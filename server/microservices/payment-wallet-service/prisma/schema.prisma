@@ -1,0 +1,102 @@
+// Prisma schema for Payment Wallet Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UserCredits {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  credits       Int       @default(100)
+  updatedAt     DateTime  @updatedAt
+
+  @@map("user_credits")
+  @@index([userId])
+}
+
+model WorkspaceCredits {
+  id            String    @id @default(cuid())
+  workspaceId   String    @unique
+  credits       Int       @default(0)
+  updatedAt     DateTime  @updatedAt
+
+  @@map("workspace_credits")
+  @@index([workspaceId])
+}
+
+model Transaction {
+  id            String              @id @default(cuid())
+  type          TransactionType
+  amount        Int
+  contextType   ContextType
+  
+  userId        String?
+  workspaceId   String?
+  actorUserId   String?
+  activityName  String?
+  resourceId    String?
+  
+  status        TransactionStatus   @default(COMPLETED)
+  metadata      Json?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  creditLedgers CreditLedger[]
+
+  @@map("transactions")
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([actorUserId])
+  @@index([contextType])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model CreditLedger {
+  id            String    @id @default(cuid())
+  entityType    EntityType
+  entityId      String
+  transactionId String
+  balanceBefore Int
+  balanceAfter  Int
+  change        Int
+  description   String
+  createdAt     DateTime  @default(now())
+
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@map("credit_ledger")
+  @@index([entityType, entityId])
+  @@index([transactionId])
+  @@index([createdAt])
+}
+
+enum TransactionType {
+  EARNED
+  SPENT
+  PURCHASED
+  REFUNDED
+  TRANSFER
+}
+
+enum ContextType {
+  INDIVIDUAL
+  TEAM
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum EntityType {
+  USER
+  WORKSPACE
+}
+

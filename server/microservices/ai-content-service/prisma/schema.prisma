@@ -1,0 +1,163 @@
+// Prisma schema for AI Content Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Avatar Models
+model Avatar {
+  id                String   @id @default(cuid())
+  userId            String   // User ID from auth-service
+  name              String
+  description       String?
+  
+  // Avatar Source & Type
+  source            AvatarSource  @default(UPLOAD)
+  provider          String?       // "heygen", etc.
+  providerAvatarId  String?       // ID from HeyGen
+  providerGroupId   String?       // HeyGen avatar group ID
+  
+  // Media
+  thumbnailUrl      String?
+  avatarUrl         String?       // Final avatar URL from HeyGen
+  originalImageUrl  String?       // Uploaded image URL
+  imageKey          String?       // HeyGen image_key from upload
+  
+  // Metadata
+  category          AvatarCategory?
+  tags              String[]       @default([])
+  isPublic          Boolean        @default(false)
+  isActive          Boolean        @default(true)
+  
+  // Generation Tracking
+  generationStatus  GenerationStatus @default(PENDING)
+  generationError   String?
+  creditsSpent      Int            @default(0)
+  generationMetadata Json?          // Provider-specific data
+  
+  // Timestamps
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  
+  // Relations
+  generationJobs    AvatarGenerationJob[]
+  
+  @@map("avatars")
+  @@index([userId])
+  @@index([source])
+  @@index([provider])
+  @@index([isPublic])
+  @@index([category])
+  @@index([generationStatus])
+}
+
+// Avatar Generation Job Tracking
+model AvatarGenerationJob {
+  id                String   @id @default(cuid())
+  userId            String
+  avatarId          String?
+  
+  // Job Details
+  provider          String         // "heygen"
+  providerJobId     String?        // Job ID from provider
+  jobType           JobType         // UPLOAD_IMAGE, CREATE_GROUP, TRAIN, GENERATE_LOOKS, ADD_MOTION
+  status            JobStatus       @default(PENDING)
+  
+  // Generation Parameters
+  imageUrl          String?        // Uploaded image
+  imageKey          String?        // HeyGen image_key
+  groupId           String?        // HeyGen group ID
+  avatarIdResult    String?        // Generated avatar ID from HeyGen
+  metadata          Json?          // Provider-specific params
+  
+  // Results
+  resultData        Json?          // Response from provider
+  errorMessage      String?
+  
+  // Cost Tracking
+  creditsSpent      Int            @default(0)
+  
+  // Timestamps
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  completedAt       DateTime?
+  
+  avatar            Avatar?         @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  
+  @@map("avatar_generation_jobs")
+  @@index([userId])
+  @@index([provider])
+  @@index([status])
+  @@index([jobType])
+}
+
+// Public Avatar Library (Pre-built avatars)
+model PublicAvatar {
+  id                String   @id @default(cuid())
+  provider          String?       // "heygen", etc.
+  providerAvatarId  String        // ID from provider
+  
+  // Avatar Info
+  name              String
+  description       String?
+  category          AvatarCategory
+  thumbnailUrl      String
+  avatarUrl         String
+  
+  // Availability
+  isActive          Boolean        @default(true)
+  
+  // Metadata
+  tags              String[]       @default([])
+  metadata          Json?
+  
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  
+  @@unique([provider, providerAvatarId])
+  @@map("public_avatars")
+  @@index([category])
+  @@index([isActive])
+}
+
+enum AvatarSource {
+  LIBRARY        // From public library
+  UPLOAD         // User uploaded
+  AI_GENERATED   // Generated via HeyGen
+}
+
+enum AvatarCategory {
+  PROFESSIONAL
+  CASUAL
+  MODERN
+  CUSTOM
+}
+
+enum GenerationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum JobType {
+  UPLOAD_IMAGE       // Upload image to HeyGen
+  CREATE_GROUP       // Create photo avatar group
+  TRAIN              // Train the avatar group
+  GENERATE_LOOKS     // Generate looks
+  ADD_MOTION         // Add motion to avatar
+}
+

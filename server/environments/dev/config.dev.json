@@ -1,0 +1,180 @@
+{
+  "environment": "development",
+  "services": {
+    "auth-service": {
+      "port": 9000,
+      "healthCheck": "/health",
+      "database": "usergen_auth",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "ai-content-service": {
+      "port": 9001,
+      "healthCheck": "/health",
+      "database": "usergen_ai_content",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "voice-audio-service": {
+      "port": 9002,
+      "healthCheck": "/health",
+      "database": "usergen_voice_audio",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "media-management-service": {
+      "port": 9003,
+      "healthCheck": "/health",
+      "database": "usergen_media_management",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "video-processing-service": {
+      "port": 9004,
+      "healthCheck": "/health",
+      "database": "usergen_video_processing",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "payment-wallet-service": {
+      "port": 9005,
+      "healthCheck": "/health",
+      "database": "usergen_payment_wallet",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "notification-service": {
+      "port": 9006,
+      "healthCheck": "/health",
+      "database": "usergen_notification",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "project-management-service": {
+      "port": 9007,
+      "healthCheck": "/health",
+      "database": "usergen_project_management",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    },
+    "analytics-service": {
+      "port": 9008,
+      "healthCheck": "/health",
+      "database": "usergen_analytics",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 2,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    }
+  },
+  "databases": {
+    "postgres": {
+      "host": "dev-db-server",
+      "port": 5432,
+      "databases": [
+        "usergen_auth",
+        "usergen_ai_content",
+        "usergen_voice_audio",
+        "usergen_media_management",
+        "usergen_video_processing",
+        "usergen_payment_wallet",
+        "usergen_notification",
+        "usergen_project_management",
+        "usergen_analytics"
+      ],
+      "replicas": 1,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      }
+    },
+    "redis": {
+      "host": "dev-redis-server",
+      "port": 6379,
+      "databases": 16,
+      "replicas": 1,
+      "resources": {
+        "memory": "512M",
+        "cpu": "250m"
+      }
+    },
+    "mongodb": {
+      "host": "dev-mongo-server",
+      "port": 27017,
+      "database": "usergen_metadata",
+      "replicas": 1,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    }
+  },
+  "messageQueue": {
+    "rabbitmq": {
+      "host": "dev-rabbitmq-server",
+      "port": 5672,
+      "managementPort": 15672,
+      "exchanges": [
+        "user.events",
+        "project.events",
+        "payment.events",
+        "ai.events",
+        "notification.events"
+      ],
+      "replicas": 1,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      }
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "services": {
+      "prometheus": true,
+      "grafana": true,
+      "elk": false,
+      "jaeger": false
+    }
+  },
+  "storage": {
+    "type": "s3",
+    "bucket": "usergen-dev-media",
+    "region": "us-east-1",
+    "maxFileSize": "100MB"
+  }
+}

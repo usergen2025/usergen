@@ -1,0 +1,204 @@
+{
+  "environment": "production",
+  "services": {
+    "auth-service": {
+      "port": 9000,
+      "healthCheck": "/health",
+      "database": "usergen_auth",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "ai-content-service": {
+      "port": 9001,
+      "healthCheck": "/health",
+      "database": "usergen_ai_content",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "voice-audio-service": {
+      "port": 9002,
+      "healthCheck": "/health",
+      "database": "usergen_voice_audio",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "media-management-service": {
+      "port": 9003,
+      "healthCheck": "/health",
+      "database": "usergen_media_management",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "video-processing-service": {
+      "port": 9004,
+      "healthCheck": "/health",
+      "database": "usergen_video_processing",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "payment-wallet-service": {
+      "port": 9005,
+      "healthCheck": "/health",
+      "database": "usergen_payment_wallet",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "notification-service": {
+      "port": 9006,
+      "healthCheck": "/health",
+      "database": "usergen_notification",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "project-management-service": {
+      "port": 9007,
+      "healthCheck": "/health",
+      "database": "usergen_project_management",
+      "dependencies": ["postgres", "redis", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "analytics-service": {
+      "port": 9008,
+      "healthCheck": "/health",
+      "database": "usergen_analytics",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"],
+      "replicas": 5,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    }
+  },
+  "databases": {
+    "postgres": {
+      "host": "prod-db-cluster",
+      "port": 5432,
+      "databases": [
+        "usergen_auth",
+        "usergen_ai_content",
+        "usergen_voice_audio",
+        "usergen_media_management",
+        "usergen_video_processing",
+        "usergen_payment_wallet",
+        "usergen_notification",
+        "usergen_project_management",
+        "usergen_analytics"
+      ],
+      "replicas": 3,
+      "resources": {
+        "memory": "4G",
+        "cpu": "2000m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "redis": {
+      "host": "prod-redis-cluster",
+      "port": 6379,
+      "databases": 16,
+      "replicas": 3,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      },
+      "restartPolicy": "unless-stopped"
+    },
+    "mongodb": {
+      "host": "prod-mongo-cluster",
+      "port": 27017,
+      "database": "usergen_metadata",
+      "replicas": 3,
+      "resources": {
+        "memory": "2G",
+        "cpu": "1000m"
+      },
+      "restartPolicy": "unless-stopped"
+    }
+  },
+  "messageQueue": {
+    "rabbitmq": {
+      "host": "prod-rabbitmq-cluster",
+      "port": 5672,
+      "managementPort": 15672,
+      "exchanges": [
+        "user.events",
+        "project.events",
+        "payment.events",
+        "ai.events",
+        "notification.events"
+      ],
+      "replicas": 3,
+      "resources": {
+        "memory": "1G",
+        "cpu": "500m"
+      },
+      "restartPolicy": "unless-stopped"
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "services": {
+      "prometheus": true,
+      "grafana": true,
+      "elk": true,
+      "jaeger": true
+    }
+  },
+  "storage": {
+    "type": "s3",
+    "bucket": "usergen-prod-media",
+    "region": "us-east-1",
+    "maxFileSize": "200MB"
+  },
+  "security": {
+    "ssl": true,
+    "rateLimiting": {
+      "enabled": true,
+      "limit": 1000,
+      "window": 60
+    },
+    "cors": {
+      "origins": ["https://usergen.ai", "https://admin.usergen.ai"]
+    }
+  }
+}

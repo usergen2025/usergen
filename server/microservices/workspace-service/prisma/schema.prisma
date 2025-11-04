@@ -1,0 +1,94 @@
+// Prisma schema for Workspace Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Models for Workspace Management
+
+model Workspace {
+  id              String          @id @default(cuid())
+  name            String
+  description     String?
+  ownerId         String
+  workspaceType   WorkspaceType   @default(TEAM)
+  settings        Json?
+  avatar          String?
+  isActive        Boolean          @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  members         WorkspaceMember[]
+  invitations     TeamInvitation[]
+
+  @@map("workspaces")
+  @@index([ownerId])
+  @@index([isActive])
+}
+
+model WorkspaceMember {
+  id          String            @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole      @default(MEMBER)
+  permissions Json?              // Granular permissions: { canGenerate, canDelete, canManage, etc. }
+  joinedAt    DateTime          @default(now())
+  invitedBy   String?
+
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+model TeamInvitation {
+  id        String                @id @default(cuid())
+  workspaceId String
+  invitedBy String
+  email     String
+  role      WorkspaceRole          @default(MEMBER)
+  token     String                 @unique
+  status    InvitationStatus      @default(PENDING)
+  expiresAt DateTime
+  acceptedAt DateTime?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId    String?
+
+  @@map("team_invitations")
+  @@index([workspaceId])
+  @@index([email])
+  @@index([token])
+  @@index([status])
+}
+
+// Enums
+
+enum WorkspaceType {
+  INDIVIDUAL
+  TEAM
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+

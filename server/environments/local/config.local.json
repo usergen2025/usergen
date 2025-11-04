@@ -1,0 +1,114 @@
+{
+  "environment": "local",
+  "services": {
+    "auth-service": {
+      "port": 9000,
+      "healthCheck": "/health",
+      "database": "usergen_auth",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "ai-content-service": {
+      "port": 9001,
+      "healthCheck": "/health",
+      "database": "usergen_ai_content",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"]
+    },
+    "voice-audio-service": {
+      "port": 9002,
+      "healthCheck": "/health",
+      "database": "usergen_voice_audio",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "media-management-service": {
+      "port": 9003,
+      "healthCheck": "/health",
+      "database": "usergen_media_management",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"]
+    },
+    "video-processing-service": {
+      "port": 9004,
+      "healthCheck": "/health",
+      "database": "usergen_video_processing",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "payment-wallet-service": {
+      "port": 9005,
+      "healthCheck": "/health",
+      "database": "usergen_payment_wallet",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "notification-service": {
+      "port": 9006,
+      "healthCheck": "/health",
+      "database": "usergen_notification",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "project-management-service": {
+      "port": 9007,
+      "healthCheck": "/health",
+      "database": "usergen_project_management",
+      "dependencies": ["postgres", "redis", "rabbitmq"]
+    },
+    "analytics-service": {
+      "port": 9008,
+      "healthCheck": "/health",
+      "database": "usergen_analytics",
+      "dependencies": ["postgres", "redis", "mongodb", "rabbitmq"]
+    }
+  },
+  "databases": {
+    "postgres": {
+      "host": "localhost",
+      "port": 5432,
+      "databases": [
+        "usergen_auth",
+        "usergen_ai_content",
+        "usergen_voice_audio",
+        "usergen_media_management",
+        "usergen_video_processing",
+        "usergen_payment_wallet",
+        "usergen_notification",
+        "usergen_project_management",
+        "usergen_analytics"
+      ]
+    },
+    "redis": {
+      "host": "localhost",
+      "port": 6379,
+      "databases": 16
+    },
+    "mongodb": {
+      "host": "localhost",
+      "port": 27017,
+      "database": "usergen_metadata"
+    }
+  },
+  "messageQueue": {
+    "rabbitmq": {
+      "host": "localhost",
+      "port": 5672,
+      "managementPort": 15672,
+      "exchanges": [
+        "user.events",
+        "project.events",
+        "payment.events",
+        "ai.events",
+        "notification.events"
+      ]
+    }
+  },
+  "monitoring": {
+    "enabled": false,
+    "services": {
+      "prometheus": false,
+      "grafana": false,
+      "elk": false,
+      "jaeger": false
+    }
+  },
+  "storage": {
+    "type": "local",
+    "path": "./uploads",
+    "maxFileSize": "50MB"
+  }
+}

@@ -1,0 +1,61 @@
+// Prisma schema for Activity Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model UserActivity {
+  id            String    @id @default(cuid())
+  userId        String
+  workspaceId   String?
+  activityType  ActivityType
+  resourceType  String
+  resourceId    String
+  actionDetails Json?
+  creditsSpent  Int       @default(0)
+  transactionId String?
+  createdAt     DateTime  @default(now())
+
+  @@map("user_activities")
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([resourceType])
+  @@index([activityType])
+  @@index([createdAt])
+}
+
+model WorkspaceActivity {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  activityType  ActivityType
+  resourceType  String
+  resourceId    String
+  actorUserId   String?
+  actionDetails Json?
+  creditsSpent  Int
+  transactionId String?
+  createdAt     DateTime  @default(now())
+
+  @@map("workspace_activities")
+  @@index([workspaceId])
+  @@index([actorUserId])
+  @@index([resourceType])
+  @@index([activityType])
+  @@index([createdAt])
+}
+
+enum ActivityType {
+  GENERATION
+  DOWNLOAD
+  UPDATE
+  DELETE
+  INVITE
+  JOIN
+  LEAVE
+}
+
+

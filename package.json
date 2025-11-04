@@ -1,0 +1,50 @@
+{
+  "name": "usergen-platform",
+  "version": "1.0.0",
+  "description": "UserGen.ai - AI-Powered Video Creation Platform",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n \"FRONTEND,BACKEND\" -c \"cyan,magenta\" \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npm run clear:ports && npm run dev",
+    "clear:ports": "cd server && bash scripts/clear-ports.sh",
+    "dev:server:swagger": "cd server && npm run dev:swagger",
+    "dev:server:auth": "cd server && npm run dev:auth",
+    "dev:server:ai-content": "cd server && npm run dev:ai-content",
+    "dev:server:voice-audio": "cd server && npm run dev:voice-audio",
+    "dev:server:media": "cd server && npm run dev:media",
+    "dev:server:video": "cd server && npm run dev:video",
+    "dev:server:payment": "cd server && npm run dev:payment",
+    "dev:server:notification": "cd server && npm run dev:notification",
+    "dev:server:project": "cd server && npm run dev:project",
+    "dev:server:analytics": "cd server && npm run dev:analytics",
+    "dev:server:activity": "cd server && npm run dev:activity",
+    "dev:server:workspace": "cd server && npm run dev:workspace",
+    "dev:server:iam": "cd server && npm run dev:iam",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install",
+    "install:client": "cd client && npm install",
+    "install:server": "cd server && npm install",
+    "docker:start": "cd server && npm run docker:start",
+    "docker:stop": "cd server && npm run docker:stop",
+    "docker:status": "cd server && npm run docker:status",
+    "docker:logs": "cd server && npm run docker:logs",
+    "docker:clean": "cd server && npm run docker:clean",
+    "check:services": "cd server && npm run check:services"
+  },
+  "keywords": [
+    "usergen",
+    "microservices",
+    "nestjs",
+    "nextjs",
+    "ai",
+    "video-generation"
+  ],
+  "author": "UserGen.ai Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

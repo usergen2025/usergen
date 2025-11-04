@@ -1,0 +1,116 @@
+// Prisma schema for Auth Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String
+  mobile            String?
+  socialMediaLink   String?
+  goal              String?
+  profilePicture    String?
+  passwordHash      String?
+  role              UserRole  @default(USER)
+  credits           Int       @default(100)
+  isActive          Boolean   @default(true)
+  isEmailVerified   Boolean   @default(false)
+  isMobileVerified   Boolean   @default(false)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Social login accounts
+  socialAccounts    SocialAccount[]
+  
+  // Refresh tokens
+  refreshTokens     RefreshToken[]
+  
+  // OTP records
+  otpRecords        OtpRecord[]
+  
+  // Password resets
+  passwordResets    PasswordReset[]
+
+  @@map("users")
+}
+
+model SocialAccount {
+  id        String   @id @default(cuid())
+  userId    String
+  provider  String   // google, facebook, etc.
+  providerId String
+  email     String?
+  name      String?
+  picture   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@map("social_accounts")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model OtpRecord {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String?
+  mobile    String?
+  otp       String
+  type      OtpType
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("otp_records")
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_resets")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  AVATAR_CREATOR
+}
+
+enum OtpType {
+  EMAIL_VERIFICATION
+  MOBILE_VERIFICATION
+  LOGIN
+  PASSWORD_RESET
+}

@@ -1,0 +1,206 @@
+# Docker Compose file for production environment
+# Note: All paths are relative to this file location (environments/prod/)
+
+services:
+  # Databases
+  postgres:
+    image: postgres:14
+    container_name: usergen-postgres-prod
+    environment:
+      POSTGRES_DB: usergen_prod
+      POSTGRES_USER: ${PROD_DB_USER}
+      POSTGRES_PASSWORD: ${PROD_DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+      - ../../infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ../../backups:/backups
+    networks:
+      - usergen-network-prod
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: usergen-redis-prod
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_prod:/data
+    networks:
+      - usergen-network-prod
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:6
+    container_name: usergen-mongodb-prod
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${PROD_MONGODB_PASSWORD}
+      MONGO_INITDB_DATABASE: usergen_metadata
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data_prod:/data/db
+    networks:
+      - usergen-network-prod
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: usergen-rabbitmq-prod
+    environment:
+      RABBITMQ_DEFAULT_USER: ${PROD_RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${PROD_RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data_prod:/var/lib/rabbitmq
+    networks:
+      - usergen-network-prod
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+
+  # Microservices
+  auth-service:
+    build:
+      context: ../../microservices/auth-service
+      dockerfile: Dockerfile
+    container_name: usergen-auth-service-prod
+    environment:
+      - NODE_ENV=production
+      - SERVICE_NAME=auth-service
+      - SERVICE_PORT=9000
+      - DATABASE_URL=postgresql://${PROD_DB_USER}:${PROD_DB_PASSWORD}@postgres:5432/usergen_auth
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://${PROD_RABBITMQ_USER}:${PROD_RABBITMQ_PASSWORD}@rabbitmq:5672
+    ports:
+      - "9000:9000"
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - usergen-network-prod
+    volumes:
+      - ../../logs:/app/logs
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ai-content-service:
+    build:
+      context: ../../microservices/ai-content-service
+      dockerfile: Dockerfile
+    container_name: usergen-ai-content-service-prod
+    environment:
+      - NODE_ENV=production
+      - SERVICE_NAME=ai-content-service
+      - SERVICE_PORT=9001
+      - DATABASE_URL=postgresql://${PROD_DB_USER}:${PROD_DB_PASSWORD}@postgres:5432/usergen_ai_content
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://admin:${PROD_MONGODB_PASSWORD}@mongodb:27017/usergen_metadata
+      - RABBITMQ_URL=amqp://${PROD_RABBITMQ_USER}:${PROD_RABBITMQ_PASSWORD}@rabbitmq:5672
+    ports:
+      - "9001:9001"
+    depends_on:
+      - postgres
+      - redis
+      - mongodb
+      - rabbitmq
+    networks:
+      - usergen-network-prod
+    volumes:
+      - ../../logs:/app/logs
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # API Gateway (Kong)
+  kong:
+    image: kong:3.0
+    container_name: usergen-kong-prod
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - ../../infrastructure/kong/kong.yml:/kong/kong.yml
+    depends_on:
+      - auth-service
+      - ai-content-service
+    networks:
+      - usergen-network-prod
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:
+  mongodb_data_prod:
+  rabbitmq_data_prod:
+
+networks:
+  usergen-network-prod:
+    driver: bridge

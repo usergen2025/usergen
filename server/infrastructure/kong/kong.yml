@@ -1,0 +1,274 @@
+_format_version: "3.0"
+
+services:
+  - name: auth-service
+    url: http://auth-service:9000
+    routes:
+      - name: auth-routes
+        paths:
+          - /api/auth
+        methods:
+          - GET
+          - POST
+        plugins:
+          - name: cors
+            config:
+              origins:
+                - http://localhost:3200
+                - http://localhost:9000
+                - http://localhost:9001
+              methods:
+                - GET
+                - POST
+                - PUT
+                - DELETE
+                - OPTIONS
+              headers:
+                - Accept
+                - Authorization
+                - Content-Type
+                - X-Request-ID
+              credentials: true
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+  - name: iam-service
+    url: http://iam-service:9010
+    routes:
+      - name: iam-routes
+        paths:
+          - /api/permissions
+          - /api/roles
+          - /api/policies
+          - /api/access
+        methods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 2000
+              policy: local
+
+  - name: workspace-service
+    url: http://workspace-service:9007
+    routes:
+      - name: workspace-routes
+        paths:
+          - /api/workspaces
+          - /api/invitations
+        methods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+  - name: payment-wallet-service
+    url: http://payment-wallet-service:9005
+    routes:
+      - name: payment-wallet-routes
+        paths:
+          - /api/transactions
+          - /api/credits
+        methods:
+          - GET
+          - POST
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 5000
+              policy: local
+
+  - name: activity-service
+    url: http://activity-service:9003
+    routes:
+      - name: activity-routes
+        paths:
+          - /api/activities
+        methods:
+          - GET
+          - POST
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+  - name: ai-content-service
+    url: http://ai-content-service:9001
+    routes:
+      - name: ai-content-routes
+        paths:
+          - /api/ai
+          - /api/scripts
+          - /api/avatars
+          - /api/content
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 50
+              hour: 500
+              policy: local
+
+  - name: voice-audio-service
+    url: http://voice-audio-service:9002
+    routes:
+      - name: voice-audio-routes
+        paths:
+          - /api/voice
+          - /api/audio
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+  - name: video-processing-service
+    url: http://video-processing-service:9004
+    routes:
+      - name: video-processing-routes
+        paths:
+          - /api/video
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 50
+              hour: 500
+              policy: local
+
+  - name: notification-service
+    url: http://notification-service:9006
+    routes:
+      - name: notification-routes
+        paths:
+          - /api/notifications
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 2000
+              policy: local
+
+  - name: analytics-service
+    url: http://analytics-service:9008
+    routes:
+      - name: analytics-routes
+        paths:
+          - /api/analytics
+          - /api/reports
+        methods:
+          - GET
+          - POST
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 2000
+              policy: local
+
+  - name: media-management-service
+    url: http://media-management-service:9009
+    routes:
+      - name: media-management-routes
+        paths:
+          - /api/media
+          - /api/files
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+  - name: swagger-aggregator-service
+    url: http://swagger-aggregator-service:9090
+    routes:
+      - name: swagger-aggregator-routes
+        paths:
+          - /api/docs
+          - /api/docs-json
+          - /api/status
+        methods:
+          - GET
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 2000
+              policy: local
+
+plugins:
+  - name: cors
+    config:
+      origins:
+        - http://localhost:3200
+        - http://localhost:8000
+        - http://localhost:9000
+        - http://localhost:9001
+        - http://localhost:9090
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+        - PATCH
+      headers:
+        - Accept
+        - Authorization
+        - Content-Type
+        - X-Request-ID
+      credentials: true

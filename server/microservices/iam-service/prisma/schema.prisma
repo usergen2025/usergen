@@ -1,0 +1,141 @@
+// Prisma schema for IAM Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// CORE MODELS
+// ============================================
+
+model Permission {
+  id          String   @id @default(cuid())
+  name        String   @unique  // e.g., "video.generate", "project.delete"
+  resource    String            // e.g., "video", "project", "user"
+  action      String            // e.g., "generate", "delete", "create"
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  
+  @@map("permissions")
+  @@index([resource, action])
+  @@index([isActive])
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique  // e.g., "workspace.owner", "workspace.member"
+  displayName String
+  description String?
+  isSystem    Boolean  @default(true)  // System roles vs custom roles
+  context     String?  // e.g., "workspace", "project", null for global
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  
+  @@map("roles")
+  @@index([name])
+  @@index([context])
+  @@index([isActive])
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  granted    Boolean  @default(true) // false = explicitly denied
+  createdAt    DateTime @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+// ============================================
+// POLICY-BASED ACCESS CONTROL
+// ============================================
+
+model Policy {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  entityType  String   // e.g., "workspace", "project", "resource"
+  entityId    String   // Specific entity this policy applies to
+  conditions  Json?    // JSON rules: { userIds: [...], timeRange: {...}, etc. }
+  permissions String[] // Array of permission names
+  priority    Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("policies")
+  @@index([entityType, entityId])
+  @@index([priority])
+  @@index([isActive])
+}
+
+// ============================================
+// ACCESS AUDIT LOGS
+// ============================================
+
+model AccessLog {
+  id            String   @id @default(cuid())
+  userId        String
+  action        String   // "permission_check", "access_denied", "access_granted"
+  resourceType  String?  // e.g., "workspace", "project"
+  resourceId    String?  // ID of the resource
+  permission    String?  // Permission that was checked
+  result        Boolean  // true = granted, false = denied
+  reason        String?  // Reason for denial (if applicable)
+  context       Json?    // Additional context data
+  ipAddress     String?
+  userAgent     String?
+  createdAt      DateTime @default(now())
+
+  @@map("access_logs")
+  @@index([userId])
+  @@index([resourceType, resourceId])
+  @@index([permission])
+  @@index([createdAt])
+  @@index([action])
+}
+
+// ============================================
+// USER-ROLE ASSIGNMENTS (for future use
+// ============================================
+
+model UserRole {
+  id          String   @id @default(cuid())
+  userId      String
+  roleId      String
+  entityType  String?  // e.g., "workspace", "project"
+  entityId    String?  // ID of the entity
+  assignedBy  String?  // User ID who assigned this role
+  expiresAt   DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, entityType, entityId])
+  @@map("user_roles")
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([isActive])
+}
+
+

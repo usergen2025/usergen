@@ -1,0 +1,148 @@
+// Prisma schema for Video Processing Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Video Project - tracks the entire video creation process
+model VideoProject {
+  id                String   @id @default(cuid())
+  userId            String   // User ID from auth-service
+  workspaceId       String?  // Workspace ID (optional)
+  
+  // Project Metadata
+  title             String?
+  description       String?
+  
+  // Video Configuration
+  videoType         VideoType        // "with-avatar" | "without-avatar"
+  style             VideoStyle?      // "half-n-half" | "alternate" | "avatar-cutout"
+  
+  // Avatar Configuration (if videoType is "with-avatar")
+  avatarId          String?          // Avatar ID from ai-content-service
+  avatarName        String?
+  avatarUrl         String?
+  
+  // Script & Content
+  script            String?          // Generated or user-provided script
+  scriptGenerated  Boolean          @default(false)
+  
+  // Voice Configuration
+  voiceId           String?          // Voice ID from voice-audio-service or ElevenLabs
+  voiceType         VoiceType?       // "cloned" | "synthetic" | "preset"
+  clonedVoiceId     String?          // If voiceType is "cloned"
+  voiceSettings     Json?            // Additional voice settings
+  audioFiles        Json?            // Array of audio file paths: [{ sceneNumber, filePath, localUrl, voiceover, duration }]
+  
+  // B-Roll Configuration
+  bRollSource       BRollSource?     // "skip" | "ai-generated" | "upload" | "stock"
+  bRollVideos       String[]         @default([]) // URLs or IDs of B-roll videos
+  bRollPrompt       String?          // If bRollSource is "ai-generated"
+  bRollImages       Json?            // Array: [{ sceneNumber, imageUrl, localPath, prompt }]
+  bRollVideoTasks   Json?            // Array: [{ sceneNumber, taskId, videoUrl, localPath, duration, prompt }]
+  
+  // Avatar Video Configuration
+  avatarVideos      Json?            // Array: [{ sceneNumber, videoUrl, localPath, duration, taskId }]
+  
+  // Scene Videos (composited)
+  sceneVideos       Json?            // Array: [{ sceneNumber, videoUrl, localPath }] - composited scenes
+  
+  // Rendering Status
+  renderingStatus   String?          // "pending" | "audio_generating" | "image_generating" | "video_generating" | "avatar_generating" | "stitching" | "completed" | "failed"
+  renderingProgress Int              @default(0) // 0-100
+  
+  // Caption Configuration
+  captionSettings   Json?            // CaptionSettings object
+  captionsEnabled   Boolean          @default(false)
+  
+  // Video Generation Status
+  status            VideoProjectStatus @default(DRAFT)
+  currentStep       VideoCreationStep @default(STYLE_SELECTION)
+  
+  // Generation Details
+  providerJobId     String?          // Job ID from video generation provider
+  providerType      String?           // "runway", "pika", etc.
+  videoUrl          String?          // Final video URL
+  thumbnailUrl      String?          // Video thumbnail
+  duration          Int?              // Video duration in seconds
+  
+  // Progress Tracking
+  progress          Int               @default(0) // 0-100
+  progressStage     String?           // Current stage description
+  
+  // Error Handling
+  errorMessage      String?
+  errorCode         String?
+  
+  // Cost Tracking
+  creditsSpent      Int               @default(0)
+  
+  // Metadata & Configuration History
+  configurationHistory Json?          // Store changes over time for audit
+  metadata          Json?             // Additional metadata
+  
+  // Timestamps
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  completedAt       DateTime?
+  startedAt         DateTime?
+  
+  @@map("video_projects")
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([status])
+  @@index([videoType])
+  @@index([currentStep])
+  @@index([createdAt])
+}
+
+enum VideoType {
+  WITH_AVATAR
+  WITHOUT_AVATAR
+}
+
+enum VideoStyle {
+  HALF_N_HALF
+  ALTERNATE
+  AVATAR_CUTOUT
+}
+
+enum VoiceType {
+  CLONED
+  SYNTHETIC
+  PRESET
+}
+
+enum BRollSource {
+  SKIP
+  AI_GENERATED
+  UPLOAD
+  STOCK
+}
+
+enum VideoProjectStatus {
+  DRAFT              // Project being created, not started
+  IN_PROGRESS        // Video generation in progress
+  COMPLETED          // Video generation completed
+  FAILED             // Video generation failed
+  CANCELLED          // User cancelled generation
+}
+
+enum VideoCreationStep {
+  STYLE_SELECTION    // Initial step - style selection
+  VIDEO_TYPE         // Choose with/without avatar
+  AVATAR_SELECTION   // Select or upload avatar
+  SCRIPT             // Script generation/editing
+  VOICE              // Voice selection/cloning
+  BROLL_IMAGES       // B-roll images page
+  BROLL_VIDEOS       // B-roll videos page
+  B_ROLL             // B-roll selection (legacy)
+  CAPTIONS           // Caption configuration
+  RENDERING          // Video rendering/generation
+  COMPLETED          // All steps completed
+}
+

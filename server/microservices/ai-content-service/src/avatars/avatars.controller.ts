@@ -1,0 +1,324 @@
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  ParseFilePipe,
+  MaxFileSizeValidator,
+  Query,
+  HttpCode,
+  HttpStatus,
+  Request,
+  HttpException,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import * as fs from 'fs';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { AvatarsService } from './avatars.service';
+import * as jwt from 'jsonwebtoken';
+import { ConfigService } from '@nestjs/config';
+
+@ApiTags('avatars')
+@Controller('avatars')
+export class AvatarsController {
+  constructor(
+    private readonly avatarsService: AvatarsService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  /**
+   * Extract userId from JWT token
+   */
+  private extractUserIdFromToken(req: any): string | null {
+    try {
+      const authHeader = req.headers?.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return null;
+      }
+
+      const token = authHeader.replace('Bearer ', '');
+      const jwtSecret = this.configService!.get<string>('JWT_SECRET') || 
+                       'SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.';
+      
+      const decoded = jwt.verify(token, jwtSecret) as any;
+      // JWT token uses 'sub' field for user ID
+      return decoded.sub || decoded.userId || decoded.id || null;
+    } catch (error) {
+      // Token is invalid or expired
+      return null;
+    }
+  }
+
+  @Post('upload')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Upload image to HeyGen', description: 'Upload image file to HeyGen and get image_key. Also saves file locally.' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Image file (JPEG or PNG)',
+        },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Image uploaded successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            imageKey: { type: 'string', example: 'img_key_123' },
+            assetId: { type: 'string', example: 'asset_456' },
+            localUrl: { type: 'string', example: '/uploads/avatars/123/image.jpg' },
+          },
+        },
+        message: { type: 'string', example: 'Image uploaded successfully' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          // Extract userId from token (synchronously)
+          const authHeader = req.headers?.authorization;
+          let userId = 'anonymous';
+          
+          if (authHeader && authHeader.startsWith('Bearer ')) {
+            try {
+              const token = authHeader.replace('Bearer ', '');
+              const jwtSecret = process.env.JWT_SECRET || 
+                               'SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.';
+              const decoded = jwt.verify(token, jwtSecret) as any;
+              userId = decoded.sub || decoded.userId || decoded.id || 'anonymous';
+            } catch (error) {
+              // If token is invalid, use anonymous
+              userId = 'anonymous';
+            }
+          }
+          
+          const uploadDir = join(process.cwd(), 'uploads', 'avatars', userId);
+          // Ensure directory exists
+          if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+          }
+          cb(null, uploadDir);
+        },
+        filename: (req, file, cb) => {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+          const ext = extname(file.originalname);
+          cb(null, `${uniqueSuffix}${ext}`);
+        },
+      }),
+      limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB
+      },
+    }),
+  )
+  async uploadImage(
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }), // 10MB
+          // FileTypeValidator removed - we validate mimetype manually below
+        ],
+        fileIsRequired: true,
+      }),
+    )
+    file: Express.Multer.File,
+    @Request() req: any,
+  ) {
+    const userId = this.extractUserIdFromToken(req) || 'anonymous';
+    
+    // Validate mimetype manually - FileTypeValidator regex can be problematic
+    const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+    if (!file || !file.mimetype || !allowedMimeTypes.includes(file.mimetype)) {
+      throw new HttpException(
+        {
+          success: false,
+          error: `Invalid file type. Expected image/jpeg, image/jpg, or image/png, got ${file?.mimetype || 'unknown'}`,
+          code: 'INVALID_FILE_TYPE',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    const contentType = (file.mimetype === 'image/jpeg' || file.mimetype === 'image/jpg') ? 'image/jpeg' : 'image/png';
+    
+    // Read file buffer from disk
+    const fileBuffer = fs.readFileSync(file.path);
+    
+    const result = await this.avatarsService.uploadImageToHeyGen({
+      imageBuffer: fileBuffer,
+      contentType,
+      filename: file.originalname,
+      localFilePath: file.path,
+      userId,
+    });
+
+    return {
+      success: true,
+      data: {
+        ...result,
+        localUrl: `/uploads/avatars/${userId}/${file.filename}`,
+      },
+      message: 'Image uploaded successfully. You can now proceed to create avatar.',
+    };
+  }
+
+  @Post('create-from-upload')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Create avatar from uploaded image',
+    description: 'Creates avatar from HeyGen image_key. Starts background process to generate avatar. Requires JWT token in Authorization header or userId in request body.',
+  })
+  @ApiBearerAuth('JWT-auth')
+  @ApiResponse({
+    status: 201,
+    description: 'Avatar creation started',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            avatarId: { type: 'string', example: 'avatar_123' },
+            jobId: { type: 'string', example: 'job_456' },
+          },
+        },
+        message: { type: 'string', example: 'Avatar generation started' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'User ID is required',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: false },
+        error: { type: 'string', example: 'User ID is required. Please provide userId in request body or authenticate with JWT token.' },
+        code: { type: 'string', example: 'MISSING_USER_ID' },
+      },
+    },
+  })
+  async createAvatarFromUpload(
+    @Body() dto: { imageKey: string; assetId?: string; name?: string; description?: string; userId?: string; originalImageUrl?: string },
+    @Request() req: any,
+  ) {
+    // Extract userId from JWT token if not provided in body
+    let userId = dto.userId;
+    
+    if (!userId) {
+      userId = this.extractUserIdFromToken(req);
+    }
+
+    // Validate userId is present
+    if (!userId) {
+      throw new HttpException(
+        {
+          success: false,
+          error: 'User ID is required. Please provide userId in request body or authenticate with JWT token.',
+          code: 'MISSING_USER_ID',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const result = await this.avatarsService.createAvatarFromUpload({
+      ...dto,
+      userId,
+      originalImageUrl: dto.originalImageUrl,
+    });
+
+    return {
+      success: true,
+      data: result,
+      message: 'Avatar generation started. This will take a few minutes.',
+    };
+  }
+
+  @Get()
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get user avatars', description: 'List all avatars for the authenticated user' })
+  @ApiResponse({ status: 200, description: 'Avatars retrieved successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getUserAvatars(
+    @Request() req: any,
+    @Query('source') source?: string,
+    @Query('category') category?: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        {
+          success: false,
+          error: 'Authentication failed. Please login again.',
+          code: 'UNAUTHORIZED',
+        },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const avatars = await this.avatarsService.getUserAvatars(userId, { source, category });
+    return {
+      success: true,
+      data: avatars,
+    };
+  }
+
+  @Get('library')
+  @ApiOperation({ summary: 'Get library avatars', description: 'Get public avatar library' })
+  @ApiResponse({ status: 200, description: 'Library avatars retrieved successfully' })
+  async getLibraryAvatars(
+    @Query('category') category?: string,
+    @Query('search') search?: string,
+  ) {
+    const avatars = await this.avatarsService.getLibraryAvatars({ category, search });
+    return {
+      success: true,
+      data: avatars,
+    };
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get avatar details', description: 'Get specific avatar by ID' })
+  @ApiResponse({ status: 200, description: 'Avatar retrieved successfully' })
+  async getAvatarById(@Param('id') id: string, @Query('userId') userId?: string) {
+    const user = userId || 'user123'; // TODO: Get from JWT token
+    const avatar = await this.avatarsService.getAvatarById(id, user);
+    return {
+      success: true,
+      data: avatar,
+    };
+  }
+
+  @Get('jobs/:jobId/status')
+  @ApiOperation({ summary: 'Get generation job status', description: 'Check status of avatar generation job' })
+  @ApiResponse({ status: 200, description: 'Job status retrieved successfully' })
+  async getJobStatus(@Param('jobId') jobId: string, @Query('userId') userId?: string) {
+    const user = userId || 'user123'; // TODO: Get from JWT token
+    const job = await this.avatarsService.getJobStatus(jobId, user);
+    return {
+      success: true,
+      data: job,
+    };
+  }
+}
+
