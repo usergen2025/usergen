@@ -599,7 +599,10 @@ function BrollImagesPageContent() {
         ? image.localUrl 
         : `/uploads${image.localUrl}`;
       // Static files are served at /uploads/* (not /api/uploads/*)
-      return `http://localhost:9004${url}`;
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL 
+        ? process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL.replace('/api', '')
+        : 'http://localhost:9004';
+      return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
     // Fallback to imageUrl (BytePlus URL)
     return image.imageUrl;

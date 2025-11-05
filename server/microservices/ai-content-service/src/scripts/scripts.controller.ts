@@ -196,7 +196,7 @@ export class ScriptsController {
             formattedScript: { type: 'string', example: '📹 Video Type: Half-and-Half\n⏱️  Duration: 30 seconds\n\n🎬 Scene 1 (0-5s)...', description: 'Human-readable formatted script' },
             tokensUsed: { type: 'number', example: 1500, description: 'OpenAI tokens used' },
             processingTime: { type: 'number', example: 2345, description: 'Processing time in milliseconds' },
-            model: { type: 'string', example: 'gpt-4.1', description: 'OpenAI model used' }
+            model: { type: 'string', example: 'gpt-4-turbo', description: 'OpenAI model used' }
           }
         },
         message: { type: 'string', example: 'Video script generated successfully' },

@@ -327,10 +327,13 @@ function AvatarPageContent() {
                   {/* Avatar options */}
                   {filteredAvatars.map((avatar: any) => {
                     const avatarImageUrl = avatar.avatarUrl || avatar.thumbnailUrl || avatar.originalImageUrl;
+                    const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                      ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                      : 'http://localhost:9001';
                     const imageUrl = avatarImageUrl?.startsWith('http') 
                       ? avatarImageUrl 
                       : avatarImageUrl 
-                        ? `http://localhost:9001${avatarImageUrl}` 
+                        ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}` 
                         : null;
                     
                     return (

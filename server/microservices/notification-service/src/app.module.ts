@@ -8,7 +8,10 @@ import { EmailModule } from './email/email.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/notification-service/.env',
+        '.env',
+      ],
       expandVariables: true,
     }),
     EmailModule,

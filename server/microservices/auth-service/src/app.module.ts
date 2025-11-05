@@ -19,7 +19,10 @@ import { SwaggerAuthGuard } from './common/guards/swagger-auth.guard';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/auth-service/.env',
+        '.env',
+      ],
       expandVariables: true,
     }),
     AppConfigModule,

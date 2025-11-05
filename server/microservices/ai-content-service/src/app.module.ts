@@ -16,7 +16,10 @@ import { LoggerModule } from './common/logger/logger.module';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/ai-content-service/.env',
+        '.env',
+      ],
     }),
     // AppConfigModule, // TODO: Implement later
 

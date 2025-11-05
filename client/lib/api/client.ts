@@ -8,6 +8,8 @@ import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 const AUTH_SERVICE_URL = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:9000/api';
 const VIDEO_SERVICE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:9004/api';
+const AI_CONTENT_SERVICE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL || 'http://localhost:9001/api';
+const VOICE_SERVICE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:9002/api';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -185,8 +187,8 @@ class ApiClient {
     const formData = new FormData();
     formData.append('file', file);
 
-    // Use direct service URL for now
-    const avatarServiceUrl = 'http://localhost:9001/api';
+    // Use environment variable for service URL
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ imageKey: string; assetId: string; localUrl?: string }>>(
@@ -211,7 +213,7 @@ class ApiClient {
     userId?: string;
     originalImageUrl?: string;
   }): Promise<ApiResponse<{ avatarId: string; jobId: string }>> {
-    const avatarServiceUrl = 'http://localhost:9001/api';
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ avatarId: string; jobId: string }>>(
@@ -229,7 +231,7 @@ class ApiClient {
   }
 
   async getAvatarJobStatus(jobId: string, userId?: string): Promise<ApiResponse<any>> {
-    const avatarServiceUrl = 'http://localhost:9001/api';
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.get<ApiResponse<any>>(
@@ -245,7 +247,7 @@ class ApiClient {
   }
 
   async getUserAvatars(filters?: { source?: string; category?: string }): Promise<ApiResponse<any[]>> {
-    const avatarServiceUrl = 'http://localhost:9001/api';
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
     const params = new URLSearchParams();
     if (filters?.source) params.append('source', filters.source);
@@ -264,7 +266,7 @@ class ApiClient {
   }
 
   async getLibraryAvatars(filters?: { category?: string; search?: string }): Promise<ApiResponse<any[]>> {
-    const avatarServiceUrl = 'http://localhost:9001/api';
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
     const params = new URLSearchParams();
     if (filters?.category) params.append('category', filters.category);
@@ -465,7 +467,7 @@ class ApiClient {
     duration?: string;
     projectId?: string;
   }): Promise<ApiResponse<any>> {
-    const aiContentServiceUrl = 'http://localhost:9001/api';
+    const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<any>>(
@@ -484,7 +486,7 @@ class ApiClient {
 
   // Voice/Audio endpoints
   async getElevenLabsVoices(search?: string, category?: string): Promise<ApiResponse<any[]>> {
-    const voiceServiceUrl = 'http://localhost:9002/api';
+    const voiceServiceUrl = VOICE_SERVICE_URL;
     const token = this.getToken();
     const params = new URLSearchParams();
     if (search) params.append('search', search);
@@ -511,7 +513,7 @@ class ApiClient {
     model_id?: string;
     output_format?: string;
   }): Promise<ApiResponse<any[]>> {
-    const voiceServiceUrl = 'http://localhost:9002/api';
+    const voiceServiceUrl = VOICE_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<any[]>>(

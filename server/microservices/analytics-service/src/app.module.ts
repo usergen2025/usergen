@@ -6,7 +6,10 @@ import { AnalyticsController } from './analytics/analytics.controller';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/analytics-service/.env',
+        '.env',
+      ],
     }),
   ],
   controllers: [AnalyticsController],

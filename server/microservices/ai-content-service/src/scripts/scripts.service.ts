@@ -113,8 +113,9 @@ export class ScriptsService {
       const userPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}. Return the response as a JSON object.`;
 
       // Call OpenAI API
+      // Note: response_format: json_object requires gpt-4-turbo, gpt-4o, or gpt-3.5-turbo
       const completion = await this.openai.chat.completions.create({
-        model: this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4.1'),
+        model: this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo'),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

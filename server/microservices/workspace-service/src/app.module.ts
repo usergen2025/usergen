@@ -19,7 +19,10 @@ import { InvitationsModule } from './invitations/invitations.module';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env.local', '.env'],
+      envFilePath: [
+        'microservices/workspace-service/.env',
+        '.env',
+      ],
     }),
     AppConfigModule,
 

@@ -7,7 +7,10 @@ import { SwaggerAggregatorService } from './swagger-aggregator.service';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/swagger-aggregator-service/.env',
+        '.env',
+      ],
       expandVariables: true,
     }),
   ],

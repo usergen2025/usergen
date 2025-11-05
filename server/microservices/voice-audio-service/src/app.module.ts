@@ -8,7 +8,10 @@ import { ElevenLabsProvider } from './voice/providers/elevenlabs.provider';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/voice-audio-service/.env',
+        '.env',
+      ],
     }),
   ],
   controllers: [VoiceController],

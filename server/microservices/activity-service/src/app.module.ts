@@ -7,7 +7,13 @@ import { ActivitiesModule } from './activities/activities.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'] }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [
+        'microservices/activity-service/.env',
+        '.env',
+      ],
+    }),
     DatabaseModule,
     MessageQueueModule,
     LoggerModule,

@@ -13,7 +13,10 @@ import { WebSocketModule } from './common/websocket/websocket.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/video-processing-service/.env',
+        '.env',
+      ],
     }),
     BullModule.forRoot({
       connection: QueueManagerService.getRedisConnection(),

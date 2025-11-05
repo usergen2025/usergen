@@ -10,7 +10,10 @@ import { CommonModule } from './common/common.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env', '.env.local'],
+      envFilePath: [
+        'microservices/iam-service/.env',
+        '.env',
+      ],
     }),
     CommonModule,
     PermissionsModule,

@@ -6,7 +6,10 @@ import { MediaController } from './media/media.controller';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env.local', '../../.env', '.env.local', '.env'],
+      envFilePath: [
+        'microservices/media-management-service/.env',
+        '.env',
+      ],
     }),
   ],
   controllers: [MediaController],
