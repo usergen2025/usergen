@@ -15,17 +15,17 @@ echo ""
 check_docker() {
   if ! docker ps | grep -q "usergen-postgres"; then
     echo -e "${YELLOW}⚠️  PostgreSQL container (usergen-postgres) is not running${NC}"
-    echo "   Start it with: cd server/environments/local && docker-compose up -d postgres"
+    echo "   Start it with: cd server/environments/local && docker compose up -d postgres"
     return 1
   fi
   if ! docker ps | grep -q "usergen-mongodb"; then
     echo -e "${YELLOW}⚠️  MongoDB container (usergen-mongodb) is not running${NC}"
-    echo "   Start it with: cd server/environments/local && docker-compose up -d mongodb"
+    echo "   Start it with: cd server/environments/local && docker compose up -d mongodb"
     return 1
   fi
   if ! docker ps | grep -q "usergen-redis"; then
     echo -e "${YELLOW}⚠️  Redis container (usergen-redis) is not running${NC}"
-    echo "   Start it with: cd server/environments/local && docker-compose up -d redis"
+    echo "   Start it with: cd server/environments/local && docker compose up -d redis"
     return 1
   fi
   return 0

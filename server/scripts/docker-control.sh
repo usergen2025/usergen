@@ -37,45 +37,45 @@ case "$1" in
   start)
     echo -e "${GREEN}🚀 Starting Docker infrastructure services...${NC}"
     cd "$ENV_DIR"
-    docker-compose -f docker-compose.local.yml up -d
+    docker compose -f docker-compose.local.yml up -d
     echo ""
     echo -e "${GREEN}✅ Docker services started!${NC}"
     echo ""
     echo "Services:"
-    docker-compose -f docker-compose.local.yml ps
+    docker compose -f docker-compose.local.yml ps
     ;;
     
   stop)
     echo -e "${YELLOW}🛑 Stopping Docker services...${NC}"
     cd "$ENV_DIR"
-    docker-compose -f docker-compose.local.yml stop
+    docker compose -f docker-compose.local.yml stop
     echo -e "${GREEN}✅ Docker services stopped!${NC}"
     ;;
     
   restart)
     echo -e "${YELLOW}🔄 Restarting Docker services...${NC}"
     cd "$ENV_DIR"
-    docker-compose -f docker-compose.local.yml restart
+    docker compose -f docker-compose.local.yml restart
     echo -e "${GREEN}✅ Docker services restarted!${NC}"
     ;;
     
   status)
     echo -e "${GREEN}📊 Docker Services Status:${NC}"
     cd "$ENV_DIR"
-    docker-compose -f docker-compose.local.yml ps
+    docker compose -f docker-compose.local.yml ps
     echo ""
     echo -e "${GREEN}📋 Container Details:${NC}"
-    docker-compose -f docker-compose.local.yml ps -a
+    docker compose -f docker-compose.local.yml ps -a
     ;;
     
   logs)
     cd "$ENV_DIR"
     if [ -z "$2" ]; then
       echo -e "${GREEN}📋 Showing logs for all services (Ctrl+C to exit)...${NC}"
-      docker-compose -f docker-compose.local.yml logs -f
+      docker compose -f docker-compose.local.yml logs -f
     else
       echo -e "${GREEN}📋 Showing logs for $2 (Ctrl+C to exit)...${NC}"
-      docker-compose -f docker-compose.local.yml logs -f "$2"
+      docker compose -f docker-compose.local.yml logs -f "$2"
     fi
     ;;
     
@@ -85,7 +85,7 @@ case "$1" in
     if [ "$confirm" = "yes" ]; then
       cd "$ENV_DIR"
       echo -e "${YELLOW}🧹 Cleaning Docker resources...${NC}"
-      docker-compose -f docker-compose.local.yml down -v --remove-orphans
+      docker compose -f docker-compose.local.yml down -v --remove-orphans
       echo -e "${GREEN}✅ Cleanup complete!${NC}"
     else
       echo -e "${YELLOW}Cleanup cancelled.${NC}"
@@ -94,7 +94,7 @@ case "$1" in
     
   ps)
     cd "$ENV_DIR"
-    docker-compose -f docker-compose.local.yml ps
+    docker compose -f docker-compose.local.yml ps
     ;;
     
   *)

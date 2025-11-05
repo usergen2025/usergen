@@ -119,7 +119,7 @@ start_services() {
     print_info "Starting $env services..."
     
     if [ -f "environments/$env/docker-compose.$env.yml" ]; then
-        docker-compose -f "environments/$env/docker-compose.$env.yml" up -d
+        docker compose -f "environments/$env/docker-compose.$env.yml" up -d
         print_success "$env services started!"
     else
         print_error "Docker compose file not found: environments/$env/docker-compose.$env.yml"
@@ -133,7 +133,7 @@ stop_services() {
     print_info "Stopping $env services..."
     
     if [ -f "environments/$env/docker-compose.$env.yml" ]; then
-        docker-compose -f "environments/$env/docker-compose.$env.yml" down
+        docker compose -f "environments/$env/docker-compose.$env.yml" down
         print_success "$env services stopped!"
     else
         print_error "Docker compose file not found: environments/$env/docker-compose.$env.yml"
@@ -155,7 +155,7 @@ show_logs() {
     print_info "Showing logs for $env services..."
     
     if [ -f "environments/$env/docker-compose.$env.yml" ]; then
-        docker-compose -f "environments/$env/docker-compose.$env.yml" logs -f
+        docker compose -f "environments/$env/docker-compose.$env.yml" logs -f
     else
         print_error "Docker compose file not found: environments/$env/docker-compose.$env.yml"
         exit 1
@@ -168,7 +168,7 @@ show_status() {
     print_info "Status of $env services..."
     
     if [ -f "environments/$env/docker-compose.$env.yml" ]; then
-        docker-compose -f "environments/$env/docker-compose.$env.yml" ps
+        docker compose -f "environments/$env/docker-compose.$env.yml" ps
     else
         print_error "Docker compose file not found: environments/$env/docker-compose.$env.yml"
         exit 1
@@ -181,7 +181,7 @@ clean_environment() {
     print_warning "Cleaning $env environment..."
     
     if [ -f "environments/$env/docker-compose.$env.yml" ]; then
-        docker-compose -f "environments/$env/docker-compose.$env.yml" down -v --remove-orphans
+        docker compose -f "environments/$env/docker-compose.$env.yml" down -v --remove-orphans
         print_success "$env environment cleaned!"
     else
         print_error "Docker compose file not found: environments/$env/docker-compose.$env.yml"
