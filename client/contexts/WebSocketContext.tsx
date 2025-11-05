@@ -157,7 +157,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         const queueType = jobQueueTypesRef.current.get(jobId);
         if (handlers && handlers.size > 0 && queueType) {
           console.log(`[WebSocketContext] 🔄 Re-subscribing to job ${jobId} (${queueType}) on connect`);
-          socketRef.current.emit('subscribe-job', { jobId, queueType });
+          socketRef.current?.emit('subscribe-job', { jobId, queueType });
         } else if (handlers && handlers.size > 0 && !queueType) {
           console.warn(`[WebSocketContext] ⚠️ Job ${jobId} has handlers but no queue type tracked, cannot re-subscribe`);
         }
@@ -271,7 +271,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     // Now try to subscribe via socket
     if (socketRef.current?.connected) {
       console.log(`[WebSocketContext] 📡 Subscribing to job ${jobId} (${queueType})`);
-      socketRef.current.emit('subscribe-job', { jobId, queueType });
+      socketRef.current?.emit('subscribe-job', { jobId, queueType });
       console.log(`[WebSocketContext] ✅ Subscription request sent for job ${jobId}`);
     } else {
       // Socket not ready yet - queue the subscription
@@ -284,7 +284,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       const waitForConnection = () => {
         if (socketRef.current?.connected) {
           console.log(`[WebSocketContext] 🔄 Retrying subscription to job ${jobId} after connection`);
-          socketRef.current.emit('subscribe-job', { jobId, queueType });
+          socketRef.current?.emit('subscribe-job', { jobId, queueType });
           console.log(`[WebSocketContext] ✅ Subscription request sent for job ${jobId}`);
         } else if (retryCount < maxRetries) {
           retryCount++;
@@ -305,7 +305,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           jobHandlersRef.current.delete(jobId);
           jobQueueTypesRef.current.delete(jobId);
           if (socketRef.current?.connected) {
-            socketRef.current.emit('unsubscribe-job', { jobId });
+            socketRef.current?.emit('unsubscribe-job', { jobId });
             console.log(`[WebSocketContext] Unsubscribed from job ${jobId}`);
           }
         }
@@ -317,7 +317,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     jobHandlersRef.current.delete(jobId);
     jobQueueTypesRef.current.delete(jobId);
     if (socketRef.current?.connected) {
-      socketRef.current.emit('unsubscribe-job', { jobId });
+      socketRef.current?.emit('unsubscribe-job', { jobId });
       console.log(`[WebSocketContext] Unsubscribed from job ${jobId}`);
     }
   }, []);
