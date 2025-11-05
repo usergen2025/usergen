@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Search, Image as ImageIcon, Video, Sparkles, Upload } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -12,7 +12,7 @@ import { BRollSource } from '@/types';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 
-export default function BRollPage() {
+function BRollPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -169,6 +169,20 @@ export default function BRollPage() {
         onNext={handleNext}
       />
     </div>
+  );
+}
+
+export default function BRollPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <BRollPageContent />
+    </Suspense>
   );
 }
 

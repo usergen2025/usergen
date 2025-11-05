@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Search, User, Upload, Loader2, CheckCircle } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -13,7 +13,7 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 
-export default function AvatarPage() {
+function AvatarPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -451,6 +451,20 @@ export default function AvatarPage() {
         onNext={handleNext}
       />
     </div>
+  );
+}
+
+export default function AvatarPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <AvatarPageContent />
+    </Suspense>
   );
 }
 

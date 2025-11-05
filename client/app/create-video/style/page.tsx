@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -35,7 +35,7 @@ const mapStyleFromBackend = (style?: string): VideoStyle | null => {
   return map[style] || null;
 };
 
-export default function StylePage() {
+function StylePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
@@ -443,6 +443,20 @@ export default function StylePage() {
         disabled={!selectedStyle}
       />
     </div>
+  );
+}
+
+export default function StylePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <StylePageContent />
+    </Suspense>
   );
 }
 

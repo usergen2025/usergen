@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, X, Send, Loader2, RefreshCw } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 
-export default function ScriptPage() {
+function ScriptPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -527,7 +527,7 @@ export default function ScriptPage() {
                         <pre className={cn(typography.body.small, "whitespace-pre-wrap font-sans")}>
                           {scriptFormatted}
                         </pre>
-                      </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -570,6 +570,20 @@ export default function ScriptPage() {
         disabled={!script}
       />
     </div>
+  );
+}
+
+export default function ScriptPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <ScriptPageContent />
+    </Suspense>
   );
 }
 

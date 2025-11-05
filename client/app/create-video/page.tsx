@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient } from '@/lib/api/client';
 
-export default function CreateVideoPage() {
+function CreateVideoPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
@@ -71,5 +71,19 @@ export default function CreateVideoPage() {
         <p className="text-text-primary">Loading...</p>
       </div>
     </div>
+  );
+}
+
+export default function CreateVideoPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <CreateVideoPageContent />
+    </Suspense>
   );
 }

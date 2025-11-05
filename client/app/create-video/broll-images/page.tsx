@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, RefreshCw, Loader2, Image as ImageIcon } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -34,7 +34,7 @@ interface Scene {
   broll_visual_description?: string;
 }
 
-export default function BrollImagesPage() {
+function BrollImagesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -809,6 +809,20 @@ export default function BrollImagesPage() {
         disabled={scenesNeedingBroll.length > 0 && brollImages.length !== scenesNeedingBroll.length}
       />
     </div>
+  );
+}
+
+export default function BrollImagesPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <BrollImagesPageContent />
+    </Suspense>
   );
 }
 

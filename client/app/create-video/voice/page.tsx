@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Mic, Play, X, Loader2, Pause, CheckCircle2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -21,7 +21,7 @@ interface ElevenLabsVoice {
   preview_url?: string | null;
 }
 
-export default function VoicePage() {
+function VoicePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -407,6 +407,20 @@ export default function VoicePage() {
         disabled={!(selectedOption && (selectedOption === 'library' ? selectedVoice : true))}
       />
     </div>
+  );
+}
+
+export default function VoicePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <VoicePageContent />
+    </Suspense>
   );
 }
 

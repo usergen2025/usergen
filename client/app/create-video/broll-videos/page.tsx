@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, RefreshCw, Loader2, Play, Pause, Video as VideoIcon } from 'lucide-react';
 import Button from '@/components/ui/Button';
@@ -31,7 +31,7 @@ interface Scene {
   voiceover?: string;
 }
 
-export default function BrollVideosPage() {
+function BrollVideosPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -838,6 +838,20 @@ export default function BrollVideosPage() {
         disabled={scenesNeedingVideos.length > 0 && brollVideos.length !== scenesNeedingVideos.length}
       />
     </div>
+  );
+}
+
+export default function BrollVideosPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-text-secondary">Loading...</p>
+        </div>
+      </div>
+    }>
+      <BrollVideosPageContent />
+    </Suspense>
   );
 }
 
