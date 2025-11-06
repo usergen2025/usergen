@@ -599,9 +599,8 @@ function BrollImagesPageContent() {
         ? image.localUrl 
         : `/uploads${image.localUrl}`;
       // Static files are served at /uploads/* (not /api/uploads/*)
-      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL 
-        ? process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL.replace('/api', '')
-        : 'http://localhost:9004';
+      // Use NEXT_PUBLIC_WS_URL which is already set to the base domain (e.g., https://api.dev.usergen.ai)
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
       return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
     // Fallback to imageUrl (BytePlus URL)
