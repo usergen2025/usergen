@@ -3,7 +3,7 @@
 # Build script that only builds services with tsconfig.json
 # Usage: bash scripts/build-services.sh
 
-set -e  # Exit on error, but we'll handle skipping gracefully
+set +e  # Don't exit on error - we'll handle errors manually
 
 cd "$(dirname "$0")/.."  # Go to server root
 
@@ -64,11 +64,16 @@ for service in "${services[@]}"; do
   echo "📦 Building $service..."
   cd "$service_path"
   
-  if npm run build 2>&1; then
+  # Capture build output and exit code
+  build_output=$(npm run build 2>&1)
+  build_exit_code=$?
+  
+  if [ $build_exit_code -eq 0 ]; then
     echo "✅ $service built successfully"
     ((success_count++))
   else
     echo "❌ Failed to build $service"
+    echo "$build_output" | head -20  # Show first 20 lines of error
     ((fail_count++))
     # Continue with next service instead of exiting
   fi

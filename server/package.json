@@ -67,7 +67,10 @@
     "migrate:dev": "npm run migrate:auth && npm run migrate:project && npm run migrate:analytics",
     "migrate:auth": "cd microservices/auth-service && npm run migration:run",
     "migrate:project": "cd microservices/project-management-service && npm run migration:run",
-    "migrate:analytics": "cd microservices/analytics-service && npm run migration:run"
+    "migrate:analytics": "cd microservices/analytics-service && npm run migration:run",
+    "migrate:all": "bash scripts/migrate-and-deploy.sh migrate",
+    "generate:all": "bash scripts/migrate-and-deploy.sh generate",
+    "deploy:all": "bash scripts/migrate-and-deploy.sh all"
   },
   "keywords": [
     "microservices",

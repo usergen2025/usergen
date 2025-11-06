@@ -5,13 +5,34 @@ import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class FacebookStrategy extends PassportStrategy(Strategy, 'facebook') {
+  private disabled: boolean = false;
+
   constructor(private readonly configService: ConfigService) {
-    super({
-      clientID: configService.get('FACEBOOK_APP_ID'),
-      clientSecret: configService.get('FACEBOOK_APP_SECRET'),
-      callbackURL: `${configService.get('BASE_URL')}/auth/facebook/callback`,
-      profileFields: ['id', 'emails', 'name', 'picture'],
-    });
+    const appId = configService.get<string>('FACEBOOK_APP_ID');
+    const appSecret = configService.get<string>('FACEBOOK_APP_SECRET');
+    const baseUrl = configService.get<string>('BASE_URL') || configService.get<string>('CDN_URL') || 'http://localhost:9000';
+
+    // Determine strategy config based on credentials
+    const strategyConfig = (!appId || !appSecret || appId === 'your-facebook-app-id' || appSecret === 'your-facebook-app-secret')
+      ? {
+          clientID: 'dummy', // Dummy values to prevent Passport error
+          clientSecret: 'dummy',
+          callbackURL: `${baseUrl}/auth/facebook/callback`,
+          profileFields: ['id', 'emails', 'name', 'picture'],
+        }
+      : {
+          clientID: appId,
+          clientSecret: appSecret,
+          callbackURL: `${baseUrl}/auth/facebook/callback`,
+          profileFields: ['id', 'emails', 'name', 'picture'],
+        };
+
+    super(strategyConfig);
+
+    // Mark as disabled if using dummy credentials
+    if (strategyConfig.clientID === 'dummy') {
+      this.disabled = true;
+    }
   }
 
   async validate(
@@ -20,6 +41,11 @@ export class FacebookStrategy extends PassportStrategy(Strategy, 'facebook') {
     profile: Profile,
     done: Function,
   ): Promise<any> {
+    // Skip validation if disabled
+    if (this.disabled) {
+      return done(new Error('Facebook OAuth is not configured'), null);
+    }
+
     const { id, name, emails, photos } = profile;
     const user = {
       providerId: id,

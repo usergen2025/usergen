@@ -10,10 +10,21 @@ export class HttpClientService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit() {
-    const notificationServiceUrl = this.configService.get<string>(
+    let notificationServiceUrl = this.configService.get<string>(
       'NOTIFICATION_SERVICE_URL',
       'http://localhost:9006/api',
     );
+
+    // Normalize URL: Remove trailing /notifications if present
+    // This prevents double /notifications in the final URL
+    // baseURL should be: https://api.dev.usergen.ai/api (without /notifications)
+    // endpoint will be: /notifications/send-otp
+    if (notificationServiceUrl.endsWith('/notifications')) {
+      notificationServiceUrl = notificationServiceUrl.replace(/\/notifications$/, '');
+      this.logger.warn(
+        `⚠️ NOTIFICATION_SERVICE_URL ends with /notifications, removing it. Use: ${notificationServiceUrl}`,
+      );
+    }
 
     this.axiosInstance = axios.create({
       baseURL: notificationServiceUrl,
