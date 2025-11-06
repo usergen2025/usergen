@@ -33,8 +33,16 @@ export class RenderingService {
       const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
       try {
         // IMPORTANT: Pass userId as query parameter to match the avatar correctly
+        // authToken from controller already includes "Bearer " prefix, so use it directly
+        const headers: Record<string, string> = {};
+        if (authToken) {
+          // If authToken already has "Bearer ", use it as-is, otherwise add it
+          headers.Authorization = authToken.startsWith('Bearer ') ? authToken : `Bearer ${authToken}`;
+        }
+        
+        console.log(`[RenderingService] Fetching avatar ${avatarId} for userId ${userId} from ${aiContentServiceUrl}/api/avatars/${avatarId}`);
         const response = await axios.get(`${aiContentServiceUrl}/api/avatars/${avatarId}`, {
-          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+          headers,
           params: { userId }, // Pass userId to find the correct avatar
         });
         
@@ -62,9 +70,24 @@ export class RenderingService {
           return { providerAvatarId, isHeyGenId: false };
         }
       } catch (aiContentError: any) {
+        // Log detailed error information for debugging
+        console.error(`[RenderingService] Failed to fetch avatar from ai-content-service:`, {
+          avatarId,
+          userId,
+          status: aiContentError.response?.status,
+          statusText: aiContentError.response?.statusText,
+          errorMessage: aiContentError.message,
+          responseData: aiContentError.response?.data,
+          url: `${aiContentServiceUrl}/api/avatars/${avatarId}?userId=${userId}`,
+        });
+        
         // If 404, try HeyGen API as fallback (for any ID format)
         if (aiContentError.response?.status === 404) {
-          console.log(`[RenderingService] Avatar ${avatarId} not found in ai-content-service (404) for userId ${userId}, trying HeyGen API as fallback...`);
+          console.log(`[RenderingService] Avatar ${avatarId} not found in ai-content-service (404) for userId ${userId}. This could mean:`);
+          console.log(`[RenderingService] 1. Avatar doesn't exist in database`);
+          console.log(`[RenderingService] 2. Avatar exists but belongs to a different userId`);
+          console.log(`[RenderingService] 3. Database mismatch between services`);
+          console.log(`[RenderingService] Trying HeyGen API as fallback...`);
           
           try {
             const heygenAvatarDetails = await this.heygenVideoProvider.getAvatarDetails(avatarId);

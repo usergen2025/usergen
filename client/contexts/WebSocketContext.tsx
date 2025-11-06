@@ -80,7 +80,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       tokenLength: token?.length || 0,
     });
 
-    // Connect to backend socket.io with namespace
+    // Connect to backend socket.io namespace directly
+    // Socket.IO namespaces are specified in the URL, not via path option
+    // The path option is for the Socket.IO server path (default /socket.io/), not the namespace
     socketRef.current = io(`${WS_URL}/job-status`, {
       auth: { token },
       transports: ['websocket', 'polling'],

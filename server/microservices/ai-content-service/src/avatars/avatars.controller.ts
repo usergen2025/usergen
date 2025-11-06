@@ -298,10 +298,28 @@ export class AvatarsController {
   }
 
   @Get(':id')
+  @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get avatar details', description: 'Get specific avatar by ID' })
   @ApiResponse({ status: 200, description: 'Avatar retrieved successfully' })
-  async getAvatarById(@Param('id') id: string, @Query('userId') userId?: string) {
-    const user = userId || 'user123'; // TODO: Get from JWT token
+  async getAvatarById(@Param('id') id: string, @Query('userId') userId?: string, @Request() req?: any) {
+    // Try to extract userId from JWT token first, fallback to query parameter
+    let user = userId;
+    if (!user) {
+      user = this.extractUserIdFromToken(req);
+    }
+    
+    // If still no userId, return error
+    if (!user) {
+      throw new HttpException(
+        {
+          success: false,
+          error: 'User ID is required. Please provide userId query parameter or authenticate with a valid token.',
+          code: 'USER_ID_REQUIRED',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
     const avatar = await this.avatarsService.getAvatarById(id, user);
     return {
       success: true,
