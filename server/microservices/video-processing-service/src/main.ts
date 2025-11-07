@@ -19,8 +19,20 @@ async function bootstrap() {
   }));
   app.use(compression());
 
+  // CORS configuration with complete options for preflight handling
   const corsOrigins = configService.get<string>('CORS_ORIGINS', 'http://localhost:3200');
-  app.enableCors({ origin: corsOrigins.split(','), credentials: true });
+  const allowedOrigins = corsOrigins.split(',').map((o: string) => o.trim());
+  
+  app.enableCors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Request-ID'],
+    exposedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400, // 24 hours
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  });
 
   // Serve static files from uploads directory (BEFORE setting global prefix)
   // This way static files are served at /uploads/* (not /api/uploads/*)
