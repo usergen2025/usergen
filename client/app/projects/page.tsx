@@ -103,10 +103,9 @@ export default function ProjectsPage() {
     }
     
     // Otherwise, construct full URL using video-processing-service
-    // Note: Remove /api suffix since static files are served directly from /uploads/*
-    const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL 
-      ? process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL.replace('/api', '')
-      : 'http://localhost:9004';
+    // Static files are served at /uploads/* (not /api/uploads/*)
+    // Use NEXT_PUBLIC_WS_URL which is already set to the base domain (e.g., https://api.dev.usergen.ai)
+    const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
     return `${VIDEO_SERVICE_BASE_URL}${videoUrl}`;
   };
 

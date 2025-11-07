@@ -50,13 +50,11 @@ function PreviewPageContent() {
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   
-  // Get service URLs (remove /api suffix for static files)
-  const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL 
-    ? process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL.replace('/api', '')
-    : 'http://localhost:9004';
-  const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL 
-    ? process.env.NEXT_PUBLIC_VOICE_SERVICE_URL.replace('/api', '')
-    : 'http://localhost:9002';
+  // Get service URLs
+  // Static files are served at /uploads/* (not /api/uploads/*)
+  // Use NEXT_PUBLIC_WS_URL which is already set to the base domain (e.g., https://api.dev.usergen.ai)
+  const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+  const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9002';
   
   // Caption settings state
   const [captionSettingsOpen, setCaptionSettingsOpen] = useState(false);
