@@ -139,6 +139,16 @@ export function isValidStep(step: string): boolean {
 }
 
 /**
+ * Get step from route path
+ * Example: '/create-video/broll-videos' -> 'BROLL_VIDEOS'
+ */
+export function getStepFromRoute(route: string): string | undefined {
+  // Normalize route - remove query params and trailing slashes
+  const normalizedRoute = route.split('?')[0].replace(/\/$/, '');
+  return VIDEO_CREATION_STEPS.find((s) => s.route === normalizedRoute)?.step;
+}
+
+/**
  * Get all steps as a map for quick lookup
  */
 export function getStepToRouteMap(): Record<string, string> {

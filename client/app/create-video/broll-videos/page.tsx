@@ -720,7 +720,7 @@ function BrollVideosPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

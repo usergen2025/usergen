@@ -37,7 +37,8 @@ function CreateVideoPageContent() {
 
             const targetPage = stepToPageMap[currentStep];
             if (targetPage) {
-              router.replace(`${targetPage}?projectId=${projectId}`);
+              // Include step in URL query params for navigation hook reliability
+              router.replace(`${targetPage}?projectId=${projectId}&step=${currentStep}`);
               return;
             }
           }
