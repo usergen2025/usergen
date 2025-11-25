@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { getRenderingRollbackRoute, getStepRoute } from '@/lib/config/video-steps';
 
 function RenderingPageContent() {
   const router = useRouter();
@@ -78,33 +79,35 @@ function RenderingPageContent() {
             clearInterval(pollInterval);
             showToast(errorMessage || 'Video rendering failed. Please try again.', 'error');
             
-            // Determine redirect page - check multiple sources for rollback step
-            let redirectPath = `/create-video/voice?projectId=${projectId}`;
+            // Determine redirect page using step configuration
+            // Default to step before RENDERING (BROLL_VIDEOS)
+            let redirectPath = getRenderingRollbackRoute();
+            
+            // Refine based on project state or metadata
+            const currentStep = response.data.currentStep;
+            const metadata = response.data.metadata;
+            const bRollVideos = response.data.bRollVideoTasks;
+            const bRollImages = response.data.bRollImages;
             
             // Check currentStep first
-            const currentStep = response.data.currentStep;
             if (currentStep === 'BROLL_VIDEOS' || currentStep === 'B_ROLL') {
               redirectPath = `/create-video/broll-videos?projectId=${projectId}`;
             } else if (currentStep === 'BROLL_IMAGES') {
               redirectPath = `/create-video/broll-images?projectId=${projectId}`;
-            } else {
+            } else if (metadata?.rollbackStep) {
               // Check metadata for rollback step (if enum update failed)
-              const metadata = response.data.metadata;
-              if (metadata?.rollbackStep === 'BROLL_VIDEOS') {
-                redirectPath = `/create-video/broll-videos?projectId=${projectId}`;
-              } else if (metadata?.rollbackStep === 'BROLL_IMAGES') {
-                redirectPath = `/create-video/broll-images?projectId=${projectId}`;
-              } else {
-                // Check project state as fallback
-                const bRollVideos = response.data.bRollVideoTasks;
-                const bRollImages = response.data.bRollImages;
-                
-                if (bRollVideos && Array.isArray(bRollVideos) && bRollVideos.length > 0) {
-                  redirectPath = `/create-video/broll-videos?projectId=${projectId}`;
-                } else if (bRollImages && Array.isArray(bRollImages) && bRollImages.length > 0) {
-                  redirectPath = `/create-video/broll-images?projectId=${projectId}`;
-                }
+              const rollbackRoute = getStepRoute(metadata.rollbackStep);
+              if (rollbackRoute) {
+                redirectPath = `${rollbackRoute}?projectId=${projectId}`;
               }
+            } else if (bRollVideos && Array.isArray(bRollVideos) && bRollVideos.length > 0) {
+              // Check project state as fallback
+              redirectPath = `/create-video/broll-videos?projectId=${projectId}`;
+            } else if (bRollImages && Array.isArray(bRollImages) && bRollImages.length > 0) {
+              redirectPath = `/create-video/broll-images?projectId=${projectId}`;
+            } else {
+              // Use default from step config
+              redirectPath = `${getRenderingRollbackRoute()}?projectId=${projectId}`;
             }
             
             setTimeout(() => {
@@ -154,9 +157,10 @@ function RenderingPageContent() {
       console.error('Failed to start rendering:', error);
       showToast(error.response?.data?.message || error.message || 'Failed to start rendering. Please try again.', 'error');
       
-      // Redirect to voice page on error
+      // Redirect to previous step (BROLL_VIDEOS) using step configuration
+      const rollbackRoute = getRenderingRollbackRoute();
       setTimeout(() => {
-        router.push(`/create-video/voice?projectId=${projectId}`);
+        router.push(`${rollbackRoute}?projectId=${projectId}`);
       }, 2000);
     }
   };

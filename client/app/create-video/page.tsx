@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient } from '@/lib/api/client';
+import { getStepToRouteMap } from '@/lib/config/video-steps';
 
 function CreateVideoPageContent() {
   const router = useRouter();
@@ -31,18 +32,8 @@ function CreateVideoPageContent() {
           if (response.success && response.data?.currentStep) {
             const currentStep = response.data.currentStep;
             
-            // Map currentStep to corresponding page
-            const stepToPageMap: Record<string, string> = {
-              'STYLE_SELECTION': '/create-video/style',
-              'VIDEO_TYPE': '/create-video/type',
-              'AVATAR_SELECTION': '/create-video/avatar',
-              'SCRIPT': '/create-video/script',
-              'VOICE': '/create-video/voice',
-              'BROLL_IMAGES': '/create-video/broll-images',
-              'BROLL_VIDEOS': '/create-video/broll-videos',
-              'PREVIEW': '/create-video/preview',
-              'RENDERING': '/create-video/rendering',
-            };
+            // Use step configuration for mapping
+            const stepToPageMap = getStepToRouteMap();
 
             const targetPage = stepToPageMap[currentStep];
             if (targetPage) {

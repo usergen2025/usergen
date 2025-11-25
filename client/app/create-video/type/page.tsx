@@ -12,6 +12,7 @@ import { VideoType } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 function VideoTypePageContent() {
   const router = useRouter();
@@ -20,6 +21,8 @@ function VideoTypePageContent() {
   const { showToast } = useToast();
   const projectIdFromUrl = searchParams.get('projectId');
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [selectedType, setSelectedType] = useState<VideoType | null>(null);
 
   // Reset state when projectId changes
@@ -159,7 +162,7 @@ function VideoTypePageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-3xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

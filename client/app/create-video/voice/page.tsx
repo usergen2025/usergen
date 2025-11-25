@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 interface ElevenLabsVoice {
   voice_id: string;
@@ -29,6 +30,8 @@ function VoicePageContent() {
   const projectIdFromUrl = searchParams.get('projectId');
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [selectedOption, setSelectedOption] = useState<'clone' | 'library' | null>(null);
   const [selectedVoice, setSelectedVoice] = useState<ElevenLabsVoice | null>(null);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -512,7 +515,7 @@ function VoicePageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

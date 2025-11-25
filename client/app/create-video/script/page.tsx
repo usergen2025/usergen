@@ -10,6 +10,7 @@ import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 function ScriptPageContent() {
   const router = useRouter();
@@ -17,6 +18,8 @@ function ScriptPageContent() {
   const { showToast } = useToast();
   const projectIdFromUrl = searchParams.get('projectId');
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   
   const [script, setScript] = useState<any>(null);
   const [scriptFormatted, setScriptFormatted] = useState<string>('');
@@ -405,7 +408,7 @@ function ScriptPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { ModelSelector } from '@/components/create-video/ModelSelector';
 
@@ -44,6 +45,7 @@ function BrollImagesPageContent() {
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<BrollImage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -552,7 +554,8 @@ function BrollImagesPageContent() {
       // Get selected model for this scene (default to model-1)
       const selectedModelId = selectedModels[sceneNumber] || 'model-1';
       
-      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId);
+      // Pass force: true to always regenerate when user manually clicks the button
+      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId, true);
       
       // Handle existing image response
       if (response.success && response.data?.existing && response.data?.image) {
@@ -664,7 +667,7 @@ function BrollImagesPageContent() {
         <div className="container mx-auto px-4 py-8">
           <div className="max-w-7xl mx-auto">
             <button
-              onClick={() => router.back()}
+              onClick={goToPreviousStep}
               className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />

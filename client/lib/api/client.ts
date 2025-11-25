@@ -590,14 +590,15 @@ class ApiClient {
     projectId: string, 
     sceneNumber: number, 
     prompt?: string,
-    modelId?: string
+    modelId?: string,
+    force?: boolean
   ): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-image/${sceneNumber}`,
-      { prompt, modelId },
+      { prompt, modelId, force },
       {
         headers: {
           'Content-Type': 'application/json',
@@ -644,13 +645,53 @@ class ApiClient {
     return response.data;
   }
 
-  async regenerateVideo(projectId: string, sceneNumber: number, force: boolean = false): Promise<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>> {
+  async getVideoGenerationModels(): Promise<ApiResponse<{
+    models: Array<{
+      id: string;
+      displayName: string;
+      platform: string;
+      defaultConfig: any;
+      capabilities: any;
+    }>;
+    default: string;
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{
+      models: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        defaultConfig: any;
+        capabilities: any;
+      }>;
+      default: string;
+    }>>(
+      `${videoServiceUrl}/video-projects/video-generation-models`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async regenerateVideo(
+    projectId: string, 
+    sceneNumber: number, 
+    modelId?: string,
+    force: boolean = false
+  ): Promise<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-video/${sceneNumber}`,
-      { force },
+      { modelId, force },
       {
         headers: {
           'Content-Type': 'application/json',

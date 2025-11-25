@@ -12,6 +12,7 @@ import { AvatarCategory } from '@/types';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 function AvatarPageContent() {
   const router = useRouter();
@@ -19,6 +20,11 @@ function AvatarPageContent() {
   const { showToast } = useToast();
   const { isAuthenticated } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const projectIdFromUrl = searchParams.get('projectId');
+  const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   
   const [activeTab, setActiveTab] = useState<'library' | 'upload'>('library');
   const [selectedCategory, setSelectedCategory] = useState<AvatarCategory>('all');
@@ -234,7 +240,7 @@ function AvatarPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

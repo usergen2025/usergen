@@ -18,9 +18,11 @@ interface ModelSelectorProps {
   selectedModelId: string;
   onModelSelect: (modelId: string) => void;
   disabled?: boolean;
+  getModelsFn?: () => Promise<any>; // Optional function to fetch models (for video models)
 }
 
 // Initialize with fallback models immediately so menu can work even if API fails
+// These are for image models - video models will be fetched via getModelsFn
 const fallbackModels: ModelInfo[] = [
   { id: 'model-1', displayName: 'Model 1', platform: 'FAL', defaultConfig: {}, capabilities: {} },
   { id: 'model-2', displayName: 'Model 2', platform: 'FAL', defaultConfig: {}, capabilities: {} },
@@ -29,8 +31,15 @@ const fallbackModels: ModelInfo[] = [
   { id: 'model-5', displayName: 'Model 5', platform: 'BYTEPLUS', defaultConfig: {}, capabilities: {} },
 ];
 
-export function ModelSelector({ selectedModelId, onModelSelect, disabled }: ModelSelectorProps) {
-  const [models, setModels] = useState<ModelInfo[]>(fallbackModels);
+// Fallback models for video (used if getModelsFn is provided but fails)
+const fallbackVideoModels: ModelInfo[] = [
+  { id: 'video-model-1', displayName: 'Model 1', platform: 'BYTEPLUS', defaultConfig: {}, capabilities: {} },
+  { id: 'video-model-2', displayName: 'Model 2', platform: 'FAL', defaultConfig: {}, capabilities: {} },
+];
+
+export function ModelSelector({ selectedModelId, onModelSelect, disabled, getModelsFn }: ModelSelectorProps) {
+  // Use video fallback models if getModelsFn is provided (indicates video models), otherwise use image fallback
+  const [models, setModels] = useState<ModelInfo[]>(getModelsFn ? fallbackVideoModels : fallbackModels);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -54,7 +63,8 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled }: Mode
   useEffect(() => {
     // Fetch models from API (non-blocking - fallback models already set)
     setLoading(true);
-    apiClient.getImageGenerationModels()
+    const fetchModels = getModelsFn || (() => apiClient.getImageGenerationModels());
+    fetchModels()
       .then(response => {
         if (response.success && response.data && response.data.models) {
           setModels(response.data.models);
@@ -68,7 +78,7 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled }: Mode
         // Keep fallback models
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [getModelsFn]);
 
   // Calculate dropdown position when opening - use requestAnimationFrame to ensure it happens after render
   useEffect(() => {

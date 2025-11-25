@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 interface Scene {
   sceneNumber?: number;
@@ -37,6 +38,7 @@ function PreviewPageContent() {
   const [projectId, setProjectId] = useState<string | null>(searchParams.get('projectId'));
   
   const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -440,7 +442,7 @@ function PreviewPageContent() {
           {/* Left: Video Preview */}
           <div>
             <button
-              onClick={() => router.back()}
+              onClick={goToPreviousStep}
               className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
