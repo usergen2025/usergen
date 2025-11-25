@@ -14,6 +14,7 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
+import { ModelSelector } from '@/components/create-video/ModelSelector';
 
 interface BrollImage {
   sceneNumber: number;
@@ -51,6 +52,7 @@ function BrollImagesPageContent() {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [updateKey, setUpdateKey] = useState(0); // Force re-render on WebSocket updates
+  const [selectedModels, setSelectedModels] = useState<Record<number, string>>({}); // Track selected model per scene
   // Track active jobs per scene: Map<sceneNumber, Set<jobId>>
   const activeJobsBySceneRef = React.useRef<Map<number, Set<string>>>(new Map());
   const jobToSceneRef = React.useRef<Map<string, number>>(new Map());
@@ -331,6 +333,28 @@ function BrollImagesPageContent() {
     loadProject();
   }, [projectId, isAuthenticated, authLoading, showToast]);
 
+  // Initialize default model for all scenes - ensure Model 1 is selected by default
+  useEffect(() => {
+    if (!scenesNeedingBroll.length || !dbLoaded) return;
+
+    setSelectedModels(prev => {
+      const updated = { ...prev };
+      let hasChanges = false;
+      
+      scenesNeedingBroll.forEach((scene, index) => {
+        const sceneNumber = normalizeSceneNumber(scene, index);
+        // Always set default to 'model-1' if not already set
+        if (!updated[sceneNumber]) {
+          updated[sceneNumber] = 'model-1'; // Default to Model 1 (FAL imagen4)
+          hasChanges = true;
+        }
+      });
+      
+      return hasChanges ? updated : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenesNeedingBroll.length, dbLoaded]);
+
   // Generate images for all scenes that need them (with duplicate prevention)
   const [generatingImages, setGeneratingImages] = React.useState<Set<number>>(new Set());
   
@@ -418,8 +442,11 @@ function BrollImagesPageContent() {
         setGeneratingImages(prev => new Set(prev).add(sceneNumber));
         setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
         
+        // Get selected model for this scene (default to model-1)
+        const selectedModelId = selectedModels[sceneNumber] || 'model-1';
+
         // Fire API call without awaiting (non-blocking)
-        return apiClient.regenerateImage(projectId, sceneNumber, prompt)
+        return apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId)
           .then(response => {
             // Handle existing image response
             if (response.success && response.data?.existing && response.data?.image) {
@@ -522,7 +549,10 @@ function BrollImagesPageContent() {
       setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
       setGeneratingImages(prev => new Set(prev).add(sceneNumber));
       
-      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt);
+      // Get selected model for this scene (default to model-1)
+      const selectedModelId = selectedModels[sceneNumber] || 'model-1';
+      
+      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId);
       
       // Handle existing image response
       if (response.success && response.data?.existing && response.data?.image) {
@@ -762,25 +792,40 @@ function BrollImagesPageContent() {
                         </div>
                       )}
                       
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleRegenerate(sceneNumber)}
-                        disabled={isRegenerating}
-                        className="w-full"
-                      >
-                        {isRegenerating ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Regenerating...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="w-4 h-4 mr-2" />
-                            Regenerate
-                          </>
-                        )}
-                      </Button>
+                      {/* Split button with Regenerate and Model Selector */}
+                      <div className="flex items-stretch border border-border rounded-md overflow-hidden">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRegenerate(sceneNumber)}
+                          disabled={isRegenerating}
+                          className="flex-1 rounded-none border-0 border-r border-border"
+                        >
+                          {isRegenerating ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Regenerating...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Regenerate
+                            </>
+                          )}
+                        </Button>
+                        
+                        {/* Model selector - integrated as part of button */}
+                        <ModelSelector
+                          selectedModelId={selectedModels[sceneNumber] ?? 'model-1'}
+                          onModelSelect={(modelId) => {
+                            setSelectedModels(prev => ({
+                              ...prev,
+                              [sceneNumber]: modelId,
+                            }));
+                          }}
+                          disabled={isRegenerating}
+                        />
+                      </div>
                     </div>
                   </Card>
                 );

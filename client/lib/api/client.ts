@@ -505,6 +505,43 @@ class ApiClient {
     return response.data;
   }
 
+  async cloneVoice(data: {
+    name: string;
+    audioFile: File;
+    description?: string;
+    labels?: string;
+    removeBackgroundNoise?: boolean;
+  }): Promise<ApiResponse<{ voiceId: string; requiresVerification: boolean }>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+
+    const formData = new FormData();
+    formData.append('name', data.name);
+    formData.append('audioFile', data.audioFile);
+    if (data.description) {
+      formData.append('description', data.description);
+    }
+    if (data.labels) {
+      formData.append('labels', data.labels);
+    }
+    if (data.removeBackgroundNoise !== undefined) {
+      formData.append('removeBackgroundNoise', String(data.removeBackgroundNoise));
+    }
+
+    const response = await axios.post<ApiResponse<{ voiceId: string; requiresVerification: boolean }>>(
+      `${voiceServiceUrl}/voice/clone`,
+      formData,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          // DO NOT set Content-Type - browser will set it automatically with boundary
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async generateScriptAudio(data: {
     voiceId: string;
     scenes: Array<{ sceneNumber: number; voiceover: string; timeRange?: string }>;
@@ -549,13 +586,53 @@ class ApiClient {
     return response.data;
   }
 
-  async regenerateImage(projectId: string, sceneNumber: number, prompt?: string): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
+  async regenerateImage(
+    projectId: string, 
+    sceneNumber: number, 
+    prompt?: string,
+    modelId?: string
+  ): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-image/${sceneNumber}`,
-      { prompt },
+      { prompt, modelId },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getImageGenerationModels(): Promise<ApiResponse<{
+    models: Array<{
+      id: string;
+      displayName: string;
+      platform: string;
+      defaultConfig: any;
+      capabilities: any;
+    }>;
+    default: string;
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{
+      models: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        defaultConfig: any;
+        capabilities: any;
+      }>;
+      default: string;
+    }>>(
+      `${videoServiceUrl}/video-projects/image-generation-models`,
       {
         headers: {
           'Content-Type': 'application/json',

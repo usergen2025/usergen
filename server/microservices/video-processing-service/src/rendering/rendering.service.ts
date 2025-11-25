@@ -4,6 +4,7 @@ import { DatabaseService } from '../common/database/database.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
+import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
@@ -143,10 +144,11 @@ export class RenderingService {
         where: { id: projectId },
       });
       
-      // Determine rollback step based on project state (not just currentStep, since enum update may fail)
-      let rollbackStep: string = 'VOICE';
+      // Determine rollback step using step configuration
+      // Default to step before RENDERING (BROLL_VIDEOS)
+      let rollbackStep: string = getRenderingRollbackStep();
       
-      // Check project state directly (more reliable than reading currentStep)
+      // Refine based on project state (more reliable than reading currentStep, since enum update may fail)
       const bRollVideos = (currentProject as any)?.bRollVideoTasks;
       const bRollImages = (currentProject as any)?.bRollImages;
       

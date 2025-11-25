@@ -4,9 +4,13 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
 import { BytePlusProvider } from '../../../rendering/providers/byteplus.provider';
+import { VideoProviderFactory } from '../../../rendering/providers/video-provider-factory.service';
+import { ModelRegistryService } from '../../../rendering/providers/model-registry.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import * as path from 'path';
 import * as fs from 'fs';
+import axios from 'axios';
 
 export interface VideoGenerationJobData {
   projectId: string;
@@ -15,6 +19,7 @@ export interface VideoGenerationJobData {
   imageUrl: string;
   prompt?: string;
   duration: number;
+  modelId?: string; // NEW: Video model selection
 }
 
 @Processor('video-generation', {
@@ -28,6 +33,8 @@ export class VideoGenerationProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly bytePlusProvider: BytePlusProvider,
+    private readonly videoProviderFactory: VideoProviderFactory,
+    private readonly modelRegistry: ModelRegistryService,
     private readonly jobStatusGateway: JobStatusGateway,
   ) {
     super();
@@ -35,9 +42,9 @@ export class VideoGenerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<VideoGenerationJobData>): Promise<any> {
-    const { projectId, userId, sceneNumber, imageUrl, prompt, duration } = job.data;
+    const { projectId, userId, sceneNumber, imageUrl, prompt, duration, modelId } = job.data;
 
-    console.log(`[VideoGenerationProcessor] Processing job ${job.id} for scene ${sceneNumber}`);
+    console.log(`[VideoGenerationProcessor] Processing job ${job.id} for scene ${sceneNumber}, modelId: ${modelId || 'default'}`);
 
     try {
       // Get project
@@ -64,10 +71,36 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       await job.updateProgress(10);
 
-      // Ensure duration matches audio file duration exactly (not exceeding it)
-      // Round down to nearest second to ensure video doesn't exceed audio duration
-      const videoDuration = Math.floor(duration);
-      if (videoDuration <= 0) {
+      // Get selected model or use default
+      const selectedModelId = modelId || 'video-model-1';
+      const model = this.modelRegistry.getVideoModel(selectedModelId);
+      if (!model) {
+        throw new Error(`Video model not found: ${selectedModelId}`);
+      }
+
+      // Get provider for the selected model
+      const provider = this.videoProviderFactory.getProviderForModel(selectedModelId);
+      // Use model capabilities from registry (more reliable than provider.getCapabilities())
+      const capabilities = model.capabilities;
+
+      // Map duration based on provider capabilities
+      let finalDuration: number;
+      if (capabilities.supportedDurations) {
+        // FAL: Map to enum (4s, 6s, 8s)
+        const durationValue = duration;
+        if (durationValue <= 4) {
+          finalDuration = 4;
+        } else if (durationValue <= 6) {
+          finalDuration = 6;
+        } else {
+          finalDuration = Math.min(8, Math.ceil(durationValue)); // Cap at 8s
+        }
+      } else {
+        // BytePlus: Ensure minimum duration
+        finalDuration = Math.max(Math.floor(duration), capabilities.minDuration || 2);
+      }
+
+      if (finalDuration <= 0) {
         throw new Error(`Invalid duration for scene ${sceneNumber}: ${duration} seconds`);
       }
 
@@ -85,37 +118,63 @@ export class VideoGenerationProcessor extends WorkerHost {
         videoResolution = '1080p'; // Results in 1080x1920
       }
 
-      // BytePlus API requires minimum duration of 2 seconds
-      const minDuration = 2;
-      const finalDuration = Math.max(videoDuration, minDuration);
-      
-      if (videoDuration < minDuration) {
-        console.warn(`[VideoGenerationProcessor] Scene ${sceneNumber}: Duration ${videoDuration}s is less than minimum ${minDuration}s. Using ${minDuration}s for BytePlus API.`);
+      // Adjust aspect ratio for FAL (only supports 16:9 and 9:16)
+      if (model.platform === 'FAL') {
+        if (videoRatio === '3:4') {
+          // FAL doesn't support 3:4, use 9:16 as closest
+          videoRatio = '9:16';
+        }
       }
 
-      console.log(`[VideoGenerationProcessor] Scene ${sceneNumber}: Style=${project.style}, Ratio=${videoRatio}, Resolution=${videoResolution}, Duration=${finalDuration}s (audio: ${videoDuration}s)`);
+      console.log(`[VideoGenerationProcessor] Scene ${sceneNumber}: Model=${model.displayName} (${model.platform}), Style=${project.style}, Ratio=${videoRatio}, Resolution=${videoResolution}, Duration=${finalDuration}s (audio: ${duration}s)`);
 
-      // Create video generation task with style-specific dimensions
-      const taskResponse = await this.bytePlusProvider.createVideoGenerationTask({
-        model: 'seedance-1-0-pro-250528',
-        prompt: videoPrompt,
-        image: imageUrl,
-        duration: finalDuration, // Use minimum 2 seconds for BytePlus API
-        ratio: videoRatio,
-        resolution: videoResolution,
-        frames_per_second: 24,
-      });
+      await job.updateProgress(15);
 
-      await job.updateProgress(30);
-
-      console.log(`[VideoGenerationProcessor] Created video task ${taskResponse.id} for scene ${sceneNumber}`);
-
-      // Poll until completion
-      const completedTask = await this.bytePlusProvider.pollVideoTaskUntilComplete(taskResponse.id);
+      // Generate video using unified interface
+      let videoResponse;
+      try {
+        videoResponse = await provider.generateVideo({
+          prompt: videoPrompt,
+          imageUrl: imageUrl,
+          modelId: selectedModelId,
+          aspectRatio: videoRatio,
+          resolution: videoResolution,
+          duration: finalDuration,
+          generateAudio: model.defaultConfig.generateAudio,
+        }, (progress) => {
+          // Map provider progress (0-100) to job progress (15-80)
+          const mappedProgress = 15 + (progress * 0.65); // 15% to 80%
+          job.updateProgress(mappedProgress);
+        });
+      } catch (error: any) {
+        if (error instanceof FalProviderError) {
+          // Handle FAL-specific errors
+          const errorMessage = error.getUserMessage();
+          console.error(`[VideoGenerationProcessor] FAL error: ${errorMessage}`);
+          
+          // Emit WebSocket event with error details
+          this.jobStatusGateway.notifyJobStatus(userId, {
+            jobId: job.id!,
+            queueType: 'video-generation',
+            state: 'failed',
+            error: errorMessage,
+            progress: typeof job.progress === 'number' ? job.progress : 0,
+            metadata: {
+              retryable: error.isRetryable(),
+              errorType: error.type,
+            },
+          }).catch(err => {
+            console.error(`[VideoGenerationProcessor] Failed to emit WebSocket event:`, err);
+          });
+          
+          throw error;
+        }
+        throw error;
+      }
 
       await job.updateProgress(80);
 
-      if (!completedTask.content || !completedTask.content.video_url) {
+      if (!videoResponse.videoUrl) {
         throw new Error('Video generation completed but no video URL');
       }
 
@@ -127,7 +186,7 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       const videoFilename = `broll_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`;
       const videoPath = path.join(userDir, videoFilename);
-      await this.bytePlusProvider.downloadVideo(completedTask.content.video_url, videoPath);
+      await this.downloadVideo(videoResponse.videoUrl, videoPath);
 
       await job.updateProgress(90);
 
@@ -146,12 +205,14 @@ export class VideoGenerationProcessor extends WorkerHost {
       const videoData = {
         sceneNumber,
         jobId: job.id!, // Include jobId for unique identification
-        taskId: taskResponse.id,
-        videoUrl: completedTask.content.video_url,
+        taskId: videoResponse.metadata?.taskId || videoResponse.metadata?.requestId,
+        videoUrl: videoResponse.videoUrl,
         localPath: videoPath,
         localUrl,
-        duration: completedTask.duration || duration,
+        duration: finalDuration,
         prompt: videoPrompt,
+        modelId: selectedModelId, // Store which model was used
+        model: model.displayName, // Store display name
       };
 
       // Get latest bRollVideoTasks array from database to avoid race conditions
@@ -210,6 +271,35 @@ export class VideoGenerationProcessor extends WorkerHost {
       });
       
       throw error;
+    }
+  }
+
+  /**
+   * Download video from URL (works for all providers)
+   */
+  private async downloadVideo(videoUrl: string, outputPath: string): Promise<string> {
+    try {
+      console.log(`[VideoGenerationProcessor] Downloading video from ${videoUrl} to ${outputPath}`);
+
+      const response = await axios.get(videoUrl, {
+        responseType: 'stream',
+        timeout: 300000, // 5 minutes for large files
+      });
+
+      const writer = fs.createWriteStream(outputPath);
+
+      response.data.pipe(writer);
+
+      return new Promise((resolve, reject) => {
+        writer.on('finish', () => {
+          console.log(`[VideoGenerationProcessor] Video downloaded successfully to ${outputPath}`);
+          resolve(outputPath);
+        });
+        writer.on('error', reject);
+      });
+    } catch (error: any) {
+      console.error(`[VideoGenerationProcessor] Failed to download video:`, error.message);
+      throw new Error(`Failed to download video: ${error.message}`);
     }
   }
 

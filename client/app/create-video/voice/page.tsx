@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense, ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Mic, Play, X, Loader2, Pause, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Mic, Play, X, Loader2, Pause, CheckCircle2, Upload } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -31,11 +31,88 @@ function VoicePageContent() {
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [selectedOption, setSelectedOption] = useState<'clone' | 'library' | null>(null);
   const [selectedVoice, setSelectedVoice] = useState<ElevenLabsVoice | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
   const [loading, setLoading] = useState(false);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+
+  const [cloneMode, setCloneMode] = useState<'record' | 'upload' | null>(null);
+  const [cloneVoiceName, setCloneVoiceName] = useState('');
+  const [cloneAudioFile, setCloneAudioFile] = useState<File | null>(null);
+  const [cloneAudioUrl, setCloneAudioUrl] = useState<string | null>(null);
+  const [removeBackgroundNoise, setRemoveBackgroundNoise] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [isCloning, setIsCloning] = useState(false);
+  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [requiresVerification, setRequiresVerification] = useState<boolean | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const cloneAudioElementRef = useRef<HTMLAudioElement | null>(null);
+
+  const MAX_CLONE_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+
+  const applyCloneAudioFile = (file: File, mode?: 'record' | 'upload') => {
+    if (cloneAudioElementRef.current) {
+      try {
+        cloneAudioElementRef.current.pause();
+        cloneAudioElementRef.current.currentTime = 0;
+      } catch (err) {
+        // ignore pause errors
+      }
+    }
+    if (cloneAudioUrl) {
+      URL.revokeObjectURL(cloneAudioUrl);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    setCloneAudioFile(file);
+    setCloneAudioUrl(objectUrl);
+    setSelectedVoice(null);
+    setRequiresVerification(null);
+    if (mode) {
+      setCloneMode(mode);
+    }
+    setSelectedOption('clone');
+  };
+
+  const resetCloneAudio = () => {
+    if (cloneAudioElementRef.current) {
+      try {
+        cloneAudioElementRef.current.pause();
+        cloneAudioElementRef.current.currentTime = 0;
+      } catch (err) {
+        // ignore
+      }
+      cloneAudioElementRef.current = null;
+    }
+    if (cloneAudioUrl) {
+      URL.revokeObjectURL(cloneAudioUrl);
+    }
+    setCloneAudioUrl(null);
+    setCloneAudioFile(null);
+    setRemoveBackgroundNoise(false);
+    setRequiresVerification(null);
+  };
+
+  const stopActiveRecording = () => {
+    if (mediaRecorderRef.current) {
+      try {
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch (err) {
+        // ignore
+      }
+      mediaRecorderRef.current = null;
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+    audioChunksRef.current = [];
+  };
 
   // Update projectId from URL when it changes
   useEffect(() => {
@@ -43,6 +120,27 @@ function VoicePageContent() {
       setProjectId(projectIdFromUrl);
     }
   }, [projectIdFromUrl, projectId]);
+
+  useEffect(() => {
+    if (selectedOption === 'clone' && !cloneMode) {
+      setCloneMode('record');
+    }
+  }, [selectedOption, cloneMode]);
+
+  useEffect(() => {
+    return () => {
+      if (cloneAudioUrl) {
+        URL.revokeObjectURL(cloneAudioUrl);
+      }
+    };
+  }, [cloneAudioUrl]);
+
+  useEffect(() => {
+    return () => {
+      stopActiveRecording();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load or create project if projectId is missing
   useEffect(() => {
@@ -123,6 +221,34 @@ function VoicePageContent() {
     }
   }, [projectId, voices]);
 
+  const toggleCloneOption = () => {
+    if (isRecording) {
+      showToast('Please stop recording before switching options', 'warning');
+      return;
+    }
+    if (isCloning) return;
+    if (selectedOption === 'clone') {
+      setSelectedOption(null);
+      setCloneMode(null);
+    } else {
+      setSelectedOption('clone');
+      setCloneMode((mode) => mode || 'record');
+    }
+  };
+
+  const toggleLibraryOption = () => {
+    if (isRecording) {
+      showToast('Please stop recording before switching options', 'warning');
+      return;
+    }
+    if (isCloning) return;
+    if (selectedOption === 'library') {
+      setSelectedOption(null);
+    } else {
+      setSelectedOption('library');
+    }
+  };
+
   const handlePlayPreview = (voice: ElevenLabsVoice) => {
     if (!voice.preview_url) {
       showToast('No preview available for this voice', 'warning');
@@ -161,7 +287,12 @@ function VoicePageContent() {
   };
 
   const handleVoiceSelect = async (voice: ElevenLabsVoice) => {
+    if (cloneAudioFile || cloneAudioUrl) {
+      resetCloneAudio();
+    }
     setSelectedVoice(voice);
+    setSelectedOption('library');
+    setCloneMode(null);
     
     // Save to project
     if (projectId) {
@@ -177,32 +308,185 @@ function VoicePageContent() {
     }
   };
 
+  const handleUploadChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('audio/')) {
+      showToast('Please upload a valid audio file', 'warning');
+      return;
+    }
+
+    if (file.size > MAX_CLONE_FILE_SIZE) {
+      showToast('Audio file is too large. Maximum size is 15MB.', 'warning');
+      return;
+    }
+
+    applyCloneAudioFile(file, 'upload');
+  };
+
+  const handleRemoveCloneAudio = () => {
+    if (isRecording) {
+      showToast('Stop recording before removing audio', 'warning');
+      return;
+    }
+    resetCloneAudio();
+  };
+
+  const handleStartRecording = async () => {
+    if (isRecording || isCloning) return;
+    if (!cloneVoiceName.trim()) {
+      showToast('Please enter a voice name before recording', 'warning');
+      return;
+    }
+    setRecordingError(null);
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      showToast('Recording is not supported in this browser.', 'error');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const filenameBase = cloneVoiceName.trim().length > 0 ? cloneVoiceName.trim().replace(/\s+/g, '_') : 'recording';
+        const file = new File([blob], `${filenameBase}_${Date.now()}.webm`, { type: 'audio/webm' });
+        applyCloneAudioFile(file, 'record');
+        stopActiveRecording();
+        setIsRecording(false);
+      };
+
+      mediaRecorder.start();
+      setSelectedOption('clone');
+      setCloneMode('record');
+      setIsRecording(true);
+    } catch (error: any) {
+      console.error('Failed to access microphone:', error);
+      setRecordingError(error?.message || 'Failed to access microphone');
+      showToast(error?.message || 'Failed to access microphone', 'error');
+      stopActiveRecording();
+      setIsRecording(false);
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (!isRecording) return;
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+    } finally {
+      setIsRecording(false);
+    }
+  };
+
   const handleNext = async () => {
-    // Validate selection based on option
-    if (selectedOption === 'library') {
-      if (!selectedVoice) {
-        showToast('Please select a voice from the library', 'warning');
+    if (!projectId) {
+      showToast('Project ID missing. Please try again.', 'error');
+      return;
+    }
+
+    const hasCloneSelection =
+      !!cloneAudioFile && cloneVoiceName.trim().length > 0 && !isRecording;
+    const hasLibrarySelection = !!selectedVoice;
+
+    if (!hasCloneSelection && !hasLibrarySelection) {
+      showToast('Please choose a voice from the library or clone your voice first', 'warning');
+      return;
+    }
+
+    if (hasCloneSelection) {
+      if (isRecording) {
+        showToast('Please stop the recording before continuing', 'warning');
         return;
       }
-      if (!projectId) {
-        showToast('Project ID missing. Please try again.', 'error');
-        return;
-      }
-      
+
+      setIsCloning(true);
       try {
-        // Update project with voice selection
+        const cloneResponse = await apiClient.cloneVoice({
+          name: cloneVoiceName.trim(),
+          audioFile: cloneAudioFile!,
+          removeBackgroundNoise,
+        });
+
+        if (!cloneResponse.success || !cloneResponse.data?.voiceId) {
+          throw new Error(cloneResponse.message || 'Failed to clone voice');
+        }
+
+        const voiceId = cloneResponse.data.voiceId;
+        setRequiresVerification(cloneResponse.data.requiresVerification ?? null);
+        setSelectedVoice(null);
+
+        await apiClient.updateVideoProject(projectId, {
+          voiceId,
+          clonedVoiceId: voiceId,
+          voiceType: 'CLONED',
+          voiceSettings: {
+            removeBackgroundNoise,
+            source: 'CLONED',
+          },
+          currentStep: 'VOICE',
+        });
+
+        showToast(
+          cloneResponse.data.requiresVerification
+            ? 'Voice cloned. Verification may be required before use.'
+            : 'Voice cloned successfully!',
+          cloneResponse.data.requiresVerification ? 'warning' : 'success'
+        );
+
+        // Start audio generation with separate loading state
+        setIsCloning(false);
+        setIsGeneratingAudio(true);
+        try {
+          const audioResponse = await apiClient.generateAudio(projectId);
+          if (audioResponse.success && audioResponse.data?.jobId) {
+            showToast('Audio generation started', 'info');
+            router.push(`/create-video/broll-images?projectId=${projectId}`);
+          } else {
+            showToast('Failed to start audio generation', 'error');
+            setIsGeneratingAudio(false);
+          }
+        } catch (error: any) {
+          console.error('Failed to queue audio generation:', error);
+          showToast(error.response?.data?.message || error.message || 'Failed to start audio generation', 'error');
+          setIsGeneratingAudio(false);
+        }
+      } catch (error: any) {
+        console.error('Failed to clone voice:', error);
+        showToast(error.response?.data?.message || error.message || 'Failed to clone voice', 'error');
+        setIsCloning(false);
+      }
+      return;
+    }
+
+    if (hasLibrarySelection && selectedVoice) {
+      try {
         await apiClient.updateVideoProject(projectId, {
           voiceId: selectedVoice.voice_id,
           voiceType: 'SYNTHETIC',
           currentStep: 'VOICE',
         });
 
-        // Queue audio generation
         try {
           const audioResponse = await apiClient.generateAudio(projectId);
           if (audioResponse.success && audioResponse.data?.jobId) {
             showToast('Audio generation started', 'info');
-            // Navigate to B-roll images page (audio will generate in background via queue)
             router.push(`/create-video/broll-images?projectId=${projectId}`);
           } else {
             showToast('Failed to start audio generation', 'error');
@@ -215,14 +499,13 @@ function VoicePageContent() {
         console.error('Failed to save progress:', error);
         showToast(error.response?.data?.message || error.message || 'Failed to save progress', 'error');
       }
-    } else if (selectedOption === 'clone') {
-      // Voice cloning not implemented yet
-      showToast('Voice cloning will be available soon', 'info');
-    } else {
-      showToast('Please select a voice option first', 'warning');
     }
   };
 
+  const hasCloneSelection =
+    !!cloneAudioFile && cloneVoiceName.trim().length > 0 && !isRecording && !isCloning;
+  const hasLibrarySelection = !!selectedVoice;
+  const canProceed = (hasCloneSelection || hasLibrarySelection) && !isCloning && !isRecording && !isGeneratingAudio;
 
   return (
     <div className="min-h-screen bg-background pb-20">
@@ -249,7 +532,7 @@ function VoicePageContent() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setSelectedOption(selectedOption === 'clone' ? null : 'clone')}
+                  onClick={toggleCloneOption}
                   className={cn(
                     'w-5 h-5 rounded-full border-2 flex items-center justify-center',
                     selectedOption === 'clone' ? 'bg-primary border-primary' : 'border-border'
@@ -260,40 +543,159 @@ function VoicePageContent() {
               </div>
 
               {selectedOption === 'clone' && (
-                <div className="mt-6 space-y-4">
+                <div className="mt-6 space-y-5">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-text-secondary" htmlFor="clone-voice-name">
+                      Voice name
+                    </label>
+                    <input
+                      id="clone-voice-name"
+                      type="text"
+                      value={cloneVoiceName}
+                      onChange={(event) => setCloneVoiceName(event.target.value)}
+                      placeholder="Give your cloned voice a name"
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-text-primary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <Button
+                      variant={cloneMode === 'record' ? 'primary' : 'outline'}
+                      onClick={() => {
+                        if (isCloning) return;
+                        if (isRecording) return;
+                        setCloneMode('record');
+                        setSelectedOption('clone');
+                      }}
+                      disabled={isCloning}
+                    >
+                      Record yourself
+                    </Button>
+                    <Button
+                      variant={cloneMode === 'upload' ? 'primary' : 'outline'}
+                      onClick={() => {
+                        if (isCloning) return;
+                        if (isRecording) {
+                          showToast('Stop recording before switching mode', 'warning');
+                          return;
+                        }
+                        setCloneMode('upload');
+                        setSelectedOption('clone');
+                      }}
+                      disabled={isCloning}
+                    >
+                      Upload your audio
+                    </Button>
+                  </div>
+
+                  {cloneMode === 'record' && (
+                    <div className="space-y-4">
                   <div>
                     <p className="font-medium mb-2">Read this while recording</p>
                     <p className="text-text-secondary italic">
                       &quot;The quick brown fox jumps over the lazy dog&quot;
                     </p>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <button
-                      onClick={() => setIsRecording(!isRecording)}
-                      className={cn(
-                        'w-16 h-16 rounded-lg flex items-center justify-center',
-                        isRecording ? 'bg-red-500' : 'bg-primary'
-                      )}
-                    >
-                      {isRecording ? (
-                        <X className="w-8 h-8 text-secondary" />
-                      ) : (
-                        <Mic className="w-8 h-8 text-secondary" />
-                      )}
-                    </button>
-                    <div className="flex-1 h-12 bg-primary-light rounded flex items-center gap-1 px-2">
-                      {[...Array(10)].map((_, i) => (
-                        <div
-                          key={i}
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                        <Button
+                          variant={isRecording ? 'secondary' : 'primary'}
+                          icon={<Mic className="w-5 h-5" />}
+                          onClick={isRecording ? handleStopRecording : handleStartRecording}
+                          disabled={isCloning || (isRecording ? false : !cloneVoiceName.trim())}
+                        >
+                          {isRecording ? 'Stop recording' : 'Start recording'}
+                        </Button>
+                        <div className="flex-1 h-12 bg-primary-light rounded flex items-center gap-1 px-2 overflow-hidden">
+                          {Array.from({ length: 24 }).map((_, index) => (
+                            <span
+                              key={index}
                           className={cn(
-                            'flex-1 rounded',
-                            isRecording ? 'bg-primary' : 'bg-gray-300'
+                                'flex-1 rounded bg-primary transition-all duration-200 ease-in-out',
+                                isRecording ? 'animate-pulse' : 'opacity-40'
                           )}
                           style={{ height: `${Math.random() * 60 + 20}%` }}
                         />
                       ))}
                     </div>
                   </div>
+                      {!cloneVoiceName.trim() && (
+                        <p className="text-xs text-text-secondary">
+                          Enter a voice name before recording so we can save it for you.
+                        </p>
+                      )}
+                      {recordingError && <p className="text-sm text-red-500">{recordingError}</p>}
+                    </div>
+                  )}
+
+                  {cloneMode === 'upload' && (
+                    <div className="space-y-3">
+                      <label className="inline-flex items-center justify-center px-4 py-3 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-primary transition-colors bg-primary-light/20">
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          className="hidden"
+                          onChange={handleUploadChange}
+                          disabled={isCloning}
+                        />
+                        <div className="flex items-center gap-2 text-primary">
+                          <Upload className="w-5 h-5" />
+                          <span>Upload audio file</span>
+                        </div>
+                      </label>
+                      <p className="text-xs text-text-secondary">
+                        Supported formats: MP3, WAV, M4A, WEBM • Max 15MB
+                      </p>
+                    </div>
+                  )}
+
+                  {cloneAudioFile && (
+                    <div className="border border-border rounded-lg p-4 space-y-3 bg-primary-light/30">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-medium text-text-primary">{cloneAudioFile.name}</p>
+                          <p className="text-sm text-text-secondary">
+                            {(cloneAudioFile.size / (1024 * 1024)).toFixed(2)} MB
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleRemoveCloneAudio}
+                          className="p-2 rounded-full border border-border hover:bg-primary-light transition-colors"
+                          title="Remove audio"
+                          type="button"
+                          disabled={isCloning}
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <audio
+                        controls
+                        src={cloneAudioUrl || undefined}
+                        ref={(element) => {
+                          cloneAudioElementRef.current = element;
+                        }}
+                        className="w-full"
+                        onError={() => {
+                          showToast('Failed to load audio preview. The file may be corrupted or in an unsupported format.', 'error');
+                        }}
+                      />
+                      <label className="inline-flex items-center gap-2 text-sm text-text-primary">
+                        <input
+                          type="checkbox"
+                          checked={removeBackgroundNoise}
+                          onChange={(event) => setRemoveBackgroundNoise(event.target.checked)}
+                          disabled={isCloning}
+                        />
+                        <span>Remove background noise</span>
+                      </label>
+                      {requiresVerification !== null && (
+                        <p className="text-xs text-text-secondary">
+                          {requiresVerification
+                            ? 'This voice may require verification in ElevenLabs before it can be used.'
+                            : 'Voice cloned successfully and ready to use.'}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
@@ -308,7 +710,7 @@ function VoicePageContent() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setSelectedOption(selectedOption === 'library' ? null : 'library')}
+                  onClick={toggleLibraryOption}
                   className={cn(
                     'w-5 h-5 rounded-full border-2 flex items-center justify-center',
                     selectedOption === 'library' ? 'bg-primary border-primary' : 'border-border'
@@ -400,11 +802,24 @@ function VoicePageContent() {
         </div>
       </div>
 
+      {(isCloning || isGeneratingAudio) && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-40">
+          <div className="bg-secondary text-primary px-6 py-4 rounded-lg shadow-lg flex items-center gap-3">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>
+              {isCloning 
+                ? 'Cloning voice… This may take a moment.' 
+                : 'Starting audio generation…'}
+            </span>
+          </div>
+        </div>
+      )}
+
       <ProgressBar
-        progress={(selectedOption && (selectedOption === 'library' ? selectedVoice : true)) ? 60 : 40}
-        message={(selectedOption && (selectedOption === 'library' ? selectedVoice : true)) ? "Yay you got a voice now!" : "Keep going, your story is shaping up."}
+        progress={canProceed ? 60 : 40}
+        message={canProceed ? "Yay you got a voice now!" : "Keep going, your story is shaping up."}
         onNext={handleNext}
-        disabled={!(selectedOption && (selectedOption === 'library' ? selectedVoice : true))}
+        disabled={!canProceed || isRecording || isCloning || isGeneratingAudio}
       />
     </div>
   );

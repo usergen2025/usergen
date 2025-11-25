@@ -1,5 +1,20 @@
-import { Controller, Get, Post, Body, Query, Param, Request, HttpException, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Query,
+  Param,
+  Request,
+  HttpException,
+  HttpStatus,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import type { Multer } from 'multer';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { VoiceService } from './voice.service';
@@ -29,24 +44,27 @@ export class VoiceController {
     }
   }
   @Post('clone')
-  @ApiOperation({ 
-    summary: 'Clone voice', 
-    description: 'Create a voice clone from audio sample. Upload an audio file to clone the voice for use in video generation.' 
+  @ApiOperation({
+    summary: 'Clone voice',
+    description: 'Create a voice clone from audio sample. Upload an audio file to clone the voice for use in video generation.',
   })
   @ApiBearerAuth('JWT-auth')
+  @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
       properties: {
         name: { type: 'string', example: 'John Doe Voice', description: 'Name for the cloned voice' },
-        audioFile: { type: 'string', format: 'binary', description: 'Audio file (MP3, WAV, M4A) to clone voice from' },
-        description: { type: 'string', example: 'Professional male voice for video narration', description: 'Optional description' }
+        audioFile: { type: 'string', format: 'binary', description: 'Audio file (MP3, WAV, M4A, WEBM) to clone voice from' },
+        description: { type: 'string', example: 'Professional male voice for video narration', description: 'Optional description' },
+        labels: { type: 'string', example: '{"style":"professional"}', description: 'Serialized labels JSON (optional)' },
+        removeBackgroundNoise: { type: 'boolean', example: false, description: 'Remove background noise from sample (optional)' },
       },
-      required: ['name', 'audioFile']
-    }
+      required: ['name', 'audioFile'],
+    },
   })
-  @ApiResponse({ 
-    status: 201, 
+  @ApiResponse({
+    status: 201,
     description: 'Voice cloned successfully',
     schema: {
       type: 'object',
@@ -56,32 +74,30 @@ export class VoiceController {
           type: 'object',
           properties: {
             voiceId: { type: 'string', example: 'voice_abc123', description: 'Unique voice ID' },
-            name: { type: 'string', example: 'John Doe Voice' },
-            status: { type: 'string', example: 'processing', description: 'Voice cloning status' },
-            createdAt: { type: 'string', example: '2024-11-02T03:55:00.000Z' }
-          }
+            requiresVerification: { type: 'boolean', example: false },
+          },
         },
-        message: { type: 'string', example: 'Voice cloning started successfully' },
-        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' }
-      }
-    }
+        message: { type: 'string', example: 'Voice cloned successfully' },
+        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' },
+      },
+    },
   })
-  @ApiResponse({ 
-    status: 400, 
+  @ApiResponse({
+    status: 400,
     description: 'Bad request - Invalid audio file or missing parameters',
     schema: {
       type: 'object',
       properties: {
         success: { type: 'boolean', example: false },
         statusCode: { type: 'number', example: 400 },
-        message: { type: 'string', example: 'Invalid audio file format. Supported formats: MP3, WAV, M4A' },
+        message: { type: 'string', example: 'Invalid audio file format. Supported formats: MP3, WAV, M4A, WEBM' },
         error: { type: 'string', example: 'Bad Request' },
-        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' }
-      }
-    }
+        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' },
+      },
+    },
   })
-  @ApiResponse({ 
-    status: 401, 
+  @ApiResponse({
+    status: 401,
     description: 'Unauthorized - Invalid or missing token',
     schema: {
       type: 'object',
@@ -90,13 +106,146 @@ export class VoiceController {
         statusCode: { type: 'number', example: 401 },
         message: { type: 'string', example: 'Unauthorized - Invalid token' },
         error: { type: 'string', example: 'Unauthorized' },
-        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' }
-      }
-    }
+        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' },
+      },
+    },
   })
-  async cloneVoice(@Body() dto: any) {
-    // TODO: Implement voice cloning logic
-    return { success: true, message: 'Voice cloning endpoint - implementation pending' };
+  @UseInterceptors(
+    FileInterceptor('audioFile', {
+      storage: memoryStorage(),
+      limits: {
+        fileSize: 15 * 1024 * 1024, // 15MB limit
+      },
+    }),
+  )
+  async cloneVoice(
+    @Request() req: any,
+    @UploadedFile() audioFile: Multer.File,
+    @Body()
+    body: {
+      name?: string;
+      description?: string;
+      labels?: string;
+      removeBackgroundNoise?: string | boolean;
+    },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'User ID is required. Please login again.',
+          error: 'Authentication failed',
+        },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    if (!body?.name || !body.name.trim()) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Voice name is required',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!audioFile) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Audio file is required',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const allowedMimeTypes = [
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/webm',
+      'audio/ogg',
+      'audio/m4a',
+      'audio/x-m4a',
+    ];
+
+    if (!allowedMimeTypes.includes(audioFile.mimetype)) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Invalid audio file format. Supported formats: MP3, WAV, M4A, WEBM, OGG',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    let storedSample;
+    try {
+      console.log(`[VoiceController] Starting voice clone for user ${userId}, name: ${body.name}`);
+      console.log(`[VoiceController] Received audio file: ${audioFile.originalname}, size: ${audioFile.size} bytes, mimetype: ${audioFile.mimetype}`);
+
+      storedSample = await this.voiceService.storeCloneAudioSample(
+        userId,
+        audioFile,
+        body.name,
+      );
+
+      // Validate stored sample before sending to ElevenLabs
+      if (!storedSample || !storedSample.buffer || storedSample.buffer.length === 0) {
+        throw new Error('Stored audio sample is invalid or empty');
+      }
+
+      console.log(`[VoiceController] Audio sample stored successfully: ${storedSample.filename}, size: ${storedSample.buffer.length} bytes`);
+      console.log(`[VoiceController] Calling ElevenLabs API to clone voice...`);
+
+      const result = await this.voiceService.cloneVoice(
+        body.name.trim(),
+        [
+          {
+            buffer: storedSample.buffer,
+            filename: storedSample.filename,
+            mimetype: storedSample.mimetype,
+          },
+        ],
+        userId,
+        {
+          description: body.description,
+          labels: body.labels,
+          remove_background_noise:
+            typeof body.removeBackgroundNoise === 'string'
+              ? body.removeBackgroundNoise === 'true'
+              : !!body.removeBackgroundNoise,
+        },
+      );
+
+      console.log(`[VoiceController] Voice cloned successfully: ${result.voice_id}, requires_verification: ${result.requires_verification}`);
+
+      return {
+        success: true,
+        data: {
+          voiceId: result.voice_id,
+          requiresVerification: result.requires_verification,
+          sampleUrl: storedSample.localUrl,
+        },
+        message: 'Voice cloned successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      throw new HttpException(
+        {
+          success: false,
+          message: error.message || 'Failed to clone voice',
+          error: 'Voice cloning failed',
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
   }
 
   @Get('voices')

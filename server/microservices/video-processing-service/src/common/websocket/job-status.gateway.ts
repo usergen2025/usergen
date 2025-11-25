@@ -18,6 +18,11 @@ export interface JobStatusUpdate {
   result?: any;
   progress?: number;
   error?: string;
+  metadata?: {
+    retryable?: boolean;
+    errorType?: string;
+    [key: string]: any;
+  };
 }
 
 @WebSocketGateway({

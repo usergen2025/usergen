@@ -1,6 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import {
+  IImageGenerationProvider,
+  ImageGenerationRequest,
+  ImageGenerationResponse,
+  ProviderCapabilities,
+  ModelInfo,
+  ValidationResult,
+} from './interfaces/image-generation.interface';
+import {
+  IVideoGenerationProvider,
+  VideoGenerationRequest,
+  VideoGenerationResponse,
+  VideoProviderCapabilities,
+  VideoModelInfo,
+} from './interfaces/video-generation.interface';
 
 export interface BytePlusImageGenerationRequest {
   model: string;
@@ -89,7 +104,7 @@ export interface BytePlusVideoTaskStatus {
 }
 
 @Injectable()
-export class BytePlusProvider {
+export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerationProvider {
   private axiosInstance: AxiosInstance;
   private baseUrl: string;
   private apiKey: string;
@@ -109,9 +124,117 @@ export class BytePlusProvider {
   }
 
   /**
-   * Generate image using BytePlus Seedream 4.0
+   * Generate image using unified interface
+   * Implements IImageGenerationProvider
    */
-  async generateImage(request: BytePlusImageGenerationRequest): Promise<BytePlusImageGenerationResponse> {
+  async generateImage(
+    request: ImageGenerationRequest,
+    onProgress?: (progress: number) => void
+  ): Promise<ImageGenerationResponse> {
+    try {
+      // Validate request
+      const validation = this.validateRequest(request);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Invalid request');
+      }
+
+      // Convert unified request to BytePlus format
+      const bytePlusRequest = this.normalizeRequest(request);
+
+      onProgress?.(10);
+
+      // Call BytePlus API
+      const response = await this.axiosInstance.post<BytePlusImageGenerationResponse>(
+        '/images/generations',
+        bytePlusRequest
+      );
+
+      onProgress?.(80);
+
+      if (response.data.error) {
+        throw new Error(`BytePlus image generation failed: ${response.data.error.message}`);
+      }
+
+      if (!response.data.data || !response.data.data[0] || !response.data.data[0].url) {
+        throw new Error('BytePlus API did not return image URL');
+      }
+
+      onProgress?.(95);
+
+      // Convert BytePlus response to unified format
+      return this.normalizeResponse(response.data, request.modelId);
+    } catch (error: any) {
+      console.error('[BytePlus] Image generation error:', error.response?.data || error.message);
+      throw new Error(`Failed to generate image: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Normalize unified request to BytePlus format
+   */
+  private normalizeRequest(request: ImageGenerationRequest): BytePlusImageGenerationRequest {
+    // Convert aspect ratio to size format
+    // BytePlus uses "WxH" format like "1080x1920" or "1K", "2K", "4K"
+    let size: string | undefined;
+    
+    if (request.resolution) {
+      // If resolution is specified, use it directly
+      size = request.resolution;
+    } else if (request.aspectRatio) {
+      // Map aspect ratio to dimensions
+      const sizeMap: Record<string, string> = {
+        '9:16': '1080x1920',
+        '3:4': '1080x1440',
+        '16:9': '1920x1080',
+        '1:1': '1080x1080',
+        '4:3': '1440x1080',
+      };
+      size = sizeMap[request.aspectRatio] || '1080x1920';
+    } else {
+      size = '1080x1920'; // Default
+    }
+
+    return {
+      model: request.modelId || 'seedream-4-0-250828',
+      prompt: request.prompt,
+      size,
+      response_format: (request.outputFormat === 'jpeg' ? 'url' : 'url') as 'url', // BytePlus always returns URL
+      sequential_image_generation: 'disabled',
+      watermark: false,
+    };
+  }
+
+  /**
+   * Normalize BytePlus response to unified format
+   */
+  private normalizeResponse(
+    bytePlusResponse: BytePlusImageGenerationResponse,
+    modelId: string
+  ): ImageGenerationResponse {
+    const imageData = bytePlusResponse.data[0];
+    
+    if (!imageData?.url) {
+      throw new Error('BytePlus API returned image without URL');
+    }
+
+    return {
+      imageUrl: imageData.url,
+      model: modelId,
+      metadata: {
+        generationTime: Date.now() - (bytePlusResponse.created * 1000),
+      },
+      usage: {
+        generatedImages: bytePlusResponse.usage?.generated_images || 1,
+        tokens: bytePlusResponse.usage?.total_tokens,
+      },
+    };
+  }
+
+  /**
+   * Legacy method for backward compatibility
+   * @deprecated Use generateImage with ImageGenerationRequest instead
+   */
+  async generateImageLegacy(request: BytePlusImageGenerationRequest): Promise<BytePlusImageGenerationResponse> {
     try {
       console.log(`[BytePlus] Generating image with model: ${request.model}`);
       
@@ -138,6 +261,94 @@ export class BytePlusProvider {
       console.error('[BytePlus] Image generation error:', error.response?.data || error.message);
       throw new Error(`Failed to generate image: ${error.response?.data?.error?.message || error.message}`);
     }
+  }
+
+  /**
+   * Validate request (for images)
+   */
+  validateRequest(request: ImageGenerationRequest): ValidationResult;
+  /**
+   * Validate request (for videos)
+   */
+  validateRequest(request: VideoGenerationRequest): ValidationResult;
+  /**
+   * Validate request implementation (handles both image and video)
+   */
+  validateRequest(request: ImageGenerationRequest | VideoGenerationRequest): ValidationResult {
+    // Type guard: check if it's a video request by looking for imageUrl
+    if ('imageUrl' in request) {
+      // Video request
+      return this.validateVideoRequest(request as VideoGenerationRequest);
+    } else {
+      // Image request
+      const imgRequest = request as ImageGenerationRequest;
+      if (!imgRequest.prompt || imgRequest.prompt.trim().length === 0) {
+        return { valid: false, error: 'Prompt is required' };
+      }
+
+      if (imgRequest.prompt.length > 10000) {
+        return { valid: false, error: 'Prompt exceeds maximum length of 10000 characters' };
+      }
+
+      if (!imgRequest.modelId) {
+        return { valid: false, error: 'Model ID is required' };
+      }
+
+      return { valid: true };
+    }
+  }
+
+  /**
+   * Get provider capabilities (for images)
+   * When called as IImageGenerationProvider, returns ProviderCapabilities
+   */
+  getCapabilities(): ProviderCapabilities;
+  /**
+   * Get provider capabilities (for videos)
+   * When called as IVideoGenerationProvider, returns VideoProviderCapabilities
+   */
+  getCapabilities(): VideoProviderCapabilities;
+  /**
+   * Get provider capabilities implementation
+   * Note: TypeScript method overloading with different return types has limitations.
+   * The video processor uses model.capabilities from registry instead of this method.
+   * This method returns image capabilities for IImageGenerationProvider compatibility.
+   */
+  getCapabilities(): ProviderCapabilities | VideoProviderCapabilities {
+    // Return image capabilities (for IImageGenerationProvider)
+    // For video capabilities, use getVideoCapabilities() or model.capabilities from registry
+    return {
+      supportsAspectRatio: true,
+      supportsResolution: true,
+      supportsNumImages: false, // BytePlus generates 1 image at a time
+      supportedAspectRatios: ['9:16', '3:4', '16:9', '1:1', '4:3'],
+      supportedResolutions: ['1K', '2K', '4K'],
+      maxNumImages: 1,
+      isAsync: false, // BytePlus is synchronous
+      estimatedTimeSeconds: 15, // Average generation time
+    };
+  }
+
+  /**
+   * Get supported models (for images)
+   * When called as IImageGenerationProvider, returns ModelInfo[]
+   */
+  async getSupportedModels(): Promise<ModelInfo[]>;
+  /**
+   * Get supported models (for videos)
+   * When called as IVideoGenerationProvider, returns VideoModelInfo[]
+   */
+  async getSupportedModels(): Promise<VideoModelInfo[]>;
+  /**
+   * Get supported models implementation
+   * Returns image models by default (for IImageGenerationProvider)
+   * When called through IVideoGenerationProvider, the factory will handle type casting
+   */
+  async getSupportedModels(): Promise<ModelInfo[] | VideoModelInfo[]> {
+    // Models are managed by ModelRegistryService
+    // Return empty array (models are managed by registry)
+    // When used as IVideoGenerationProvider, the factory/processor will cast appropriately
+    return [];
   }
 
   /**
@@ -247,7 +458,8 @@ export class BytePlusProvider {
   async pollVideoTaskUntilComplete(
     taskId: string,
     maxAttempts: number = 60,
-    intervalMs: number = 5000
+    intervalMs: number = 5000,
+    onProgress?: (progress: number) => void
   ): Promise<BytePlusVideoTaskStatus> {
     let attempts = 0;
     
@@ -255,6 +467,12 @@ export class BytePlusProvider {
       const taskStatus = await this.getVideoTaskStatus(taskId);
       
       console.log(`[BytePlus] Task ${taskId} status: ${taskStatus.status} (attempt ${attempts + 1}/${maxAttempts})`);
+      
+      // Update progress (estimate based on attempts)
+      if (onProgress) {
+        const estimatedProgress = Math.min(85, 30 + (attempts / maxAttempts) * 55);
+        onProgress(estimatedProgress);
+      }
       
       if (taskStatus.status === 'succeeded') {
         console.log(`[BytePlus] Task ${taskId} completed successfully`);
@@ -335,6 +553,119 @@ export class BytePlusProvider {
       console.error(`[BytePlus] Failed to download image:`, error.message);
       throw new Error(`Failed to download image: ${error.message}`);
     }
+  }
+
+  /**
+   * Generate video using unified interface
+   * Implements IVideoGenerationProvider
+   */
+  async generateVideo(
+    request: VideoGenerationRequest,
+    onProgress?: (progress: number) => void
+  ): Promise<VideoGenerationResponse> {
+    try {
+      // Validate request
+      const validation = this.validateVideoRequest(request);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Invalid request');
+      }
+
+      // Map duration - ensure minimum 2 seconds
+      const duration = request.duration ? Math.max(Math.floor(request.duration), 2) : 2;
+
+      // Map aspect ratio
+      const ratio = request.aspectRatio || '9:16';
+
+      // Map resolution
+      const resolution = request.resolution || '1080p';
+
+      onProgress?.(10);
+
+      // Create video generation task
+      const taskResponse = await this.createVideoGenerationTask({
+        model: 'seedance-1-0-pro-250528',
+        prompt: request.prompt,
+        image: request.imageUrl,
+        duration,
+        ratio,
+        resolution,
+        frames_per_second: 24,
+      });
+
+      onProgress?.(30);
+
+      // Poll until completion
+      const completedTask = await this.pollVideoTaskUntilComplete(
+        taskResponse.id,
+        120, // Max 10 minutes (120 * 5s)
+        5000,
+        onProgress
+      );
+
+      onProgress?.(90);
+
+      if (!completedTask.content || !completedTask.content.video_url) {
+        throw new Error('Video generation completed but no video URL');
+      }
+
+      onProgress?.(100);
+
+      return {
+        videoUrl: completedTask.content.video_url,
+        model: 'seedance-1-0-pro-250528',
+        metadata: {
+          taskId: taskResponse.id,
+          generationTime: Date.now() - (completedTask.created_at * 1000),
+        },
+      };
+    } catch (error: any) {
+      console.error('[BytePlus] Video generation error:', error.response?.data || error.message);
+      throw new Error(`Failed to generate video: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+
+  /**
+   * Get video provider capabilities
+   */
+  getVideoCapabilities(): VideoProviderCapabilities {
+    return {
+      supportsAspectRatio: true,
+      supportsResolution: true,
+      supportsDuration: true,
+      supportedAspectRatios: ['9:16', '3:4', '16:9', '1:1', '4:3'],
+      supportedResolutions: ['720p', '1080p'],
+      minDuration: 2,
+      isAsync: true, // BytePlus uses async polling
+      estimatedTimeSeconds: 60, // Average generation time
+    };
+  }
+
+  /**
+   * Get supported video models
+   */
+  async getSupportedVideoModels(): Promise<VideoModelInfo[]> {
+    // Models are managed by ModelRegistryService
+    return [];
+  }
+
+  /**
+   * Validate video request
+   */
+  validateVideoRequest(request: VideoGenerationRequest): ValidationResult {
+    if (!request.prompt || request.prompt.trim().length === 0) {
+      return { valid: false, error: 'Prompt is required' };
+    }
+
+    if (!request.imageUrl || request.imageUrl.trim().length === 0) {
+      return { valid: false, error: 'Image URL is required' };
+    }
+
+    if (request.duration && request.duration < 2) {
+      return { valid: false, error: 'Duration must be at least 2 seconds for BytePlus' };
+    }
+
+    return { valid: true };
   }
 }
 
