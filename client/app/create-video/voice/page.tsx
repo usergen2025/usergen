@@ -173,10 +173,11 @@ function VoicePageContent() {
     loadOrCreateProject();
   }, [isAuthenticated, authLoading, projectId, router, showToast]);
 
-  // Load ElevenLabs voices when "Select from Library" is selected
+  // Load ElevenLabs voices immediately when page loads (not just when library is selected)
+  // This ensures voices are available when restoring selection
   useEffect(() => {
     const loadVoices = async () => {
-      if (selectedOption === 'library' && voices.length === 0) {
+      if (voices.length === 0 && projectId) {
         setLoading(true);
         try {
           const response = await apiClient.getElevenLabsVoices();
@@ -195,9 +196,9 @@ function VoicePageContent() {
     };
 
     loadVoices();
-  }, [selectedOption, showToast]);
+  }, [projectId, showToast]); // Load voices when projectId is available
 
-  // Load existing project data
+  // Load and restore project state (runs after voices might be loaded)
   useEffect(() => {
     const loadProject = async () => {
       if (!projectId) return;
@@ -205,13 +206,33 @@ function VoicePageContent() {
       try {
         const response = await apiClient.getVideoProject(projectId);
         if (response.success && response.data) {
-          if (response.data.voiceId) {
-            // If voice is already selected, find it from the loaded voices
-            const voice = voices.find(v => v.voice_id === response.data.voiceId);
+          setProject(response.data);
+          const projectData = response.data;
+          
+          // Check for library voice (SYNTHETIC type)
+          if (projectData.voiceId && projectData.voiceType === 'SYNTHETIC') {
+            // Find voice in loaded voices array
+            const voice = voices.find(v => v.voice_id === projectData.voiceId);
             if (voice) {
               setSelectedVoice(voice);
+              setSelectedOption('library'); // This will auto-open the library section
+              console.log('[VoicePage] Restored library voice selection:', voice.name);
+            } else if (voices.length > 0) {
+              // Voices are loaded but voice not found - might be a different voice or removed
+              console.warn('[VoicePage] Voice not found in library:', projectData.voiceId);
+              // Still set the option to library so user can see it was selected
               setSelectedOption('library');
             }
+            // If voices not loaded yet, this useEffect will re-run when voices load
+          }
+          
+          // Check for cloned voice (CLONED type)
+          if (projectData.voiceType === 'CLONED' && projectData.clonedVoiceId) {
+            setSelectedOption('clone');
+            setCloneMode('upload'); // Cloned voices are uploaded
+            // Note: We can't restore the actual audio file, but we can show the clone option is selected
+            // The cloned voice ID is stored, but we'd need to fetch voice details to show the name
+            console.log('[VoicePage] Restored cloned voice selection:', projectData.clonedVoiceId);
           }
         }
       } catch (error: any) {
@@ -219,10 +240,10 @@ function VoicePageContent() {
       }
     };
 
-    if (projectId && voices.length > 0) {
+    if (projectId) {
       loadProject();
     }
-  }, [projectId, voices]);
+  }, [projectId, voices]); // Re-run when voices are loaded to find the voice
 
   const toggleCloneOption = () => {
     if (isRecording) {
@@ -453,13 +474,19 @@ function VoicePageContent() {
           cloneResponse.data.requiresVerification ? 'warning' : 'success'
         );
 
-        // Start audio generation with separate loading state
+        // Check if audio needs regeneration (cloned voice is always new, so always regenerate)
         setIsCloning(false);
         setIsGeneratingAudio(true);
         try {
+          // For cloned voices, always regenerate since it's a new voice
           const audioResponse = await apiClient.generateAudio(projectId);
-          if (audioResponse.success && audioResponse.data?.jobId) {
-            showToast('Audio generation started', 'info');
+          if (audioResponse.success) {
+            // Check if job was queued or if existing audio was returned
+            if (audioResponse.data?.jobId) {
+              showToast('Audio generation started', 'info');
+            } else if (audioResponse.data?.existing) {
+              showToast('Using existing audio', 'info');
+            }
             router.push(`/create-video/broll-images?projectId=${projectId}`);
           } else {
             showToast('Failed to start audio generation', 'error');
@@ -480,23 +507,42 @@ function VoicePageContent() {
 
     if (hasLibrarySelection && selectedVoice) {
       try {
+        // Check if voice changed or audio needs regeneration
+        const currentVoiceId = project?.voiceId;
+        const newVoiceId = selectedVoice.voice_id;
+        const existingAudioFiles = project?.audioFiles;
+        const audioConfig = project?.audioGenerationConfig;
+
+        // Check if regeneration is needed
+        const voiceChanged = currentVoiceId !== newVoiceId;
+        const hasExistingAudio = existingAudioFiles && Array.isArray(existingAudioFiles) && existingAudioFiles.length > 0;
+        const needsRegeneration = voiceChanged || !hasExistingAudio;
+
+        // Update project with new voice selection
         await apiClient.updateVideoProject(projectId, {
-          voiceId: selectedVoice.voice_id,
+          voiceId: newVoiceId,
           voiceType: 'SYNTHETIC',
           currentStep: 'VOICE',
         });
 
-        try {
-          const audioResponse = await apiClient.generateAudio(projectId);
-          if (audioResponse.success && audioResponse.data?.jobId) {
-            showToast('Audio generation started', 'info');
-            router.push(`/create-video/broll-images?projectId=${projectId}`);
-          } else {
+        // Only generate audio if voice changed or no audio exists
+        if (needsRegeneration) {
+          try {
+            const audioResponse = await apiClient.generateAudio(projectId);
+            if (audioResponse.success && audioResponse.data?.jobId) {
+              showToast('Audio generation started', 'info');
+              router.push(`/create-video/broll-images?projectId=${projectId}`);
+            } else {
+              showToast('Failed to start audio generation', 'error');
+            }
+          } catch (error: any) {
+            console.error('Failed to queue audio generation:', error);
             showToast('Failed to start audio generation', 'error');
           }
-        } catch (error: any) {
-          console.error('Failed to queue audio generation:', error);
-          showToast('Failed to start audio generation', 'error');
+        } else {
+          // Voice and config match, skip regeneration and navigate
+          console.log('[VoicePage] Audio already generated with matching config, skipping regeneration');
+          router.push(`/create-video/broll-images?projectId=${projectId}`);
         }
       } catch (error: any) {
         console.error('Failed to save progress:', error);

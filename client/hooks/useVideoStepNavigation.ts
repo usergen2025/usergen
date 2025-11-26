@@ -13,9 +13,9 @@ export function useVideoStepNavigation(projectId: string | null, currentStep?: s
   /**
    * Navigate to the previous step in the flow
    * Uses multiple fallback strategies to determine current step:
-   * 1. currentStep from project (if loaded)
+   * 1. step derived from current route pathname (MOST RELIABLE - always accurate)
    * 2. step from URL query params (if provided)
-   * 3. step derived from current route pathname
+   * 3. currentStep from project (LEAST RELIABLE - may be stale)
    * Falls back to router.back() only if step cannot be determined
    */
   const goToPreviousStep = () => {
@@ -24,8 +24,16 @@ export function useVideoStepNavigation(projectId: string | null, currentStep?: s
       return;
     }
 
-    // Strategy 1: Try to get step from project first (most reliable)
-    let step = currentStep;
+    // Strategy 1: Derive step from current route pathname (MOST RELIABLE)
+    // Pathname is always accurate and available immediately, regardless of database state
+    let step = pathname ? getStepFromRoute(pathname) : undefined;
+    
+    if (step) {
+      console.log('[useVideoStepNavigation] Step derived from route (most reliable):', {
+        pathname,
+        derivedStep: step,
+      });
+    }
     
     // Strategy 2: Check URL query params (added when navigating from projects page)
     if (!step) {
@@ -36,13 +44,13 @@ export function useVideoStepNavigation(projectId: string | null, currentStep?: s
       }
     }
     
-    // Strategy 3: Derive step from current route pathname
-    if (!step && pathname) {
-      step = getStepFromRoute(pathname);
-      console.log('[useVideoStepNavigation] Step derived from route:', {
-        pathname,
-        derivedStep: step,
-      });
+    // Strategy 3: Use currentStep from project (LEAST RELIABLE - may be stale)
+    // Only use as last resort since it may not reflect the actual current page
+    if (!step) {
+      step = currentStep;
+      if (step) {
+        console.log('[useVideoStepNavigation] Step from project (fallback):', step);
+      }
     }
 
     if (step) {

@@ -568,7 +568,7 @@ class ApiClient {
   }
 
   // Queue operations
-  async generateAudio(projectId: string): Promise<ApiResponse<{ jobId: string }>> {
+  async generateAudio(projectId: string): Promise<ApiResponse<{ jobId?: string; existing?: boolean; audioFiles?: any[] }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

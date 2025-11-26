@@ -129,6 +129,7 @@ export class VideoService {
       );
       updateData.audioFiles = dto.audioFiles;
     }
+    if (dto.audioGenerationConfig !== undefined) updateData.audioGenerationConfig = dto.audioGenerationConfig;
     if (dto.bRollImages !== undefined) updateData.bRollImages = dto.bRollImages;
     if (dto.bRollVideoTasks !== undefined) updateData.bRollVideoTasks = dto.bRollVideoTasks;
     if (dto.avatarVideos !== undefined) updateData.avatarVideos = dto.avatarVideos;

@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import { buildAudioGenerationConfig } from '../../utils/audio-config.util';
 import axios from 'axios';
 
 export interface AudioGenerationJobData {
@@ -88,11 +89,22 @@ export class AudioGenerationProcessor extends WorkerHost {
 
       const audioFiles = response.data.data;
 
-      // Update project with audio files
+      // Build audio generation config to store
+      const audioGenerationConfig = buildAudioGenerationConfig(
+        project.voiceId!,
+        project.voiceType || 'SYNTHETIC',
+        project.script,
+        'eleven_multilingual_v2',
+        'mp3_44100_128',
+        audioFiles.length,
+      );
+
+      // Update project with audio files and generation config
       await this.databaseService.videoProject.update({
         where: { id: projectId },
         data: {
           audioFiles,
+          audioGenerationConfig,
           renderingStatus: 'audio_completed',
           renderingProgress: 20,
         },

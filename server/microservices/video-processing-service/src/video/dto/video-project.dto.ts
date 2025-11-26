@@ -232,6 +232,11 @@ export class UpdateVideoProjectDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsObject()
+  audioGenerationConfig?: any;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
   bRollImages?: any;
 
   @ApiPropertyOptional()

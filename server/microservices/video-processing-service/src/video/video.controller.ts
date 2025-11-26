@@ -25,6 +25,7 @@ import {
 } from './dto/video-project.dto';
 import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
+import { buildAudioGenerationConfig, shouldRegenerateAudio } from '../common/utils/audio-config.util';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -322,14 +323,52 @@ export class VideoController {
   @Post(':projectId/generate-audio')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
-  @ApiOperation({ summary: 'Generate audio files', description: 'Queue audio generation for all scenes' })
-  @ApiResponse({ status: 200, description: 'Audio generation queued successfully' })
+  @ApiOperation({ summary: 'Generate audio files', description: 'Queue audio generation for all scenes. Skips regeneration if config matches existing audio.' })
+  @ApiResponse({ status: 200, description: 'Audio generation queued successfully or existing audio returned' })
   async generateAudio(@Request() req: any, @Param('projectId') projectId: string) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
       throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
     }
 
+    // Fetch project to check current state
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data;
+    const existingAudioFiles = (projectData.audioFiles as any[]) || null;
+    const storedConfig = (projectData.audioGenerationConfig as any) || null;
+
+    // Build current config from project data
+    const currentConfig = buildAudioGenerationConfig(
+      projectData.voiceId,
+      projectData.voiceType,
+      projectData.script,
+      'eleven_multilingual_v2', // Default model
+      'mp3_44100_128', // Default format
+      existingAudioFiles?.length || 0,
+    );
+
+    // Check if regeneration is needed
+    const needsRegeneration = shouldRegenerateAudio(currentConfig, storedConfig, existingAudioFiles);
+
+    if (!needsRegeneration && existingAudioFiles && existingAudioFiles.length > 0) {
+      // No regeneration needed, return existing audio
+      console.log(`[VideoController] Audio already generated with matching config for project ${projectId}, skipping regeneration`);
+      return {
+        success: true,
+        data: {
+          existing: true,
+          audioFiles: existingAudioFiles,
+          message: 'Audio already generated with matching configuration',
+        },
+        message: 'Using existing audio files',
+      };
+    }
+
+    // Regeneration needed, queue job
     const authToken = req.headers?.authorization || null;
     const jobId = await this.queueManager.addAudioGenerationJob({
       projectId,

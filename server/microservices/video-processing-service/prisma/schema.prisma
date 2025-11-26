@@ -37,6 +37,7 @@ model VideoProject {
   clonedVoiceId     String?          // If voiceType is "cloned"
   voiceSettings     Json?            // Additional voice settings
   audioFiles        Json?            // Array of audio file paths: [{ sceneNumber, filePath, localUrl, voiceover, duration }]
+  audioGenerationConfig Json?        // Config used for last audio generation: { voiceId, voiceType, scriptHash, modelId, outputFormat, scenesCount, generatedAt, audioFilesCount }
   
   // B-Roll Configuration
   bRollSource       BRollSource?     // "skip" | "ai-generated" | "upload" | "stock"
