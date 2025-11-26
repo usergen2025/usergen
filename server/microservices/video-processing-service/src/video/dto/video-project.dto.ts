@@ -197,6 +197,11 @@ export class UpdateVideoProjectDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  avatarMode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   script?: string;
 
   @ApiPropertyOptional()

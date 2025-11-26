@@ -549,6 +549,7 @@ export class AvatarsService {
       const where: Prisma.AvatarWhereInput = {
         userId,
         isActive: true,
+        generationStatus: 'COMPLETED', // Only show completed avatars
       };
 
       if (filters?.source) {

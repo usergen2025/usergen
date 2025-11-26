@@ -24,6 +24,7 @@ model VideoProject {
   
   // Avatar Configuration (if videoType is "with-avatar")
   avatarId          String?          // Avatar ID from ai-content-service
+  avatarMode        String?          // 'BASIC' | 'PREMIUM' - Avatar rendering mode
   avatarName        String?
   avatarUrl         String?
   

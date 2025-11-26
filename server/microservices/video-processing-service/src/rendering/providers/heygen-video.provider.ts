@@ -42,6 +42,23 @@ export interface HeyGenVideoStatus {
   message?: string;
 }
 
+export interface HeyGenAvatarIVRequest {
+  image_key: string;
+  video_title: string;
+  script?: string;
+  voice_id?: string;
+  audio_url?: string;
+  audio_asset_id?: string;
+  video_orientation?: 'portrait' | 'landscape';
+  fit?: 'cover' | 'contain';
+  custom_motion_prompt?: string;
+  enhance_custom_motion_prompt?: boolean;
+}
+
+export interface HeyGenAvatarIVResponse {
+  video_id: string;
+}
+
 @Injectable()
 export class HeyGenVideoProvider {
   private axiosInstance: AxiosInstance;
@@ -344,6 +361,81 @@ export class HeyGenVideoProvider {
     } catch (error: any) {
       console.error(`[HeyGen] Failed to download video:`, error.message);
       throw new Error(`Failed to download video: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate Avatar IV video (Premium mode)
+   * Uses /v2/video/av4/generate endpoint
+   * Reference: https://docs.heygen.com/reference/create-avatar-iv-video
+   */
+  async generateAvatarIVVideo(request: HeyGenAvatarIVRequest): Promise<HeyGenAvatarIVResponse> {
+    try {
+      console.log(`[HeyGen] Generating Avatar IV video with image_key: ${request.image_key}`);
+      
+      // Validate required fields
+      if (!request.image_key) {
+        throw new Error('image_key is required for Avatar IV generation');
+      }
+      
+      if (!request.audio_url && !request.audio_asset_id && (!request.script || !request.voice_id)) {
+        throw new Error('Either audio_url/audio_asset_id or script+voice_id must be provided');
+      }
+
+      const payload: any = {
+        image_key: request.image_key,
+        video_title: request.video_title,
+        video_orientation: request.video_orientation || 'portrait',
+      };
+
+      // Add audio source (prefer audio_asset_id over audio_url)
+      if (request.audio_asset_id) {
+        payload.audio_asset_id = request.audio_asset_id;
+      } else if (request.audio_url) {
+        payload.audio_url = request.audio_url;
+      } else if (request.script && request.voice_id) {
+        payload.script = request.script;
+        payload.voice_id = request.voice_id;
+      }
+
+      // Add optional parameters
+      if (request.fit) {
+        payload.fit = request.fit;
+      }
+      if (request.custom_motion_prompt) {
+        payload.custom_motion_prompt = request.custom_motion_prompt;
+      }
+      if (request.enhance_custom_motion_prompt !== undefined) {
+        payload.enhance_custom_motion_prompt = request.enhance_custom_motion_prompt;
+      }
+
+      console.log(`[HeyGen] Avatar IV payload:`, JSON.stringify(payload, null, 2));
+
+      const response = await this.axiosInstance.post<any>(
+        '/video/av4/generate',
+        payload
+      );
+
+      // Handle response format: { error: null, data: { video_id: '...' } }
+      const responseData = response.data;
+      let videoId: string;
+      
+      if (responseData.error !== null && responseData.error !== undefined) {
+        throw new Error(`HeyGen Avatar IV API error: ${JSON.stringify(responseData.error)}`);
+      }
+      
+      if (responseData.data?.video_id) {
+        videoId = responseData.data.video_id;
+      } else {
+        console.error('[HeyGen] Avatar IV response:', JSON.stringify(responseData, null, 2));
+        throw new Error('Failed to get video_id from HeyGen Avatar IV API response');
+      }
+
+      console.log(`[HeyGen] Avatar IV video generation started. Video ID: ${videoId}`);
+      return { video_id: videoId };
+    } catch (error: any) {
+      console.error('[HeyGen] Avatar IV video generation error:', error.response?.data || error.message);
+      throw new Error(`Failed to generate Avatar IV video: ${error.response?.data?.msg || error.response?.data?.error?.message || error.message}`);
     }
   }
 }

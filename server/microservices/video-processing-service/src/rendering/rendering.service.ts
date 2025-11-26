@@ -24,11 +24,11 @@ export class RenderingService {
   }
 
   /**
-   * Fetch avatar details from ai-content-service or HeyGen API to get talking_photo_id
+   * Fetch avatar details from ai-content-service or HeyGen API to get talking_photo_id and imageKey
    * First tries to fetch from ai-content-service (for internal IDs) using userId.
    * If that fails with 404, tries HeyGen API as fallback.
    */
-  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string): Promise<{ providerAvatarId: string; isHeyGenId: boolean }> {
+  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string): Promise<{ providerAvatarId: string; imageKey?: string; isHeyGenId: boolean }> {
     try {
       // First, try to fetch from ai-content-service (for internal IDs)
       const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
@@ -67,8 +67,11 @@ export class RenderingService {
             throw new Error('Provider avatar ID (motion ID) not found in avatar details. Avatar may not be ready yet. Generation status: ' + (avatarData.generationStatus || 'unknown'));
           }
           
-          console.log(`[RenderingService] Found internal avatar ${avatarId}, using providerAvatarId (motion ID): ${providerAvatarId}`);
-          return { providerAvatarId, isHeyGenId: false };
+          // Get imageKey for Premium mode (Avatar IV)
+          const imageKey = avatarData.imageKey;
+          
+          console.log(`[RenderingService] Found internal avatar ${avatarId}, using providerAvatarId (motion ID): ${providerAvatarId}, imageKey: ${imageKey || 'not available'}`);
+          return { providerAvatarId, imageKey, isHeyGenId: false };
         }
       } catch (aiContentError: any) {
         // Log detailed error information for debugging
@@ -408,24 +411,50 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
-    // Fetch avatar details to get talking_photo_id
+    // Fetch avatar details to get talking_photo_id and imageKey
     const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
+    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
 
-    if (!talkingPhotoId) {
-      throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    console.log(`[RenderingService] HALF_N_HALF: Using avatar mode: ${avatarMode}`);
+
+    let videoResponse: { video_id: string };
+
+    if (avatarMode === 'PREMIUM') {
+      // Use Avatar IV API for Premium mode
+      // Note: Avatar IV generates full 9:16 portrait video, compositor will handle positioning
+      if (!imageKey) {
+        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
+      }
+      
+      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
+      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+        image_key: imageKey,
+        video_title: `Avatar Video ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait', // 9:16 is portrait
+        fit: 'cover', // Cover the screen
+      });
+    } else {
+      // Use standard Avatar API for Basic mode
+      if (!talkingPhotoId) {
+        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+      }
+      
+      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
+      // Generate avatar video with greyish background (1080x1440 for bottom half of 9:16)
+      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
+        talking_photo_id: talkingPhotoId, // Use motion avatar ID
+        audio_asset_id: audioAssetId,
+        dimension: {
+          width: 1080,
+          height: 1440, // Bottom half of 1920 (9:16)
+        },
+        caption: false,
+      });
     }
-
-    // Generate avatar video with greyish background (1080x1440 for bottom half of 9:16)
-    const videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-      talking_photo_id: talkingPhotoId, // Use motion avatar ID
-      audio_asset_id: audioAssetId,
-      dimension: {
-        width: 1080,
-        height: 1440, // Bottom half of 1920 (9:16)
-      },
-      caption: false,
-    });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
@@ -563,24 +592,48 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
-    // Fetch avatar details to get talking_photo_id
+    // Fetch avatar details to get talking_photo_id and imageKey
     const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
+    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
 
-    if (!talkingPhotoId) {
-      throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    console.log(`[RenderingService] CUTOUT: Using avatar mode: ${avatarMode}`);
+
+    let videoResponse: { video_id: string };
+
+    if (avatarMode === 'PREMIUM') {
+      // Use Avatar IV API for Premium mode
+      if (!imageKey) {
+        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
+      }
+      
+      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
+      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+        image_key: imageKey,
+        video_title: `Avatar Video ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait', // 9:16 is portrait
+        fit: 'cover', // Cover the screen
+      });
+    } else {
+      // Use standard Avatar API for Basic mode
+      if (!talkingPhotoId) {
+        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+      }
+      
+      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
+      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
+        talking_photo_id: talkingPhotoId, // Use motion avatar ID
+        audio_asset_id: audioAssetId,
+        dimension: {
+          width: 1080,
+          height: 1920, // 9:16
+        },
+        caption: false,
+      });
     }
-
-    // Generate avatar video with green background (9:16 ratio)
-    const videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-      talking_photo_id: talkingPhotoId, // Use motion avatar ID
-      audio_asset_id: audioAssetId,
-      dimension: {
-        width: 1080,
-        height: 1920, // 9:16
-      },
-      caption: false,
-    });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
@@ -740,13 +793,14 @@ export class RenderingService {
 
     await this.updateRenderingStatus(projectId, 'avatar_generating', 30);
 
-    // Fetch avatar details to get talking_photo_id
+    // Fetch avatar details to get talking_photo_id and imageKey
     const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
+    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
 
-    if (!talkingPhotoId) {
-      throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-    }
+    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    console.log(`[RenderingService] ALTERNATE: Using avatar mode: ${avatarMode}`);
 
     // Generate avatar videos for avatar scenes only (9:16 ratio)
     const avatarDir = path.join(this.uploadsDir, 'videos', userId, 'avatars');
@@ -790,15 +844,39 @@ export class RenderingService {
       const audioBuffer = fs.readFileSync(audioPath);
       const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${scene.sceneNumber}_audio.mp3`);
 
-      const videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId, // Use motion avatar ID
-        audio_asset_id: audioAssetId,
-        dimension: {
-          width: 1080,
-          height: 1920, // 9:16
-        },
-        caption: false,
-      });
+      let videoResponse: { video_id: string };
+
+      if (avatarMode === 'PREMIUM') {
+        // Use Avatar IV API for Premium mode
+        if (!imageKey) {
+          throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
+        }
+        
+        console.log(`[RenderingService] Using Avatar IV (Premium) for scene ${scene.sceneNumber} with image_key: ${imageKey}`);
+        videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+          image_key: imageKey,
+          video_title: `Avatar Video Scene ${scene.sceneNumber} - ${projectId}`,
+          audio_asset_id: audioAssetId,
+          video_orientation: 'portrait', // 9:16 is portrait
+          fit: 'cover', // Cover the screen
+        });
+      } else {
+        // Use standard Avatar API for Basic mode
+        if (!talkingPhotoId) {
+          throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+        }
+        
+        console.log(`[RenderingService] Using standard Avatar API (Basic) for scene ${scene.sceneNumber} with talking_photo_id: ${talkingPhotoId}`);
+        videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
+          talking_photo_id: talkingPhotoId, // Use motion avatar ID
+          audio_asset_id: audioAssetId,
+          dimension: {
+            width: 1080,
+            height: 1920, // 9:16
+          },
+          caption: false,
+        });
+      }
 
       console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id} for scene ${scene.sceneNumber}`);
       const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);

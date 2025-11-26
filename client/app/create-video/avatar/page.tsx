@@ -30,6 +30,9 @@ function AvatarPageContent() {
   const [selectedCategory, setSelectedCategory] = useState<AvatarCategory>('all');
   const [selectedAvatar, setSelectedAvatar] = useState<string | null>(null);
   
+  // Avatar mode selection (for library avatars)
+  const [avatarModes, setAvatarModes] = useState<Record<string, 'BASIC' | 'PREMIUM'>>({});
+  
   // Upload state
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
@@ -37,6 +40,7 @@ function AvatarPageContent() {
   const [assetId, setAssetId] = useState<string | null>(null);
   const [avatarCreationStarted, setAvatarCreationStarted] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadMode, setUploadMode] = useState<'BASIC' | 'PREMIUM'>('BASIC');
 
   const categories: AvatarCategory[] = ['all', 'professional', 'casual', 'modern'];
 
@@ -152,12 +156,13 @@ function AvatarPageContent() {
           setSelectedAvatar(response.data.avatarId);
         }
         
-        // Update project with avatar ID
+        // Update project with avatar ID and mode
         const projectIdParam = searchParams.get('projectId');
         if (projectIdParam && response.data.avatarId) {
           try {
             await apiClient.updateVideoProject(projectIdParam, {
               avatarId: response.data.avatarId,
+              avatarMode: uploadMode, // Save upload mode
             });
           } catch (error: any) {
             console.error('Failed to save avatar to project:', error);
@@ -193,6 +198,11 @@ function AvatarPageContent() {
     const projectIdParam = searchParams.get('projectId');
     let currentProjectId = projectIdParam;
     const avatarIdToUse = activeTab === 'upload' && avatarCreationStarted ? selectedAvatar || imageKey : selectedAvatar;
+    
+    // Get the selected mode for the avatar
+    const selectedMode = activeTab === 'upload' && avatarCreationStarted
+      ? uploadMode  // Use upload mode
+      : avatarModes[avatarIdToUse || ''] || 'BASIC'; // Use library mode
 
     // If no project exists, create one now
     if (!currentProjectId) {
@@ -200,6 +210,7 @@ function AvatarPageContent() {
         const createResponse = await apiClient.createVideoProject({
           videoType: 'WITH_AVATAR',
           avatarId: avatarIdToUse || undefined,
+          avatarMode: selectedMode, // Add avatarMode
           currentStep: 'SCRIPT',
         });
         
@@ -224,6 +235,7 @@ function AvatarPageContent() {
       try {
         await apiClient.updateVideoProject(currentProjectId, {
           avatarId: avatarIdToUse || undefined,
+          avatarMode: selectedMode, // Add avatarMode
           currentStep: 'SCRIPT',
         });
       } catch (error: any) {
@@ -342,11 +354,19 @@ function AvatarPageContent() {
                         ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}` 
                         : null;
                     
+                    const currentMode = avatarModes[avatar.id] || 'BASIC';
+                    
                     return (
                       <Card
                         key={avatar.id}
                         selected={selectedAvatar === avatar.id}
-                        onClick={() => setSelectedAvatar(avatar.id)}
+                        onClick={() => {
+                          setSelectedAvatar(avatar.id);
+                          // Set default mode if not set
+                          if (!avatarModes[avatar.id]) {
+                            setAvatarModes(prev => ({ ...prev, [avatar.id]: 'BASIC' }));
+                          }
+                        }}
                         className="p-6 cursor-pointer text-center relative"
                       >
                         {selectedAvatar === avatar.id && (
@@ -367,7 +387,42 @@ function AvatarPageContent() {
                           />
                         ) : null}
                         {!imageUrl && <User className="w-12 h-12 mx-auto mb-2" />}
-                        <p className="font-medium text-sm">{avatar.name}</p>
+                        <p className="font-medium text-sm mb-2">{avatar.name}</p>
+                        
+                        {/* Basic/Premium Toggle - Only show when avatar is selected */}
+                        {selectedAvatar === avatar.id && (
+                          <div className="mt-2 flex gap-2 justify-center" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAvatarModes(prev => ({ ...prev, [avatar.id]: 'BASIC' }));
+                              }}
+                              className={cn(
+                                'px-3 py-1 text-xs rounded-full font-medium transition-colors',
+                                currentMode === 'BASIC'
+                                  ? 'bg-primary text-secondary'
+                                  : 'bg-secondary border border-border text-text-primary hover:bg-border hover:text-text-secondary'
+                              )}
+                            >
+                              Basic
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAvatarModes(prev => ({ ...prev, [avatar.id]: 'PREMIUM' }));
+                              }}
+                              className={cn(
+                                'px-3 py-1 text-xs rounded-full font-medium transition-colors',
+                                currentMode === 'PREMIUM'
+                                  ? 'bg-primary text-secondary'
+                                  : 'bg-secondary border border-border text-text-primary hover:bg-border hover:text-text-secondary'
+                              )}
+                            >
+                              Premium
+                            </button>
+                          </div>
+                        )}
+                        
                         {avatar.generationStatus && avatar.generationStatus !== 'COMPLETED' && (
                           <span className="text-xs text-text-muted mt-1 block">
                             {avatar.generationStatus === 'PENDING' && 'Pending...'}
@@ -420,6 +475,36 @@ function AvatarPageContent() {
                         </div>
                       </div>
                     )}
+                    
+                    {/* Basic/Premium Selection for Upload */}
+                    <div className="mb-4">
+                      <p className="text-sm font-medium mb-2 text-center">Select Avatar Mode:</p>
+                      <div className="flex gap-2 justify-center">
+                        <button
+                          onClick={() => setUploadMode('BASIC')}
+                          className={cn(
+                            'px-4 py-2 text-sm rounded-full font-medium transition-colors',
+                            uploadMode === 'BASIC'
+                              ? 'bg-primary text-secondary'
+                              : 'bg-secondary border border-border text-text-primary hover:bg-border hover:text-text-secondary'
+                          )}
+                        >
+                          Basic
+                        </button>
+                        <button
+                          onClick={() => setUploadMode('PREMIUM')}
+                          className={cn(
+                            'px-4 py-2 text-sm rounded-full font-medium transition-colors',
+                            uploadMode === 'PREMIUM'
+                              ? 'bg-primary text-secondary'
+                              : 'bg-secondary border border-border text-text-primary hover:bg-border hover:text-text-secondary'
+                          )}
+                        >
+                          Premium
+                        </button>
+                      </div>
+                    </div>
+                    
                     <div className="mb-4 p-3 bg-green-100 rounded-lg">
                       <p className="text-sm text-green-800">
                         ✓ Image uploaded to HeyGen<br/>
