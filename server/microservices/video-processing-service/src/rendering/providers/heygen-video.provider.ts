@@ -77,6 +77,38 @@ export class HeyGenVideoProvider {
       },
       timeout: 60000,
     });
+
+    // Add error interceptors to handle EPIPE and socket errors
+    this.setupErrorHandlers();
+  }
+
+  /**
+   * Setup error handlers for axios instance to prevent EPIPE errors from crashing the process
+   */
+  private setupErrorHandlers(): void {
+    // Request interceptor
+    this.axiosInstance.interceptors.request.use(
+      (config) => config,
+      (error) => {
+        console.error(`[HeyGenVideoProvider] Request error: ${error.message}`);
+        return Promise.reject(error);
+      }
+    );
+
+    // Response interceptor
+    this.axiosInstance.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        // Handle EPIPE and socket errors gracefully
+        if (error.code === 'EPIPE' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
+          console.warn(`[HeyGenVideoProvider] Connection error (${error.code}): ${error.message}`);
+          // Return a more descriptive error instead of crashing
+          return Promise.reject(new Error(`HeyGen API connection failed: ${error.message}`));
+        }
+        console.error(`[HeyGenVideoProvider] Response error: ${error.message}`);
+        return Promise.reject(error);
+      }
+    );
   }
 
   /**
@@ -356,7 +388,15 @@ export class HeyGenVideoProvider {
           console.log(`[HeyGen] Video downloaded successfully to ${outputPath}`);
           resolve(outputPath);
         });
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
+        // Handle response stream errors (EPIPE, connection closed, etc.)
+        response.data.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
       });
     } catch (error: any) {
       console.error(`[HeyGen] Failed to download video:`, error.message);

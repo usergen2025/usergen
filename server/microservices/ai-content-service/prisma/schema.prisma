@@ -26,6 +26,7 @@ model Avatar {
   avatarUrl         String?       // Final avatar URL from HeyGen
   originalImageUrl  String?       // Uploaded image URL
   imageKey          String?       // HeyGen image_key from upload
+  transparentImageKey String?     // HeyGen image_key for transparent background version
   
   // Metadata
   category          AvatarCategory?

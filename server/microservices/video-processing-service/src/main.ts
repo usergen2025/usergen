@@ -68,6 +68,35 @@ async function bootstrap() {
     res.status(200).json({ status: 'ok', service: 'video-processing-service', timestamp: new Date().toISOString(), uptime: process.uptime() });
   });
 
+  // Global error handlers for unhandled errors (EPIPE, socket errors, etc.)
+  process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+    // Ignore EPIPE errors as they're handled by axios interceptors
+    if (reason?.code === 'EPIPE' || reason?.code === 'ECONNRESET' || reason?.code === 'ECONNABORTED') {
+      console.warn(`[Bootstrap] Unhandled rejection (${reason.code}): ${reason.message}`);
+      return;
+    }
+    console.error(`[Bootstrap] Unhandled Rejection: ${reason}`, reason?.stack);
+  });
+
+  process.on('uncaughtException', (error: Error) => {
+    // Ignore EPIPE errors as they're handled by axios interceptors
+    if (error.message?.includes('EPIPE') || error.message?.includes('ECONNRESET') || error.message?.includes('ECONNABORTED')) {
+      console.warn(`[Bootstrap] Uncaught Exception (connection error): ${error.message}`);
+      return;
+    }
+    console.error(`[Bootstrap] Uncaught Exception: ${error.message}`, error.stack);
+    // Don't exit on uncaught exceptions - let NestJS handle it
+  });
+
+  // Handle socket errors globally
+  process.on('error', (error: Error) => {
+    if (error.message?.includes('EPIPE') || error.message?.includes('ECONNRESET') || error.message?.includes('ECONNABORTED')) {
+      console.warn(`[Bootstrap] Process error (connection error): ${error.message}`);
+      return;
+    }
+    console.error(`[Bootstrap] Process error: ${error.message}`, error.stack);
+  });
+
   await app.listen(port);
   console.log(`🚀 Video Processing Service running on port ${port}`);
   console.log(`📄 Swagger JSON available at http://localhost:${port}/api/docs-json`);

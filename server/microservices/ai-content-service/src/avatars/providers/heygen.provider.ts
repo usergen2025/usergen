@@ -96,6 +96,62 @@ export class HeyGenProvider {
       },
       timeout: 30000,
     });
+
+    // Add error interceptors to handle EPIPE and socket errors
+    this.setupErrorHandlers();
+  }
+
+  /**
+   * Setup error handlers for axios instances to prevent EPIPE errors from crashing the process
+   */
+  private setupErrorHandlers(): void {
+    // Request interceptor for upload client
+    this.uploadClient.interceptors.request.use(
+      (config) => config,
+      (error) => {
+        this.logger.error(`Upload client request error: ${error.message}`, error.stack);
+        return Promise.reject(error);
+      }
+    );
+
+    // Response interceptor for upload client
+    this.uploadClient.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        // Handle EPIPE and socket errors gracefully
+        if (error.code === 'EPIPE' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
+          this.logger.warn(`Upload client connection error (${error.code}): ${error.message}`);
+          // Return a more descriptive error instead of crashing
+          return Promise.reject(new Error(`Upload connection failed: ${error.message}`));
+        }
+        this.logger.error(`Upload client response error: ${error.message}`, error.stack);
+        return Promise.reject(error);
+      }
+    );
+
+    // Request interceptor for API client
+    this.apiClient.interceptors.request.use(
+      (config) => config,
+      (error) => {
+        this.logger.error(`API client request error: ${error.message}`, error.stack);
+        return Promise.reject(error);
+      }
+    );
+
+    // Response interceptor for API client
+    this.apiClient.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        // Handle EPIPE and socket errors gracefully
+        if (error.code === 'EPIPE' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
+          this.logger.warn(`API client connection error (${error.code}): ${error.message}`);
+          // Return a more descriptive error instead of crashing
+          return Promise.reject(new Error(`API connection failed: ${error.message}`));
+        }
+        this.logger.error(`API client response error: ${error.message}`, error.stack);
+        return Promise.reject(error);
+      }
+    );
   }
 
   /**

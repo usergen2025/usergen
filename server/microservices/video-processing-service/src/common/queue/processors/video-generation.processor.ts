@@ -8,6 +8,7 @@ import { VideoProviderFactory } from '../../../rendering/providers/video-provide
 import { ModelRegistryService } from '../../../rendering/providers/model-registry.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
+import { VideoCompositorProvider } from '../../../rendering/providers/video-compositor.provider';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
@@ -36,6 +37,7 @@ export class VideoGenerationProcessor extends WorkerHost {
     private readonly videoProviderFactory: VideoProviderFactory,
     private readonly modelRegistry: ModelRegistryService,
     private readonly jobStatusGateway: JobStatusGateway,
+    private readonly videoCompositor: VideoCompositorProvider,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -109,20 +111,32 @@ export class VideoGenerationProcessor extends WorkerHost {
       let videoResolution: string = '1080p';
       
       if (project.style === 'HALF_N_HALF') {
-        // For half-n-half, b-roll videos should be 3:4 ratio (1080x1440 for top half)
-        videoRatio = '3:4';
-        videoResolution = '1080p'; // Results in 1080x1440
+        // For half-n-half, b-roll videos should be 1080x960 (top half)
+        if (model.platform === 'BYTEPLUS') {
+          // Use adaptive for BytePlus/Seedance - will auto-detect from image
+          videoRatio = 'adaptive';
+        } else if (model.platform === 'FAL') {
+          // FAL doesn't support 3:4 or adaptive, use 1:1 then scale to 1080x960
+          videoRatio = '1:1';
+        } else {
+          // Fallback for other platforms
+          videoRatio = '3:4';
+        }
+        videoResolution = '1080p';
       } else if (project.style === 'AVATAR_CUTOUT' || project.style === 'ALTERNATE') {
         // For cutout and alternate, b-roll videos should be 9:16 ratio
         videoRatio = '9:16';
         videoResolution = '1080p'; // Results in 1080x1920
       }
 
-      // Adjust aspect ratio for FAL (only supports 16:9 and 9:16)
+      // Adjust aspect ratio for FAL (only supports 16:9 and 9:16, and 1:1)
       if (model.platform === 'FAL') {
-        if (videoRatio === '3:4') {
-          // FAL doesn't support 3:4, use 9:16 as closest
-          videoRatio = '9:16';
+        if (videoRatio === '3:4' || videoRatio === 'adaptive') {
+          // For HALF_N_HALF, we already set to 1:1 above
+          // For other cases, use 9:16 as closest
+          if (project.style !== 'HALF_N_HALF') {
+            videoRatio = '9:16';
+          }
         }
       }
 
@@ -185,8 +199,24 @@ export class VideoGenerationProcessor extends WorkerHost {
       }
 
       const videoFilename = `broll_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`;
-      const videoPath = path.join(userDir, videoFilename);
+      let videoPath = path.join(userDir, videoFilename);
       await this.downloadVideo(videoResponse.videoUrl, videoPath);
+
+      // For HALF_N_HALF style, verify and scale video to 1080x960 if needed
+      if (project.style === 'HALF_N_HALF') {
+        const videoRes = await this.videoCompositor.getVideoResolution(videoPath);
+        if (videoRes && (videoRes.width !== 1080 || videoRes.height !== 960)) {
+          console.log(`[VideoGenerationProcessor] HALF_N_HALF: Scaling video from ${videoRes.width}x${videoRes.height} to 1080x960`);
+          const scaledPath = videoPath.replace('.mp4', '_scaled.mp4');
+          await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 960);
+          // Replace original with scaled version
+          fs.unlinkSync(videoPath);
+          fs.renameSync(scaledPath, videoPath);
+          console.log(`[VideoGenerationProcessor] HALF_N_HALF: Video scaled successfully to 1080x960`);
+        } else if (videoRes) {
+          console.log(`[VideoGenerationProcessor] HALF_N_HALF: Video already at correct dimensions ${videoRes.width}x${videoRes.height}`);
+        }
+      }
 
       await job.updateProgress(90);
 
@@ -295,7 +325,15 @@ export class VideoGenerationProcessor extends WorkerHost {
           console.log(`[VideoGenerationProcessor] Video downloaded successfully to ${outputPath}`);
           resolve(outputPath);
         });
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
+        // Handle response stream errors (EPIPE, connection closed, etc.)
+        response.data.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
       });
     } catch (error: any) {
       console.error(`[VideoGenerationProcessor] Failed to download video:`, error.message);

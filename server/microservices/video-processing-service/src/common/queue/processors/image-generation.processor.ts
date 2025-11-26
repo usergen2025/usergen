@@ -262,7 +262,15 @@ export class ImageGenerationProcessor extends WorkerHost {
           console.log(`[ImageGenerationProcessor] Image downloaded successfully to ${outputPath}`);
           resolve(outputPath);
         });
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
+        // Handle response stream errors (EPIPE, connection closed, etc.)
+        response.data.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
       });
     } catch (error: any) {
       console.error(`[ImageGenerationProcessor] Failed to download image:`, error.message);

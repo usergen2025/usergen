@@ -60,6 +60,50 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled, getMod
     return parent as HTMLElement | null;
   };
 
+  // Helper function to calculate dropdown position with viewport overflow detection
+  const calculateDropdownPosition = (element: HTMLElement): { top: number; left: number; width: number } => {
+    const rect = element.getBoundingClientRect();
+    
+    // Estimate dropdown height
+    // Header section: "Select Model" text (~32px) + border (~1px) + padding (~16px) = ~49px
+    // Each model item: ~40px (py-2 = 8px top + 8px bottom + text line height ~24px)
+    // Bottom padding: ~8px
+    const headerHeight = 49;
+    const itemHeight = 40;
+    const bottomPadding = 8;
+    const estimatedDropdownHeight = headerHeight + (models.length * itemHeight) + bottomPadding;
+    
+    // Check if dropdown would overflow below viewport
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const wouldOverflowBelow = (rect.bottom + 5 + estimatedDropdownHeight) > window.innerHeight;
+    
+    // Position above if it would overflow below AND there's more space above
+    // Also position above if space below is less than estimated height
+    const shouldPositionAbove = wouldOverflowBelow && (spaceAbove >= estimatedDropdownHeight + 5);
+    
+    const top = shouldPositionAbove 
+      ? rect.top - estimatedDropdownHeight - 5  // 5px above button top
+      : rect.bottom + 5;  // 5px below button bottom (default)
+    
+    console.log('[ModelSelector] Position calculation:', {
+      wouldOverflowBelow,
+      shouldPositionAbove,
+      spaceBelow,
+      spaceAbove,
+      estimatedDropdownHeight,
+      top,
+      rectBottom: rect.bottom,
+      viewportHeight: window.innerHeight,
+    });
+    
+    return {
+      top,
+      left: rect.left,
+      width: rect.width,
+    };
+  };
+
   useEffect(() => {
     // Fetch models from API (non-blocking - fallback models already set)
     setLoading(true);
@@ -89,20 +133,13 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled, getMod
         const container = getParentContainer();
         const element = container || buttonRef.current;
         if (element) {
-          const rect = element.getBoundingClientRect();
-          // Use viewport coordinates directly (getBoundingClientRect returns viewport-relative)
-          // No need to add scroll offsets since position: fixed is viewport-relative
-          const newPosition = {
-            top: rect.bottom + 5, // 5px gap below container
-            left: rect.left, // Align to left edge of entire split button container
-            width: rect.width, // Use container's full width
-          };
-          console.log('[ModelSelector] Position calculated:', newPosition, 'Container rect:', rect);
+          const newPosition = calculateDropdownPosition(element);
+          console.log('[ModelSelector] Position calculated:', newPosition, 'Container rect:', element.getBoundingClientRect());
           setDropdownPosition(newPosition);
         }
       });
     }
-  }, [isOpen]);
+  }, [isOpen, models.length]);
 
   // Close dropdown when clicking outside - use click event with flag to avoid race condition
   useEffect(() => {
@@ -146,14 +183,8 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled, getMod
       const container = getParentContainer();
       const element = container || buttonRef.current;
       if (element) {
-        const rect = element.getBoundingClientRect();
-        // Use viewport coordinates directly (getBoundingClientRect returns viewport-relative)
-        // No need to add scroll offsets since position: fixed is viewport-relative
-        setDropdownPosition({
-          top: rect.bottom + 5, // 5px gap below container
-          left: rect.left, // Align to left edge of entire split button container
-          width: rect.width, // Use container's full width
-        });
+        const newPosition = calculateDropdownPosition(element);
+        setDropdownPosition(newPosition);
       }
     };
 
@@ -164,7 +195,7 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled, getMod
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [isOpen]);
+  }, [isOpen, models.length]);
 
   const handleModelSelect = (modelId: string) => {
     console.log('[ModelSelector] Model selected:', modelId);
@@ -195,15 +226,8 @@ export function ModelSelector({ selectedModelId, onModelSelect, disabled, getMod
     const container = getParentContainer();
     const element = container || buttonRef.current;
     if (element) {
-      const rect = element.getBoundingClientRect();
-      // Use viewport coordinates directly (getBoundingClientRect returns viewport-relative)
-      // No need to add scroll offsets since position: fixed is viewport-relative
-      const newPosition = {
-        top: rect.bottom + 5, // 5px gap below container
-        left: rect.left, // Align to left edge of entire split button container
-        width: rect.width, // Use container's full width
-      };
-      console.log('[ModelSelector] Pre-calculated position:', newPosition, 'Container rect:', rect);
+      const newPosition = calculateDropdownPosition(element);
+      console.log('[ModelSelector] Pre-calculated position:', newPosition, 'Container rect:', element.getBoundingClientRect());
       setDropdownPosition(newPosition);
     }
 

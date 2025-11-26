@@ -19,7 +19,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import * as fs from 'fs';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiConsumes, ApiBody, ApiParam } from '@nestjs/swagger';
 import { AvatarsService } from './avatars.service';
 import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
@@ -336,7 +336,65 @@ export class AvatarsController {
     return {
       success: true,
       data: job,
-    };
+      };
+    }
+
+    @Post(':id/create-transparent')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Create transparent background version of avatar' })
+    @ApiParam({ name: 'id', description: 'Avatar ID' })
+    @ApiResponse({
+      status: 200,
+      description: 'Transparent version created successfully',
+      schema: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean', example: true },
+          data: {
+            type: 'object',
+            properties: {
+              imageKey: { type: 'string' },
+              assetId: { type: 'string' },
+            },
+          },
+          message: { type: 'string' },
+        },
+      },
+    })
+    async createTransparentVersion(@Param('id') id: string, @Request() req: any) {
+      const userId = this.extractUserIdFromToken(req);
+      
+      if (!userId) {
+        throw new HttpException(
+          {
+            success: false,
+            error: 'Unauthorized',
+            code: 'UNAUTHORIZED',
+          },
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+
+      // Verify avatar belongs to user
+      const avatar = await this.avatarsService.getAvatarById(id, userId);
+      if (!avatar) {
+        throw new HttpException(
+          {
+            success: false,
+            error: 'Avatar not found',
+            code: 'AVATAR_NOT_FOUND',
+          },
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      
+      const result = await this.avatarsService.createTransparentAvatarVersion(id);
+      
+      return {
+        success: true,
+        data: result,
+        message: 'Transparent version created successfully',
+      };
+    }
   }
-}
 

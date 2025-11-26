@@ -177,17 +177,23 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
     // BytePlus uses "WxH" format like "1080x1920" or "1K", "2K", "4K"
     let size: string | undefined;
     
-    if (request.resolution) {
+    // For HALF_N_HALF (3:4 aspect ratio), always use direct dimensions, ignore resolution
+    // This ensures we get exactly 1080x960 instead of letting resolution override it
+    if (request.aspectRatio === '3:4') {
+      // Force 1080x960 for HALF_N_HALF regardless of resolution
+      size = '1080x960';
+      console.log(`[BytePlusProvider] HALF_N_HALF detected (3:4), forcing size to 1080x960 (ignoring resolution: ${request.resolution})`);
+    } else if (request.resolution) {
       // If resolution is specified, use it directly
       size = request.resolution;
     } else if (request.aspectRatio) {
       // Map aspect ratio to dimensions
       const sizeMap: Record<string, string> = {
         '9:16': '1080x1920',
-        '3:4': '1080x1440',
         '16:9': '1920x1080',
         '1:1': '1080x1080',
         '4:3': '1440x1080',
+        'HALF_N_HALF_TOP': '1080x960', // Explicit for HALF_N_HALF top half
       };
       size = sizeMap[request.aspectRatio] || '1080x1920';
     } else {
@@ -517,7 +523,15 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
           console.log(`[BytePlus] Video downloaded successfully to ${outputPath}`);
           resolve(outputPath);
         });
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
+        // Handle response stream errors (EPIPE, connection closed, etc.)
+        response.data.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
       });
     } catch (error: any) {
       console.error(`[BytePlus] Failed to download video:`, error.message);
@@ -547,7 +561,15 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
           console.log(`[BytePlus] Image downloaded successfully to ${outputPath}`);
           resolve(outputPath);
         });
-        writer.on('error', reject);
+        writer.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
+        // Handle response stream errors (EPIPE, connection closed, etc.)
+        response.data.on('error', (err) => {
+          writer.destroy();
+          reject(err);
+        });
       });
     } catch (error: any) {
       console.error(`[BytePlus] Failed to download image:`, error.message);
@@ -633,7 +655,7 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       supportsAspectRatio: true,
       supportsResolution: true,
       supportsDuration: true,
-      supportedAspectRatios: ['9:16', '3:4', '16:9', '1:1', '4:3'],
+      supportedAspectRatios: ['9:16', '3:4', '16:9', '1:1', '4:3', 'adaptive'], // Added 'adaptive' for Seedance
       supportedResolutions: ['720p', '1080p'],
       minDuration: 2,
       isAsync: true, // BytePlus uses async polling

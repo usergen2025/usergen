@@ -27,8 +27,9 @@ export class RenderingService {
    * Fetch avatar details from ai-content-service or HeyGen API to get talking_photo_id and imageKey
    * First tries to fetch from ai-content-service (for internal IDs) using userId.
    * If that fails with 404, tries HeyGen API as fallback.
+   * @param useTransparent If true, will fetch/create transparent imageKey for CUTOUT mode
    */
-  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string): Promise<{ providerAvatarId: string; imageKey?: string; isHeyGenId: boolean }> {
+  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string, useTransparent: boolean = false): Promise<{ providerAvatarId: string; imageKey?: string; isHeyGenId: boolean }> {
     try {
       // First, try to fetch from ai-content-service (for internal IDs)
       const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
@@ -68,7 +69,45 @@ export class RenderingService {
           }
           
           // Get imageKey for Premium mode (Avatar IV)
-          const imageKey = avatarData.imageKey;
+          // For CUTOUT mode, use transparent imageKey if available
+          let imageKey = avatarData.imageKey;
+          
+          if (useTransparent) {
+            console.log(`[RenderingService] CUTOUT mode: Checking for transparent imageKey...`);
+            
+            // Check if transparent version exists
+            if (avatarData.transparentImageKey) {
+              imageKey = avatarData.transparentImageKey;
+              console.log(`[RenderingService] CUTOUT mode: Using existing transparent imageKey: ${imageKey}`);
+            } else {
+              // Create transparent version on-demand
+              console.log(`[RenderingService] CUTOUT mode: Transparent version not found, creating on-demand...`);
+              try {
+                const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
+                const headers: Record<string, string> = {};
+                if (authToken) {
+                  headers.Authorization = authToken.startsWith('Bearer ') ? authToken : `Bearer ${authToken}`;
+                }
+                
+                const transparentResponse = await axios.post(
+                  `${aiContentServiceUrl}/api/avatars/${avatarId}/create-transparent`,
+                  {},
+                  { headers }
+                );
+                
+                if (transparentResponse.data?.success && transparentResponse.data?.data?.imageKey) {
+                  imageKey = transparentResponse.data.data.imageKey;
+                  console.log(`[RenderingService] CUTOUT mode: ✅ Transparent version created successfully. ImageKey: ${imageKey}`);
+                } else {
+                  console.warn(`[RenderingService] CUTOUT mode: ⚠️  Failed to create transparent version, using original imageKey`);
+                }
+              } catch (transparentError: any) {
+                console.error(`[RenderingService] CUTOUT mode: ❌ Failed to create transparent version: ${transparentError.message}`);
+                console.warn(`[RenderingService] CUTOUT mode: ⚠️  Using original imageKey (video may have background)`);
+                // Fall back to original imageKey
+              }
+            }
+          }
           
           console.log(`[RenderingService] Found internal avatar ${avatarId}, using providerAvatarId (motion ID): ${providerAvatarId}, imageKey: ${imageKey || 'not available'}`);
           return { providerAvatarId, imageKey, isHeyGenId: false };
@@ -444,13 +483,13 @@ export class RenderingService {
       }
       
       console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
-      // Generate avatar video with greyish background (1080x1440 for bottom half of 9:16)
+      // Generate avatar video with greyish background (1080x960 for bottom half - direct dimension, no scaling needed)
       videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
         talking_photo_id: talkingPhotoId, // Use motion avatar ID
         audio_asset_id: audioAssetId,
         dimension: {
           width: 1080,
-          height: 1440, // Bottom half of 1920 (9:16)
+          height: 960, // Direct bottom half dimension (no scaling needed)
         },
         caption: false,
       });
@@ -511,9 +550,11 @@ export class RenderingService {
   /**
    * Process CUTOUT style:
    * - Stitch all audios together
-   * - Generate one avatar video from full audio with green background
+   * - Generate one avatar video from full audio (with or without green background)
    * - Stitch all b-roll videos together
-   * - Overlay avatar video on stitched b-roll (bottom center, max 40% height, remove green background)
+   * - Overlay avatar video on stitched b-roll (bottom center, max 40% height, remove background)
+   *   - Uses AI background removal for non-green backgrounds (works for both Basic and Premium avatars)
+   *   - Falls back to chroma key if green screen is detected or AI removal fails
    * - Final 9:16 video
    */
   private async processCutout(
@@ -593,13 +634,14 @@ export class RenderingService {
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
     // Fetch avatar details to get talking_photo_id and imageKey
-    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
+    // For CUTOUT mode, use transparent imageKey if available (creates on-demand if needed)
+    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, true); // useTransparent=true for CUTOUT
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
-    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
+    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV) - will be transparentImageKey for CUTOUT
 
     // Get avatar mode (BASIC or PREMIUM) - default to BASIC
     const avatarMode = (project.avatarMode as string) || 'BASIC';
-    console.log(`[RenderingService] CUTOUT: Using avatar mode: ${avatarMode}`);
+    console.log(`[RenderingService] CUTOUT: Using avatar mode: ${avatarMode}, imageKey: ${imageKey ? 'available' : 'not available'}`);
 
     let videoResponse: { video_id: string };
 
@@ -649,6 +691,47 @@ export class RenderingService {
 
     const avatarVideoPath = path.join(avatarDir, `avatar_full_${projectId}_${Date.now()}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+
+    // Check if video has transparent background, if not remove it
+    let finalAvatarVideoPath = avatarVideoPath;
+    console.log(`[RenderingService] CUTOUT: Checking if avatar video has transparent background...`);
+    const hasTransparency = await this.videoCompositor.hasAlphaChannel(avatarVideoPath);
+
+    if (!hasTransparency) {
+      console.log(`[RenderingService] CUTOUT: Avatar video doesn't have transparency, removing background using AI...`);
+      await this.updateRenderingStatus(projectId, 'avatar_generating', 65);
+      
+      try {
+        // Remove background from video using AI
+        const transparentVideoPath = path.join(avatarDir, `avatar_transparent_${projectId}_${Date.now()}.mp4`);
+        await this.videoCompositor.removeBackgroundAI(
+          avatarVideoPath,
+          transparentVideoPath,
+          'u2net_human_seg'
+        );
+        
+        finalAvatarVideoPath = transparentVideoPath;
+        
+        // Cleanup original video if background removal succeeded
+        if (fs.existsSync(avatarVideoPath) && avatarVideoPath !== transparentVideoPath) {
+          try {
+            fs.unlinkSync(avatarVideoPath);
+            console.log(`[RenderingService] CUTOUT: Cleaned up original avatar video`);
+          } catch (e) {
+            console.warn(`[RenderingService] CUTOUT: Failed to cleanup original avatar video: ${e}`);
+          }
+        }
+        
+        console.log(`[RenderingService] CUTOUT: ✅ Background removed successfully, using transparent video`);
+      } catch (bgRemovalError: any) {
+        console.error(`[RenderingService] CUTOUT: ❌ Background removal failed: ${bgRemovalError.message}`);
+        console.log(`[RenderingService] CUTOUT: ⚠️  Using original video (may have background)`);
+        // Continue with original video if background removal fails
+        finalAvatarVideoPath = avatarVideoPath;
+      }
+    } else {
+      console.log(`[RenderingService] CUTOUT: ✅ Avatar video already has transparent background`);
+    }
 
     await this.updateRenderingStatus(projectId, 'stitching_broll', 60);
 
@@ -713,13 +796,17 @@ export class RenderingService {
 
     await this.updateRenderingStatus(projectId, 'overlaying', 80);
 
-    // Overlay avatar video on stitched b-roll (bottom center, max 40% height, remove green background)
+    // Overlay avatar video on stitched b-roll (bottom center, max 40% height, remove background)
+    // For CUTOUT mode, always use AI background removal (works for both Basic and Premium avatars)
+    // Use finalAvatarVideoPath which may have been processed to remove background
     const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+    console.log(`[RenderingService] CUTOUT: Overlaying avatar video on b-roll...`);
     await this.videoCompositor.overlayAvatarOnBroll(
       stitchedBrollWithAudioPath,
-      avatarVideoPath,
+      finalAvatarVideoPath, // Use processed video (with transparency if available)
       finalVideoPath,
-      40 // Max 40% height
+      40, // Max 40% height
+      true // useAIBackgroundRemoval: Always use AI removal for CUTOUT mode
     );
 
     // Calculate total duration

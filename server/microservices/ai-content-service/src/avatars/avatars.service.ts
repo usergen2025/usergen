@@ -4,6 +4,9 @@ import { DatabaseService } from '../common/database/database.service';
 import { LoggerService } from '../common/logger/logger.service';
 import { HeyGenProvider } from './providers/heygen.provider';
 import { Prisma } from '@prisma/client';
+import * as fs from 'fs';
+import * as path from 'path';
+import { execSync } from 'child_process';
 
 export interface UploadImageDto {
   imageBuffer: Buffer;
@@ -201,6 +204,18 @@ export class AvatarsService {
                 assetId,
               },
             },
+          });
+
+          // Create transparent version in background (async, don't wait)
+          // This will be used for CUTOUT mode video generation
+          this.createTransparentAvatarVersion(avatarId).catch((error) => {
+            // Ignore EPIPE and connection errors as they're handled by axios interceptors
+            if (error?.code === 'EPIPE' || error?.code === 'ECONNRESET' || error?.code === 'ECONNABORTED') {
+              this.logger.warn(`[TransparentAvatar] Connection error during transparent version creation (${error.code}): ${error.message}`, 'AvatarsService');
+            } else {
+              this.logger.warn(`[TransparentAvatar] Failed to create transparent version during avatar creation: ${error.message}`, 'AvatarsService');
+            }
+            // Don't fail avatar creation if transparent version fails
           });
 
           await this.databaseService.avatarGenerationJob.update({
@@ -653,6 +668,182 @@ export class AvatarsService {
     } catch (error: any) {
       this.logger.error(`Failed to get library avatars: ${error.message}`, error.stack, 'AvatarsService');
       throw error;
+    }
+  }
+
+  /**
+   * Create transparent background version of avatar image
+   * Removes background using AI and uploads to HeyGen
+   * Uses database locking to prevent concurrent processing
+   */
+  async createTransparentAvatarVersion(avatarId: string): Promise<{ imageKey: string; assetId: string }> {
+    try {
+      this.logger.log(`[TransparentAvatar] Starting transparent version creation for avatar ${avatarId}`, 'AvatarsService');
+      
+      // Use transaction with locking to prevent concurrent processing
+      const result = await this.databaseService.$transaction(async (tx) => {
+        const avatar = await tx.avatar.findUnique({
+          where: { id: avatarId },
+        });
+
+        if (!avatar) {
+          throw new NotFoundException(`Avatar ${avatarId} not found`);
+        }
+
+        // Check if transparent version already exists
+        const avatarWithTransparent = avatar as any; // Type assertion for new field
+        if (avatarWithTransparent.transparentImageKey) {
+          this.logger.log(`[TransparentAvatar] Transparent version already exists for avatar ${avatarId}`, 'AvatarsService');
+          const metadata = (avatar.generationMetadata as any) || {};
+          return {
+            imageKey: avatarWithTransparent.transparentImageKey,
+            assetId: metadata.transparentAssetId || '',
+          };
+        }
+
+        // Check if currently being processed (by checking metadata)
+        const metadata = (avatar.generationMetadata as any) || {};
+        if (metadata.transparentProcessing === true) {
+          this.logger.log(`[TransparentAvatar] Transparent version is already being processed for avatar ${avatarId}`, 'AvatarsService');
+          throw new BadRequestException('Transparent version is already being processed. Please wait.');
+        }
+
+        // Mark as processing
+        await tx.avatar.update({
+          where: { id: avatarId },
+          data: {
+            generationMetadata: {
+              ...metadata,
+              transparentProcessing: true,
+            },
+          },
+        });
+
+        return { avatar, metadata };
+      }, {
+        isolationLevel: 'Serializable', // Highest isolation to prevent concurrent updates
+      });
+
+      // If result has imageKey, it means it already existed
+      if ('imageKey' in result) {
+        return result as { imageKey: string; assetId: string };
+      }
+
+      const { avatar, metadata } = result as { avatar: any; metadata: any };
+
+      try {
+        if (!avatar.originalImageUrl) {
+          throw new Error('Original image URL not found. Cannot create transparent version.');
+        }
+
+        // Get absolute path to original image
+        const imagePath = path.join(process.cwd(), avatar.originalImageUrl.replace(/^\/uploads\//, 'uploads/'));
+        if (!fs.existsSync(imagePath)) {
+          throw new Error(`Original image file not found: ${imagePath}`);
+        }
+
+        this.logger.log(`[TransparentAvatar] Removing background from image: ${imagePath}`, 'AvatarsService');
+
+        // Remove background using Python script
+        const transparentImagePath = imagePath.replace(/\.(jpg|jpeg|png)$/i, '_transparent.png');
+        await this.removeImageBackground(imagePath, transparentImagePath);
+
+        // Read transparent image buffer
+        const transparentImageBuffer = fs.readFileSync(transparentImagePath);
+
+        this.logger.log(`[TransparentAvatar] Uploading transparent image to HeyGen...`, 'AvatarsService');
+
+        // Upload transparent image to HeyGen
+        let uploadResponse;
+        try {
+          uploadResponse = await this.heygenProvider.uploadImage(
+            transparentImageBuffer,
+            'image/png', // PNG preserves alpha channel
+            `transparent_${avatar.name}.png`
+          );
+        } catch (error: any) {
+          // Handle connection errors gracefully
+          if (error?.code === 'EPIPE' || error?.code === 'ECONNRESET' || error?.code === 'ECONNABORTED') {
+            this.logger.warn(`[TransparentAvatar] Connection error during upload (${error.code}): ${error.message}`, 'AvatarsService');
+            throw new Error(`Upload connection failed: ${error.message}`);
+          }
+          throw error;
+        }
+
+        if (!uploadResponse.image_key) {
+          throw new Error('Failed to get image_key from HeyGen upload');
+        }
+
+        this.logger.log(`[TransparentAvatar] Transparent image uploaded. Image key: ${uploadResponse.image_key}`, 'AvatarsService');
+
+        // Update avatar with transparent imageKey
+        await this.databaseService.avatar.update({
+          where: { id: avatarId },
+          data: {
+            transparentImageKey: uploadResponse.image_key as any, // Type assertion for new field
+            generationMetadata: {
+              ...metadata,
+              transparentAssetId: uploadResponse.id,
+              transparentProcessing: false, // Mark as completed
+            },
+          } as any,
+        });
+
+        // Cleanup temporary file
+        if (fs.existsSync(transparentImagePath)) {
+          fs.unlinkSync(transparentImagePath);
+        }
+
+        this.logger.log(`[TransparentAvatar] ✅ Transparent version created successfully for avatar ${avatarId}`, 'AvatarsService');
+        
+        return {
+          imageKey: uploadResponse.image_key,
+          assetId: uploadResponse.id,
+        };
+      } catch (error: any) {
+        // Remove processing flag on error
+        await this.databaseService.avatar.update({
+          where: { id: avatarId },
+          data: {
+            generationMetadata: {
+              ...metadata,
+              transparentProcessing: false,
+            },
+          },
+        });
+        throw error;
+      }
+    } catch (error: any) {
+      this.logger.error(`[TransparentAvatar] Failed to create transparent version: ${error.message}`, error.stack, 'AvatarsService');
+      throw error;
+    }
+  }
+
+  /**
+   * Remove background from image using Python script
+   */
+  private async removeImageBackground(inputPath: string, outputPath: string): Promise<void> {
+    const scriptPath = path.join(process.cwd(), 'scripts', 'remove_image_background.py');
+    
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`Background removal script not found: ${scriptPath}`);
+    }
+
+    const command = `python3 "${scriptPath}" "${inputPath}" "${outputPath}" "u2net_human_seg"`;
+    
+    this.logger.log(`[TransparentAvatar] Executing background removal: ${command}`, 'AvatarsService');
+    
+    try {
+      execSync(command, { stdio: 'inherit', maxBuffer: 1024 * 1024 * 10 });
+      
+      if (!fs.existsSync(outputPath)) {
+        throw new Error('Background removal completed but output file not found');
+      }
+      
+      this.logger.log(`[TransparentAvatar] Background removal completed: ${outputPath}`, 'AvatarsService');
+    } catch (error: any) {
+      this.logger.error(`[TransparentAvatar] Background removal failed: ${error.message}`, 'AvatarsService');
+      throw new Error(`Background removal failed: ${error.message}`);
     }
   }
 }
