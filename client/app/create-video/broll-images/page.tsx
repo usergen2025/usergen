@@ -34,6 +34,9 @@ interface Scene {
   broll_image_prompt?: string;
   broll_prompt?: string;
   broll_visual_description?: string;
+  avatar_action?: string;
+  avatar_motion?: string;
+  avatar_cutout_position?: string;
 }
 
 function BrollImagesPageContent() {

@@ -484,6 +484,31 @@ class ApiClient {
     return response.data;
   }
 
+  async regenerateScene(data: {
+    sceneNumber: number;
+    videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+    existingScript: any;
+    originalUserPrompt: string;
+    operation: 'regenerate' | 'edit';
+    newVoiceover?: string;
+  }): Promise<ApiResponse<{ scene: any; tokensUsed: number; processingTime: number; model: string }>> {
+    const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ scene: any; tokensUsed: number; processingTime: number; model: string }>>(
+      `${aiContentServiceUrl}/scripts/regenerate-scene`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Voice/Audio endpoints
   async getElevenLabsVoices(search?: string, category?: string): Promise<ApiResponse<any[]>> {
     const voiceServiceUrl = VOICE_SERVICE_URL;

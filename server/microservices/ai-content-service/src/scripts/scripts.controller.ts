@@ -1,6 +1,6 @@
 import { Controller, Post, Body, Get, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
-import { ScriptsService, ScriptGenerationRequest, VideoScriptGenerationRequest } from './scripts.service';
+import { ScriptsService, ScriptGenerationRequest, VideoScriptGenerationRequest, SceneRegenerationRequest } from './scripts.service';
 
 @ApiTags('scripts')
 @Controller('scripts')
@@ -238,6 +238,65 @@ export class ScriptsController {
       success: true,
       data: result,
       message: 'Video script generated successfully',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  @Post('regenerate-scene')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ 
+    summary: 'Regenerate or edit a single scene from a video script',
+    description: 'Uses chat-based approach with OpenAI to regenerate or edit a specific scene while maintaining context from the existing script. Follows the same guidelines as full script generation.'
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        sceneNumber: { type: 'number', example: 1, description: 'Scene number to regenerate/edit' },
+        videoStyle: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT'], example: 'HALF_N_HALF', description: 'Video style/format' },
+        existingScript: { type: 'object', description: 'Full existing script for context' },
+        originalUserPrompt: { type: 'string', example: 'Introduction to AI', description: 'Original user prompt for context' },
+        operation: { type: 'string', enum: ['regenerate', 'edit'], example: 'regenerate', description: 'Operation type: regenerate or edit' },
+        newVoiceover: { type: 'string', example: 'New voiceover text', description: 'New voiceover text (required if operation is edit)' }
+      },
+      required: ['sceneNumber', 'videoStyle', 'existingScript', 'originalUserPrompt', 'operation']
+    }
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Scene regenerated/edited successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            scene: { type: 'object', description: 'Updated scene object' },
+            tokensUsed: { type: 'number', example: 500 },
+            processingTime: { type: 'number', example: 2000 },
+            model: { type: 'string', example: 'gpt-4-turbo' }
+          }
+        },
+        message: { type: 'string', example: 'Scene regenerated successfully' },
+        timestamp: { type: 'string', example: '2024-01-01T00:00:00.000Z' }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Bad request - Invalid input parameters'
+  })
+  @ApiResponse({ 
+    status: 401, 
+    description: 'Unauthorized - Invalid or missing token'
+  })
+  async regenerateScene(@Body() request: SceneRegenerationRequest) {
+    const result = await this.scriptsService.regenerateOrEditScene(request);
+    return {
+      success: true,
+      data: result,
+      message: request.operation === 'edit' ? 'Scene edited successfully' : 'Scene regenerated successfully',
       timestamp: new Date().toISOString(),
     };
   }

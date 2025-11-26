@@ -33,6 +33,22 @@ export interface VideoScriptGenerationResponse {
   model: string;
 }
 
+export interface SceneRegenerationRequest {
+  sceneNumber: number;
+  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+  existingScript: any; // Full script for context
+  originalUserPrompt: string; // Original prompt for context
+  operation: 'regenerate' | 'edit';
+  newVoiceover?: string; // If editing, the new voiceover text
+}
+
+export interface SceneRegenerationResponse {
+  scene: any; // Updated scene object
+  tokensUsed: number;
+  processingTime: number;
+  model: string;
+}
+
 @Injectable()
 export class ScriptsService {
   private openai: OpenAI;
@@ -154,6 +170,101 @@ export class ScriptsService {
   }
 
   /**
+   * Regenerate or edit a single scene using chat-based approach
+   * Uses conversation history to maintain context and follow same guidelines
+   */
+  async regenerateOrEditScene(request: SceneRegenerationRequest): Promise<SceneRegenerationResponse> {
+    const startTime = Date.now();
+    
+    try {
+      this.logger.log(`Regenerating/editing scene ${request.sceneNumber} for style: ${request.videoStyle}`, 'ScriptsService');
+
+      if (!this.openai) {
+        throw new Error('OpenAI API key is not configured');
+      }
+
+      // Get system prompt (same as script generation to maintain consistency)
+      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle);
+      
+      // Build conversation history for context
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: systemPrompt },
+        { 
+          role: 'user', 
+          content: `Create a video script for the following topic/idea: "${request.originalUserPrompt}". Return the response as a valid JSON object.`
+        },
+        {
+          role: 'assistant',
+          content: JSON.stringify(request.existingScript) // Existing script as context
+        }
+      ];
+      
+      // Build the user's request based on operation type
+      let userRequest: string;
+      if (request.operation === 'edit' && request.newVoiceover) {
+        userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
+      } else {
+        // Regenerate operation
+        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
+      }
+      
+      messages.push({ role: 'user', content: userRequest });
+      
+      // Call OpenAI with conversation history
+      const completion = await this.openai.chat.completions.create({
+        model: this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo'),
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0.7,
+      });
+
+      const responseContent = completion.choices[0]?.message?.content;
+      if (!responseContent) {
+        throw new Error('Empty response from OpenAI');
+      }
+
+      // Parse the scene response
+      const responseData = JSON.parse(responseContent);
+      
+      // Extract scene from response (could be direct scene object or wrapped)
+      let sceneData: any;
+      if (responseData.scene) {
+        sceneData = responseData.scene;
+      } else if (responseData.scene_number || responseData.sceneNumber) {
+        sceneData = responseData; // Response is the scene itself
+      } else {
+        // Try to find scene in scenes array
+        const scenes = responseData.scenes || responseData.scene_plan || [];
+        sceneData = scenes.find((s: any) => 
+          (s.scene_number || s.sceneNumber) === request.sceneNumber
+        ) || scenes[0] || responseData;
+      }
+      
+      // Ensure scene_number is set correctly
+      if (!sceneData.scene_number && !sceneData.sceneNumber) {
+        sceneData.scene_number = request.sceneNumber;
+      } else if (sceneData.sceneNumber && !sceneData.scene_number) {
+        sceneData.scene_number = sceneData.sceneNumber;
+      }
+
+      const processingTime = Date.now() - startTime;
+      const tokensUsed = completion.usage?.total_tokens || 0;
+
+      this.logger.log(`Scene ${request.sceneNumber} regenerated/edited successfully in ${processingTime}ms`, 'ScriptsService');
+
+      return {
+        scene: sceneData,
+        tokensUsed,
+        processingTime,
+        model: completion.model || 'gpt-4-turbo',
+      };
+    } catch (error: any) {
+      this.logger.error(`Scene regeneration/editing failed: ${error.message}`, error.stack, 'ScriptsService');
+      throw error;
+    }
+  }
+
+  /**
    * Get system prompt based on video style
    */
   private getSystemPromptForStyle(style: string): string {
@@ -182,7 +293,8 @@ Structure Your Output in This JSON Format:
       "broll_visual_description": "Describe the scene — what should be seen in the upper half.",
       "broll_image_prompt": "Short prompt to generate a single b-roll image.",
       "broll_video_prompt": "Short prompt to generate a short video clip for the same concept.",
-      "avatar_action": "Describe how the avatar speaks or reacts."
+      "avatar_action": "Describe how the avatar speaks or reacts.",
+      "avatar_motion": "Single word describing avatar's motion such as 'nod', 'smile', 'gesture'"
     }
   ],
   "notes": "Any special visual transitions or aesthetic guidance."
@@ -213,7 +325,8 @@ Output Format:
       "broll_visual_description": "Only if type is b-roll — describe what's seen.",
       "broll_image_prompt": "Prompt for generating the b-roll image.",
       "broll_video_prompt": "Prompt for generating the b-roll clip.",
-      "avatar_action": "If type=avatar, describe expression and delivery."
+      "avatar_action": "If type=avatar, describe expression and delivery.",
+      "avatar_motion": "If type=avatar, give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
     }
   ],
   "notes": {
@@ -248,7 +361,8 @@ Output Format:
       "broll_image_prompt": "Prompt for generating the b-roll image.",
       "broll_video_prompt": "Prompt for generating the b-roll video.",
       "avatar_cutout_position": "bottom-left" | "bottom-right" | "center" | etc.,
-      "avatar_action": "Describe facial expression and gestures for realism."
+      "avatar_action": "Describe facial expression and gestures for realism.",
+      "avatar_motion": "Single word describing avatar's motion such as 'nod', 'raise-hand', 'smile'"
     }
   ],
   "notes": {
@@ -301,6 +415,10 @@ Guidelines:
       
       if (scene.avatar_action) {
         formatted += `   👤 Avatar: ${scene.avatar_action}\n`;
+      }
+      
+      if (scene.avatar_motion) {
+        formatted += `   🎭 Motion: ${scene.avatar_motion}\n`;
       }
       
       if (scene.avatar_cutout_position) {

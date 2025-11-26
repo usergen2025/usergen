@@ -104,7 +104,7 @@ export class AudioGenerationProcessor extends WorkerHost {
         where: { id: projectId },
         data: {
           audioFiles,
-          audioGenerationConfig,
+          audioGenerationConfig: audioGenerationConfig as any, // Cast to any for Prisma JSON field compatibility
           renderingStatus: 'audio_completed',
           renderingProgress: 20,
         },
