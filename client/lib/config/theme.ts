@@ -98,6 +98,7 @@ export const typography = {
   button: {
     primary: 'text-base font-medium',
     secondary: 'text-base font-medium',
+    outline: 'text-base font-medium',
   },
 } as const;
 
