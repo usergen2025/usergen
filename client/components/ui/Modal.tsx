@@ -36,21 +36,24 @@ export default function Modal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 gradient-overlay"
+      onClick={onClose}
+    >
       <div
         className={cn(
-          'bg-secondary border border-border rounded-lg shadow-lg max-w-md w-full max-h-[90vh] overflow-auto',
+          'bg-white shadow-modal rounded-xl max-w-md w-full max-h-[90vh] overflow-auto',
           className
         )}
         onClick={(e) => e.stopPropagation()}
       >
         {(title || showCloseButton) && (
-          <div className="flex items-center justify-between p-4 border-b border-border">
+          <div className="flex items-center justify-between p-4 border-b border-gray-200">
             {title && <h2 className={cn('text-lg font-semibold text-text-primary')}>{title}</h2>}
             {showCloseButton && (
               <button
                 onClick={onClose}
-                className="p-1 rounded-full hover:bg-primary-light transition-colors"
+                className="p-1 rounded-full hover:bg-gray-100 transition-colors"
                 aria-label="Close"
               >
                 <X className="w-5 h-5 text-text-primary" />
@@ -58,7 +61,7 @@ export default function Modal({
             )}
           </div>
         )}
-        <div className="p-6">{children}</div>
+        <div>{children}</div>
       </div>
     </div>
   );

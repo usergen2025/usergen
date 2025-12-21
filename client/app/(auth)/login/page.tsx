@@ -5,10 +5,9 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
-import Modal from '@/components/ui/Modal';
 import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
-import { Chrome, Facebook } from 'lucide-react';
+import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
@@ -18,9 +17,9 @@ function LoginPageContent() {
   const searchParams = useSearchParams();
   const { login, isAuthenticated, isLoading: authLoading } = useAuth();
   const { showToast } = useToast();
+  const [name, setName] = useState('');
   const [mobileEmail, setMobileEmail] = useState('');
   const [otp, setOtp] = useState('');
-  const [showOtpModal, setShowOtpModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
 
@@ -69,7 +68,6 @@ function LoginPageContent() {
       });
 
       setOtpSent(true);
-      setShowOtpModal(true);
       showToast('OTP sent successfully! Please check your email.', 'success');
     } catch (err: any) {
       showToast(err.message || 'Failed to send OTP. Please try again.', 'error');
@@ -113,9 +111,6 @@ function LoginPageContent() {
           sessionStorage.removeItem('pendingRedirect');
           sessionStorage.removeItem('videoCreationStyle');
         }
-        
-        // Close modal
-        setShowOtpModal(false);
         
         // Small delay to show success toast and ensure auth state is updated
         setTimeout(() => {
@@ -169,22 +164,37 @@ function LoginPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4 py-12">
-      <div className="max-w-md w-full bg-secondary border border-border rounded-lg p-8 space-y-6">
-        <h1 className={cn(typography.heading.h3, "text-center")}>Login</h1>
+    <div className="min-h-screen gradient-overlay flex items-center justify-center px-4 py-12 relative">
+      <div className="max-w-[546px] w-full bg-white shadow-modal rounded-xl p-10 space-y-5 relative z-10">
+        <h1 className={cn(typography.heading.h3, "text-center font-heading")}>Login</h1>
         
         <form 
           onSubmit={(e) => {
             e.preventDefault();
             if (!otpSent) {
               handleSendOtp();
+            } else {
+              handleVerifyOtp();
             }
           }} 
           className="space-y-4"
         >
           <Input
-            placeholder="Mobile/Email"
+            placeholder="Enter your Name"
             type="text"
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+            }}
+            disabled={isLoading || otpSent}
+            autoComplete="name"
+            required
+            className="mb-4"
+          />
+          
+          <Input
+            placeholder="Email"
+            type="email"
             value={mobileEmail}
             onChange={(e) => {
               setMobileEmail(e.target.value);
@@ -192,29 +202,35 @@ function LoginPageContent() {
             disabled={isLoading || otpSent}
             autoComplete="email"
             required
+            className="mb-4"
+            icon={
+              !otpSent && mobileEmail.trim() ? (
+                <Image src="/assets/icon-send.svg" alt="Send OTP" width={14} height={14} />
+              ) : undefined
+            }
+            iconPosition="right"
+            onIconClick={!otpSent && mobileEmail.trim() && !isLoading ? handleSendOtp : undefined}
           />
-
+          
           {otpSent && (
-            <div className="space-y-2">
-              <p className="text-sm text-text-secondary">
-                OTP sent to {mobileEmail}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                fullWidth
-                onClick={() => {
-                  setOtpSent(false);
-                  setShowOtpModal(false);
-                  setOtp('');
-                }}
-                disabled={isLoading}
-              >
-                Change Mobile/Email
-              </Button>
-            </div>
+            <Input
+              placeholder="One Time Password"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={otp}
+              onChange={(e) => {
+                const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                setOtp(value);
+              }}
+              maxLength={6}
+              disabled={isLoading}
+              className="text-center text-2xl tracking-widest font-mono mb-4"
+              required
+              autoFocus
+            />
           )}
+
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
@@ -230,32 +246,46 @@ function LoginPageContent() {
               type="button"
               onClick={() => handleSocialLogin('google')}
               disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-border rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex flex-col items-center gap-2 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Chrome className="w-8 h-8" />
-              <span className="text-sm">Google</span>
+              <Image src="/assets/icon-google.svg" alt="Google" width={22} height={22} />
+              <span className="text-sm font-sans text-black">G Google</span>
             </button>
             <button
               type="button"
               onClick={() => handleSocialLogin('facebook')}
               disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-border rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex flex-col items-center gap-2 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Facebook className="w-8 h-8" />
-              <span className="text-sm">Facebook</span>
+              <Image src="/assets/icon-facebook.svg" alt="Facebook" width={11} height={20} />
+              <span className="text-sm font-sans text-black">f Facebook</span>
             </button>
           </div>
 
-          <Button 
-            type="submit" 
-            variant="primary" 
-            size="lg" 
-            fullWidth 
-            className="mt-6"
-            disabled={isLoading || otpSent}
-          >
-            {isLoading ? 'Sending...' : otpSent ? 'OTP Sent' : 'SEND OTP'}
-          </Button>
+          {!otpSent ? (
+            <Button 
+              type="submit" 
+              variant="primary" 
+              size="lg" 
+              fullWidth 
+              className="mt-6"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Sending...' : 'SEND OTP'}
+            </Button>
+          ) : (
+            <Button 
+              type="button" 
+              variant="primary" 
+              size="lg" 
+              fullWidth 
+              className="mt-6"
+              disabled={isLoading || otp.length !== 6}
+              onClick={handleVerifyOtp}
+            >
+              {isLoading ? 'Verifying...' : 'Login'}
+            </Button>
+          )}
 
           <div className="text-center">
             <p className="text-sm text-text-secondary">
@@ -271,78 +301,6 @@ function LoginPageContent() {
         </form>
       </div>
 
-      {/* OTP Modal */}
-      <Modal
-        isOpen={showOtpModal}
-        onClose={() => {
-          if (!isLoading) {
-            setShowOtpModal(false);
-          }
-        }}
-        title="Enter OTP"
-        showCloseButton={!isLoading}
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-text-secondary">
-            We've sent a 6-digit OTP to {mobileEmail}
-          </p>
-
-          <Input
-            placeholder="000000"
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            value={otp}
-            onChange={(e) => {
-              // Only allow digits
-              const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-              setOtp(value);
-            }}
-            maxLength={6}
-            disabled={isLoading}
-            className="text-center text-2xl tracking-widest font-mono"
-            required
-            autoFocus
-          />
-
-          <div className="flex gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="md"
-              fullWidth
-              onClick={() => {
-                setShowOtpModal(false);
-                setOtp('');
-              }}
-              disabled={isLoading}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              fullWidth
-              onClick={handleVerifyOtp}
-              disabled={isLoading || otp.length !== 6}
-            >
-              {isLoading ? 'Verifying...' : 'Verify OTP'}
-            </Button>
-          </div>
-
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={handleSendOtp}
-              disabled={isLoading}
-              className="text-sm text-primary hover:underline disabled:opacity-50"
-            >
-              Resend OTP
-            </button>
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }

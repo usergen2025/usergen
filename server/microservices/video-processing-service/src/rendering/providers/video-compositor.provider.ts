@@ -760,5 +760,66 @@ export class VideoCompositorProvider {
       throw new Error(`Failed to add audio to video: ${error.message}`);
     }
   }
+
+  /**
+   * Crop video to specific dimensions
+   * @param videoPath Path to input video
+   * @param outputPath Path for output video
+   * @param x X offset (left position)
+   * @param y Y offset (top position)
+   * @param width Width to crop
+   * @param height Height to crop
+   */
+  async cropVideo(
+    videoPath: string,
+    outputPath: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get actual video dimensions to validate crop parameters
+    const videoRes = await this.getVideoResolution(videoPath);
+    if (!videoRes) {
+      throw new Error('Failed to get video resolution for cropping');
+    }
+
+    // Validate crop parameters
+    if (x + width > videoRes.width) {
+      throw new Error(`Crop width (${x + width}) exceeds video width (${videoRes.width}). Video needs to be scaled first.`);
+    }
+    if (y + height > videoRes.height) {
+      throw new Error(`Crop height (${y + height}) exceeds video height (${videoRes.height}). Video needs to be scaled first.`);
+    }
+    if (width <= 0 || height <= 0) {
+      throw new Error(`Invalid crop dimensions: ${width}x${height}`);
+    }
+
+    console.log(`[VideoCompositor] Cropping video: x=${x}, y=${y}, width=${width}, height=${height} (from ${videoRes.width}x${videoRes.height})`);
+
+    try {
+      const ffmpegCommand = `
+        ffmpeg -i "${videoPath}" \
+        -vf "crop=${width}:${height}:${x}:${y}" \
+        -c:v libx264 -preset medium -crf 23 \
+        -c:a copy \
+        -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      execSync(ffmpegCommand, { stdio: 'inherit' });
+      console.log(`[VideoCompositor] Video cropped successfully: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg crop error:`, error.message);
+      throw new Error(`Failed to crop video: ${error.message}`);
+    }
+  }
 }
 

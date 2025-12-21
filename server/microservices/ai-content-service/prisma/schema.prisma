@@ -25,8 +25,10 @@ model Avatar {
   thumbnailUrl      String?
   avatarUrl         String?       // Final avatar URL from HeyGen
   originalImageUrl  String?       // Uploaded image URL
-  imageKey          String?       // HeyGen image_key from upload
+  imageKey          String?       // HeyGen image_key from upload (9:16 default)
   transparentImageKey String?     // HeyGen image_key for transparent background version
+  imageKeyHalfNHalf String?       // HeyGen image_key for 9:8 (1080x960) - HALF_N_HALF style
+  imageKeyHalfNHalfWithWhite String? // HeyGen image_key for 9:8 + white top (1080x1920) - Avatar IV HALF_N_HALF
   
   // Metadata
   category          AvatarCategory?

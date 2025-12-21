@@ -7,6 +7,7 @@ import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import axios from 'axios';
 
 @Injectable()
@@ -24,12 +25,95 @@ export class RenderingService {
   }
 
   /**
+   * Convert video style enum to kebab-case directory name
+   * HALF_N_HALF -> half-n-half
+   * AVATAR_CUTOUT -> avatar-cutout
+   * ALTERNATE -> alternate
+   */
+  private getStyleDirectoryName(style: string | null | undefined): string {
+    if (!style) {
+      return 'unknown';
+    }
+    return style.toLowerCase().replace(/_/g, '-');
+  }
+
+  /**
+   * Generate a hash of file paths and modification times to detect changes
+   */
+  private generateSourceHash(filePaths: string[]): string {
+    const hash = crypto.createHash('sha256');
+    
+    for (const filePath of filePaths) {
+      if (fs.existsSync(filePath)) {
+        const stats = fs.statSync(filePath);
+        // Include file path and modification time in hash
+        hash.update(`${filePath}:${stats.mtimeMs}:${stats.size}`);
+      } else {
+        hash.update(`${filePath}:missing`);
+      }
+    }
+    
+    return hash.digest('hex');
+  }
+
+  /**
+   * Get cached intermediate file path from database
+   */
+  private getCachedIntermediateFile(project: any, fileType: 'stitched_broll' | 'stitched_audio'): { path: string; sourceHash: string } | null {
+    const metadata = (project.metadata as any) || {};
+    const intermediateFiles = metadata.intermediateFiles || {};
+    const cached = intermediateFiles[fileType];
+    
+    if (cached && cached.path && fs.existsSync(cached.path)) {
+      return cached;
+    }
+    
+    return null;
+  }
+
+  /**
+   * Save cached intermediate file path to database
+   */
+  private async saveCachedIntermediateFile(
+    projectId: string,
+    fileType: 'stitched_broll' | 'stitched_audio',
+    filePath: string,
+    sourceHash: string
+  ): Promise<void> {
+    const project = await this.databaseService.videoProject.findUnique({
+      where: { id: projectId },
+    });
+    
+    if (!project) return;
+    
+    const metadata = (project.metadata as any) || {};
+    const intermediateFiles = metadata.intermediateFiles || {};
+    
+    intermediateFiles[fileType] = {
+      path: filePath,
+      sourceHash: sourceHash,
+      cachedAt: new Date().toISOString(),
+    };
+    
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        metadata: {
+          ...metadata,
+          intermediateFiles: intermediateFiles,
+        } as any,
+      },
+    });
+  }
+
+  /**
    * Fetch avatar details from ai-content-service or HeyGen API to get talking_photo_id and imageKey
    * First tries to fetch from ai-content-service (for internal IDs) using userId.
    * If that fails with 404, tries HeyGen API as fallback.
    * @param useTransparent If true, will fetch/create transparent imageKey for CUTOUT mode
+   * @param useHalfNHalf If true, will fetch imageKeyHalfNHalfWithWhite for HALF_N_HALF Premium mode
    */
-  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string, useTransparent: boolean = false): Promise<{ providerAvatarId: string; imageKey?: string; isHeyGenId: boolean }> {
+  private async fetchAvatarDetails(avatarId: string, userId: string, authToken?: string, useTransparent: boolean = false, useHalfNHalf: boolean = false): Promise<{ providerAvatarId: string; imageKey?: string; imageKeyHalfNHalfWithWhite?: string; isHeyGenId: boolean }> {
     try {
       // First, try to fetch from ai-content-service (for internal IDs)
       const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
@@ -69,10 +153,57 @@ export class RenderingService {
           }
           
           // Get imageKey for Premium mode (Avatar IV)
-          // For CUTOUT mode, use transparent imageKey if available
+          // For CUTOUT mode, use transparent imageKey if available (created from processed 1080x1920)
+          // For HALF_N_HALF Premium mode, use imageKeyHalfNHalfWithWhite if available
+          // For ALTERNATE Premium mode, use imageKey (which should be imageKeyFull - processed 1080x1920)
+          // Note: imageKey gets updated to imageKeyFull after processing completes
           let imageKey = avatarData.imageKey;
+          let imageKeyHalfNHalfWithWhite: string | undefined;
           
-          if (useTransparent) {
+          // For ALTERNATE and CUTOUT Premium modes, ensure we use processed imageKeyFull if available
+          // Check if processed images exist (imageKeyFull is stored in imageKey after processing)
+          // For old avatars that haven't been processed, imageKey will still be original
+          // In that case, we'll use the original (fallback behavior)
+          
+          if (useHalfNHalf) {
+            console.log(`[RenderingService] HALF_N_HALF Premium mode: Checking for processed image key...`);
+            
+            // Check if HALF_N_HALF processed version exists
+            if (avatarData.imageKeyHalfNHalfWithWhite) {
+              imageKeyHalfNHalfWithWhite = avatarData.imageKeyHalfNHalfWithWhite;
+              console.log(`[RenderingService] HALF_N_HALF Premium mode: Using processed imageKeyHalfNHalfWithWhite: ${imageKeyHalfNHalfWithWhite}`);
+            } else {
+              // Old avatar - trigger on-demand processing
+              console.log(`[RenderingService] HALF_N_HALF Premium mode: ⚠️  Processed image key not found for old avatar, triggering on-demand processing...`);
+              try {
+                const headers: Record<string, string> = {};
+                if (authToken) {
+                  headers.Authorization = authToken.startsWith('Bearer ') ? authToken : `Bearer ${authToken}`;
+                }
+                
+                const processResponse = await axios.post(
+                  `${aiContentServiceUrl}/api/avatars/${avatarId}/process-images`,
+                  {},
+                  { 
+                    headers,
+                    params: { userId },
+                    timeout: 5000, // Short timeout - don't wait for completion
+                  }
+                );
+                
+                if (processResponse.data?.data?.jobId) {
+                  console.log(`[RenderingService] HALF_N_HALF Premium mode: ✅ Image processing job queued (jobId: ${processResponse.data.data.jobId})`);
+                  console.log(`[RenderingService] HALF_N_HALF Premium mode: ⚠️  Using default imageKey for now. Processed images will be available for future generations.`);
+                }
+              } catch (processError: any) {
+                console.error(`[RenderingService] HALF_N_HALF Premium mode: ❌ Failed to trigger on-demand processing: ${processError.message}`);
+                console.warn(`[RenderingService] HALF_N_HALF Premium mode: ⚠️  Using default imageKey (may not be optimal for HALF_N_HALF)`);
+              }
+              
+              // Fall back to default imageKey
+              imageKeyHalfNHalfWithWhite = undefined;
+            }
+          } else if (useTransparent) {
             console.log(`[RenderingService] CUTOUT mode: Checking for transparent imageKey...`);
             
             // Check if transparent version exists
@@ -80,8 +211,9 @@ export class RenderingService {
               imageKey = avatarData.transparentImageKey;
               console.log(`[RenderingService] CUTOUT mode: Using existing transparent imageKey: ${imageKey}`);
             } else {
-              // Create transparent version on-demand
-              console.log(`[RenderingService] CUTOUT mode: Transparent version not found, creating on-demand...`);
+              // Create transparent version on-demand from processed 1080x1920 image
+              // The create-transparent endpoint now uses processed full_9x16_1080x1920.jpg if available
+              console.log(`[RenderingService] CUTOUT mode: Transparent version not found, creating from processed 1080x1920 image...`);
               try {
                 const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
                 const headers: Record<string, string> = {};
@@ -97,20 +229,26 @@ export class RenderingService {
                 
                 if (transparentResponse.data?.success && transparentResponse.data?.data?.imageKey) {
                   imageKey = transparentResponse.data.data.imageKey;
-                  console.log(`[RenderingService] CUTOUT mode: ✅ Transparent version created successfully. ImageKey: ${imageKey}`);
+                  console.log(`[RenderingService] CUTOUT mode: ✅ Transparent version created successfully from processed image. ImageKey: ${imageKey}`);
                 } else {
-                  console.warn(`[RenderingService] CUTOUT mode: ⚠️  Failed to create transparent version, using original imageKey`);
+                  console.warn(`[RenderingService] CUTOUT mode: ⚠️  Failed to create transparent version, using processed imageKey`);
+                  // Use processed imageKey (imageKeyFull) if available, otherwise fall back to original
                 }
               } catch (transparentError: any) {
                 console.error(`[RenderingService] CUTOUT mode: ❌ Failed to create transparent version: ${transparentError.message}`);
-                console.warn(`[RenderingService] CUTOUT mode: ⚠️  Using original imageKey (video may have background)`);
-                // Fall back to original imageKey
+                console.warn(`[RenderingService] CUTOUT mode: ⚠️  Using processed imageKey (video may have background)`);
+                // Use processed imageKey (imageKeyFull) if available, otherwise fall back to original
               }
             }
+          } else {
+            // ALTERNATE mode (no special params)
+            // imageKey should be imageKeyFull (processed 1080x1920) after processing completes
+            // For old avatars, it might still be original, but that's acceptable
+            console.log(`[RenderingService] ALTERNATE mode: Using imageKey (processed 1080x1920 if available): ${imageKey || 'not available'}`);
           }
           
-          console.log(`[RenderingService] Found internal avatar ${avatarId}, using providerAvatarId (motion ID): ${providerAvatarId}, imageKey: ${imageKey || 'not available'}`);
-          return { providerAvatarId, imageKey, isHeyGenId: false };
+          console.log(`[RenderingService] Found internal avatar ${avatarId}, using providerAvatarId (motion ID): ${providerAvatarId}, imageKey: ${imageKey || 'not available'}, imageKeyHalfNHalfWithWhite: ${imageKeyHalfNHalfWithWhite || 'not available'}`);
+          return { providerAvatarId, imageKey, imageKeyHalfNHalfWithWhite, isHeyGenId: false };
         }
       } catch (aiContentError: any) {
         // Log detailed error information for debugging
@@ -346,7 +484,6 @@ export class RenderingService {
     
     // Stitch all b-roll videos together
     const userDir = path.join(this.uploadsDir, 'videos', userId);
-    const stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}_${Date.now()}.mp4`);
     
     // Convert paths to absolute paths before concatenation
     // Log all videos for debugging
@@ -392,18 +529,34 @@ export class RenderingService {
       })
       .filter((p): p is string => p !== null);
     
-    console.log(`[RenderingService] HALF_N_HALF: Stitching ${brollVideoPaths.length} videos (filtered from ${sortedBrollVideos.length})`);
-    
     if (brollVideoPaths.length === 0) {
       throw new Error('No valid b-roll video paths found for stitching');
     }
     
+    // Check for cached stitched b-roll video
+    const sourceHashBroll = this.generateSourceHash(brollVideoPaths);
+    const cachedBroll = this.getCachedIntermediateFile(project, 'stitched_broll');
+    
+    let stitchedBrollPath: string;
+    
+    if (cachedBroll && cachedBroll.sourceHash === sourceHashBroll) {
+      console.log(`[RenderingService] HALF_N_HALF: Reusing cached stitched b-roll video: ${cachedBroll.path}`);
+      stitchedBrollPath = cachedBroll.path;
+    } else {
+      // Generate new stitched b-roll video with consistent filename
+      stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}.mp4`);
+      
+      console.log(`[RenderingService] HALF_N_HALF: Stitching ${brollVideoPaths.length} videos (filtered from ${sortedBrollVideos.length})...`);
     await this.videoCompositor.concatenateVideos(brollVideoPaths, stitchedBrollPath);
+      
+      // Save to cache
+      await this.saveCachedIntermediateFile(projectId, 'stitched_broll', stitchedBrollPath, sourceHashBroll);
+      console.log(`[RenderingService] HALF_N_HALF: Stitched b-roll video cached`);
+    }
 
     await this.updateRenderingStatus(projectId, 'stitching_audio', 40);
 
     // Stitch all audio files together
-    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}_${Date.now()}.mp3`);
     // Convert file paths to absolute paths (same logic as CUTOUT)
     const serverRoot = path.join(process.cwd(), '..', '..');
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
@@ -439,11 +592,86 @@ export class RenderingService {
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
     
+    if (audioPaths.length === 0) {
+      throw new Error('No valid audio file paths found for stitching');
+    }
+    
+    // Check for cached stitched audio
+    const sourceHashAudio = this.generateSourceHash(audioPaths);
+    const cachedAudio = this.getCachedIntermediateFile(project, 'stitched_audio');
+    
+    let stitchedAudioPath: string;
+    
+    if (cachedAudio && cachedAudio.sourceHash === sourceHashAudio) {
+      console.log(`[RenderingService] HALF_N_HALF: Reusing cached stitched audio: ${cachedAudio.path}`);
+      stitchedAudioPath = cachedAudio.path;
+    } else {
+      // Generate new stitched audio with consistent filename
+      stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}.mp3`);
+      
+      console.log(`[RenderingService] HALF_N_HALF: Stitching ${audioPaths.length} audio files...`);
     await this.videoCompositor.concatenateAudios(audioPaths, stitchedAudioPath);
+      
+      // Save to cache
+      await this.saveCachedIntermediateFile(projectId, 'stitched_audio', stitchedAudioPath, sourceHashAudio);
+      console.log(`[RenderingService] HALF_N_HALF: Stitched audio cached`);
+    }
 
     await this.updateRenderingStatus(projectId, 'avatar_generating', 60);
 
     // Generate one avatar video from full stitched audio with greyish background
+    // Check if avatar video already exists from previous attempt
+    let avatarVideoPath: string | null = null;
+    let originalAvatarVideoPath: string | null = null;
+    let imageKeyHalfNHalfWithWhite: string | undefined;
+    const existingAvatarVideos = (project.avatarVideos as any) || [];
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    const existingAvatarVideo = existingAvatarVideos.find((av: any) => 
+      av.type === 'HALF_N_HALF' && av.mode === avatarMode
+    );
+
+    if (existingAvatarVideo && existingAvatarVideo.originalPath && fs.existsSync(existingAvatarVideo.originalPath)) {
+      console.log(`[RenderingService] HALF_N_HALF: Reusing existing avatar video from previous attempt: ${existingAvatarVideo.originalPath}`);
+      originalAvatarVideoPath = existingAvatarVideo.originalPath;
+      avatarVideoPath = existingAvatarVideo.originalPath;
+      
+      // Check if cropped version exists for Premium mode
+      if (avatarMode === 'PREMIUM' && existingAvatarVideo.croppedPath && fs.existsSync(existingAvatarVideo.croppedPath)) {
+        console.log(`[RenderingService] HALF_N_HALF Premium: Reusing existing cropped video: ${existingAvatarVideo.croppedPath}`);
+        avatarVideoPath = existingAvatarVideo.croppedPath;
+      } else if (avatarMode === 'BASIC') {
+        // For Basic mode, original is the final processed video
+        avatarVideoPath = existingAvatarVideo.originalPath;
+      }
+      
+      // Ensure finalProcessedPath is set if not already set
+      if (!existingAvatarVideo.finalProcessedPath) {
+        const updatedProject = await this.databaseService.videoProject.findUnique({
+          where: { id: projectId },
+        });
+        const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+        const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+          av.type === 'HALF_N_HALF' && av.mode === avatarMode
+        );
+        
+        if (avatarVideoIndex >= 0) {
+          updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
+          updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = avatarMode === 'PREMIUM' && existingAvatarVideo.croppedUrl 
+            ? existingAvatarVideo.croppedUrl 
+            : existingAvatarVideo.originalUrl;
+          
+          await this.databaseService.videoProject.update({
+            where: { id: projectId },
+            data: {
+              avatarVideos: updatedAvatarVideos as any,
+            },
+          });
+        }
+      }
+    } else {
+      // Generate new avatar video
+      console.log(`[RenderingService] HALF_N_HALF: Generating new avatar video...`);
+      
     if (!fs.existsSync(stitchedAudioPath)) {
       throw new Error(`Stitched audio file not found: ${stitchedAudioPath}`);
     }
@@ -451,26 +679,33 @@ export class RenderingService {
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
     // Fetch avatar details to get talking_photo_id and imageKey
-    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
+      // For HALF_N_HALF Premium, fetch the processed image key with white top
+      const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, false, true);
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
     const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
+      imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite; // For HALF_N_HALF Premium
 
-    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
-    const avatarMode = (project.avatarMode as string) || 'BASIC';
     console.log(`[RenderingService] HALF_N_HALF: Using avatar mode: ${avatarMode}`);
 
     let videoResponse: { video_id: string };
 
     if (avatarMode === 'PREMIUM') {
       // Use Avatar IV API for Premium mode
-      // Note: Avatar IV generates full 9:16 portrait video, compositor will handle positioning
-      if (!imageKey) {
+        // Use processed image key with white top for HALF_N_HALF
+        const imageKeyToUse = imageKeyHalfNHalfWithWhite || imageKey;
+        
+        if (!imageKeyToUse) {
         throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
       }
       
-      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
+        if (imageKeyHalfNHalfWithWhite) {
+          console.log(`[RenderingService] Using Avatar IV (Premium) with processed HALF_N_HALF image_key: ${imageKeyHalfNHalfWithWhite}`);
+        } else {
+          console.log(`[RenderingService] Using Avatar IV (Premium) with default image_key: ${imageKey} (processed key not available)`);
+        }
+        
       videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-        image_key: imageKey,
+          image_key: imageKeyToUse,
         video_title: `Avatar Video ${projectId}`,
         audio_asset_id: audioAssetId,
         video_orientation: 'portrait', // 9:16 is portrait
@@ -502,13 +737,189 @@ export class RenderingService {
       throw new Error('Avatar video generation completed but no video URL');
     }
 
-    const avatarDir = path.join(userDir, 'avatars');
+      // Create directory structure: avatars/{projectId}/{styleType}/{avatarType}/
+      const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+      const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+      const avatarDir = path.join(userDir, 'avatars', projectId, styleType, avatarType);
     if (!fs.existsSync(avatarDir)) {
       fs.mkdirSync(avatarDir, { recursive: true });
     }
 
-    const avatarVideoPath = path.join(avatarDir, `avatar_full_${projectId}_${Date.now()}.mp4`);
-    await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+      // Use consistent filename based on projectId (not timestamp) for retry capability
+      const avatarVideoFilename = `avatar_full_${projectId}.mp4`;
+      originalAvatarVideoPath = path.join(avatarDir, avatarVideoFilename);
+      
+      // Only download if file doesn't exist
+      if (!fs.existsSync(originalAvatarVideoPath)) {
+        await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, originalAvatarVideoPath);
+        console.log(`[RenderingService] HALF_N_HALF: Avatar video downloaded to: ${originalAvatarVideoPath}`);
+      } else {
+        console.log(`[RenderingService] HALF_N_HALF: Avatar video already exists, skipping download: ${originalAvatarVideoPath}`);
+      }
+      
+      avatarVideoPath = originalAvatarVideoPath;
+      
+      // Save avatar video info to database for future retries
+      const avatarVideoInfo = {
+        type: 'HALF_N_HALF',
+        mode: avatarMode,
+        originalPath: originalAvatarVideoPath,
+        originalUrl: `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${avatarVideoFilename}`,
+        videoId: videoResponse.video_id, // Use the video_id from the response, not from completedVideo.data
+        videoUrl: completedVideo.data.video_url,
+        generatedAt: new Date().toISOString(),
+        dimensions: avatarMode === 'PREMIUM' ? '1080x1920' : '1080x960',
+      };
+      
+      // Update project with avatar video info
+      const updatedAvatarVideos = existingAvatarVideos.filter((av: any) => 
+        !(av.type === 'HALF_N_HALF' && av.mode === avatarMode)
+      );
+      updatedAvatarVideos.push(avatarVideoInfo);
+      
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          avatarVideos: updatedAvatarVideos as any,
+        },
+      });
+      
+      console.log(`[RenderingService] HALF_N_HALF: Avatar video info saved to database for retry capability`);
+    }
+
+    // For HALF_N_HALF Premium mode, crop the white top portion (remove top 960px, keep bottom 960px)
+    // Fetch avatar details again if we reused existing video (imageKeyHalfNHalfWithWhite not set)
+    if (avatarMode === 'PREMIUM' && originalAvatarVideoPath && !imageKeyHalfNHalfWithWhite) {
+      const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, false, true);
+      imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite;
+    }
+    
+    if (avatarMode === 'PREMIUM' && imageKeyHalfNHalfWithWhite && originalAvatarVideoPath) {
+      console.log(`[RenderingService] HALF_N_HALF Premium: Cropping white top portion from avatar video...`);
+      
+      // Use consistent filename for cropped version
+      const croppedAvatarFilename = `avatar_cropped_${projectId}.mp4`;
+      const croppedAvatarPath = path.join(path.dirname(originalAvatarVideoPath), croppedAvatarFilename);
+      
+      // Check if cropped version already exists
+      if (!fs.existsSync(croppedAvatarPath)) {
+        try {
+          // Get video dimensions first to validate crop parameters
+          const videoRes = await this.videoCompositor.getVideoResolution(originalAvatarVideoPath);
+          if (!videoRes) {
+            throw new Error('Failed to get video resolution');
+          }
+          
+          console.log(`[RenderingService] HALF_N_HALF Premium: Video dimensions: ${videoRes.width}x${videoRes.height}`);
+          
+          // If video is not 1080x1920, scale it first
+          if (videoRes.width !== 1080 || videoRes.height !== 1920) {
+            console.log(`[RenderingService] HALF_N_HALF Premium: Scaling video from ${videoRes.width}x${videoRes.height} to 1080x1920`);
+            const scaledPath = path.join(path.dirname(originalAvatarVideoPath), `avatar_scaled_${projectId}.mp4`);
+            await this.videoCompositor.scaleVideoToDimensions(originalAvatarVideoPath, scaledPath, 1080, 1920);
+            
+            if (fs.existsSync(scaledPath)) {
+              // Use scaled version for cropping
+              await this.videoCompositor.cropVideo(
+                scaledPath,
+                croppedAvatarPath,
+                0,      // x offset
+                960,    // y offset (start from 960px down - skip white top)
+                1080,   // width
+                960     // height (crop to 1080x960)
+              );
+              
+              // Cleanup scaled version after cropping
+              try {
+                fs.unlinkSync(scaledPath);
+              } catch (e) {
+                console.warn(`[RenderingService] Failed to cleanup scaled video: ${e}`);
+              }
+            } else {
+              throw new Error('Video scaling failed');
+            }
+          } else {
+            // Video is already correct size, just crop it
+            await this.videoCompositor.cropVideo(
+              originalAvatarVideoPath,
+              croppedAvatarPath,
+              0,      // x offset
+              960,    // y offset (start from 960px down - skip white top)
+              1080,   // width
+              960     // height (crop to 1080x960)
+            );
+          }
+          
+          if (fs.existsSync(croppedAvatarPath)) {
+            avatarVideoPath = croppedAvatarPath;
+            console.log(`[RenderingService] HALF_N_HALF Premium: ✅ Video cropped successfully to 1080x960`);
+            
+            // Update database with cropped path and final processed path
+            // Refetch project to get latest avatarVideos
+            const updatedProject = await this.databaseService.videoProject.findUnique({
+              where: { id: projectId },
+            });
+            const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+            const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+              av.type === 'HALF_N_HALF' && av.mode === avatarMode
+            );
+            
+            if (avatarVideoIndex >= 0) {
+              const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+              const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+              updatedAvatarVideos[avatarVideoIndex].croppedPath = croppedAvatarPath;
+              updatedAvatarVideos[avatarVideoIndex].croppedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${croppedAvatarFilename}`;
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = croppedAvatarPath; // Final video used for composition
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${croppedAvatarFilename}`;
+              
+              await this.databaseService.videoProject.update({
+                where: { id: projectId },
+                data: {
+                  avatarVideos: updatedAvatarVideos as any,
+                },
+              });
+              
+              console.log(`[RenderingService] HALF_N_HALF Premium: ✅ Cropped video path saved to database`);
+            }
+          }
+        } catch (cropError: any) {
+          console.error(`[RenderingService] HALF_N_HALF Premium: ⚠️ Crop failed: ${cropError.message}`);
+          console.log(`[RenderingService] HALF_N_HALF Premium: Using original video (cropping can be retried later)`);
+          // Don't throw - use original video as fallback
+          // The original video is preserved, so user can retry cropping
+          avatarVideoPath = originalAvatarVideoPath;
+        }
+      } else {
+        console.log(`[RenderingService] HALF_N_HALF Premium: Cropped video already exists, reusing: ${croppedAvatarPath}`);
+        avatarVideoPath = croppedAvatarPath;
+      }
+    } else if (avatarMode === 'BASIC' && originalAvatarVideoPath) {
+      // For Basic mode HALF_N_HALF, the video is already 1080x960, so it's the final processed video
+      // Update database to mark this as the final processed path
+      const updatedProject = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+      });
+      const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+      const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+        av.type === 'HALF_N_HALF' && av.mode === avatarMode
+      );
+      
+      if (avatarVideoIndex >= 0) {
+        const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+        const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+        updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = originalAvatarVideoPath;
+        updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/avatar_full_${projectId}.mp4`;
+        
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: {
+            avatarVideos: updatedAvatarVideos as any,
+          },
+        });
+        
+        console.log(`[RenderingService] HALF_N_HALF Basic: ✅ Final processed video path saved to database`);
+      }
+    }
 
     await this.updateRenderingStatus(projectId, 'stitching', 80);
 
@@ -579,7 +990,6 @@ export class RenderingService {
 
     // Stitch all audio files together
     const userDir = path.join(this.uploadsDir, 'videos', userId);
-    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}_${Date.now()}.mp3`);
     // Convert file paths to absolute paths
     // Audio files from voice service are stored at voice-service/uploads/audio/userId/file.mp3
     // If running from server root, voice service cwd is server/microservices/voice-audio-service
@@ -625,11 +1035,81 @@ export class RenderingService {
       }
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
+    
+    if (audioPaths.length === 0) {
+      throw new Error('No valid audio file paths found for stitching');
+    }
+    
+    // Check for cached stitched audio
+    const sourceHashAudio = this.generateSourceHash(audioPaths);
+    const cachedAudio = this.getCachedIntermediateFile(project, 'stitched_audio');
+    
+    let stitchedAudioPath: string;
+    
+    if (cachedAudio && cachedAudio.sourceHash === sourceHashAudio) {
+      console.log(`[RenderingService] CUTOUT: Reusing cached stitched audio: ${cachedAudio.path}`);
+      stitchedAudioPath = cachedAudio.path;
+    } else {
+      // Generate new stitched audio with consistent filename
+      stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}.mp3`);
+      
+      console.log(`[RenderingService] CUTOUT: Stitching ${audioPaths.length} audio files...`);
     await this.videoCompositor.concatenateAudios(audioPaths, stitchedAudioPath);
+      
+      // Save to cache
+      await this.saveCachedIntermediateFile(projectId, 'stitched_audio', stitchedAudioPath, sourceHashAudio);
+      console.log(`[RenderingService] CUTOUT: Stitched audio cached`);
+    }
 
     await this.updateRenderingStatus(projectId, 'avatar_generating', 40);
 
     // Generate one avatar video from full stitched audio with green background
+    // Check if avatar video already exists from previous attempt
+    let avatarVideoPath: string | null = null;
+    let originalAvatarVideoPath: string | null = null;
+    const existingAvatarVideos = (project.avatarVideos as any) || [];
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    const existingAvatarVideo = existingAvatarVideos.find((av: any) => 
+      av.type === 'CUTOUT' && av.mode === avatarMode
+    );
+
+    if (existingAvatarVideo && existingAvatarVideo.originalPath && fs.existsSync(existingAvatarVideo.originalPath)) {
+      console.log(`[RenderingService] CUTOUT: Reusing existing avatar video from previous attempt: ${existingAvatarVideo.originalPath}`);
+      originalAvatarVideoPath = existingAvatarVideo.originalPath;
+      avatarVideoPath = existingAvatarVideo.originalPath;
+      
+      // Check if processed (transparent) version exists
+      if (existingAvatarVideo.processedPath && fs.existsSync(existingAvatarVideo.processedPath)) {
+        console.log(`[RenderingService] CUTOUT: Reusing existing processed video: ${existingAvatarVideo.processedPath}`);
+        avatarVideoPath = existingAvatarVideo.processedPath;
+      }
+      
+      // Ensure finalProcessedPath is set if not already set
+      if (!existingAvatarVideo.finalProcessedPath) {
+        const updatedProject = await this.databaseService.videoProject.findUnique({
+          where: { id: projectId },
+        });
+        const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+        const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+          av.type === 'CUTOUT' && av.mode === avatarMode
+        );
+        
+        if (avatarVideoIndex >= 0) {
+          updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
+          updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = existingAvatarVideo.processedUrl || existingAvatarVideo.originalUrl;
+          
+          await this.databaseService.videoProject.update({
+            where: { id: projectId },
+            data: {
+              avatarVideos: updatedAvatarVideos as any,
+            },
+          });
+        }
+      }
+    } else {
+      // Generate new avatar video
+      console.log(`[RenderingService] CUTOUT: Generating new avatar video...`);
+      
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
@@ -639,8 +1119,6 @@ export class RenderingService {
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
     const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV) - will be transparentImageKey for CUTOUT
 
-    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
-    const avatarMode = (project.avatarMode as string) || 'BASIC';
     console.log(`[RenderingService] CUTOUT: Using avatar mode: ${avatarMode}, imageKey: ${imageKey ? 'available' : 'not available'}`);
 
     let videoResponse: { video_id: string };
@@ -684,13 +1162,55 @@ export class RenderingService {
       throw new Error('Avatar video generation completed but no video URL');
     }
 
-    const avatarDir = path.join(userDir, 'avatars');
+      // Create directory structure: avatars/{projectId}/{styleType}/{avatarType}/
+      const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+      const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+      const avatarDir = path.join(userDir, 'avatars', projectId, styleType, avatarType);
     if (!fs.existsSync(avatarDir)) {
       fs.mkdirSync(avatarDir, { recursive: true });
     }
 
-    const avatarVideoPath = path.join(avatarDir, `avatar_full_${projectId}_${Date.now()}.mp4`);
-    await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+      // Use consistent filename based on projectId (not timestamp) for retry capability
+      const avatarVideoFilename = `avatar_full_${projectId}.mp4`;
+      originalAvatarVideoPath = path.join(avatarDir, avatarVideoFilename);
+      
+      // Only download if file doesn't exist
+      if (!fs.existsSync(originalAvatarVideoPath)) {
+        await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, originalAvatarVideoPath);
+        console.log(`[RenderingService] CUTOUT: Avatar video downloaded to: ${originalAvatarVideoPath}`);
+      } else {
+        console.log(`[RenderingService] CUTOUT: Avatar video already exists, skipping download: ${originalAvatarVideoPath}`);
+      }
+      
+      avatarVideoPath = originalAvatarVideoPath;
+      
+      // Save avatar video info to database for future retries
+      const avatarVideoInfo = {
+        type: 'CUTOUT',
+        mode: avatarMode,
+        originalPath: originalAvatarVideoPath,
+        originalUrl: `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${avatarVideoFilename}`,
+        videoId: videoResponse.video_id, // Use video_id from the generation response
+        videoUrl: completedVideo.data.video_url,
+        generatedAt: new Date().toISOString(),
+        dimensions: '1080x1920',
+      };
+      
+      // Update project with avatar video info
+      const updatedAvatarVideos = existingAvatarVideos.filter((av: any) => 
+        !(av.type === 'CUTOUT' && av.mode === avatarMode)
+      );
+      updatedAvatarVideos.push(avatarVideoInfo);
+      
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          avatarVideos: updatedAvatarVideos as any,
+        },
+      });
+      
+      console.log(`[RenderingService] CUTOUT: Avatar video info saved to database for retry capability`);
+    }
 
     // Check if video has transparent background, if not remove it
     let finalAvatarVideoPath = avatarVideoPath;
@@ -701,43 +1221,120 @@ export class RenderingService {
       console.log(`[RenderingService] CUTOUT: Avatar video doesn't have transparency, removing background using AI...`);
       await this.updateRenderingStatus(projectId, 'avatar_generating', 65);
       
+      // Use consistent filename for processed version
+      const transparentVideoFilename = `avatar_transparent_${projectId}.mp4`;
+      const transparentVideoPath = path.join(path.dirname(avatarVideoPath), transparentVideoFilename);
+      
+      // Check if processed version already exists
+      if (!fs.existsSync(transparentVideoPath)) {
       try {
         // Remove background from video using AI
-        const transparentVideoPath = path.join(avatarDir, `avatar_transparent_${projectId}_${Date.now()}.mp4`);
         await this.videoCompositor.removeBackgroundAI(
           avatarVideoPath,
           transparentVideoPath,
           'u2net_human_seg'
         );
         
+          if (fs.existsSync(transparentVideoPath)) {
         finalAvatarVideoPath = transparentVideoPath;
-        
-        // Cleanup original video if background removal succeeded
-        if (fs.existsSync(avatarVideoPath) && avatarVideoPath !== transparentVideoPath) {
-          try {
-            fs.unlinkSync(avatarVideoPath);
-            console.log(`[RenderingService] CUTOUT: Cleaned up original avatar video`);
-          } catch (e) {
-            console.warn(`[RenderingService] CUTOUT: Failed to cleanup original avatar video: ${e}`);
+            console.log(`[RenderingService] CUTOUT: ✅ Background removed successfully, using transparent video`);
+            
+            // Update database with processed path (don't delete original - keep it for retry)
+            // Refetch project to get latest avatarVideos
+            const updatedProject = await this.databaseService.videoProject.findUnique({
+              where: { id: projectId },
+            });
+            const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+            const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+              av.type === 'CUTOUT' && av.mode === avatarMode
+            );
+            
+            if (avatarVideoIndex >= 0) {
+              const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+              const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+              updatedAvatarVideos[avatarVideoIndex].processedPath = transparentVideoPath;
+              updatedAvatarVideos[avatarVideoIndex].processedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${transparentVideoFilename}`;
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = transparentVideoPath; // Final video used for composition
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${transparentVideoFilename}`;
+              
+              await this.databaseService.videoProject.update({
+                where: { id: projectId },
+                data: {
+                  avatarVideos: updatedAvatarVideos as any,
+                },
+              });
+              
+              console.log(`[RenderingService] CUTOUT: ✅ Processed video path saved to database`);
+            }
+          } else {
+            throw new Error('Background removal completed but output file not found');
           }
-        }
-        
-        console.log(`[RenderingService] CUTOUT: ✅ Background removed successfully, using transparent video`);
       } catch (bgRemovalError: any) {
         console.error(`[RenderingService] CUTOUT: ❌ Background removal failed: ${bgRemovalError.message}`);
-        console.log(`[RenderingService] CUTOUT: ⚠️  Using original video (may have background)`);
+          console.log(`[RenderingService] CUTOUT: ⚠️  Using original video (may have background, can retry later)`);
         // Continue with original video if background removal fails
+          // Original video is preserved, so user can retry background removal
         finalAvatarVideoPath = avatarVideoPath;
+          
+          // Still save the original as final processed path
+          const updatedProject = await this.databaseService.videoProject.findUnique({
+            where: { id: projectId },
+          });
+          const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+          const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+            av.type === 'CUTOUT' && av.mode === avatarMode
+          );
+          
+          if (avatarVideoIndex >= 0) {
+            const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+            const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+            updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
+            updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/avatar_full_${projectId}.mp4`;
+            
+            await this.databaseService.videoProject.update({
+              where: { id: projectId },
+              data: {
+                avatarVideos: updatedAvatarVideos as any,
+              },
+            });
+          }
+        }
+      } else {
+        console.log(`[RenderingService] CUTOUT: Processed video already exists, reusing: ${transparentVideoPath}`);
+        finalAvatarVideoPath = transparentVideoPath;
       }
     } else {
       console.log(`[RenderingService] CUTOUT: ✅ Avatar video already has transparent background`);
+      // Video already has transparency, so original is the final processed video
+      // Update database to mark this as the final processed path
+      const updatedProject = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+      });
+      const updatedAvatarVideos = (updatedProject?.avatarVideos as any) || [];
+      const avatarVideoIndex = updatedAvatarVideos.findIndex((av: any) => 
+        av.type === 'CUTOUT' && av.mode === avatarMode
+      );
+      
+      if (avatarVideoIndex >= 0) {
+        const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+        const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+        updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
+        updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/avatar_full_${projectId}.mp4`;
+        
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: {
+            avatarVideos: updatedAvatarVideos as any,
+          },
+        });
+        
+        console.log(`[RenderingService] CUTOUT: ✅ Final processed video path saved to database (already transparent)`);
+      }
     }
 
     await this.updateRenderingStatus(projectId, 'stitching_broll', 60);
 
     // Stitch all b-roll videos together
-    const stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}_${Date.now()}.mp4`);
-    
     // Log all videos for debugging
     console.log(`[RenderingService] CUTOUT: Processing ${sortedBrollVideos.length} b-roll videos:`, 
       sortedBrollVideos.map(v => ({
@@ -782,13 +1379,30 @@ export class RenderingService {
       })
       .filter((p): p is string => p !== null);
     
-    console.log(`[RenderingService] CUTOUT: Stitching ${brollVideoPaths.length} videos (filtered from ${sortedBrollVideos.length})`);
-    
     if (brollVideoPaths.length === 0) {
       throw new Error('No valid b-roll video paths found for stitching');
     }
     
+    // Check for cached stitched b-roll video
+    const sourceHashBroll = this.generateSourceHash(brollVideoPaths);
+    const cachedBroll = this.getCachedIntermediateFile(project, 'stitched_broll');
+    
+    let stitchedBrollPath: string;
+    
+    if (cachedBroll && cachedBroll.sourceHash === sourceHashBroll) {
+      console.log(`[RenderingService] CUTOUT: Reusing cached stitched b-roll video: ${cachedBroll.path}`);
+      stitchedBrollPath = cachedBroll.path;
+    } else {
+      // Generate new stitched b-roll video with consistent filename
+      stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}.mp4`);
+      
+      console.log(`[RenderingService] CUTOUT: Stitching ${brollVideoPaths.length} videos (filtered from ${sortedBrollVideos.length})...`);
     await this.videoCompositor.concatenateVideos(brollVideoPaths, stitchedBrollPath);
+      
+      // Save to cache
+      await this.saveCachedIntermediateFile(projectId, 'stitched_broll', stitchedBrollPath, sourceHashBroll);
+      console.log(`[RenderingService] CUTOUT: Stitched b-roll video cached`);
+    }
 
     // Add audio to stitched b-roll
     const stitchedBrollWithAudioPath = path.join(userDir, `stitched_broll_audio_${projectId}_${Date.now()}.mp4`);
@@ -890,7 +1504,10 @@ export class RenderingService {
     console.log(`[RenderingService] ALTERNATE: Using avatar mode: ${avatarMode}`);
 
     // Generate avatar videos for avatar scenes only (9:16 ratio)
-    const avatarDir = path.join(this.uploadsDir, 'videos', userId, 'avatars');
+    // Create directory structure: avatars/{projectId}/{styleType}/{avatarType}/
+    const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
+    const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+    const avatarDir = path.join(this.uploadsDir, 'videos', userId, 'avatars', projectId, styleType, avatarType);
     if (!fs.existsSync(avatarDir)) {
       fs.mkdirSync(avatarDir, { recursive: true });
     }

@@ -1,33 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 :root {
-  --background: #f5f5f5;
+  --background: #FFFDF9;
+  --background-alt: #FFFCF8;
   --foreground: #000000;
   --card: #ffffff;
   --text-primary: #000000;
-  --text-secondary: #666666;
+  --text-secondary: #574977;
   --text-muted: #999999;
   --border: #000000;
   --border-light: #e0e0e0;
+  
+  /* Primary Gradient Colors */
+  --color-primary-start: #E86412;
+  --color-primary-end: #F12A4C;
+  
+  /* Secondary Gradient Colors */
+  --color-secondary-start: #FFD3B7;
+  --color-secondary-end: #F6A6A6;
+  
+  /* Accent Color */
+  --color-accent: #E86512;
+  
+  /* Shadows */
+  --shadow-button: 0px 13.38px 35.679px rgba(242, 126, 53, 0.4);
+  --shadow-header: 0px 20px 35px -15px rgba(203, 190, 179, 0.25);
+  --shadow-card: 0px 2px 35.7px rgba(242, 126, 53, 0.12);
+  --shadow-modal: 0px 4px 22px rgba(242, 126, 53, 0.3);
+  
+  /* Border Radius */
+  --radius-button-lg: 40px;
+  --radius-button-md: 26px;
+  --radius-card: 12px;
+  --radius-header: 16px;
+  --radius-badge: 41px;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-background-alt: var(--background-alt);
   --color-foreground: var(--foreground);
-  --color-primary: #000000;
+  --color-primary: var(--color-primary-start);
+  --color-primary-start: var(--color-primary-start);
+  --color-primary-end: var(--color-primary-end);
   --color-secondary: #ffffff;
+  --color-secondary-start: var(--color-secondary-start);
+  --color-secondary-end: var(--color-secondary-end);
   --color-card: var(--card);
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
   --color-text-muted: var(--text-muted);
   --color-border: var(--border);
   --color-border-light: var(--border-light);
+  --color-accent: var(--color-accent);
   --font-sans: Inter, system-ui, sans-serif;
-  --font-heading: Inter, system-ui, sans-serif;
+  --font-heading: Outfit, Inter, system-ui, sans-serif;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+/* Gradient Utilities */
+.gradient-primary {
+  background: linear-gradient(90deg, var(--color-primary-start) 0%, var(--color-primary-end) 100%);
+}
+
+.gradient-secondary {
+  background: linear-gradient(90deg, var(--color-secondary-start) 0%, var(--color-secondary-end) 100%);
+}
+
+.gradient-overlay {
+  background: linear-gradient(116.46deg, rgba(191, 143, 100, 0.5) 17.88%, rgba(179, 104, 56, 0.5) 89.93%);
+}
+
+/* Shadow Utilities */
+.shadow-button {
+  box-shadow: var(--shadow-button);
+}
+
+.shadow-header {
+  box-shadow: var(--shadow-header);
+}
+
+.shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+.shadow-modal {
+  box-shadow: var(--shadow-modal);
 }

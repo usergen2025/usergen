@@ -91,6 +91,7 @@ export const typography = {
   body: {
     base: 'text-base text-black',
     large: 'text-lg text-black',
+    medium: 'text-base text-black',
     small: 'text-sm text-black',
     muted: 'text-base text-gray-600',
   },

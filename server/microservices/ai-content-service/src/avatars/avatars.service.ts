@@ -1,12 +1,14 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
 import { LoggerService } from '../common/logger/logger.service';
 import { HeyGenProvider } from './providers/heygen.provider';
+import { AvatarQueueService } from './queue/avatar-queue.service';
 import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import axios from 'axios';
 
 export interface UploadImageDto {
   imageBuffer: Buffer;
@@ -30,6 +32,8 @@ export class AvatarsService {
     private readonly logger: LoggerService,
     private readonly heygenProvider: HeyGenProvider,
     private readonly configService: ConfigService,
+    @Inject(forwardRef(() => AvatarQueueService))
+    private readonly avatarQueueService: AvatarQueueService,
   ) {}
 
   /**
@@ -77,7 +81,74 @@ export class AvatarsService {
     try {
       this.logger.log(`Creating avatar from upload for user ${dto.userId}`, 'AvatarsService');
 
-      // Create avatar record with temporary name first
+      // Get original image buffer for processing
+      let imageBuffer: Buffer | null = null;
+      let originalImagePath: string | null = null;
+      
+      if (dto.originalImageUrl) {
+        // Try to read from local file path
+        try {
+          // originalImageUrl format: /uploads/avatars/{userId}/{filename}
+          // OR new format: /uploads/avatars/{userId}/{avatarId}/{filename}
+          const urlMatch = dto.originalImageUrl.match(/\/uploads\/avatars\/([^\/]+)\/(.+)$/);
+          
+          if (urlMatch) {
+            const [, urlUserId, filename] = urlMatch;
+            
+            // Try multiple possible locations for uploads directory
+            const uploadsBasePaths = [
+              path.join(process.cwd(), 'uploads', 'avatars', urlUserId, filename), // Primary location
+              path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlUserId, filename),
+              path.join(process.cwd(), '..', '..', 'uploads', 'avatars', urlUserId, filename),
+              path.join(process.cwd(), '..', 'uploads', 'avatars', urlUserId, filename),
+            ];
+            
+            for (const filePath of uploadsBasePaths) {
+              if (fs.existsSync(filePath)) {
+                imageBuffer = fs.readFileSync(filePath);
+                originalImagePath = filePath;
+                this.logger.log(`Read image buffer from: ${filePath}`, 'AvatarsService');
+                break;
+              }
+            }
+            
+            if (!imageBuffer) {
+              this.logger.warn(`Image file not found. Tried paths: ${uploadsBasePaths.join(', ')}`, 'AvatarsService');
+            }
+          } else {
+            // Try direct path if URL format doesn't match
+            const directPath = dto.originalImageUrl.startsWith('/') 
+              ? dto.originalImageUrl.slice(1)
+              : dto.originalImageUrl;
+            
+            const possiblePaths = [
+              path.join(process.cwd(), directPath),
+              path.join(process.cwd(), 'microservices', 'ai-content-service', directPath),
+              path.join(process.cwd(), '..', '..', directPath),
+              directPath,
+            ];
+            
+            for (const possiblePath of possiblePaths) {
+              if (fs.existsSync(possiblePath)) {
+                imageBuffer = fs.readFileSync(possiblePath);
+                originalImagePath = possiblePath;
+                this.logger.log(`Read image buffer from: ${possiblePath}`, 'AvatarsService');
+                break;
+              }
+            }
+          }
+        } catch (error: any) {
+          this.logger.warn(`Failed to read image from local path: ${error.message}`, 'AvatarsService');
+        }
+      }
+
+      // If we couldn't get buffer from local file, log warning but continue
+      // Image processing will be skipped for this avatar (will use default imageKey)
+      if (!imageBuffer) {
+        this.logger.warn(`Image buffer not available for avatar ${dto.userId}, image processing will be skipped. originalImageUrl: ${dto.originalImageUrl}`, 'AvatarsService');
+      }
+
+      // Create avatar record first (avatarId will be available after this)
       const avatar = await this.databaseService.avatar.create({
         data: {
           userId: dto.userId,
@@ -100,6 +171,45 @@ export class AvatarsService {
         },
       });
 
+      // NOW avatarId is available - move original image to avatarId directory
+      if (originalImagePath && fs.existsSync(originalImagePath)) {
+        try {
+          const avatarDir = path.join(process.cwd(), 'uploads', 'avatars', dto.userId, avatar.id);
+          if (!fs.existsSync(avatarDir)) {
+            fs.mkdirSync(avatarDir, { recursive: true });
+          }
+          
+          const newImagePath = path.join(avatarDir, 'original.jpg');
+          
+          // Use copy instead of rename to avoid issues if file is in use
+          fs.copyFileSync(originalImagePath, newImagePath);
+          
+          // Optionally delete old file after successful copy
+          try {
+            fs.unlinkSync(originalImagePath);
+          } catch (unlinkError) {
+            this.logger.warn(`Failed to delete old image file: ${unlinkError}`, 'AvatarsService');
+          }
+          
+          // Update originalImageUrl to new path
+          const newImageUrl = `/uploads/avatars/${dto.userId}/${avatar.id}/original.jpg`;
+          await this.databaseService.avatar.update({
+            where: { id: avatar.id },
+            data: {
+              originalImageUrl: newImageUrl,
+            },
+          });
+          
+          // Update imageBuffer to use new path for processing
+          imageBuffer = fs.readFileSync(newImagePath);
+          
+          this.logger.log(`Moved original image to: ${newImagePath}`, 'AvatarsService');
+        } catch (moveError: any) {
+          this.logger.error(`Failed to move original image: ${moveError.message}`, moveError.stack, 'AvatarsService');
+          // Continue even if move fails - image processing can still use original path
+        }
+      }
+
       // Create initial job for uploading image
       const uploadJob = await this.databaseService.avatarGenerationJob.create({
         data: {
@@ -114,6 +224,22 @@ export class AvatarsService {
           },
         },
       });
+
+      // Add image processing job to queue (avatarId is now available)
+      if (imageBuffer) {
+        try {
+          await this.avatarQueueService.addImageProcessingJob({
+            avatarId: avatar.id, // ✅ avatarId is available here
+            userId: dto.userId,
+            imageBuffer: imageBuffer,
+            originalImageKey: dto.imageKey,
+          });
+          this.logger.log(`Added image processing job to queue for avatar ${avatar.id}`, 'AvatarsService');
+        } catch (error: any) {
+          this.logger.error(`Failed to add image processing job: ${error.message}`, error.stack, 'AvatarsService');
+          // Don't fail avatar creation if image processing fails
+        }
+      }
 
       // Start background process: Create group -> Train -> Generate looks -> Add motion
       const createGroupJob = await this.databaseService.avatarGenerationJob.create({
@@ -732,14 +858,31 @@ export class AvatarsService {
       const { avatar, metadata } = result as { avatar: any; metadata: any };
 
       try {
-        if (!avatar.originalImageUrl) {
-          throw new Error('Original image URL not found. Cannot create transparent version.');
-        }
-
-        // Get absolute path to original image
-        const imagePath = path.join(process.cwd(), avatar.originalImageUrl.replace(/^\/uploads\//, 'uploads/'));
-        if (!fs.existsSync(imagePath)) {
-          throw new Error(`Original image file not found: ${imagePath}`);
+        // Try to use processed 1080x1920 image first (for Premium avatars)
+        const processedImagePath = path.join(
+          process.cwd(),
+          'uploads',
+          'avatars',
+          avatar.userId,
+          avatarId,
+          'full_9x16_1080x1920.jpg'
+        );
+        
+        let imagePath: string;
+        
+        if (fs.existsSync(processedImagePath)) {
+          imagePath = processedImagePath;
+          this.logger.log(`[TransparentAvatar] Using processed 1080x1920 image: ${imagePath}`, 'AvatarsService');
+        } else {
+          // Fallback to original for old avatars
+          if (!avatar.originalImageUrl) {
+            throw new Error('Neither processed nor original image found. Cannot create transparent version.');
+          }
+          imagePath = path.join(process.cwd(), avatar.originalImageUrl.replace(/^\/uploads\//, 'uploads/'));
+          if (!fs.existsSync(imagePath)) {
+            throw new Error(`Original image file not found: ${imagePath}`);
+          }
+          this.logger.log(`[TransparentAvatar] Processed image not found, using original: ${imagePath}`, 'AvatarsService');
         }
 
         this.logger.log(`[TransparentAvatar] Removing background from image: ${imagePath}`, 'AvatarsService');
@@ -829,7 +972,11 @@ export class AvatarsService {
       throw new Error(`Background removal script not found: ${scriptPath}`);
     }
 
-    const command = `python3 "${scriptPath}" "${inputPath}" "${outputPath}" "u2net_human_seg"`;
+    // Try to use venv Python if available, otherwise fall back to system python3
+    const venvPython = path.join(process.cwd(), 'venv', 'bin', 'python3');
+    const pythonCommand = fs.existsSync(venvPython) ? venvPython : 'python3';
+    
+    const command = `${pythonCommand} "${scriptPath}" "${inputPath}" "${outputPath}" "u2net_human_seg"`;
     
     this.logger.log(`[TransparentAvatar] Executing background removal: ${command}`, 'AvatarsService');
     
@@ -843,7 +990,149 @@ export class AvatarsService {
       this.logger.log(`[TransparentAvatar] Background removal completed: ${outputPath}`, 'AvatarsService');
     } catch (error: any) {
       this.logger.error(`[TransparentAvatar] Background removal failed: ${error.message}`, 'AvatarsService');
+      
+      // Provide helpful error message if rembg is not installed
+      if (error.message && error.message.includes('No module named \'rembg\'')) {
+        const venvPath = path.join(process.cwd(), 'venv');
+        const requirementsPath = path.join(process.cwd(), 'scripts', 'requirements.txt');
+        throw new Error(
+          `rembg module not found. Please install Python dependencies:\n` +
+          `1. Create virtual environment: python3 -m venv venv\n` +
+          `2. Activate it: source venv/bin/activate\n` +
+          `3. Install dependencies: pip install -r ${requirementsPath}\n` +
+          `Note: Python 3.8-3.13 is recommended (Python 3.14 may not be compatible with onnxruntime)`
+        );
+      }
+      
       throw new Error(`Background removal failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Process images on-demand for old avatars that don't have processed images
+   */
+  async processAvatarImagesOnDemand(avatarId: string, userId: string): Promise<{ jobId: string; message: string }> {
+    try {
+      // Fetch avatar record
+      const avatar = await this.databaseService.avatar.findFirst({
+        where: { id: avatarId, userId },
+      });
+
+      if (!avatar) {
+        throw new NotFoundException(`Avatar ${avatarId} not found for user ${userId}`);
+      }
+
+      // Check if processed images already exist
+      if (avatar.imageKeyHalfNHalf && avatar.imageKeyHalfNHalfWithWhite) {
+        this.logger.log(`Avatar ${avatarId} already has processed images`, 'AvatarsService');
+        return {
+          jobId: '',
+          message: 'Avatar already has processed images',
+        };
+      }
+
+      // Get original image buffer
+      let imageBuffer: Buffer | null = null;
+      let originalImagePath: string | null = null;
+      
+      if (avatar.originalImageUrl) {
+        // Try both old and new path formats
+        const urlMatch = avatar.originalImageUrl.match(/\/uploads\/avatars\/([^\/]+)\/([^\/]+)\/(.+)$/) ||
+                         avatar.originalImageUrl.match(/\/uploads\/avatars\/([^\/]+)\/(.+)$/);
+        
+        if (urlMatch) {
+          let filePath: string | null = null;
+          
+          if (urlMatch.length === 4) {
+            // New format: /uploads/avatars/{userId}/{avatarId}/{filename}
+            const [, urlUserId, avatarIdFromUrl, filename] = urlMatch;
+            const possiblePaths = [
+              path.join(process.cwd(), 'uploads', 'avatars', urlUserId, avatarIdFromUrl, filename),
+              path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlUserId, avatarIdFromUrl, filename),
+            ];
+            
+            for (const possiblePath of possiblePaths) {
+              if (fs.existsSync(possiblePath)) {
+                filePath = possiblePath;
+                break;
+              }
+            }
+          } else {
+            // Old format: /uploads/avatars/{userId}/{filename}
+            const [, urlUserId, filename] = urlMatch;
+            const possiblePaths = [
+              path.join(process.cwd(), 'uploads', 'avatars', urlUserId, filename),
+              path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlUserId, filename),
+              path.join(process.cwd(), '..', '..', 'uploads', 'avatars', urlUserId, filename),
+              path.join(process.cwd(), '..', 'uploads', 'avatars', urlUserId, filename),
+            ];
+            
+            for (const possiblePath of possiblePaths) {
+              if (fs.existsSync(possiblePath)) {
+                filePath = possiblePath;
+                break;
+              }
+            }
+          }
+          
+          if (filePath && fs.existsSync(filePath)) {
+            imageBuffer = fs.readFileSync(filePath);
+            originalImagePath = filePath;
+          }
+        }
+      }
+
+      if (!imageBuffer) {
+        throw new BadRequestException('Cannot process images: Original image file not found locally. Please ensure originalImageUrl is valid.');
+      }
+
+      // Ensure avatar directory exists (new structure)
+      const avatarDir = path.join(process.cwd(), 'uploads', 'avatars', userId, avatarId);
+      if (!fs.existsSync(avatarDir)) {
+        fs.mkdirSync(avatarDir, { recursive: true });
+      }
+
+      // Move original image to new structure if it's in old location
+      if (originalImagePath && avatar.originalImageUrl && !avatar.originalImageUrl.includes(`/${avatarId}/`)) {
+        const oldPathMatch = avatar.originalImageUrl.match(/\/uploads\/avatars\/([^\/]+)\/(.+)$/);
+        if (oldPathMatch) {
+          const [, urlUserId, filename] = oldPathMatch;
+          const oldPath = path.join(process.cwd(), 'uploads', 'avatars', urlUserId, filename);
+          
+          if (fs.existsSync(oldPath)) {
+            const newImagePath = path.join(avatarDir, 'original.jpg');
+            fs.copyFileSync(oldPath, newImagePath);
+            
+            await this.databaseService.avatar.update({
+              where: { id: avatarId },
+              data: {
+                originalImageUrl: `/uploads/avatars/${userId}/${avatarId}/original.jpg`,
+              },
+            });
+            
+            imageBuffer = fs.readFileSync(newImagePath);
+            this.logger.log(`Moved original image to new structure: ${newImagePath}`, 'AvatarsService');
+          }
+        }
+      }
+
+      // Queue image processing job
+      const jobId = await this.avatarQueueService.addImageProcessingJob({
+        avatarId: avatarId,
+        userId: userId,
+        imageBuffer: imageBuffer,
+        originalImageKey: avatar.imageKey || '',
+      });
+
+      this.logger.log(`Queued image processing for old avatar ${avatarId}`, 'AvatarsService');
+
+      return {
+        jobId,
+        message: 'Image processing job queued successfully',
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to process images on-demand: ${error.message}`, error.stack, 'AvatarsService');
+      throw error;
     }
   }
 }
