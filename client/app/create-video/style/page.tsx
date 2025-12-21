@@ -13,6 +13,7 @@ import { VideoStyle } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 // Map frontend style to backend enum
 const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' => {
@@ -40,7 +41,10 @@ function StylePageContent() {
   const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
   const { showToast } = useToast();
-  const [projectId, setProjectId] = useState<string | null>(null);
+  const projectIdFromUrl = searchParams.get('projectId');
+  const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [selectedStyle, setSelectedStyle] = useState<VideoStyle | null>(null);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [captionText, setCaptionText] = useState('The quick brown fox jumps over the lazy dog');
@@ -309,7 +313,7 @@ function StylePageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

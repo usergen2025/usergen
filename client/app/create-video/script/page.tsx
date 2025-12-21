@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X, Send, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, X, Send, Loader2, RefreshCw, Edit2, Check, X as XIcon } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -10,6 +10,7 @@ import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 function ScriptPageContent() {
   const router = useRouter();
@@ -17,6 +18,8 @@ function ScriptPageContent() {
   const { showToast } = useToast();
   const projectIdFromUrl = searchParams.get('projectId');
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   
   const [script, setScript] = useState<any>(null);
   const [scriptFormatted, setScriptFormatted] = useState<string>('');
@@ -30,6 +33,9 @@ function ScriptPageContent() {
   const [videoStyle, setVideoStyle] = useState<'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | null>(null);
   const [lastUserPrompt, setLastUserPrompt] = useState<string>('');
   const [isInitialized, setIsInitialized] = useState(false);
+  const [editingScene, setEditingScene] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState<string>('');
+  const [regeneratingScenes, setRegeneratingScenes] = useState<Set<number>>(new Set());
 
   // Reset state on mount or when projectId changes
   useEffect(() => {
@@ -78,11 +84,19 @@ function ScriptPageContent() {
               setScript(scriptData);
               // Format existing script for display
               setScriptFormatted(formatScriptForDisplay(scriptData));
+              
+              // Try to extract lastUserPrompt from project metadata or use a default
+              // If we have the script, we can infer the prompt might be stored elsewhere
+              // For now, we'll set it to empty and let user regenerate with new prompt
+              // In future, we could store originalPrompt in project metadata
             } catch (e) {
               // If script is already a formatted string
               setScriptFormatted(response.data.script);
             }
           }
+          
+          // Set project to access it later
+          setProject(response.data);
           
           setIsInitialized(true);
         }
@@ -136,6 +150,10 @@ function ScriptPageContent() {
         formatted += `   👤 **Avatar:** ${scene.avatar_action}\n`;
       }
       
+      if (scene.avatar_motion) {
+        formatted += `   🎭 **Motion:** ${scene.avatar_motion}\n`;
+      }
+      
       if (scene.avatar_cutout_position) {
         formatted += `   📍 **Position:** ${scene.avatar_cutout_position}\n`;
       }
@@ -155,6 +173,16 @@ function ScriptPageContent() {
     }
 
     return formatted;
+  };
+
+  // Simplified format: returns array of scenes with just scene number and voiceover
+  const formatScriptSimple = (scriptData: any): Array<{ sceneNumber: number; voiceover: string; scene: any }> => {
+    const scenes = scriptData.scenes || scriptData.scene_plan || [];
+    return scenes.map((scene: any, index: number) => ({
+      sceneNumber: scene.scene_number || scene.sceneNumber || (index + 1),
+      voiceover: scene.voiceover || '',
+      scene: scene, // Keep full scene object for updates
+    }));
   };
 
   const handleOptionSelect = (option: 'own-script' | 'generate-ai') => {
@@ -270,7 +298,7 @@ function ScriptPageContent() {
           }
 
           setScript(scriptData);
-          setScriptFormatted(formattedScript);
+          setScriptFormatted(formatScriptForDisplay(scriptData));
           
           // Add AI response to chat
           setChatMessages(prev => [...prev, { 
@@ -310,7 +338,17 @@ function ScriptPageContent() {
   };
 
   const handleRegenerate = async () => {
-    if (!lastUserPrompt) return;
+    // If no lastUserPrompt, try to extract from script or use a generic prompt
+    let promptToUse = lastUserPrompt;
+    if (!promptToUse && script) {
+      // Try to infer from script content or use a generic prompt
+      promptToUse = 'Regenerate the entire video script with new creative variations';
+    }
+    
+    if (!promptToUse) {
+      showToast('Please generate a script first before regenerating', 'warning');
+      return;
+    }
     
     // Get current projectId to ensure we're working with the right project
     const currentProjectId = projectId || projectIdFromUrl;
@@ -343,7 +381,7 @@ function ScriptPageContent() {
     setIsGenerating(true);
     try {
       const response = await apiClient.generateVideoScript({
-        userPrompt: lastUserPrompt,
+        userPrompt: promptToUse,
         videoStyle: styleToUse,
         projectId: currentProjectId,
       });
@@ -371,7 +409,12 @@ function ScriptPageContent() {
         }
 
         setScript(scriptData);
-        setScriptFormatted(formattedScript);
+        setScriptFormatted(formatScriptForDisplay(scriptData));
+        
+        // Update lastUserPrompt if we used a different prompt
+        if (promptToUse !== lastUserPrompt) {
+          setLastUserPrompt(promptToUse);
+        }
         
         showToast('Script regenerated! A new version of your script has been generated.', 'success');
       } else {
@@ -382,6 +425,153 @@ function ScriptPageContent() {
       showToast(error.response?.data?.message || error.message || 'Failed to regenerate script. An error occurred', 'error');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleEditScene = (sceneNumber: number, currentVoiceover: string) => {
+    setEditingScene(sceneNumber);
+    setEditValue(currentVoiceover);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingScene(null);
+    setEditValue('');
+  };
+
+  const handleSaveEdit = async (sceneNumber: number) => {
+    if (!script || !videoStyle) {
+      showToast('Missing required information for editing', 'error');
+      return;
+    }
+    
+    // Use lastUserPrompt if available, otherwise use a generic prompt
+    const promptToUse = lastUserPrompt || 'Update the scene with the provided voiceover';
+
+    const currentProjectId = projectId || projectIdFromUrl;
+    if (!currentProjectId) {
+      showToast('Project not found', 'error');
+      return;
+    }
+
+    try {
+      const response = await apiClient.regenerateScene({
+        sceneNumber,
+        videoStyle,
+        existingScript: script,
+        originalUserPrompt: promptToUse,
+        operation: 'edit',
+        newVoiceover: editValue.trim(),
+      });
+
+      if (response.success && response.data) {
+        const updatedScene = response.data.scene;
+        
+        // Update the scene in the script
+        const scenes = script.scenes || script.scene_plan || [];
+        const sceneIndex = scenes.findIndex((s: any) => 
+          (s.scene_number || s.sceneNumber) === sceneNumber
+        );
+
+        if (sceneIndex >= 0) {
+          const updatedScenes = [...scenes];
+          updatedScenes[sceneIndex] = updatedScene;
+          
+          const updatedScript = {
+            ...script,
+            scenes: script.scenes ? updatedScenes : undefined,
+            scene_plan: script.scene_plan ? updatedScenes : undefined,
+          };
+
+          // Save to database
+          await apiClient.updateVideoProject(currentProjectId, {
+            script: JSON.stringify(updatedScript),
+          });
+
+          setScript(updatedScript);
+          setScriptFormatted(formatScriptForDisplay(updatedScript));
+          setEditingScene(null);
+          setEditValue('');
+          
+          showToast(`Scene ${sceneNumber} updated successfully!`, 'success');
+        }
+      } else {
+        throw new Error(response.message || 'Failed to edit scene');
+      }
+    } catch (error: any) {
+      console.error('Failed to edit scene:', error);
+      showToast(error.response?.data?.message || error.message || 'Failed to edit scene', 'error');
+    }
+  };
+
+  const handleRegenerateScene = async (sceneNumber: number) => {
+    if (!script || !videoStyle) {
+      showToast('Missing required information for regeneration', 'error');
+      return;
+    }
+    
+    // Use lastUserPrompt if available, otherwise use a generic prompt based on script
+    const promptToUse = lastUserPrompt || 'Regenerate the scene with new creative content';
+
+    const currentProjectId = projectId || projectIdFromUrl;
+    if (!currentProjectId) {
+      showToast('Project not found', 'error');
+      return;
+    }
+
+    // Add to regenerating set
+    setRegeneratingScenes(prev => new Set(prev).add(sceneNumber));
+
+    try {
+      const response = await apiClient.regenerateScene({
+        sceneNumber,
+        videoStyle,
+        existingScript: script,
+        originalUserPrompt: promptToUse,
+        operation: 'regenerate',
+      });
+
+      if (response.success && response.data) {
+        const updatedScene = response.data.scene;
+        
+        // Update the scene in the script
+        const scenes = script.scenes || script.scene_plan || [];
+        const sceneIndex = scenes.findIndex((s: any) => 
+          (s.scene_number || s.sceneNumber) === sceneNumber
+        );
+
+        if (sceneIndex >= 0) {
+          const updatedScenes = [...scenes];
+          updatedScenes[sceneIndex] = updatedScene;
+          
+          const updatedScript = {
+            ...script,
+            scenes: script.scenes ? updatedScenes : undefined,
+            scene_plan: script.scene_plan ? updatedScenes : undefined,
+          };
+
+          // Save to database
+          await apiClient.updateVideoProject(currentProjectId, {
+            script: JSON.stringify(updatedScript),
+          });
+
+          setScript(updatedScript);
+          setScriptFormatted(formatScriptForDisplay(updatedScript));
+          
+          showToast(`Scene ${sceneNumber} regenerated successfully!`, 'success');
+        }
+      } else {
+        throw new Error(response.message || 'Failed to regenerate scene');
+      }
+    } catch (error: any) {
+      console.error('Failed to regenerate scene:', error);
+      showToast(error.response?.data?.message || error.message || 'Failed to regenerate scene', 'error');
+    } finally {
+      // Remove from regenerating set
+      setRegeneratingScenes(prev => {
+        const next = new Set(prev);
+        next.delete(sceneNumber);
+        return next;
+      });
     }
   };
 
@@ -405,7 +595,7 @@ function ScriptPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
@@ -507,29 +697,111 @@ function ScriptPageContent() {
                     </div>
                   )}
 
-                  {/* Display generated script */}
-                  {script && scriptFormatted && !isGenerating && (
+                  {/* Display generated script - Simplified view */}
+                  {script && !isGenerating && (
                     <div className="bg-secondary border border-border rounded-lg p-4 mr-auto max-w-[90%] space-y-3">
                       <div className="flex items-center justify-between mb-2">
                         <h4 className={cn(typography.heading.h6, "text-primary")}>Generated Script</h4>
-                          <Button
-                            variant="outline"
-                            size="sm"
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={handleRegenerate}
                           disabled={isGenerating || !videoStyle}
                           className="flex items-center gap-2"
-                          >
+                        >
                           <RefreshCw className={cn("w-4 h-4", isGenerating && "animate-spin")} />
-                            Regenerate
-                          </Button>
-                        </div>
-                      <div className="bg-background rounded-lg p-4 border border-border">
-                        <pre className={cn(typography.body.small, "whitespace-pre-wrap font-sans")}>
-                          {scriptFormatted}
-                        </pre>
-                        </div>
+                          Regenerate All
+                        </Button>
                       </div>
-                    )}
+                      <div className="bg-background rounded-lg p-4 border border-border space-y-3">
+                        {formatScriptSimple(script).map((item) => {
+                          const isRegenerating = regeneratingScenes.has(item.sceneNumber);
+                          const isEditing = editingScene === item.sceneNumber;
+                          
+                          return (
+                            <div key={item.sceneNumber} className="flex items-start gap-3 p-3 rounded-lg hover:bg-secondary/50 transition-colors">
+                              {/* Scene number and voiceover */}
+                              <div className="flex-1 min-w-0">
+                                {isRegenerating ? (
+                                  // Shimmer effect while regenerating
+                                  <div className="space-y-2">
+                                    <div className="h-5 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-24"></div>
+                                    <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-full"></div>
+                                    <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-3/4"></div>
+                                  </div>
+                                ) : isEditing ? (
+                                  // Edit mode
+                                  <div className="space-y-2">
+                                    <div className={cn(typography.body.medium, "font-semibold")}>
+                                      Scene {item.sceneNumber}:
+                                    </div>
+                                    <textarea
+                                      value={editValue}
+                                      onChange={(e) => setEditValue(e.target.value)}
+                                      className="w-full px-3 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                                      rows={3}
+                                      autoFocus
+                                    />
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="primary"
+                                        size="sm"
+                                        onClick={() => handleSaveEdit(item.sceneNumber)}
+                                        className="flex items-center gap-1"
+                                      >
+                                        <Check className="w-4 h-4" />
+                                        Save
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={handleCancelEdit}
+                                        className="flex items-center gap-1"
+                                      >
+                                        <XIcon className="w-4 h-4" />
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  // Display mode
+                                  <div>
+                                    <div className={cn(typography.body.medium, "font-semibold mb-1")}>
+                                      Scene {item.sceneNumber}:
+                                    </div>
+                                    <div className={cn(typography.body.small, "text-text-secondary")}>
+                                      "{item.voiceover}"
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                              
+                              {/* Action buttons - only show when not regenerating or editing */}
+                              {!isRegenerating && !isEditing && (
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <button
+                                    onClick={() => handleEditScene(item.sceneNumber, item.voiceover)}
+                                    className="p-2 hover:bg-primary-light rounded-lg transition-colors"
+                                    title="Edit voiceover"
+                                  >
+                                    <Edit2 className="w-4 h-4 text-text-secondary hover:text-primary" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleRegenerateScene(item.sceneNumber)}
+                                    disabled={!videoStyle}
+                                    className="p-2 hover:bg-primary-light rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="Regenerate scene"
+                                  >
+                                    <RefreshCw className="w-4 h-4 text-text-secondary hover:text-primary" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   </div>
 
                   <div className="flex gap-2">

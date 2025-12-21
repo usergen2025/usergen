@@ -16,6 +16,8 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } 
 import { VideoService } from './video.service';
 import { RenderingService } from '../rendering/rendering.service';
 import { QueueManagerService } from '../common/queue/queue-manager.service';
+import { ModelRegistryService } from '../rendering/providers/model-registry.service';
+import { PublicUrlService } from '../common/storage/public-url.service';
 import {
   CreateVideoProjectDto,
   UpdateVideoProjectDto,
@@ -23,6 +25,7 @@ import {
 } from './dto/video-project.dto';
 import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
+import { buildAudioGenerationConfig, shouldRegenerateAudio } from '../common/utils/audio-config.util';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -32,6 +35,8 @@ export class VideoController {
     private readonly renderingService: RenderingService,
     private readonly queueManager: QueueManagerService,
     private readonly configService: ConfigService,
+    private readonly modelRegistry: ModelRegistryService,
+    private readonly publicUrlService: PublicUrlService,
   ) {}
 
   /**
@@ -118,6 +123,75 @@ export class VideoController {
     }
 
     return await this.videoService.getActiveProject(userId);
+  }
+
+  @Get('image-generation-models')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get available image generation models', description: 'Returns list of all available image generation models' })
+  @ApiResponse({ status: 200, description: 'Models retrieved successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getImageGenerationModels(@Request() req: any) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    // Get models with their keys (Map keys like 'model-1', 'model-2', etc.)
+    const modelsWithKeys = this.modelRegistry.getAllModelsWithKeys();
+    return {
+      success: true,
+      data: {
+        models: modelsWithKeys.map(([key, model]) => ({
+          id: key, // Use Map key ('model-1', 'model-2', etc.) as the id
+          displayName: model.displayName, // "Model 1"
+          platform: model.platform,
+          defaultConfig: model.defaultConfig,
+          capabilities: {
+            supportsAspectRatio: model.capabilities.supportsAspectRatio,
+            supportsResolution: model.capabilities.supportsResolution,
+            supportsNumImages: model.capabilities.supportsNumImages,
+            isAsync: model.capabilities.isAsync,
+          },
+        })),
+        default: 'model-1',
+      },
+    };
+  }
+
+  @Get('video-generation-models')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get available video generation models', description: 'Returns list of all available video generation models' })
+  @ApiResponse({ status: 200, description: 'Models retrieved successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getVideoGenerationModels(@Request() req: any) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    // Get video models with their keys (Map keys like 'video-model-1', 'video-model-2', etc.)
+    const modelsWithKeys = this.modelRegistry.getAllVideoModelsWithKeys();
+    return {
+      success: true,
+      data: {
+        models: modelsWithKeys.map(([key, model]) => ({
+          id: key, // Use Map key ('video-model-1', 'video-model-2', etc.) as the id
+          displayName: model.displayName, // "Model 1"
+          platform: model.platform,
+          defaultConfig: model.defaultConfig,
+          capabilities: {
+            supportsAspectRatio: model.capabilities.supportsAspectRatio,
+            supportsResolution: model.capabilities.supportsResolution,
+            supportsDuration: model.capabilities.supportsDuration,
+            supportedDurations: model.capabilities.supportedDurations,
+            minDuration: model.capabilities.minDuration,
+            maxDuration: model.capabilities.maxDuration,
+            isAsync: model.capabilities.isAsync,
+          },
+        })),
+        default: 'video-model-1',
+      },
+    };
   }
 
   @Get(':projectId')
@@ -249,14 +323,52 @@ export class VideoController {
   @Post(':projectId/generate-audio')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
-  @ApiOperation({ summary: 'Generate audio files', description: 'Queue audio generation for all scenes' })
-  @ApiResponse({ status: 200, description: 'Audio generation queued successfully' })
+  @ApiOperation({ summary: 'Generate audio files', description: 'Queue audio generation for all scenes. Skips regeneration if config matches existing audio.' })
+  @ApiResponse({ status: 200, description: 'Audio generation queued successfully or existing audio returned' })
   async generateAudio(@Request() req: any, @Param('projectId') projectId: string) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
       throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
     }
 
+    // Fetch project to check current state
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data;
+    const existingAudioFiles = (projectData.audioFiles as any[]) || null;
+    const storedConfig = (projectData.audioGenerationConfig as any) || null;
+
+    // Build current config from project data
+    const currentConfig = buildAudioGenerationConfig(
+      projectData.voiceId,
+      projectData.voiceType,
+      projectData.script,
+      'eleven_multilingual_v2', // Default model
+      'mp3_44100_128', // Default format
+      existingAudioFiles?.length || 0,
+    );
+
+    // Check if regeneration is needed
+    const needsRegeneration = shouldRegenerateAudio(currentConfig, storedConfig, existingAudioFiles);
+
+    if (!needsRegeneration && existingAudioFiles && existingAudioFiles.length > 0) {
+      // No regeneration needed, return existing audio
+      console.log(`[VideoController] Audio already generated with matching config for project ${projectId}, skipping regeneration`);
+      return {
+        success: true,
+        data: {
+          existing: true,
+          audioFiles: existingAudioFiles,
+          message: 'Audio already generated with matching configuration',
+        },
+        message: 'Using existing audio files',
+      };
+    }
+
+    // Regeneration needed, queue job
     const authToken = req.headers?.authorization || null;
     const jobId = await this.queueManager.addAudioGenerationJob({
       projectId,
@@ -281,7 +393,13 @@ export class VideoController {
     @Request() req: any,
     @Param('projectId') projectId: string,
     @Param('sceneNumber') sceneNumber: string,
-    @Body() body: { prompt?: string; force?: boolean } = {},
+    @Body() body: { 
+      prompt?: string; 
+      force?: boolean;
+      modelId?: string; // e.g., "model-1", "model-2", etc.
+      aspectRatio?: string; // Optional override
+      resolution?: string; // Optional override
+    } = {},
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
@@ -328,11 +446,17 @@ export class VideoController {
       throw new HttpException('Image prompt not found for this scene', HttpStatus.BAD_REQUEST);
     }
 
+    // Get model ID from body or use default
+    const modelId = body.modelId || 'model-1'; // Default to Model 1 (FAL imagen4)
+
     const jobId = await this.queueManager.addImageGenerationJob({
       projectId,
       userId,
       sceneNumber: sceneNum,
       prompt,
+      modelId, // Pass model selection
+      aspectRatio: body.aspectRatio, // Optional override
+      resolution: body.resolution, // Optional override
     });
 
     return {
@@ -352,7 +476,7 @@ export class VideoController {
     @Request() req: any,
     @Param('projectId') projectId: string,
     @Param('sceneNumber') sceneNumber: string,
-    @Body() body: { force?: boolean } = {},
+    @Body() body: { force?: boolean; modelId?: string } = {},
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
@@ -392,8 +516,35 @@ export class VideoController {
     const bRollImages = (project.data.bRollImages as any[]) || [];
     const image = bRollImages.find((img: any) => img.sceneNumber === sceneNum);
 
-    if (!image || !image.imageUrl) {
+    if (!image) {
       throw new HttpException('Image not found for this scene', HttpStatus.BAD_REQUEST);
+    }
+
+    // Get public URL for the image - prefer local file over provider URL (which may expire)
+    let publicImageUrl: string;
+    if (image.localPath && image.localUrl) {
+      try {
+        // Use local file and get public URL (uploads to FAL in local, uses backend URL in dev/prod)
+        console.log(`[VideoController] Using local file for scene ${sceneNum}: ${image.localPath}`);
+        publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
+        console.log(`[VideoController] ✅ Got public URL for local file: ${publicImageUrl}`);
+      } catch (error: any) {
+        console.warn(`[VideoController] Failed to get public URL from local file, falling back to provider URL: ${error.message}`);
+        // Fallback to provider URL if local file upload fails
+        if (!image.imageUrl) {
+          throw new HttpException(
+            `Failed to get public URL for image: ${error.message}`,
+            HttpStatus.INTERNAL_SERVER_ERROR
+          );
+        }
+        publicImageUrl = image.imageUrl;
+      }
+    } else if (image.imageUrl) {
+      // Fallback to provider URL if local file doesn't exist (backward compatibility)
+      console.log(`[VideoController] Using provider URL for scene ${sceneNum} (no local file found)`);
+      publicImageUrl = image.imageUrl;
+    } else {
+      throw new HttpException('Image URL not found for this scene', HttpStatus.BAD_REQUEST);
     }
 
     const audioFiles = (project.data.audioFiles as any[]) || [];
@@ -418,15 +569,16 @@ export class VideoController {
       );
     }
 
-    console.log(`[VideoController] Scene ${sceneNumber}: Audio duration=${audioDuration}s, Video duration=${videoDuration}s`);
+    console.log(`[VideoController] Scene ${sceneNumber}: Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}`);
 
     const jobId = await this.queueManager.addVideoGenerationJob({
       projectId,
       userId,
       sceneNumber: parseInt(sceneNumber, 10),
-      imageUrl: image.imageUrl,
+      imageUrl: publicImageUrl, // Use public URL from local file or provider
       prompt: image.prompt,
       duration: videoDuration, // Use exact duration matching audio file
+      modelId: body.modelId || 'video-model-1', // Use selected model or default
     });
 
     return {

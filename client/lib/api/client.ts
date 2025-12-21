@@ -484,6 +484,31 @@ class ApiClient {
     return response.data;
   }
 
+  async regenerateScene(data: {
+    sceneNumber: number;
+    videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+    existingScript: any;
+    originalUserPrompt: string;
+    operation: 'regenerate' | 'edit';
+    newVoiceover?: string;
+  }): Promise<ApiResponse<{ scene: any; tokensUsed: number; processingTime: number; model: string }>> {
+    const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ scene: any; tokensUsed: number; processingTime: number; model: string }>>(
+      `${aiContentServiceUrl}/scripts/regenerate-scene`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Voice/Audio endpoints
   async getElevenLabsVoices(search?: string, category?: string): Promise<ApiResponse<any[]>> {
     const voiceServiceUrl = VOICE_SERVICE_URL;
@@ -498,6 +523,43 @@ class ApiClient {
       {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async cloneVoice(data: {
+    name: string;
+    audioFile: File;
+    description?: string;
+    labels?: string;
+    removeBackgroundNoise?: boolean;
+  }): Promise<ApiResponse<{ voiceId: string; requiresVerification: boolean }>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+
+    const formData = new FormData();
+    formData.append('name', data.name);
+    formData.append('audioFile', data.audioFile);
+    if (data.description) {
+      formData.append('description', data.description);
+    }
+    if (data.labels) {
+      formData.append('labels', data.labels);
+    }
+    if (data.removeBackgroundNoise !== undefined) {
+      formData.append('removeBackgroundNoise', String(data.removeBackgroundNoise));
+    }
+
+    const response = await axios.post<ApiResponse<{ voiceId: string; requiresVerification: boolean }>>(
+      `${voiceServiceUrl}/voice/clone`,
+      formData,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          // DO NOT set Content-Type - browser will set it automatically with boundary
         },
       }
     );
@@ -531,7 +593,7 @@ class ApiClient {
   }
 
   // Queue operations
-  async generateAudio(projectId: string): Promise<ApiResponse<{ jobId: string }>> {
+  async generateAudio(projectId: string): Promise<ApiResponse<{ jobId?: string; existing?: boolean; audioFiles?: any[] }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
@@ -549,13 +611,19 @@ class ApiClient {
     return response.data;
   }
 
-  async regenerateImage(projectId: string, sceneNumber: number, prompt?: string): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
+  async regenerateImage(
+    projectId: string, 
+    sceneNumber: number, 
+    prompt?: string,
+    modelId?: string,
+    force?: boolean
+  ): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-image/${sceneNumber}`,
-      { prompt },
+      { prompt, modelId, force },
       {
         headers: {
           'Content-Type': 'application/json',
@@ -567,13 +635,88 @@ class ApiClient {
     return response.data;
   }
 
-  async regenerateVideo(projectId: string, sceneNumber: number, force: boolean = false): Promise<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>> {
+  async getImageGenerationModels(): Promise<ApiResponse<{
+    models: Array<{
+      id: string;
+      displayName: string;
+      platform: string;
+      defaultConfig: any;
+      capabilities: any;
+    }>;
+    default: string;
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{
+      models: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        defaultConfig: any;
+        capabilities: any;
+      }>;
+      default: string;
+    }>>(
+      `${videoServiceUrl}/video-projects/image-generation-models`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getVideoGenerationModels(): Promise<ApiResponse<{
+    models: Array<{
+      id: string;
+      displayName: string;
+      platform: string;
+      defaultConfig: any;
+      capabilities: any;
+    }>;
+    default: string;
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{
+      models: Array<{
+        id: string;
+        displayName: string;
+        platform: string;
+        defaultConfig: any;
+        capabilities: any;
+      }>;
+      default: string;
+    }>>(
+      `${videoServiceUrl}/video-projects/video-generation-models`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async regenerateVideo(
+    projectId: string, 
+    sceneNumber: number, 
+    modelId?: string,
+    force: boolean = false
+  ): Promise<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-video/${sceneNumber}`,
-      { force },
+      { modelId, force },
       {
         headers: {
           'Content-Type': 'application/json',

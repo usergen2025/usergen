@@ -27,6 +27,7 @@ Welcome to the UserGen.ai documentation! This directory is organized to serve di
 - [Credits API](./server/CREDITS.md) - Credit system API
 - [IAM Service](./server/IAM.md) - Identity and Access Management
 - [Inter-Service Communication](./server/INTER_SERVICE_COMMUNICATION.md) - Service communication patterns
+- [Image Generation System](./server/IMAGE_GENERATION.md) - Multi-provider image generation with model selection
 
 ### For Administrators 👨‍💼
 **[admin/](./admin/)** - Administrative documentation

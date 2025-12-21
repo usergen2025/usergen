@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { getStepToRouteMap } from '@/lib/config/video-steps';
 
 interface VideoProject {
   id: string;
@@ -125,21 +126,15 @@ export default function ProjectsPage() {
   };
 
   const handleContinue = (project: VideoProject) => {
-    // Determine the route based on current step
-    const stepRoutes: Record<string, string> = {
-      STYLE_SELECTION: '/create-video/style',
-      VIDEO_TYPE: '/create-video',
-      AVATAR_SELECTION: '/create-video/avatar',
-      SCRIPT: '/create-video/script',
-      VOICE: '/create-video/voice',
-      B_ROLL: '/create-video/b-roll',
-      CAPTIONS: '/create-video/style',
-      RENDERING: '/create-video/rendering',
-      COMPLETED: '/create-video/rendering',
-    };
-
-    const route = stepRoutes[project.currentStep] || '/create-video';
-    router.push(`${route}?projectId=${project.id}`);
+    // Use step configuration for route mapping (single source of truth)
+    const stepToRouteMap = getStepToRouteMap();
+    
+    // Get route from step config, fallback to /create-video if step not found
+    const route = stepToRouteMap[project.currentStep] || '/create-video';
+    
+    // Include step in URL query params for additional reliability
+    // This helps the navigation hook determine the step even if pathname hasn't updated
+    router.push(`${route}?projectId=${project.id}&step=${project.currentStep}`);
   };
 
   const handleDelete = async (projectId: string) => {

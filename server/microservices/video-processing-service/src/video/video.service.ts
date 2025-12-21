@@ -116,6 +116,7 @@ export class VideoService {
     if (dto.avatarId !== undefined) updateData.avatarId = dto.avatarId;
     if (dto.avatarName !== undefined) updateData.avatarName = dto.avatarName;
     if (dto.avatarUrl !== undefined) updateData.avatarUrl = dto.avatarUrl;
+    if (dto.avatarMode !== undefined) updateData.avatarMode = dto.avatarMode;
     if (dto.script !== undefined) updateData.script = dto.script;
     if (dto.scriptGenerated !== undefined) updateData.scriptGenerated = dto.scriptGenerated;
     if (dto.voiceId !== undefined) updateData.voiceId = dto.voiceId;
@@ -129,6 +130,7 @@ export class VideoService {
       );
       updateData.audioFiles = dto.audioFiles;
     }
+    if (dto.audioGenerationConfig !== undefined) updateData.audioGenerationConfig = dto.audioGenerationConfig;
     if (dto.bRollImages !== undefined) updateData.bRollImages = dto.bRollImages;
     if (dto.bRollVideoTasks !== undefined) updateData.bRollVideoTasks = dto.bRollVideoTasks;
     if (dto.avatarVideos !== undefined) updateData.avatarVideos = dto.avatarVideos;

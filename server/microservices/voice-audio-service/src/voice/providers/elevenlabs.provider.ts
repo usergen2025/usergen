@@ -47,13 +47,16 @@ export class ElevenLabsProvider {
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('ELEVENLABS_API_KEY') || '';
     
+    // Create axios instance without Content-Type header
+    // Content-Type will be set per-request based on the data type
+    // For JSON requests, we'll set it explicitly; for multipart/form-data, form-data library will set it
     this.axiosInstance = axios.create({
       baseURL: this.baseURL,
       headers: {
         'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
+        // DO NOT set Content-Type here - it will be set per-request
       },
-      timeout: 60000, // 60 seconds timeout
+      timeout: 180000, // 180 seconds (3 minutes) timeout for voice cloning operations
     });
   }
 
@@ -75,6 +78,9 @@ export class ElevenLabsProvider {
 
       const response = await this.axiosInstance.get<ElevenLabsVoicesResponse>('/v2/voices', {
         params,
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
 
       return response.data;
@@ -91,7 +97,11 @@ export class ElevenLabsProvider {
    */
   async getVoice(voiceId: string): Promise<ElevenLabsVoice> {
     try {
-      const response = await this.axiosInstance.get<ElevenLabsVoice>(`/v1/voices/${voiceId}`);
+      const response = await this.axiosInstance.get<ElevenLabsVoice>(`/v1/voices/${voiceId}`, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
       return response.data;
     } catch (error: any) {
       if (error.response) {
@@ -125,6 +135,9 @@ export class ElevenLabsProvider {
           params: {
             output_format,
           },
+          headers: {
+            'Content-Type': 'application/json',
+          },
           responseType: 'arraybuffer', // Get binary audio data
         }
       );
@@ -144,7 +157,7 @@ export class ElevenLabsProvider {
    */
   async cloneVoice(
     name: string,
-    audioFiles: Array<{ buffer: Buffer; filename: string }>,
+    audioFiles: Array<{ buffer: Buffer; filename: string; mimetype: string }>,
     options?: {
       description?: string;
       labels?: string;
@@ -152,15 +165,36 @@ export class ElevenLabsProvider {
     }
   ): Promise<{ voice_id: string; requires_verification: boolean }> {
     try {
+      // Validate audio files
+      if (!audioFiles || audioFiles.length === 0) {
+        throw new Error('No audio files provided for voice cloning');
+      }
+
+      // Validate each file has a non-empty buffer
+      audioFiles.forEach((file, index) => {
+        if (!file.buffer || file.buffer.length === 0) {
+          throw new Error(`Audio file ${index + 1} (${file.filename}) has an empty buffer`);
+        }
+        if (!file.filename) {
+          throw new Error(`Audio file ${index + 1} is missing a filename`);
+        }
+        console.log(`[ElevenLabsProvider] Preparing audio file ${index + 1}: ${file.filename}, size: ${file.buffer.length} bytes, mimetype: ${file.mimetype}`);
+      });
+
       const FormData = require('form-data');
       const formData = new FormData();
 
       formData.append('name', name);
       
-      audioFiles.forEach((file, index) => {
-        formData.append('files[]', file.buffer, {
+      // ElevenLabs API accepts multiple files with the same field name 'files'
+      // When using Node.js form-data library, use 'files' without brackets
+      // The library will send multiple files with the same field name, which ElevenLabs expects
+      audioFiles.forEach((file) => {
+        // Append buffer with proper options for form-data library
+        // Using 'files' (not 'files[]') - form-data library handles multiple files correctly
+        formData.append('files', file.buffer, {
           filename: file.filename,
-          contentType: 'audio/mpeg',
+          contentType: file.mimetype || 'audio/mpeg',
         });
       });
 
@@ -168,28 +202,70 @@ export class ElevenLabsProvider {
         formData.append('description', options.description);
       }
       if (options?.labels) {
-        formData.append('labels', options.labels);
+        // Labels must be a serialized JSON dictionary string according to API docs
+        try {
+          // If labels is already a JSON string, validate it; otherwise stringify it
+          let labelsValue: string;
+          if (typeof options.labels === 'string') {
+            // Validate it's valid JSON
+            JSON.parse(options.labels);
+            labelsValue = options.labels;
+          } else {
+            // Convert object to JSON string
+            labelsValue = JSON.stringify(options.labels);
+          }
+          formData.append('labels', labelsValue);
+        } catch (error) {
+          throw new Error('Labels must be a valid JSON string or object. Example: \'{"accent":"American","gender":"male"}\'');
+        }
       }
       if (options?.remove_background_noise !== undefined) {
         formData.append('remove_background_noise', options.remove_background_noise.toString());
       }
+
+      // Get form-data headers (includes Content-Type with boundary)
+      const formDataHeaders = formData.getHeaders();
+      
+      console.log(`[ElevenLabsProvider] Sending voice cloning request to ElevenLabs API`);
+      console.log(`[ElevenLabsProvider] Content-Type: ${formDataHeaders['content-type']}`);
+      console.log(`[ElevenLabsProvider] Number of files: ${audioFiles.length}`);
+      console.log(`[ElevenLabsProvider] Total buffer size: ${audioFiles.reduce((sum, f) => sum + f.buffer.length, 0)} bytes`);
 
       const response = await this.axiosInstance.post(
         '/v1/voices/add',
         formData,
         {
           headers: {
-            ...formData.getHeaders(),
+            ...formDataHeaders, // This includes Content-Type: multipart/form-data; boundary=...
             'xi-api-key': this.apiKey,
+            // Explicitly ensure Content-Type is from form-data, not from axios instance
           },
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          // Ensure axios doesn't try to transform the form-data stream
+          transformRequest: [(data) => data], // Pass form-data as-is without transformation
         }
       );
 
       return response.data;
     } catch (error: any) {
       if (error.response) {
-        const errorMessage = error.response.data?.detail?.message || error.response.statusText;
+        // Handle 422 Unprocessable Entity (validation errors) specifically
+        if (error.response.status === 422) {
+          const errorMessage = error.response.data?.detail?.message 
+            || error.response.data?.message 
+            || 'Invalid voice cloning data. Please check your audio file format, size, and parameters.';
+          throw new Error(`Voice cloning validation failed: ${errorMessage}`);
+        }
+        // Handle other API errors
+        const errorMessage = error.response.data?.detail?.message 
+          || error.response.data?.message 
+          || error.response.statusText;
         throw new Error(`ElevenLabs voice cloning failed: ${error.response.status} - ${errorMessage}`);
+      }
+      // Handle network/timeout errors
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('Voice cloning request timed out. Please try again with a shorter audio file.');
       }
       throw new Error(`Failed to clone voice: ${error.message}`);
     }

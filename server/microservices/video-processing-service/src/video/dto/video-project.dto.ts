@@ -197,6 +197,11 @@ export class UpdateVideoProjectDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  avatarMode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   script?: string;
 
   @ApiPropertyOptional()
@@ -228,6 +233,11 @@ export class UpdateVideoProjectDto {
   @IsOptional()
   @IsObject()
   audioFiles?: any;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  audioGenerationConfig?: any;
 
   @ApiPropertyOptional()
   @IsOptional()

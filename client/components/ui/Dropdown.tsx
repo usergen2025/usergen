@@ -38,12 +38,14 @@ export default function Dropdown({ trigger, children, className, align = 'right'
       {isOpen && (
         <div
           className={cn(
-            'absolute z-50 mt-2 min-w-[200px] bg-secondary border border-border rounded-lg shadow-lg overflow-hidden',
+            'absolute z-50 mt-2 min-w-[200px] bg-white rounded-xl shadow-lg overflow-hidden',
             align === 'right' ? 'right-0' : 'left-0',
             className
           )}
         >
-          {children}
+          <div className="flex flex-col gap-2 p-2">
+            {children}
+          </div>
         </div>
       )}
     </div>
@@ -62,11 +64,11 @@ export function DropdownItem({ children, onClick, className, icon }: DropdownIte
     <button
       onClick={onClick}
       className={cn(
-        'w-full flex items-center gap-3 px-4 py-3 text-left text-text-primary hover:bg-primary-light transition-colors',
+        'w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-left text-[#0F082B] hover:text-[#E86512] hover:bg-gray-50 transition-colors',
         className
       )}
     >
-      {icon && <span className="w-5 h-5 flex items-center justify-center">{icon}</span>}
+      {icon && <span className="w-5 h-5 flex items-center justify-center text-[#0F082B]">{icon}</span>}
       <span>{children}</span>
     </button>
   );

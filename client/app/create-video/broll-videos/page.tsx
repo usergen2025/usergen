@@ -13,6 +13,8 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
+import { ModelSelector } from '@/components/create-video/ModelSelector';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 interface BrollVideo {
   sceneNumber: number;
@@ -40,6 +42,7 @@ function BrollVideosPageContent() {
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<any[]>([]);
   const [brollVideos, setBrollVideos] = useState<BrollVideo[]>([]);
@@ -49,6 +52,7 @@ function BrollVideosPageContent() {
   const [playingVideo, setPlayingVideo] = useState<number | null>(null);
   const [videoElements, setVideoElements] = useState<Record<number, HTMLVideoElement>>({});
   const [updateKey, setUpdateKey] = useState(0); // Force re-render on WebSocket updates
+  const [selectedModels, setSelectedModels] = useState<Record<number, string>>({}); // Track selected model per scene
   
   // Track active jobs per scene: Map<sceneNumber, Set<jobId>>
   const activeJobsBySceneRef = React.useRef<Map<number, Set<string>>>(new Map());
@@ -357,6 +361,22 @@ function BrollVideosPageContent() {
 
   // Generate videos for all scenes that need them
   const [generatingVideos, setGeneratingVideos] = React.useState<Set<number>>(new Set());
+
+  // Initialize default model for all scenes - ensure Model 1 is selected by default
+  useEffect(() => {
+    if (!scenesNeedingVideos.length || !dbLoaded) return;
+    setSelectedModels(prev => {
+      const updated = { ...prev };
+      let hasChanges = false;
+      scenesNeedingVideos.forEach((sceneNumber) => {
+        if (!updated[sceneNumber]) {
+          updated[sceneNumber] = 'video-model-1'; // Default to Model 1 (BytePlus Seedance)
+          hasChanges = true;
+        }
+      });
+      return hasChanges ? updated : prev;
+    });
+  }, [scenesNeedingVideos.length, dbLoaded]);
   
   useEffect(() => {
     const generateMissingVideos = async () => {
@@ -446,7 +466,9 @@ function BrollVideosPageContent() {
         setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
         
         // Fire API call without awaiting (non-blocking)
-        return apiClient.regenerateVideo(projectId, sceneNumber)
+        // Use default model for auto-generation
+        const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-1';
+        return apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, false)
           .then(response => {
             // Handle existing video response
             if (response.success && response.data?.existing && response.data?.video) {
@@ -542,7 +564,11 @@ function BrollVideosPageContent() {
       setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
       setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
       
-      const response = await apiClient.regenerateVideo(projectId, sceneNumber, true); // Pass force: true for manual regeneration
+      // Get selected model for this scene
+      const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-1'; // Using nullish coalescing
+      
+      // Pass force: true to always regenerate when user manually clicks the button
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, true);
       
       // Handle existing video response
       if (response.success && response.data?.existing && response.data?.video) {
@@ -662,7 +688,7 @@ function BrollVideosPageContent() {
         <div className="container mx-auto px-4 py-8">
           <div className="max-w-7xl mx-auto">
             <button
-              onClick={() => router.back()}
+              onClick={goToPreviousStep}
               className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -694,7 +720,7 @@ function BrollVideosPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
@@ -798,25 +824,35 @@ function BrollVideosPageContent() {
                         </div>
                       )}
                       
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleRegenerate(sceneNumber)}
-                        disabled={isRegenerating}
-                        className="w-full"
-                      >
-                        {isRegenerating ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Regenerating...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="w-4 h-4 mr-2" />
-                            Regenerate
-                          </>
-                        )}
-                      </Button>
+                      <div className="flex items-stretch border border-border rounded-md overflow-hidden">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRegenerate(sceneNumber)}
+                          disabled={isRegenerating}
+                          className="flex-1 rounded-none border-0 border-r border-border"
+                        >
+                          {isRegenerating ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Regenerating...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Regenerate
+                            </>
+                          )}
+                        </Button>
+                        <ModelSelector
+                          selectedModelId={selectedModels[sceneNumber] ?? 'video-model-1'}
+                          onModelSelect={(modelId) => {
+                            setSelectedModels(prev => ({ ...prev, [sceneNumber]: modelId }));
+                          }}
+                          disabled={isRegenerating}
+                          getModelsFn={() => apiClient.getVideoGenerationModels()}
+                        />
+                      </div>
                     </div>
                   </Card>
                 );

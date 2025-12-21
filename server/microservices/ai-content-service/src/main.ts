@@ -89,6 +89,35 @@ async function bootstrap() {
     });
   });
 
+  // Global error handlers for unhandled errors (EPIPE, socket errors, etc.)
+  process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+    // Ignore EPIPE errors as they're handled by axios interceptors
+    if (reason?.code === 'EPIPE' || reason?.code === 'ECONNRESET' || reason?.code === 'ECONNABORTED') {
+      logger.warn(`Unhandled rejection (${reason.code}): ${reason.message}`, 'Bootstrap');
+      return;
+    }
+    logger.error(`Unhandled Rejection: ${reason}`, reason?.stack, 'Bootstrap');
+  });
+
+  process.on('uncaughtException', (error: Error) => {
+    // Ignore EPIPE errors as they're handled by axios interceptors
+    if (error.message?.includes('EPIPE') || error.message?.includes('ECONNRESET') || error.message?.includes('ECONNABORTED')) {
+      logger.warn(`Uncaught Exception (connection error): ${error.message}`, 'Bootstrap');
+      return;
+    }
+    logger.error(`Uncaught Exception: ${error.message}`, error.stack, 'Bootstrap');
+    // Don't exit on uncaught exceptions - let NestJS handle it
+  });
+
+  // Handle socket errors globally
+  process.on('error', (error: Error) => {
+    if (error.message?.includes('EPIPE') || error.message?.includes('ECONNRESET') || error.message?.includes('ECONNABORTED')) {
+      logger.warn(`Process error (connection error): ${error.message}`, 'Bootstrap');
+      return;
+    }
+    logger.error(`Process error: ${error.message}`, error.stack, 'Bootstrap');
+  });
+
   await app.listen(port);
   
   logger.log(`AI Content Service is running on port ${port}`, 'Bootstrap');

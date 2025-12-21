@@ -3,6 +3,12 @@ node_modules/
 .pnp
 .pnp.js
 
+# Python virtual environment
+venv/
+env/
+ENV/
+.venv
+
 # Testing
 coverage/
 *.lcov

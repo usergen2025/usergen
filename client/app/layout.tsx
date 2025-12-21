@@ -4,6 +4,7 @@ import "./globals.css";
 import Header from "@/components/layout/Header";
 import { ToastProvider } from "@/lib/toast/toast";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
+import ConditionalHeader from "@/components/layout/ConditionalHeader";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -25,7 +26,7 @@ export default function RootLayout({
       <body className={`${inter.variable} antialiased`}>
         <WebSocketProvider>
           <ToastProvider>
-            <Header />
+            <ConditionalHeader />
             <main className="min-h-screen">
               {children}
             </main>

@@ -11,12 +11,15 @@ import { cn } from '@/lib/utils/cn';
 import { BRollSource } from '@/types';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 function BRollPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const projectId = searchParams.get('projectId');
+  const [project, setProject] = useState<any>(null);
+  const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   
   const [selectedSource, setSelectedSource] = useState<BRollSource | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -63,7 +66,7 @@ function BRollPageContent() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <button
-            onClick={() => router.back()}
+            onClick={goToPreviousStep}
             className="mb-6 flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

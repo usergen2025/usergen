@@ -1,23 +1,51 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Circle, User, LogOut } from 'lucide-react';
+import { LogOut, Menu, X, FolderKanban, Wallet } from 'lucide-react';
+import Image from 'next/image';
 import Button from '@/components/ui/Button';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 import { useAuth } from '@/hooks/useAuth';
+import { cn } from '@/lib/utils/cn';
+import LoginModal from '@/components/auth/LoginModal';
+import { apiClient, User } from '@/lib/api/client';
 
-export default function Header() {
+interface HeaderProps {
+  position?: 'fixed' | 'relative' | 'sticky';
+}
+
+export default function Header({ position = 'fixed' }: HeaderProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { logout, isAuthenticated } = useAuth();
   const isAuthPage = pathname === '/login' || pathname === '/signup';
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
 
   const handleLogout = () => {
     logout();
     router.push('/');
   };
+
+  // Fetch user profile when authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      apiClient.getProfile()
+        .then((response) => {
+          if (response.data) {
+            setUser(response.data);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch user profile:', err);
+        });
+    } else {
+      setUser(null);
+    }
+  }, [isAuthenticated]);
 
   // Redirect /dashboard routes to main routes
   useEffect(() => {
@@ -30,66 +58,226 @@ export default function Header() {
     }
   }, [pathname, router]);
 
-  return (
-    <header className="bg-secondary border-b border-border sticky top-0 z-50">
-      <div className="container mx-auto px-4 py-3 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2">
-          <Circle className="w-8 h-8 text-primary-light" fill="currentColor" />
-          <span className="text-xl font-bold text-primary">UserGen.ai</span>
-        </Link>
+  const isActive = (href: string) => pathname === href;
 
-        <div className="flex items-center gap-4">
-          {!isAuthPage && (
-            <nav className="hidden md:flex items-center gap-6">
-              <Link href="/" className="text-base text-text-primary hover:text-text-secondary transition-colors">
-                Home
-              </Link>
-              {isAuthenticated && (
-                <Link href="/projects" className="text-base text-text-primary hover:text-text-secondary transition-colors">
-                  Projects
+  const positionClasses = {
+    fixed: 'fixed top-0 left-0 right-0 z-50',
+    sticky: 'sticky top-0 z-50',
+    relative: 'relative'
+  };
+
+  return (
+    <>
+      <header className={cn(positionClasses[position], "w-full pt-[43px] pb-0")}>
+      <div className="max-w-[1248px] mx-auto px-6">
+        <div className="bg-white shadow-header rounded-2xl px-6 py-4">
+          <div className="flex items-center justify-between">
+            {/* Logo */}
+            <Link href="/" className="flex items-center gap-2">
+              <Image 
+                src="/assets/logo.svg" 
+                alt="UserGen.ai Logo" 
+                width={38} 
+                height={44}
+                className="w-[38px] h-[44px]"
+              />
+              <span className="font-heading text-2xl font-medium text-black">UserGen.ai</span>
+            </Link>
+
+            {/* Desktop Navigation */}
+            <div className="hidden lg:flex items-center gap-2">
+              <nav className="flex items-center gap-2">
+                <Link 
+                  href="/" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    isActive('/') ? "text-[#E86512]" : "text-[#0F082B] hover:text-[#E86512]"
+                  )}
+                >
+                  Home
                 </Link>
-              )}
-              <Link href="/about" className="text-base text-text-primary hover:text-text-secondary transition-colors">
-                About Us
-              </Link>
-              <Link href="/contact" className="text-base text-text-primary hover:text-text-secondary transition-colors">
-                Contact
-              </Link>
-            </nav>
-          )}
-          <div className="flex items-center gap-2">
-            {isAuthenticated ? (
-              <>
-                <Link href="/create-video/style">
-                  <Button variant="primary" size="sm">Create Video</Button>
+                <Link 
+                  href="/features" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    isActive('/features') ? "text-[#E86512]" : "text-[#0F082B] hover:text-[#E86512]"
+                  )}
+                >
+                  Features
                 </Link>
+                <Link 
+                  href="/use-cases" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    isActive('/use-cases') ? "text-[#E86512]" : "text-[#0F082B] hover:text-[#E86512]"
+                  )}
+                >
+                  Use Cases
+                </Link>
+                <Link 
+                  href="/enterprise" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    isActive('/enterprise') ? "text-[#E86512]" : "text-[#222222] hover:text-[#E86512]"
+                  )}
+                >
+                  Enterprise
+                </Link>
+                <Link 
+                  href="/pricing" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    isActive('/pricing') ? "text-[#E86512]" : "text-[#222222] hover:text-[#E86512]"
+                  )}
+                >
+                  Pricing
+                </Link>
+              </nav>
+            </div>
+
+            {/* Right Side Actions */}
+            <div className="flex items-center gap-2">
+              {isAuthenticated ? (
                 <Dropdown
                   trigger={
-                    <button className="p-2 hover:bg-primary-light rounded-md transition-colors">
-                      <User className="w-5 h-5" />
-                    </button>
+                    <div className="flex items-center gap-2 px-0 py-0 rounded-[26px] cursor-pointer hover:opacity-80 transition-opacity">
+                      <div className="w-6 h-6 flex items-center justify-center bg-white rounded-[18px]">
+                        <Image src="/assets/u_user.svg" alt="User" width={24} height={24} />
+                      </div>
+                      <span className="text-sm font-heading font-medium text-[#9E9E9E]">
+                        {user?.name || 'User'}
+                      </span>
+                    </div>
                   }
                   align="right"
                 >
+                  <DropdownItem 
+                    onClick={() => {
+                      router.push('/projects');
+                    }}
+                    icon={<FolderKanban className="w-5 h-5" />}
+                  >
+                    My Projects
+                  </DropdownItem>
+                  <DropdownItem 
+                    onClick={() => {
+                      router.push('/wallet');
+                    }}
+                    icon={<Wallet className="w-5 h-5" />}
+                  >
+                    My Wallet
+                  </DropdownItem>
                   <DropdownItem onClick={handleLogout} icon={<LogOut className="w-5 h-5" />}>
                     Logout
                   </DropdownItem>
                 </Dropdown>
-              </>
-            ) : (
-              <>
-                <Link href="/login">
-                  <Button variant="outline" size="sm">Login</Button>
-                </Link>
-                <Link href="/create-video/style">
-                  <Button variant="primary" size="sm">Create Video</Button>
-                </Link>
-              </>
-            )}
+              ) : (
+                <>
+                  <div 
+                    onClick={() => setLoginModalOpen(true)} 
+                    className="hidden md:block cursor-pointer"
+                  >
+                    <Button variant="secondary" size="sm">Login</Button>
+                  </div>
+                  <Link href="/create-video/style">
+                    <Button variant="primary" size="sm">Create a Video</Button>
+                  </Link>
+                </>
+              )}
+              
+              {/* Mobile Menu Button */}
+              <button
+                className="lg:hidden p-2"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                aria-label="Toggle menu"
+              >
+                {mobileMenuOpen ? (
+                  <X className="w-6 h-6 text-black" />
+                ) : (
+                  <Menu className="w-6 h-6 text-black" />
+                )}
+              </button>
+            </div>
           </div>
+
+          {/* Mobile Menu */}
+          {mobileMenuOpen && (
+            <div className="lg:hidden mt-4 pt-4 border-t border-gray-200">
+              <nav className="flex flex-col gap-2">
+                <Link 
+                  href="/" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium",
+                    isActive('/') ? "text-[#E86512]" : "text-[#0F082B]"
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Home
+                </Link>
+                <Link 
+                  href="/features" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium",
+                    isActive('/features') ? "text-[#E86512]" : "text-[#0F082B]"
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Features
+                </Link>
+                <Link 
+                  href="/use-cases" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium",
+                    isActive('/use-cases') ? "text-[#E86512]" : "text-[#0F082B]"
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Use Cases
+                </Link>
+                <Link 
+                  href="/enterprise" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium",
+                    isActive('/enterprise') ? "text-[#E86512]" : "text-[#222222]"
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Enterprise
+                </Link>
+                <Link 
+                  href="/pricing" 
+                  className={cn(
+                    "px-4 py-3 rounded-xl text-sm font-medium",
+                    isActive('/pricing') ? "text-[#E86512]" : "text-[#222222]"
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Pricing
+                </Link>
+                {!isAuthenticated && (
+                  <div 
+                    onClick={() => {
+                      setLoginModalOpen(true);
+                      setMobileMenuOpen(false);
+                    }}
+                    className="px-4 py-3 cursor-pointer"
+                  >
+                    <Button variant="secondary" size="sm" fullWidth>Login</Button>
+                  </div>
+                )}
+              </nav>
+            </div>
+          )}
         </div>
       </div>
     </header>
+    
+    {/* Login Modal */}
+    <LoginModal 
+      isOpen={loginModalOpen} 
+      onClose={() => setLoginModalOpen(false)} 
+    />
+    </>
   );
 }
 
