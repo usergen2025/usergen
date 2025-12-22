@@ -78,6 +78,14 @@ function VoicePageContent() {
       setCloneMode(mode);
     }
     setSelectedOption('clone');
+    
+    // Force load metadata after state update to ensure duration displays immediately
+    // Use setTimeout to ensure the audio element has been updated with the new URL
+    setTimeout(() => {
+      if (cloneAudioElementRef.current && cloneAudioElementRef.current.src === objectUrl) {
+        cloneAudioElementRef.current.load();
+      }
+    }, 50);
   };
 
   const resetCloneAudio = () => {
@@ -245,6 +253,63 @@ function VoicePageContent() {
     }
   }, [projectId, voices]); // Re-run when voices are loaded to find the voice
 
+  // Force audio element to load metadata when URL changes to display duration immediately
+  useEffect(() => {
+    if (!cloneAudioUrl) return;
+    
+    let handleLoadedMetadata: (() => void) | null = null;
+    let audioElement: HTMLAudioElement | null = null;
+    
+    // Use requestAnimationFrame to ensure DOM is fully updated before loading
+    const loadMetadata = () => {
+      if (cloneAudioElementRef.current && cloneAudioUrl) {
+        audioElement = cloneAudioElementRef.current;
+        
+        // Ensure src is set (should be via prop, but verify)
+        if (audioElement.src !== cloneAudioUrl) {
+          audioElement.src = cloneAudioUrl;
+        }
+        
+        // Set preload to metadata to ensure browser loads it
+        audioElement.preload = 'metadata';
+        
+        // Explicitly load metadata to get duration
+        // This ensures the duration is displayed without needing to click play
+        audioElement.load();
+        
+        // Add event listener to log when metadata loads
+        handleLoadedMetadata = () => {
+          if (audioElement && audioElement.duration && !isNaN(audioElement.duration) && isFinite(audioElement.duration)) {
+            console.log('[Audio] Duration loaded via useEffect:', audioElement.duration, 'seconds');
+          }
+        };
+        
+        audioElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+        
+        // Also check if metadata is already loaded
+        if (audioElement.readyState >= 1) {
+          handleLoadedMetadata();
+        }
+      }
+    };
+    
+    // Use double requestAnimationFrame to ensure DOM is ready
+    // First frame: browser has updated the DOM
+    // Second frame: browser has painted the changes
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        loadMetadata();
+      });
+    });
+    
+    // Cleanup function
+    return () => {
+      if (audioElement && handleLoadedMetadata) {
+        audioElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      }
+    };
+  }, [cloneAudioUrl]);
+
   const toggleCloneOption = () => {
     if (isRecording) {
       showToast('Please stop recording before switching options', 'warning');
@@ -372,28 +437,105 @@ function VoicePageContent() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Request audio with optimal settings for voice recording
+      // Use ideal constraints to get the best quality without being too strict
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 44100 },
+          channelCount: { ideal: 1 }, // Mono is sufficient for voice
+        } 
+      });
+      
+      // Verify we got an audio track
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio track available from microphone');
+      }
+      
+      console.log('[Recording] Audio track info:', {
+        label: audioTracks[0].label,
+        enabled: audioTracks[0].enabled,
+        muted: audioTracks[0].muted,
+        settings: audioTracks[0].getSettings(),
+      });
+      
       recordingStreamRef.current = stream;
-      const mediaRecorder = new MediaRecorder(stream);
+      
+      // Try to find the best supported codec for quality recording
+      const codecs = [
+        'audio/webm;codecs=opus',  // Best quality, widely supported
+        'audio/webm;codecs=pcm',   // Alternative
+        'audio/webm',               // Fallback
+      ];
+      
+      let selectedMimeType = '';
+      for (const codec of codecs) {
+        if (MediaRecorder.isTypeSupported(codec)) {
+          selectedMimeType = codec;
+          console.log('[Recording] Using codec:', codec);
+          break;
+        }
+      }
+      
+      if (!selectedMimeType) {
+        console.warn('[Recording] No preferred codec found, using default');
+      }
+      
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          console.log(`[Recording] Data chunk received: ${event.data.size} bytes, total chunks: ${audioChunksRef.current.length}`);
         }
       };
 
+      mediaRecorder.onerror = (event: any) => {
+        console.error('[Recording] MediaRecorder error:', event);
+        setRecordingError(event.error?.message || 'Recording error occurred');
+        showToast('Recording error occurred. Please try again.', 'error');
+        stopActiveRecording();
+        setIsRecording(false);
+      };
+
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        console.log(`[Recording] Stopped. Total chunks: ${audioChunksRef.current.length}, total size: ${audioChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0)} bytes`);
+        
+        // Use the same MIME type that was used for recording
+        const blobType = selectedMimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: blobType });
+        
+        if (blob.size === 0) {
+          console.error('[Recording] No audio data recorded');
+          setRecordingError('No audio was recorded. Please try again.');
+          showToast('No audio was recorded. Please try again.', 'error');
+          setIsRecording(false);
+          return;
+        }
+        
+        console.log('[Recording] Created blob:', {
+          size: blob.size,
+          type: blob.type,
+        });
+        
         const filenameBase = cloneVoiceName.trim().length > 0 ? cloneVoiceName.trim().replace(/\s+/g, '_') : 'recording';
-        const file = new File([blob], `${filenameBase}_${Date.now()}.webm`, { type: 'audio/webm' });
+        const fileExtension = blobType.includes('opus') || blobType.includes('webm') ? 'webm' : 'webm';
+        const file = new File([blob], `${filenameBase}_${Date.now()}.${fileExtension}`, { type: blobType });
         applyCloneAudioFile(file, 'record');
         stopActiveRecording();
         setIsRecording(false);
       };
 
-      mediaRecorder.start();
+      // Start recording with timeslice to periodically collect data (every 1 second)
+      // This ensures data is collected even if recording stops unexpectedly
+      mediaRecorder.start(1000);
+      console.log('[Recording] Started recording');
       setSelectedOption('clone');
       setCloneMode('record');
       setIsRecording(true);
@@ -719,12 +861,31 @@ function VoicePageContent() {
                       <audio
                         controls
                         src={cloneAudioUrl || undefined}
+                        preload="metadata"
                         ref={(element) => {
                           cloneAudioElementRef.current = element;
+                          // Also trigger load when ref is set with a new URL
+                          // This provides a fallback if useEffect timing is off
+                          if (element && cloneAudioUrl) {
+                            // Use setTimeout to ensure element is fully initialized
+                            setTimeout(() => {
+                              if (element && element.src === cloneAudioUrl) {
+                                element.preload = 'metadata';
+                                element.load();
+                              }
+                            }, 0);
+                          }
                         }}
                         className="w-full"
-                        onError={() => {
+                        onError={(e) => {
+                          console.error('[Audio] Error loading audio:', e);
                           showToast('Failed to load audio preview. The file may be corrupted or in an unsupported format.', 'error');
+                        }}
+                        onLoadedMetadata={() => {
+                          // This ensures the duration is displayed correctly
+                          if (cloneAudioElementRef.current) {
+                            console.log('[Audio] Metadata loaded, duration:', cloneAudioElementRef.current.duration);
+                          }
                         }}
                       />
                       <label className="inline-flex items-center gap-2 text-sm text-text-primary">
