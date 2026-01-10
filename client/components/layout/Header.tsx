@@ -10,6 +10,9 @@ import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils/cn';
 import LoginModal from '@/components/auth/LoginModal';
+import GetStartedModal from '@/components/auth/GetStartedModal';
+import BrandSignupModal from '@/components/auth/BrandSignupModal';
+import CreatorSignupModal from '@/components/auth/CreatorSignupModal';
 import { apiClient, User } from '@/lib/api/client';
 
 interface HeaderProps {
@@ -23,7 +26,49 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
   const isAuthPage = pathname === '/login' || pathname === '/signup';
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [getStartedModalOpen, setGetStartedModalOpen] = useState(false);
+  const [brandSignupModalOpen, setBrandSignupModalOpen] = useState(false);
+  const [creatorSignupModalOpen, setCreatorSignupModalOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
+
+  const handleCreateVideoClick = () => {
+    if (isAuthenticated) {
+      router.push('/create-video/ai-chat');
+    } else {
+      setGetStartedModalOpen(true);
+    }
+  };
+
+  const handleSelectCreator = () => {
+    setGetStartedModalOpen(false);
+    setCreatorSignupModalOpen(true);
+  };
+
+  const handleSelectBrand = () => {
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(true);
+  };
+
+  const handleShowLogin = () => {
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+    setLoginModalOpen(true);
+  };
+
+  const handleShowGetStarted = () => {
+    setLoginModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+    setGetStartedModalOpen(true);
+  };
+
+  const closeAllModals = () => {
+    setLoginModalOpen(false);
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+  };
 
   const handleLogout = () => {
     logout();
@@ -179,9 +224,13 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
                   >
                     <Button variant="secondary" size="sm">Login</Button>
                   </div>
-                  <Link href="/create-video/style">
-                    <Button variant="primary" size="sm">Create a Video</Button>
-                  </Link>
+                  <Button 
+                    variant="primary" 
+                    size="sm"
+                    onClick={handleCreateVideoClick}
+                  >
+                    Create a Video
+                  </Button>
                 </>
               )}
               
@@ -272,10 +321,28 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
       </div>
     </header>
     
-    {/* Login Modal */}
+    {/* Modals */}
     <LoginModal 
       isOpen={loginModalOpen} 
-      onClose={() => setLoginModalOpen(false)} 
+      onClose={closeAllModals}
+      onShowGetStarted={handleShowGetStarted}
+    />
+    <GetStartedModal
+      isOpen={getStartedModalOpen}
+      onClose={closeAllModals}
+      onSelectCreator={handleSelectCreator}
+      onSelectBrand={handleSelectBrand}
+      onShowLogin={handleShowLogin}
+    />
+    <CreatorSignupModal
+      isOpen={creatorSignupModalOpen}
+      onClose={closeAllModals}
+      onShowLogin={handleShowLogin}
+    />
+    <BrandSignupModal
+      isOpen={brandSignupModalOpen}
+      onClose={closeAllModals}
+      onShowLogin={handleShowLogin}
     />
     </>
   );

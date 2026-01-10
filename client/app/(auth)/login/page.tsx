@@ -17,7 +17,6 @@ function LoginPageContent() {
   const searchParams = useSearchParams();
   const { login, isAuthenticated, isLoading: authLoading } = useAuth();
   const { showToast } = useToast();
-  const [name, setName] = useState('');
   const [mobileEmail, setMobileEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -179,19 +178,6 @@ function LoginPageContent() {
           }} 
           className="space-y-4"
         >
-          <Input
-            placeholder="Enter your Name"
-            type="text"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-            }}
-            disabled={isLoading || otpSent}
-            autoComplete="name"
-            required
-            className="mb-4"
-          />
-          
           <Input
             placeholder="Email"
             type="email"
