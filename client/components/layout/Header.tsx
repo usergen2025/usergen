@@ -35,6 +35,10 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
     if (isAuthenticated) {
       router.push('/create-video/ai-chat');
     } else {
+      // Set flag to indicate user came from "Create a Video" button
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('fromCreateVideo', 'true');
+      }
       setGetStartedModalOpen(true);
     }
   };
@@ -53,6 +57,7 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
     setGetStartedModalOpen(false);
     setBrandSignupModalOpen(false);
     setCreatorSignupModalOpen(false);
+    // Don't clear the flag here - it should persist if coming from Create Video flow
     setLoginModalOpen(true);
   };
 
@@ -219,7 +224,13 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
               ) : (
                 <>
                   <div 
-                    onClick={() => setLoginModalOpen(true)} 
+                    onClick={() => {
+                      // Clear any existing flag - this is from normal Login button
+                      if (typeof window !== 'undefined') {
+                        sessionStorage.removeItem('fromCreateVideo');
+                      }
+                      setLoginModalOpen(true);
+                    }} 
                     className="hidden md:block cursor-pointer"
                   >
                     <Button variant="secondary" size="sm">Login</Button>
@@ -306,6 +317,10 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
                 {!isAuthenticated && (
                   <div 
                     onClick={() => {
+                      // Clear any existing flag - this is from normal Login button
+                      if (typeof window !== 'undefined') {
+                        sessionStorage.removeItem('fromCreateVideo');
+                      }
                       setLoginModalOpen(true);
                       setMobileMenuOpen(false);
                     }}

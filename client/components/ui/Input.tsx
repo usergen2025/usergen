@@ -25,22 +25,22 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
             <div className="absolute left-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none">
               {icon}
             </div>
-          )}
-          <input
-            ref={ref}
-            className={cn(
-              'w-full px-4 py-2 border border-border rounded-md',
-              'bg-secondary text-text-primary',
-              'placeholder:text-text-muted',
-              'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
-              'disabled:opacity-50 disabled:cursor-not-allowed',
-              error && 'border-red-500 focus:ring-red-500',
+        )}
+        <input
+          ref={ref}
+          className={cn(
+            'w-full px-4 py-2 border border-border rounded-md',
+            'bg-secondary text-text-primary',
+            'placeholder:text-text-muted',
+            'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
+            'disabled:opacity-50 disabled:cursor-not-allowed',
+            error && 'border-red-500 focus:ring-red-500',
               icon && iconPosition === 'left' && 'pl-10',
               icon && iconPosition === 'right' && 'pr-10',
-              className
-            )}
-            {...props}
-          />
+            className
+          )}
+          {...props}
+        />
           {icon && iconPosition === 'right' && (
             <div 
               className={cn(

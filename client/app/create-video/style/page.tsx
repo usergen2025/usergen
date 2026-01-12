@@ -215,8 +215,41 @@ function StylePageContent() {
         if (createResponse.success && createResponse.data) {
           currentProjectId = createResponse.data.id;
           setProjectId(currentProjectId);
+          
+          // Check if there's a pending script from AI chat page and save it
+          if (typeof window !== 'undefined') {
+            const pendingScriptData = sessionStorage.getItem('pendingScriptData');
+            if (pendingScriptData) {
+              try {
+                await apiClient.updateVideoProject(currentProjectId, {
+                  script: pendingScriptData,
+                  scriptGenerated: true,
+                });
+                // Clear pending script data after successful save
+                sessionStorage.removeItem('pendingScriptData');
+                sessionStorage.removeItem('pendingScriptFormatted');
+                sessionStorage.removeItem('pendingUserPrompt');
+              } catch (error) {
+                console.error('Failed to save pending script to project:', error);
+                // Don't block navigation if script save fails
+              }
+            }
+          }
+          
+          // Save style to project before navigation
+          try {
+            await apiClient.updateVideoProject(currentProjectId, {
+              style: mapStyleToBackend(selectedStyle),
+              currentStep: 'VIDEO_TYPE',
+            });
+          } catch (error) {
+            console.error('Failed to save style to project:', error);
+            // Don't block navigation if save fails
+          }
+          
           // Update URL with new projectId
           router.replace(`/create-video/type?projectId=${currentProjectId}`);
+          return; // Exit early since we've handled navigation
         } else {
           showToast('Failed to create project. Please try again.', 'error');
           return;

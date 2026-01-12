@@ -25,6 +25,10 @@ export default function HomePage() {
     if (isAuthenticated) {
       router.push('/create-video/ai-chat');
     } else {
+      // Set flag to indicate user came from "Create a Video" button
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('fromCreateVideo', 'true');
+      }
       setGetStartedModalOpen(true);
     }
   };

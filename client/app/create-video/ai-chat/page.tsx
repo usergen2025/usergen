@@ -1,23 +1,77 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
+import { useToast } from '@/lib/toast/toast';
+
+// Define asset types
+interface Asset {
+  id: string;
+  name: string;
+  type: 'image' | 'url';
+  file?: File;
+  preview?: string; // Object URL for image preview
+  url?: string; // For URL assets
+}
 
 // Define chat flow steps
-type ChatStep = 'welcome' | 'option-selected' | 'asset-upload';
+type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'avatar-selected' | 'voice-selection';
 
 function AIChatPageContent() {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
+  const { showToast } = useToast();
   const [user, setUser] = useState<User | null>(null);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState<ChatStep>('welcome');
   const [showAddAssetsModal, setShowAddAssetsModal] = useState(false);
+  // Modal state - temporary, only visible in modal
+  const [modalLogoAsset, setModalLogoAsset] = useState<Asset | null>(null);
+  const [modalProductImages, setModalProductImages] = useState<Asset[]>([]);
+  const [modalCompanyUrl, setModalCompanyUrl] = useState<string>('');
+  // Typing area state - shown after clicking "Attach" in modal
+  const [pendingAssets, setPendingAssets] = useState<Asset[]>([]);
+  // Chat display state - shown after clicking send in typing area
+  const [attachedAssets, setAttachedAssets] = useState<Asset[]>([]);
+  const [scriptInput, setScriptInput] = useState('');
+  const [inputFocused, setInputFocused] = useState(false);
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [generatedScript, setGeneratedScript] = useState<any | null>(null);
+  const [formattedScript, setFormattedScript] = useState<string | null>(null);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [userScriptMessage, setUserScriptMessage] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [proceedConfirmed, setProceedConfirmed] = useState<boolean>(false);
+  const [avatarPreference, setAvatarPreference] = useState<'yes' | 'no' | null>(null);
+  const [avatarYesMessage, setAvatarYesMessage] = useState<boolean>(false); // Track if user selected "yes"
+  // Avatar selection state
+  const [activeAvatarTab, setActiveAvatarTab] = useState<'library' | 'upload' | 'hire'>('library');
+  const [avatars, setAvatars] = useState<any[]>([]);
+  const [selectedAvatarId, setSelectedAvatarId] = useState<string | null>(null);
+  const [showAvatarPreview, setShowAvatarPreview] = useState(false);
+  const [previewAvatar, setPreviewAvatar] = useState<any | null>(null);
+  const [loadingAvatars, setLoadingAvatars] = useState(false);
+  const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(new Set());
+  const [previewImageFailed, setPreviewImageFailed] = useState(false);
+  const [selectedAvatar, setSelectedAvatar] = useState<any | null>(null); // Store selected avatar object for preview
+  // Voice selection state
+  const [voicePreference, setVoicePreference] = useState<'yes' | 'no' | null>(null);
+  const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
+  const [activeVoiceTab, setActiveVoiceTab] = useState<'library' | 'upload' | 'record'>('library');
+  const [voices, setVoices] = useState<any[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [loadingVoices, setLoadingVoices] = useState(false);
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const logoFileInputRef = useRef<HTMLInputElement>(null);
+  const productImagesInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch user profile when authenticated
   useEffect(() => {
@@ -42,6 +96,69 @@ function AIChatPageContent() {
     }
   }, [isAuthenticated, isLoading, router]);
 
+  // Auto-scroll to bottom on initial mount
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      // Scroll to bottom on initial load with smooth behavior
+      setTimeout(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTo({
+            top: chatContainerRef.current.scrollHeight,
+            behavior: 'smooth'
+          });
+        }
+      }, 100);
+    }
+  }, []); // Run only on mount
+
+  // Auto-scroll to bottom when content changes (new messages/steps)
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      // Use setTimeout to ensure DOM is updated before scrolling
+      setTimeout(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTo({
+            top: chatContainerRef.current.scrollHeight,
+            behavior: 'smooth'
+          });
+        }
+      }, 150);
+    }
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, voiceYesMessage, voices, selectedVoiceId]);
+
+  // Cleanup object URLs on unmount
+  useEffect(() => {
+    return () => {
+      if (modalLogoAsset?.preview) {
+        URL.revokeObjectURL(modalLogoAsset.preview);
+      }
+      modalProductImages.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      pendingAssets.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      attachedAssets.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      if (previewAvatar?.preview) {
+        URL.revokeObjectURL(previewAvatar.preview);
+      }
+      // Cleanup audio element
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+        audioElementRef.current = null;
+      }
+    };
+  }, []); // Only cleanup on unmount
+
   const handleOptionClick = (option: string) => {
     setSelectedOption(option);
     setCurrentStep('option-selected');
@@ -52,23 +169,632 @@ function AIChatPageContent() {
   };
 
   const handleAddAssets = () => {
+    // When opening modal, restore from pendingAssets if they exist
+    // This allows user to see previously selected items and modify them
+    if (pendingAssets.length > 0) {
+      // Restore modal state from pendingAssets
+      const logo = pendingAssets.find(a => a.id.startsWith('logo-'));
+      const products = pendingAssets.filter(a => a.id.startsWith('product-'));
+      const url = pendingAssets.find(a => a.id.startsWith('url-'));
+      
+      if (logo && logo.type === 'image') {
+        setModalLogoAsset(logo);
+      }
+      if (products.length > 0) {
+        setModalProductImages(products);
+      }
+      if (url && url.type === 'url') {
+        // Use url.url first, fallback to url.name if url.url doesn't exist
+        setModalCompanyUrl(url.url || url.name || '');
+      }
+    }
+    
     setShowAddAssetsModal(true);
   };
 
   const handleSkipAssets = () => {
-    // After completing the chat flow, redirect to style selection
-    router.push('/create-video/style');
+    // Skip assets and move directly to script generation step
+    setCurrentStep('assets-attached');
+    // Clear any pending assets if user skipped
+    pendingAssets.forEach(asset => {
+      if (asset.preview) {
+        URL.revokeObjectURL(asset.preview);
+      }
+    });
+    setPendingAssets([]);
   };
 
   const handleCloseModal = () => {
+    // Optionally clear modal state when closing without attaching
+    // Or keep it so user can reopen and see previous selections
+    // For now, we'll keep the modal state so user can continue editing
     setShowAddAssetsModal(false);
   };
 
+  // Handler for logo upload (single image) - uses modal state
+  const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      // Validate file size (5MB max)
+      if (file.size > 5 * 1024 * 1024) {
+        alert('File size must be less than 5MB');
+        return;
+      }
+      
+      // Validate file type (PNG or JPG only)
+      if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
+        alert('Please select a valid image file (PNG or JPG only)');
+        return;
+      }
+      
+      // Cleanup previous preview if exists
+      if (modalLogoAsset?.preview) {
+        URL.revokeObjectURL(modalLogoAsset.preview);
+      }
+      
+      const previewUrl = URL.createObjectURL(file);
+      setModalLogoAsset({
+        id: `logo-${Date.now()}`,
+        name: file.name,
+        type: 'image',
+        file,
+        preview: previewUrl
+      });
+    } else {
+      alert('Please select a valid image file (PNG or JPG)');
+    }
+    // Reset input so same file can be selected again
+    if (logoFileInputRef.current) {
+      logoFileInputRef.current.value = '';
+    }
+  };
+
+  // Handler for product images upload (multiple images) - uses modal state
+  const handleProductImagesUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    const validFiles = files.filter(file => {
+      const isValidType = file.type.startsWith('image/') && ['image/png', 'image/jpeg', 'image/jpg'].includes(file.type);
+      const isValidSize = file.size <= 5 * 1024 * 1024;
+      return isValidType && isValidSize;
+    });
+    
+    if (validFiles.length !== files.length) {
+      alert('Some files were invalid. Only PNG/JPG images under 5MB are allowed.');
+    }
+    
+    if (validFiles.length === 0) {
+      return;
+    }
+    
+    const newAssets: Asset[] = validFiles.map(file => ({
+      id: `product-${Date.now()}-${Math.random()}`,
+      name: file.name,
+      type: 'image',
+      file,
+      preview: URL.createObjectURL(file)
+    }));
+    
+    setModalProductImages(prev => [...prev, ...newAssets]);
+    // Reset input so same files can be selected again
+    if (productImagesInputRef.current) {
+      productImagesInputRef.current.value = '';
+    }
+  };
+
+  // Handler for company URL (text input) - uses modal state
+  const handleCompanyUrlChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setModalCompanyUrl(event.target.value);
+  };
+
+  // Remove asset handlers - for modal state
+  const removeModalLogo = () => {
+    if (modalLogoAsset?.preview) {
+      URL.revokeObjectURL(modalLogoAsset.preview);
+    }
+    setModalLogoAsset(null);
+  };
+
+  const removeModalProductImage = (id: string) => {
+    setModalProductImages(prev => {
+      const asset = prev.find(a => a.id === id);
+      if (asset?.preview) {
+        URL.revokeObjectURL(asset.preview);
+      }
+      return prev.filter(a => a.id !== id);
+    });
+  };
+
+  // Remove from pending assets (typing area)
+  const removePendingAsset = (id: string) => {
+    setPendingAssets(prev => {
+      const asset = prev.find(a => a.id === id);
+      if (asset?.preview) {
+        URL.revokeObjectURL(asset.preview);
+      }
+      return prev.filter(a => a.id !== id);
+    });
+  };
+
+  // Remove from attached assets (chat display)
+  const removeAttachedAsset = (id: string) => {
+    setAttachedAssets(prev => {
+      const asset = prev.find(a => a.id === id);
+      if (asset?.preview) {
+        URL.revokeObjectURL(asset.preview);
+      }
+      return prev.filter(a => a.id !== id);
+    });
+  };
+
+  // Handler for "Attach" button in modal - moves assets from modal to typing area
   const handleAttachAssets = () => {
-    // Handle asset attachment logic here
+    // Collect all assets from modal state
+    const assetsToAttach: Asset[] = [];
+    
+    if (modalLogoAsset) {
+      assetsToAttach.push(modalLogoAsset);
+    }
+    
+    assetsToAttach.push(...modalProductImages);
+    
+    if (modalCompanyUrl && modalCompanyUrl.trim()) {
+      const trimmedUrl = modalCompanyUrl.trim();
+      // Check if URL already exists in pendingAssets to preserve its ID
+      // Match by URL value (name or url property) to preserve ID if user didn't change it
+      const existingUrl = pendingAssets.find(a => 
+        a.id.startsWith('url-') && 
+        (a.url === trimmedUrl || a.name === trimmedUrl)
+      );
+      if (existingUrl) {
+        // Preserve existing URL asset ID if URL value matches
+        assetsToAttach.push({
+          ...existingUrl,
+          name: trimmedUrl,
+          url: trimmedUrl
+        });
+      } else {
+        // Create new URL asset with new ID
+        assetsToAttach.push({
+          id: `url-${Date.now()}`,
+          name: trimmedUrl,
+          type: 'url',
+          url: trimmedUrl
+        });
+      }
+    }
+    
+    if (assetsToAttach.length === 0) {
+      alert('Please attach at least one asset');
+      return;
+    }
+    
+    // REPLACE pendingAssets with current modal state (don't merge)
+    // This ensures removals in modal are reflected in typing area
+    // Cleanup old pendingAssets that are no longer included
+    setPendingAssets(prev => {
+      const newAssetIds = new Set(assetsToAttach.map(a => a.id));
+      // Cleanup previews from assets that are being removed
+      prev.forEach(asset => {
+        if (!newAssetIds.has(asset.id) && asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      return assetsToAttach;
+    });
+    
+    // Clear modal state after attaching
+    setModalLogoAsset(null);
+    setModalProductImages([]);
+    setModalCompanyUrl('');
+    
+    // Close modal
     setShowAddAssetsModal(false);
-    // After assets are attached, continue to style selection
-    router.push('/create-video/style');
+    
+    // Don't advance step yet - wait for user to click send in typing area
+  };
+
+  // Handler for send button in typing area - moves assets from typing area to chat
+  const handleSendAssets = () => {
+    if (pendingAssets.length === 0) {
+      return;
+    }
+    
+    // Create a copy of pending assets for chat display
+    const assetsToDisplay = [...pendingAssets];
+    
+    // Move assets from typing area to chat display
+    setAttachedAssets(assetsToDisplay);
+    
+    // Clear typing area immediately
+    setPendingAssets([]);
+    
+    // Note: We keep the preview URLs in attachedAssets, they will be cleaned up on unmount
+    // Don't cleanup previews here as they're still needed for display in chat
+    
+    // Advance to next step: assets-attached
+    setCurrentStep('assets-attached');
+  };
+
+  // Format script JSON for display
+  const formatScriptForDisplay = (scriptData: any): string => {
+    let formatted = '';
+    
+    if (scriptData.video_type) {
+      formatted += `Video type: ${scriptData.video_type}\n`;
+    }
+    
+    if (scriptData.duration) {
+      formatted += `Duration: ${scriptData.duration}\n`;
+    }
+
+    const scenes = scriptData.scenes || scriptData.scene_plan || [];
+    
+    scenes.forEach((scene: any, index: number) => {
+      const sceneNum = scene.scene_number || index + 1;
+      const timeRange = scene.time_range || (index === 0 ? '0-5sec' : index === 1 ? '5-10 sec' : 'N/A');
+      formatted += `\nScene ${sceneNum}: (${timeRange})\n`;
+      
+      if (scene.voiceover) {
+        formatted += `Voiceover: ${scene.voiceover}\n`;
+      }
+      
+      if (scene.broll_visual_description || scene.broll) {
+        formatted += `Broll: ${scene.broll_visual_description || scene.broll}\n`;
+      }
+      
+      if (scene.avatar_action || scene.avatar) {
+        formatted += `Avatar: ${scene.avatar_action || scene.avatar}\n`;
+      }
+    });
+
+    return formatted;
+  };
+
+  const handleSendScript = async () => {
+    if (!scriptInput.trim()) return;
+    
+    const userMessage = scriptInput.trim();
+    setUserScriptMessage(userMessage);
+    setIsGeneratingScript(true);
+    setScriptError(null);
+    
+    // Advance to script-input step to show user message
+    setCurrentStep('script-input');
+    
+    try {
+      // Extract duration from input if present, otherwise default to 30 seconds
+      let duration = '30 seconds';
+      const durationMatch = userMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
+      if (durationMatch) {
+        const num = parseInt(durationMatch[1]);
+        const unit = durationMatch[2].toLowerCase().startsWith('min') ? 'minutes' : 'seconds';
+        duration = `${num} ${unit}`;
+      }
+      
+      // Generate script WITHOUT creating a project - project will be created at style selection
+      // Using default style for generation, actual style will be selected later
+      const response = await apiClient.generateVideoScript({
+        userPrompt: userMessage,
+        videoStyle: 'AVATAR_CUTOUT', // Default style for generation, user will select actual style on style page
+        duration: duration,
+        // No projectId - project will be created when user selects style
+      });
+
+      if (response.success && response.data) {
+        const { script: scriptData, formattedScript: formatted } = response.data;
+        
+        setGeneratedScript(scriptData);
+        // Use formatted script from API, or format ourselves if not provided
+        const displayScript = formatted || formatScriptForDisplay(scriptData);
+        setFormattedScript(displayScript);
+        
+        // Store script temporarily in sessionStorage - will be saved to project after style selection
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('pendingScriptData', JSON.stringify(scriptData));
+          sessionStorage.setItem('pendingScriptFormatted', displayScript);
+          sessionStorage.setItem('pendingUserPrompt', userMessage);
+        }
+        
+        // Advance to script-generated step
+        setCurrentStep('script-generated');
+        
+        // Clear script input
+        setScriptInput('');
+        
+        showToast('Script generated successfully!', 'success');
+      } else {
+        throw new Error(response.message || 'Failed to generate script');
+      }
+    } catch (error: any) {
+      console.error('Failed to generate script:', error);
+      const errorMessage = error.response?.data?.message || error.message || 'Failed to generate script. Please try again.';
+      setScriptError(errorMessage);
+      showToast(errorMessage, 'error');
+      // Keep user on script-input step so they can retry
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  const handleRegenerateScript = async () => {
+    if (!userScriptMessage) {
+      showToast('Please generate a script first before regenerating', 'warning');
+      return;
+    }
+    
+    setIsGeneratingScript(true);
+    setScriptError(null);
+    
+    try {
+      // Extract duration from original message
+      let duration = '30 seconds';
+      const durationMatch = userScriptMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
+      if (durationMatch) {
+        const num = parseInt(durationMatch[1]);
+        const unit = durationMatch[2].toLowerCase().startsWith('min') ? 'minutes' : 'seconds';
+        duration = `${num} ${unit}`;
+      }
+      
+      // Regenerate script WITHOUT project - will be saved after style selection
+      const response = await apiClient.generateVideoScript({
+        userPrompt: userScriptMessage,
+        videoStyle: 'AVATAR_CUTOUT', // Default style for generation
+        duration: duration,
+        // No projectId - project will be created when user selects style
+      });
+
+      if (response.success && response.data) {
+        const { script: scriptData, formattedScript: formatted } = response.data;
+        
+        setGeneratedScript(scriptData);
+        const displayScript = formatted || formatScriptForDisplay(scriptData);
+        setFormattedScript(displayScript);
+        
+        // Update stored script in sessionStorage
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('pendingScriptData', JSON.stringify(scriptData));
+          sessionStorage.setItem('pendingScriptFormatted', displayScript);
+          sessionStorage.setItem('pendingUserPrompt', userScriptMessage);
+        }
+        
+        showToast('Script regenerated! A new version of your script has been generated.', 'success');
+      } else {
+        throw new Error(response.message || 'Failed to regenerate script');
+      }
+    } catch (error: any) {
+      console.error('Failed to regenerate script:', error);
+      const errorMessage = error.response?.data?.message || error.message || 'Failed to regenerate script. Please try again.';
+      setScriptError(errorMessage);
+      showToast(errorMessage, 'error');
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  const handleAvatarSelection = (preference: 'yes' | 'no') => {
+    setAvatarPreference(preference);
+    // Save preference to sessionStorage for later use
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('avatarPreference', preference);
+    }
+    
+    if (preference === 'no') {
+      // Move to voice selection step instead of redirecting
+      setCurrentStep('voice-selection');
+    } else {
+      // Show user's "Yes" message and avatar selection UI within the same step
+      setAvatarYesMessage(true);
+      // Load avatars for the active tab
+      loadAvatars(activeAvatarTab);
+    }
+  };
+
+  // Load avatars based on active tab
+  const loadAvatars = async (tab: 'library' | 'upload' | 'hire') => {
+    setLoadingAvatars(true);
+    setFailedImageUrls(new Set()); // Clear failed URLs when loading new avatars
+    try {
+      let response;
+      if (tab === 'library') {
+        // Use getUserAvatars WITHOUT source filter to show all avatars (matches old behavior)
+        // The old avatar selection page showed all user avatars in the library tab
+        response = await apiClient.getUserAvatars();
+      } else if (tab === 'upload') {
+        // Use getUserAvatars with UPLOAD source filter to show only uploaded avatars
+        response = await apiClient.getUserAvatars({ source: 'UPLOAD' });
+      } else {
+        // Hire tab - placeholder for now
+        setAvatars([]);
+        setLoadingAvatars(false);
+        return;
+      }
+      
+      if (response.success && response.data) {
+        setAvatars(response.data);
+      } else {
+        setAvatars([]);
+      }
+    } catch (error: any) {
+      console.error('Failed to load avatars:', error);
+      setAvatars([]);
+      showToast('Failed to load avatars. Please try again.', 'error');
+    } finally {
+      setLoadingAvatars(false);
+    }
+  };
+
+  // Load avatars when tab changes or when in avatar-selection step and user said yes
+  useEffect(() => {
+    if (currentStep === 'avatar-selection' && avatarYesMessage) {
+      loadAvatars(activeAvatarTab);
+    }
+  }, [activeAvatarTab, currentStep, avatarYesMessage]);
+
+  // Load voices based on active tab
+  const loadVoices = async (tab: 'library' | 'upload' | 'record') => {
+    setLoadingVoices(true);
+    try {
+      if (tab === 'library') {
+        const response = await apiClient.getElevenLabsVoices();
+        if (response.success && response.data) {
+          setVoices(response.data);
+        } else {
+          setVoices([]);
+        }
+      } else if (tab === 'upload') {
+        // Upload tab - placeholder for now
+        setVoices([]);
+      } else {
+        // Record tab - placeholder for now
+        setVoices([]);
+      }
+    } catch (error: any) {
+      console.error('Failed to load voices:', error);
+      setVoices([]);
+      showToast('Failed to load voices. Please try again.', 'error');
+    } finally {
+      setLoadingVoices(false);
+    }
+  };
+
+  // Load voices when tab changes or when in voice-selection step and user said yes
+  useEffect(() => {
+    if (currentStep === 'voice-selection' && voiceYesMessage) {
+      loadVoices(activeVoiceTab);
+    }
+  }, [activeVoiceTab, currentStep, voiceYesMessage]);
+
+  // Auto-advance to voice selection after showing avatar preview
+  useEffect(() => {
+    if (currentStep === 'avatar-selected' && selectedAvatar) {
+      const timer = setTimeout(() => {
+        setCurrentStep('voice-selection');
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentStep, selectedAvatar]);
+
+  // Handle voice selection
+  const handleVoiceSelection = (preference: 'yes' | 'no') => {
+    setVoicePreference(preference);
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('voicePreference', preference);
+    }
+    
+    if (preference === 'no') {
+      // Navigate to style selection
+      router.push('/create-video/style');
+    } else {
+      setVoiceYesMessage(true);
+      loadVoices(activeVoiceTab);
+    }
+  };
+
+  // Handle voice play/preview
+  const handlePlayVoice = (voice: any) => {
+    if (!voice.preview_url) {
+      showToast('No preview available for this voice', 'warning');
+      return;
+    }
+    
+    // If clicking the same voice, toggle play/pause
+    if (playingVoiceId === voice.voice_id && audioElementRef.current) {
+      if (isAudioPlaying) {
+        // Pause
+        audioElementRef.current.pause();
+        setIsAudioPlaying(false);
+      } else {
+        // Resume
+        audioElementRef.current.play().catch((error) => {
+          console.error('Failed to resume voice preview:', error);
+          showToast('Failed to resume voice preview', 'error');
+        });
+        setIsAudioPlaying(true);
+      }
+      return;
+    }
+    
+    // Stop current audio if playing
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.currentTime = 0;
+    }
+    
+    // Play new voice
+    const audio = new Audio(voice.preview_url);
+    audioElementRef.current = audio;
+    setPlayingVoiceId(voice.voice_id);
+    setIsAudioPlaying(true);
+    
+    audio.play().catch((error) => {
+      console.error('Failed to play voice preview:', error);
+      showToast('Failed to play voice preview', 'error');
+      setPlayingVoiceId(null);
+      setIsAudioPlaying(false);
+    });
+    
+    audio.onended = () => {
+      setPlayingVoiceId(null);
+      setIsAudioPlaying(false);
+    };
+
+    audio.onpause = () => {
+      setIsAudioPlaying(false);
+    };
+  };
+
+  // Handle proceed with selected voice
+  const handleProceedWithVoice = () => {
+    if (selectedVoiceId) {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('selectedVoiceId', selectedVoiceId);
+      }
+      router.push('/create-video/style');
+    } else {
+      showToast('Please select a voice first', 'warning');
+    }
+  };
+
+  // Format duration helper
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Handle avatar selection
+  const handleSelectAvatar = (avatar: any) => {
+    setSelectedAvatarId(avatar.id);
+    // Store in sessionStorage for later use
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('selectedAvatarId', avatar.id);
+    }
+  };
+
+  // Handle avatar preview
+  const handlePreviewAvatar = (avatar: any) => {
+    setPreviewAvatar(avatar);
+    setPreviewImageFailed(false); // Reset failed state for new preview
+    setShowAvatarPreview(true);
+  };
+
+  // Handle proceed with selected avatar
+  const handleProceedWithAvatar = () => {
+    if (selectedAvatarId) {
+      // Find the selected avatar object
+      const avatar = avatars.find(a => a.id === selectedAvatarId);
+      if (avatar) {
+        setSelectedAvatar(avatar);
+      }
+      // Store in sessionStorage
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('selectedAvatarId', selectedAvatarId);
+      }
+      // Move to avatar-selected step to show preview
+      setCurrentStep('avatar-selected');
+    } else {
+      showToast('Please select an avatar first', 'warning');
+    }
   };
 
   const handleBack = () => {
@@ -79,6 +805,52 @@ function AIChatPageContent() {
       setSelectedOption(null);
     } else if (currentStep === 'asset-upload') {
       setCurrentStep('option-selected');
+      // Clear pending assets when going back
+      pendingAssets.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      setPendingAssets([]);
+    } else if (currentStep === 'avatar-selection') {
+      // If user has selected "yes" and is viewing avatar selection, go back to the question
+      if (avatarYesMessage) {
+        setAvatarYesMessage(false);
+        setSelectedAvatarId(null);
+        setShowAvatarPreview(false);
+        setPreviewAvatar(null);
+      } else {
+        // Go back to script-generated step
+        setCurrentStep('script-generated');
+        setProceedConfirmed(false);
+      }
+    } else if (currentStep === 'avatar-selected') {
+      // Go back to avatar selection
+      setCurrentStep('avatar-selection');
+      setSelectedAvatar(null);
+    } else if (currentStep === 'voice-selection') {
+      // If user has selected "yes" and is viewing voice selection, go back to the question
+      if (voiceYesMessage) {
+        setVoiceYesMessage(false);
+        setSelectedVoiceId(null);
+      } else {
+        // Go back to avatar-selected step
+        setCurrentStep('avatar-selected');
+      }
+    } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {
+      // Clear attached assets and script data, go back to asset-upload
+      attachedAssets.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      setAttachedAssets([]);
+      setGeneratedScript(null);
+      setFormattedScript(null);
+      setUserScriptMessage(null);
+      setScriptError(null);
+      setScriptInput('');
+      setCurrentStep('asset-upload');
     }
   };
 
@@ -97,8 +869,37 @@ function AIChatPageContent() {
       case 'welcome': return 0;
       case 'option-selected': return 1;
       case 'asset-upload': return 1;
+      case 'assets-attached': return 2;
+      case 'script-input': return 2;
+      case 'script-generated': return 3;
+      case 'avatar-selection': return 4; // Both sub-parts are step 4
+      case 'avatar-selected': return 4;
+      case 'voice-selection': return 5; // Both sub-parts are step 5
       default: return 0;
     }
+  };
+
+  const getProgressMessage = () => {
+    switch(currentStep) {
+      case 'welcome': return "Let's kick things off!";
+      case 'option-selected':
+      case 'asset-upload': return "Upload your visuals so I can shape your video.";
+      case 'assets-attached':
+      case 'script-input': return "Awesome! Now share your idea for video or paste your script.";
+      case 'script-generated': return "Nice! Your story is set.";
+      case 'avatar-selection': return "Choose your avatar style to bring the story to life.";
+      case 'avatar-selected': return "Choose your avatar style to bring the story to life.";
+      case 'voice-selection': return "Time to give your avatar a voice.";
+      default: return "Let's kick things off!";
+    }
+  };
+
+  // Helper function to check if a step has been reached (for cumulative rendering)
+  const hasReachedStep = (step: ChatStep): boolean => {
+    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'avatar-selected', 'voice-selection'];
+    const currentIndex = stepOrder.indexOf(currentStep);
+    const targetIndex = stepOrder.indexOf(step);
+    return currentIndex >= targetIndex;
   };
 
   if (isLoading) {
@@ -115,7 +916,9 @@ function AIChatPageContent() {
 
   const userName = user?.name || 'User';
   const firstName = userName.split(' ')[0];
-  const progressStep = getProgressStep();
+  
+  // Compute if modal has any assets selected (for attach button state)
+  const hasModalAssets = modalLogoAsset !== null || modalProductImages.length > 0 || (modalCompanyUrl && modalCompanyUrl.trim().length > 0);
 
   return (
     <div className="relative h-full bg-[#FFFCF8] overflow-hidden flex flex-col">
@@ -145,10 +948,10 @@ function AIChatPageContent() {
               {/* Figma: height: 24px, gap: 10px, font: 14px, line-height: 24px */}
               <div className="flex flex-row justify-between items-center gap-[clamp(0.5rem,1vh,10px)] w-full h-[clamp(18px,2.34vh,24px)]">
                 <span className="font-heading text-[clamp(10px,1.37vh,14px)] font-normal leading-[clamp(18px,2.34vh,24px)] text-black truncate">
-                  {currentStep === 'welcome' ? "Let's kick things off!" : "Upload your visuals so I can shape your video."}
+                  {getProgressMessage()}
                 </span>
                 <span className="font-heading text-[clamp(10px,1.37vh,14px)] font-normal leading-[clamp(18px,2.34vh,24px)] text-black text-center min-w-[16px] sm:min-w-[18px] md:min-w-[19px]">
-                  {progressStep}/6
+                  {getProgressStep()}/6
                 </span>
               </div>
               {/* Figma: height: 10px, gap: 6px */}
@@ -158,8 +961,8 @@ function AIChatPageContent() {
                     key={index}
                     className={cn(
                       "flex flex-col items-start h-[clamp(6px,0.98vh,10px)] flex-1 rounded-[5px]",
-                      index === progressStep 
-                        ? "bg-[#E86412]" 
+                      index < getProgressStep()
+                        ? "bg-[#E86412]"
                         : "bg-white border border-[#E0E0E0]"
                     )}
                   />
@@ -172,7 +975,11 @@ function AIChatPageContent() {
         {/* Chat Window - Figma: padding: 52px 56px, gap: 20px, border-radius: 12px */}
         <div className="bg-white shadow-[0px_4px_22px_rgba(102,118,108,0.12)] rounded-xl py-[clamp(1rem,5.1vh,52px)] px-[clamp(0.75rem,5.5vh,56px)] flex flex-col justify-start items-start gap-[clamp(0.5rem,1.95vh,20px)] flex-1 min-h-0 overflow-hidden">
           {/* Chat Content Container - Figma: gap: 18px, justify-content: flex-end */}
-          <div className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto">
+          <div 
+            ref={chatContainerRef}
+            className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto scroll-smooth"
+            style={{ scrollBehavior: 'smooth' }}
+          >
             {/* Welcome Message - Step 0 - Figma: gap: 10px */}
             {currentStep === 'welcome' && (
               <div className="flex flex-col justify-center items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px]">
@@ -245,7 +1052,7 @@ function AIChatPageContent() {
             )}
 
             {/* Asset Upload - Step 1 continued */}
-            {currentStep === 'asset-upload' && (
+            {hasReachedStep('asset-upload') && (
               <>
                 <div className="flex flex-col justify-center items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px]">
                   {/* AI Icon - Figma: 64px x 64px */}
@@ -283,89 +1090,1320 @@ function AIChatPageContent() {
                   </div>
                 </div>
 
-                {/* Asset Upload Section - Figma: width: 459px, gap: 8px */}
-                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] w-full max-w-full sm:max-w-[459px]">
-                  {/* Figma: font: 18px, line-height: 21px */}
-                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                    Add in your video assets to help us create your video...
-                  </p>
-                  
-                  {/* AI Recommendation Box - Figma: padding: 8px 16px, border-radius: 24px, width: 459px, height: 108px, border: 2px gradient */}
-                  <div className="relative w-full rounded-[24px] p-[2px] bg-gradient-to-r from-[rgba(255,211,183,1)] to-[rgba(246,166,166,1)]">
-                    <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[22px] py-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] w-full flex flex-col justify-center items-start gap-[clamp(0.5rem,0.78vh,8px)]">
-                      {/* Figma: gap: 10px, height: 21px */}
-                      <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)] w-full">
-                        {/* Figma: 16px x 16px */}
-                        <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex-shrink-0">
-                          <Image
-                            src="/assets/mingcute_ai-line-1.svg"
-                            alt="AI"
-                            width={16}
-                            height={16}
-                            className="w-full h-full"
-                          />
+                {/* Asset Upload Section - Only show in asset-upload step */}
+                {currentStep === 'asset-upload' && !hasReachedStep('assets-attached') && (
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] w-full max-w-full sm:max-w-[459px]">
+                    {/* Figma: font: 18px, line-height: 21px */}
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Add in your video assets to help us create your video...
+                    </p>
+                    
+                    {/* AI Recommendation Box - Figma: padding: 8px 16px, border-radius: 24px, width: 459px, height: 108px, border: 2px gradient */}
+                    <div className="relative w-full rounded-[24px] p-[2px] bg-gradient-to-r from-[rgba(255,211,183,1)] to-[rgba(246,166,166,1)]">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[22px] py-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] w-full flex flex-col justify-center items-start gap-[clamp(0.5rem,0.78vh,8px)]">
+                        {/* Figma: gap: 10px, height: 21px */}
+                        <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)] w-full">
+                          {/* Figma: 16px x 16px */}
+                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex-shrink-0">
+                            <Image
+                              src="/assets/mingcute_ai-line-1.svg"
+                              alt="AI"
+                              width={16}
+                              height={16}
+                              className="w-full h-full"
+                            />
+                          </div>
+                          {/* Figma: font: 16px, line-height: 21px, gradient text */}
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1.3125rem,2.05vh,21px)] bg-gradient-to-b from-[#E86412] to-[#F12A4C] bg-clip-text text-transparent">
+                            AI recommendation
+                          </span>
                         </div>
-                        {/* Figma: font: 16px, line-height: 21px, gradient text */}
-                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1.3125rem,2.05vh,21px)] bg-gradient-to-b from-[#E86412] to-[#F12A4C] bg-clip-text text-transparent">
-                          AI recommendation
-                        </span>
+                        {/* Figma: font: 16px, line-height: 21px, width: 427px (459 - 32px padding) */}
+                        <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] w-full">
+                          Attach your brand logo, product images and your company URL from Add Assets button so we can create a video specialized to your needs.
+                        </p>
                       </div>
-                      {/* Figma: font: 16px, line-height: 21px, width: 427px (459 - 32px padding) */}
-                      <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] w-full">
-                        Attach your brand logo, product images and your company URL from Add Assets button so we can create a video specialized to your needs.
-                      </p>
                     </div>
+                    
+                    {/* Skip this step - Outside the recommendation box */}
+                    <button
+                      onClick={handleSkipAssets}
+                      className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.75rem,2.73vh,28px)] text-transparent bg-gradient-to-b from-[#E86412] to-[#F12A4C] bg-clip-text underline self-start"
+                    >
+                      Skip this step
+                    </button>
                   </div>
-                  
-                  {/* Skip this step - Outside the recommendation box */}
-                  <button
-                    onClick={handleSkipAssets}
-                    className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.75rem,2.73vh,28px)] text-transparent bg-gradient-to-b from-[#E86412] to-[#F12A4C] bg-clip-text underline self-start"
-                  >
-                    Skip this step
-                  </button>
-                </div>
+                )}
+
+                {/* Assets Attached - Display in chat */}
+                {hasReachedStep('assets-attached') && (
+                  <>
+                    {/* Display previously shown messages and attached assets */}
+                    {attachedAssets.length > 0 && (
+                      <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,600px)]">
+                          {/* Display assets as chips with previews */}
+                          <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)]">
+                            {attachedAssets.map((asset) => (
+                              <div
+                                key={asset.id}
+                                className="flex flex-row items-center gap-[clamp(0.375rem,0.78vh,8px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.25rem,0.39vh,4px)] bg-white rounded-[40px]"
+                              >
+                                {/* Preview icon */}
+                                <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                                  {asset.type === 'image' && asset.preview ? (
+                                    <img
+                                      src={asset.preview}
+                                      alt={asset.name}
+                                      className="w-full h-full object-cover rounded-full"
+                                    />
+                                  ) : asset.type === 'url' ? (
+                                    <Image
+                                      src="/assets/u_link.svg"
+                                      alt="URL"
+                                      width={16}
+                                      height={16}
+                                      className="w-full h-full"
+                                    />
+                                  ) : (
+                                    <div className="w-full h-full bg-gray-200 rounded-full flex items-center justify-center">
+                                      <span className="text-[10px]">IMG</span>
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {/* Asset name */}
+                                <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black max-w-[140px] truncate">
+                                  {asset.name}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* AI Response - New message after assets attached */}
+                    {currentStep === 'assets-attached' && !hasReachedStep('script-input') && (
+                      <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
+                          Perfect! Now let's shape your message. Tell me your video idea, or paste your script if you already have one. If you're not sure, just describe the goal—I'll write the script for you.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* User Script Message - Show when script-input or script-generated */}
+                    {hasReachedStep('script-input') && userScriptMessage && (
+                      <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
+                            {userScriptMessage}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Loading State - Show while generating script */}
+                    {isGeneratingScript && (
+                      <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                          Generating your script...
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Error Message - Show if script generation fails */}
+                    {scriptError && (
+                      <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-red-600">
+                          {scriptError}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Script Generated Section */}
+                    {hasReachedStep('script-generated') && formattedScript && (
+                      <>
+                        {/* AI Response - "Here's your script!" */}
+                        <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                          <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                            Here's your script!
+                          </p>
+                        </div>
+
+                        {/* Formatted Script Box */}
+                        <div className="relative max-w-full sm:max-w-[637px] mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
+                          background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
+                        }}>
+                          <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                            <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
+                              {formattedScript}
+                            </pre>
+                          </div>
+                        </div>
+
+                        {/* "Want me to regenerate?" Message */}
+                        <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                          <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                            Want me to regenerate or should we move to the next step?
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
               </>
             )}
+
+            {/* Avatar Selection Step - Only show NEW avatar-specific content */}
+            {hasReachedStep('avatar-selection') && currentStep === 'avatar-selection' && (
+              <>
+                {/* User Confirmation Message - "Looks good, let's go ahead!" - Only show if we just came from script-generated */}
+                {proceedConfirmed && (
+                  <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
+                        Looks good, let's go ahead!
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Avatar Selection Question and UI - Only show NEW content for avatar selection */}
+
+                {/* SUB-PART 1: Question and Buttons - Only show if user hasn't selected "Yes" yet */}
+                {!avatarYesMessage && (
+                  <>
+                    {/* AI Question - "Would you like an avatar in the video?" */}
+                    <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                        Would you like an avatar in the video?
+                      </p>
+                    </div>
+
+                    {/* AI Recommendation Box - Avatar Benefits */}
+                    <div className="relative w-full max-w-full sm:max-w-[459px] rounded-[24px] p-[2px] bg-gradient-to-r from-[rgba(255,211,183,1)] to-[rgba(246,166,166,1)] mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[22px] py-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] w-full flex flex-col justify-center items-start gap-[clamp(0.5rem,0.78vh,8px)]">
+                        {/* AI recommendation header */}
+                        <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)] w-full">
+                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex-shrink-0">
+                            <Image
+                              src="/assets/mingcute_ai-line-1.svg"
+                              alt="AI"
+                              width={16}
+                              height={16}
+                              className="w-full h-full"
+                            />
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1.3125rem,2.05vh,21px)] bg-gradient-to-b from-[#E86412] to-[#F12A4C] bg-clip-text text-transparent">
+                            AI recommendation
+                          </span>
+                        </div>
+                        <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] w-full">
+                          Avatars boost recall. People remember faces more than logos—give your brand a personality that appears in every video effortlessly.
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* SUB-PART 2: User "Yes" Message and Avatar Selection UI - Only show if user selected "Yes" */}
+                {avatarYesMessage && (
+                  <>
+                    {/* User "Yes" Message - "Yes, I need an avatar in the video" */}
+                    <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,293px)]">
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                          Yes, I need an avatar in the video
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* "Choose from the following Avatar options:" text */}
+                    <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                        Choose from the following Avatar options:
+                      </p>
+                    </div>
+
+                    {/* Avatar Selection Container with Gradient Border - Reduced width to 3/4 */}
+                    <div className="relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]" style={{
+                      background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
+                    }}>
+                      <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                        {/* Tabs Container with Gradient Border */}
+                        <div className="relative rounded-[28px] mb-[clamp(0.5rem,0.98vh,10px)]" style={{
+                          background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)',
+                          padding: '2px',
+                        }}>
+                          <div className="flex flex-row justify-center items-center gap-[clamp(0.25rem,0.39vh,4px)] bg-white rounded-[26px] p-[clamp(0.25rem,0.39vh,4px)]">
+                            {/* Library Tab */}
+                            <button
+                              onClick={() => setActiveAvatarTab('library')}
+                              className={cn(
+                                "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                                activeAvatarTab === 'library'
+                                  ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                  : "bg-transparent hover:bg-gray-50"
+                              )}
+                            >
+                              <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                                <Image
+                                  src="/assets/u_library.svg"
+                                  alt="Library"
+                                  width={20}
+                                  height={19}
+                                  className={cn(
+                                    "w-full h-full",
+                                    activeAvatarTab === 'library' ? "brightness-0 invert" : ""
+                                  )}
+                                />
+                              </div>
+                              <span className={cn(
+                                "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                                activeAvatarTab === 'library' ? "font-medium text-white" : "font-normal text-[#212121]"
+                              )}>
+                                Library
+                              </span>
+                            </button>
+
+                            {/* Upload Tab */}
+                            <button
+                              onClick={() => setActiveAvatarTab('upload')}
+                              className={cn(
+                                "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                                activeAvatarTab === 'upload'
+                                  ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                  : "bg-transparent hover:bg-gray-50"
+                              )}
+                            >
+                              <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                                <Image
+                                  src="/assets/u_upload.svg"
+                                  alt="Upload"
+                                  width={24}
+                                  height={24}
+                                  className={cn(
+                                    "w-full h-full",
+                                    activeAvatarTab === 'upload' ? "brightness-0 invert" : ""
+                                  )}
+                                />
+                              </div>
+                              <span className={cn(
+                                "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                                activeAvatarTab === 'upload' ? "font-medium text-white" : "font-normal text-[#212121]"
+                              )}>
+                                Upload
+                              </span>
+                            </button>
+
+                            {/* Hire Tab */}
+                            <button
+                              onClick={() => setActiveAvatarTab('hire')}
+                              className={cn(
+                                "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                                activeAvatarTab === 'hire'
+                                  ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                  : "bg-transparent hover:bg-gray-50"
+                              )}
+                            >
+                              <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                                <Image
+                                  src="/assets/u_credits.svg"
+                                  alt="Hire"
+                                  width={20}
+                                  height={20}
+                                  className={cn(
+                                    "w-full h-full",
+                                    activeAvatarTab === 'hire' ? "brightness-0 invert" : ""
+                                  )}
+                                />
+                              </div>
+                              <span className={cn(
+                                "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                                activeAvatarTab === 'hire' ? "font-medium text-white" : "font-normal text-[#212121]"
+                              )}>
+                                Hire
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Avatar Grid - Fixed height for 2 rows, then scrollable */}
+                        <div className="h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                          {loadingAvatars ? (
+                            <div className="flex items-center justify-center h-full">
+                              <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
+                            </div>
+                          ) : activeAvatarTab !== 'library' ? (
+                            // Upload and Hire tabs - show placeholder message
+                            <div 
+                              key={`placeholder-${activeAvatarTab}`}
+                              className="flex flex-col items-center justify-center h-full"
+                              style={{
+                                animation: 'fadeIn 0.3s ease-in-out'
+                              }}
+                            >
+                              <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
+                                {activeAvatarTab === 'upload' ? 'Upload functionality coming soon' : 
+                                 'Hire feature coming soon'}
+                              </p>
+                            </div>
+                          ) : avatars.length === 0 ? (
+                            <div 
+                              key={`empty-${activeAvatarTab}`}
+                              className="flex flex-col items-center justify-center h-full"
+                              style={{
+                                animation: 'fadeIn 0.3s ease-in-out'
+                              }}
+                            >
+                              <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
+                                No avatars available in library
+                              </p>
+                            </div>
+                          ) : (
+                            <div 
+                              key={activeAvatarTab} 
+                              className="grid grid-cols-5 gap-[clamp(0.75rem,0.98vh,12px)]"
+                              style={{
+                                animation: 'fadeIn 0.3s ease-in-out'
+                              }}
+                            >
+                              {avatars.map((avatar: any) => {
+                                const avatarImageUrl = avatar.avatarUrl || avatar.thumbnailUrl || avatar.originalImageUrl;
+                                const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                                  ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                                  : 'http://localhost:9001';
+                                const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                                  ? avatarImageUrl 
+                                  : avatarImageUrl 
+                                    ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                                    : null;
+                                const isSelected = selectedAvatarId === avatar.id;
+
+                                return (
+                                  <div
+                                    key={avatar.id}
+                                    className="relative w-full aspect-[149/196] rounded-[8px] cursor-pointer group"
+                                    onClick={() => handlePreviewAvatar(avatar)}
+                                  >
+                                    {/* Avatar Image */}
+                                    <div className="absolute inset-[5px] rounded-[4px] overflow-hidden bg-gray-100">
+                                      <div className="relative w-full h-full">
+                                        {fullImageUrl && !failedImageUrls.has(fullImageUrl) ? (
+                                          <>
+                                            <Image
+                                              src={fullImageUrl}
+                                              alt={avatar.name || 'Avatar'}
+                                              fill
+                                              className="object-cover"
+                                              unoptimized
+                                              onError={() => {
+                                                // Track failed image URL
+                                                setFailedImageUrls(prev => new Set(prev).add(fullImageUrl));
+                                              }}
+                                            />
+                                            {/* Gradient overlay for selected state */}
+                                            {isSelected && (
+                                              <div className="absolute inset-0 bg-gradient-to-b from-[rgba(242,126,53,0.16)] to-[rgba(241,42,76,0.4)] z-10" />
+                                            )}
+                                          </>
+                                        ) : (
+                                          // Show placeholder if no image URL or image failed to load
+                                          <div className="absolute inset-0 flex items-center justify-center bg-gray-200">
+                                            <span className="text-xs text-gray-400">No Image</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Border - Selected state */}
+                                    {isSelected && (
+                                      <div className="absolute inset-0 rounded-[8px] border-2 border-[#E86412] box-border" />
+                                    )}
+
+                                    {/* X button - Only show on selected */}
+                                    {isSelected && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedAvatarId(null);
+                                          if (typeof window !== 'undefined') {
+                                            sessionStorage.removeItem('selectedAvatarId');
+                                          }
+                                        }}
+                                        className="absolute top-[clamp(0.5rem,0.78vh,12px)] right-[clamp(0.5rem,0.78vh,12px)] w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] bg-white/60 rounded-[12px] flex items-center justify-center z-10 hover:bg-white/80 transition-colors"
+                                      >
+                                        <X className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] text-black" />
+                                      </button>
+                                    )}
+
+                                    {/* Play button overlay - Center - COMMENTED OUT since we only have images, not videos */}
+                                    {/* <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                      <div className="w-[clamp(3.5rem,7.32vh,56px)] h-[clamp(3.5rem,7.32vh,56px)] bg-[rgba(242,126,53,0.5)] rounded-[32px] flex items-center justify-center">
+                                        <div className="w-[clamp(2.25rem,4.69vh,36px)] h-[clamp(2.25rem,4.69vh,36px)] border-[2.5px] border-white rounded-full flex items-center justify-center">
+                                          <div className="w-0 h-0 border-l-[clamp(0.625rem,1.17vh,12px)] border-t-[clamp(0.375rem,0.59vh,6px)] border-b-[clamp(0.375rem,0.59vh,6px)] border-t-transparent border-b-transparent border-l-white ml-[clamp(0.125rem,0.2vh,2px)]" />
+                                        </div>
+                                      </div>
+                                    </div> */}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
           </div>
 
+          {/* Avatar Selection Buttons - Only show if user hasn't selected "Yes" yet */}
+          {currentStep === 'avatar-selection' && !avatarYesMessage && (
+            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto justify-end">
+              {/* Yes, I need an avatar */}
+              <button
+                onClick={() => handleAvatarSelection('yes')}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-up.svg"
+                    alt="Yes"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                  Yes, I need an avatar in the video
+                </span>
+              </button>
+
+              {/* No, I'd like to keep it simple */}
+              <button
+                onClick={() => handleAvatarSelection('no')}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-down.svg"
+                    alt="No"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                  No, I'd like to keep it simple
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Proceed Button for Avatar Selection - Show when avatar is selected */}
+          {currentStep === 'avatar-selection' && avatarYesMessage && selectedAvatarId && (
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
+              <button
+                onClick={handleProceedWithAvatar}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_arrow-right.svg"
+                    alt="Proceed"
+                    width={12}
+                    height={12}
+                    className="w-fit"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                  Proceed
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Avatar Selected Step - Show selected avatar preview */}
+          {hasReachedStep('avatar-selected') && selectedAvatar && (
+            <>
+              {/* Show ALL previous chat messages - always visible */}
+              {/* Attached Assets */}
+              {attachedAssets.length > 0 && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,600px)]">
+                    <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)]">
+                      {attachedAssets.map((asset) => (
+                        <div
+                          key={asset.id}
+                          className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.25rem,0.39vh,4px)] bg-white rounded-[40px]"
+                        >
+                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                            {asset.type === 'image' && asset.preview ? (
+                              <img
+                                src={asset.preview}
+                                alt={asset.name}
+                                className="w-full h-full object-cover rounded-full"
+                              />
+                            ) : asset.type === 'url' ? (
+                              <Image
+                                src="/assets/u_link.svg"
+                                alt="URL"
+                                width={16}
+                                height={16}
+                                className="w-full h-full"
+                              />
+                            ) : (
+                              <div className="w-full h-full bg-gray-200 rounded-full flex items-center justify-center">
+                                <span className="text-[10px]">IMG</span>
+                              </div>
+                            )}
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black max-w-[140px] truncate">
+                            {asset.name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Show user script message if exists */}
+              {userScriptMessage && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
+                      {userScriptMessage}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Show previously generated script */}
+              {formattedScript && (
+                <>
+                  {/* AI Response - "Here's your script!" */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Here's your script!
+                    </p>
+                  </div>
+
+                  {/* Formatted Script Box */}
+                  <div className="relative max-w-full sm:max-w-[637px] mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
+                    background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
+                  }}>
+                    <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                      <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
+                        {formattedScript}
+                      </pre>
+                    </div>
+                  </div>
+
+                  {/* "Want me to regenerate?" Message */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Want me to regenerate or should we move to the next step?
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* User Confirmation Message - "Looks good, let's go ahead!" */}
+              {proceedConfirmed && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
+                      Looks good, let's go ahead!
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Selected Avatar Preview */}
+              <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
+                  {/* Selected Avatar Image */}
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                      <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                        {(() => {
+                          const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
+                          const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                            ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                            : 'http://localhost:9001';
+                          const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                            ? avatarImageUrl 
+                            : avatarImageUrl 
+                              ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                              : null;
+                          
+                          return fullImageUrl ? (
+                            <Image
+                              src={fullImageUrl}
+                              alt={selectedAvatar.name || 'Avatar'}
+                              fill
+                              className="object-cover"
+                              unoptimized
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                              <span className="text-xs text-gray-400">No Image</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
+                          {selectedAvatar.name || 'Avatar'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
+                        Selected Avatar
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI Message - "Great! Your avatar is ready..." */}
+              <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                  Great! Your avatar is ready. How would you like it to appear in the video? Choose a visual style:
+                </p>
+              </div>
+
+            </>
+          )}
+
+          {/* Voice Selection Step - Only show NEW voice-specific content */}
+          {hasReachedStep('voice-selection') && currentStep === 'voice-selection' && (
+            <>
+              {/* Show selected avatar if exists (from previous step) */}
+              {selectedAvatar && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
+                    <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                      <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                        <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                          {(() => {
+                            const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
+                            const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                              ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                              : 'http://localhost:9001';
+                            const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                              ? avatarImageUrl 
+                              : avatarImageUrl 
+                                ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                                : null;
+                            
+                            return fullImageUrl ? (
+                              <Image
+                                src={fullImageUrl}
+                                alt={selectedAvatar.name || 'Avatar'}
+                                fill
+                                className="object-cover"
+                                unoptimized
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                                <span className="text-xs text-gray-400">No Image</span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                          <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
+                            {selectedAvatar.name || 'Avatar'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
+                          Selected Avatar
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-PART 1: Question and Buttons - Only show if user hasn't selected "Yes" yet */}
+              {!voiceYesMessage && (
+                <>
+                  {/* AI Message - "Amazing, your video has a face now..." */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Amazing, your video has a face now, you're almost there... Want to change the voice?
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* SUB-PART 2: User "Yes" Message and Voice Selection UI - Only show if user selected "Yes" */}
+              {voiceYesMessage && (
+                <>
+                  {/* User "Yes" Message */}
+                  <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                        Yes, I need to change the voice of avatar
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* "Choose from the following Voice options:" text */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Choose from the following Voice options:
+                    </p>
+                  </div>
+
+                  {/* Voice Selection Container with Gradient Border */}
+                  <div className="relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]" style={{
+                    background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
+                  }}>
+                    <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                      {/* Tabs Container with Gradient Border */}
+                      <div className="relative rounded-[28px] mb-[clamp(0.5rem,0.98vh,10px)]" style={{
+                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)',
+                        padding: '2px',
+                      }}>
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.25rem,0.39vh,4px)] bg-white rounded-[26px] p-[clamp(0.25rem,0.39vh,4px)]">
+                          {/* Library Tab */}
+                          <button
+                            onClick={() => setActiveVoiceTab('library')}
+                            className={cn(
+                              "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                              activeVoiceTab === 'library'
+                                ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                : "bg-transparent hover:bg-gray-50"
+                            )}
+                          >
+                            <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                              <Image
+                                src="/assets/u_library.svg"
+                                alt="Library"
+                                width={20}
+                                height={19}
+                                className={cn(
+                                  "w-full h-full",
+                                  activeVoiceTab === 'library' ? "brightness-0 invert" : ""
+                                )}
+                              />
+                            </div>
+                            <span className={cn(
+                              "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                              activeVoiceTab === 'library' ? "font-medium text-white" : "font-normal text-[#212121]"
+                            )}>
+                              Library
+                            </span>
+                          </button>
+
+                          {/* Upload Tab */}
+                          <button
+                            onClick={() => setActiveVoiceTab('upload')}
+                            className={cn(
+                              "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                              activeVoiceTab === 'upload'
+                                ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                : "bg-transparent hover:bg-gray-50"
+                            )}
+                          >
+                            <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                              <Image
+                                src="/assets/u_upload.svg"
+                                alt="Upload"
+                                width={24}
+                                height={24}
+                                className={cn(
+                                  "w-full h-full",
+                                  activeVoiceTab === 'upload' ? "brightness-0 invert" : ""
+                                )}
+                              />
+                            </div>
+                            <span className={cn(
+                              "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                              activeVoiceTab === 'upload' ? "font-medium text-white" : "font-normal text-[#212121]"
+                            )}>
+                              Upload
+                            </span>
+                          </button>
+
+                          {/* Record Tab */}
+                          <button
+                            onClick={() => setActiveVoiceTab('record')}
+                            className={cn(
+                              "flex flex-row justify-center items-center gap-[clamp(0.625rem,0.98vh,10px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] rounded-[24px] flex-1 h-[clamp(2.25rem,4.69vh,36px)] transition-all duration-300 ease-in-out",
+                              activeVoiceTab === 'record'
+                                ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                : "bg-transparent hover:bg-gray-50"
+                            )}
+                          >
+                            <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                              <Image
+                                src="/assets/u_record.svg"
+                                alt="Record"
+                                width={20}
+                                height={20}
+                                className={cn(
+                                  "w-full h-full",
+                                  activeVoiceTab === 'record' ? "brightness-0 invert" : ""
+                                )}
+                              />
+                            </div>
+                            <span className={cn(
+                              "font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1rem,1.56vh,16px)]",
+                              activeVoiceTab === 'record' ? "font-medium text-white" : "font-normal text-[#212121]"
+                            )}>
+                              Record
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Voice List - Fixed height, then scrollable */}
+                      <div className="h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                        {loadingVoices ? (
+                          <div className="flex items-center justify-center h-full">
+                            <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
+                          </div>
+                        ) : activeVoiceTab !== 'library' ? (
+                          <div 
+                            key={`placeholder-${activeVoiceTab}`}
+                            className="flex flex-col items-center justify-center h-full"
+                            style={{
+                              animation: 'fadeIn 0.3s ease-in-out'
+                            }}
+                          >
+                            <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
+                              {activeVoiceTab === 'upload' ? 'Upload functionality coming soon' : 
+                               'Record functionality coming soon'}
+                            </p>
+                          </div>
+                        ) : voices.length === 0 ? (
+                          <div 
+                            key={`empty-${activeVoiceTab}`}
+                            className="flex flex-col items-center justify-center h-full"
+                            style={{
+                              animation: 'fadeIn 0.3s ease-in-out'
+                            }}
+                          >
+                            <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
+                              No voices available in library
+                            </p>
+                          </div>
+                        ) : (
+                          <div 
+                            key={activeVoiceTab} 
+                            className="flex flex-col gap-[clamp(0.5rem,0.78vh,8px)]"
+                            style={{
+                              animation: 'fadeIn 0.3s ease-in-out'
+                            }}
+                          >
+                            {voices.map((voice: any) => {
+                              const isSelected = selectedVoiceId === voice.voice_id;
+                              const gender = voice.labels?.gender || '';
+                              const accent = voice.labels?.accent || '';
+                              const language = voice.labels?.language || '';
+                              const voiceLabel = `${gender} ${accent} ${language}`.trim() || 'Voice';
+                              const duration = voice.preview_url ? '00:30' : '00:00'; // Default duration, can be updated if available
+
+                              return (
+                                <div
+                                  key={voice.voice_id}
+                                  className={cn(
+                                    "rounded-[8px] cursor-pointer transition-all",
+                                    isSelected ? "p-[2px]" : "p-0"
+                                  )}
+                                  style={isSelected ? {
+                                    background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                                  } : {}}
+                                  onClick={() => {
+                                    setSelectedVoiceId(voice.voice_id);
+                                    if (typeof window !== 'undefined') {
+                                      sessionStorage.setItem('selectedVoiceId', voice.voice_id);
+                                    }
+                                  }}
+                                >
+                                  <div className={cn(
+                                    "flex flex-row justify-between items-center rounded-[6px] transition-all",
+                                    isSelected ? "p-[clamp(0.375rem,0.59vh,6px)] bg-white" : "p-[clamp(0.5rem,0.78vh,8px)]"
+                                  )}>
+                                  <div className="flex flex-col justify-center items-start gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                                    <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)]">
+                                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                                        {voice.name}
+                                      </span>
+                                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#616161]">
+                                        |
+                                      </span>
+                                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#616161]">
+                                        {voiceLabel}
+                                      </span>
+                                    </div>
+                                    <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(1.5rem,2.34vh,24px)] text-[#616161]">
+                                      {duration}
+                                    </span>
+                                  </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handlePlayVoice(voice);
+                                    }}
+                                    className="flex flex-row justify-center items-center w-[clamp(2.5rem,3.91vh,40px)] h-[clamp(2.5rem,3.91vh,40px)] bg-[#E0E0E0] rounded-[20px] hover:opacity-80 transition-opacity flex-shrink-0"
+                                  >
+                                    <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center">
+                                      {playingVoiceId === voice.voice_id && isAudioPlaying ? (
+                                        // Pause icon (two vertical bars)
+                                        <div className="flex flex-row items-center justify-center gap-[2px] w-full h-full">
+                                          <div className="w-[3px] h-[10px] bg-[#212121] rounded-sm" />
+                                          <div className="w-[3px] h-[10px] bg-[#212121] rounded-sm" />
+                                        </div>
+                                      ) : (
+                                        <Image
+                                          src="/assets/u_play.svg"
+                                          alt="Play"
+                                          width={11}
+                                          height={14}
+                                          className="w-full h-full"
+                                        />
+                                      )}
+                                    </div>
+                                  </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Voice Selection Buttons - Only show if user hasn't selected "Yes" yet */}
+          {currentStep === 'voice-selection' && !voiceYesMessage && (
+            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto justify-end">
+              {/* Yes, I need to change the voice */}
+              <button
+                onClick={() => handleVoiceSelection('yes')}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-up.svg"
+                    alt="Yes"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                  Yes, I need to change the voice of avatar
+                </span>
+              </button>
+
+              {/* No, I'd like to keep it the same */}
+              <button
+                onClick={() => handleVoiceSelection('no')}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-down.svg"
+                    alt="No"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                  No, I'd like to keep it the same
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Proceed Button for Voice Selection - Show when voice is selected */}
+          {currentStep === 'voice-selection' && voiceYesMessage && selectedVoiceId && (
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
+              <button
+                onClick={handleProceedWithVoice}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_arrow-right.svg"
+                    alt="Proceed"
+                    width={12}
+                    height={12}
+                    className="w-fit"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                  Proceed
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Regenerate and Proceed Buttons - Outside scrollable container to ensure visibility */}
+          {currentStep === 'script-generated' && formattedScript && !proceedConfirmed && (
+            <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
+              <div className="flex flex-row justify-end items-center gap-[clamp(0.625rem,0.98vh,10px)] w-full">
+                {/* Regenerate Button */}
+                <button
+                  onClick={handleRegenerateScript}
+                  disabled={isGeneratingScript}
+                  className={cn(
+                    "flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.625rem,1.17vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity",
+                    isGeneratingScript && "opacity-50 cursor-not-allowed"
+                  )}
+                >
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                    <Image
+                      src="/assets/u_redo.svg"
+                      alt="Regenerate"
+                      width={24}
+                      height={24}
+                      className="w-full h-full"
+                    />
+                  </div>
+                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                    Regenerate
+                  </span>
+                </button>
+
+                {/* Proceed Button */}
+                <button
+                  onClick={() => {
+                    // Show user confirmation message and advance to avatar selection step
+                    setProceedConfirmed(true);
+                    setCurrentStep('avatar-selection');
+                  }}
+                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.625rem,1.17vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                >
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                    <Image
+                      src="/assets/mingcute_ai-line-1.svg"
+                      alt="Proceed"
+                      width={24}
+                      height={24}
+                      className="w-fit"
+                    />
+                  </div>
+                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                    Proceed
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Add Assets Input Bar - Figma: height: 68px, padding: 8px 12px, gap: 16px, border-radius: 30px */}
-          {/* KEY FIX: Add margin-top and margin-bottom to create gap from content above and below */}
           {currentStep === 'asset-upload' && (
             <div className="flex flex-row justify-center items-center gap-[clamp(0.75rem,1.56vh,16px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0">
-            {/* Add Assets Button - Figma: width: 152px, height: 44px, padding: 8px 16px, border-radius: 24px */}
-            <button
-              onClick={handleAddAssets}
-              className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[24px] h-[clamp(2rem,4.3vh,44px)]"
-            >
-              {/* Plus Icon - Figma: 24px x 24px */}
-              <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]">
+              {/* Add Assets Button - Always show gradient border */}
+              <div
+                className="rounded-[24px] h-[clamp(2rem,4.3vh,44px)] flex-shrink-0 p-[2px]"
+                style={{
+                  background: 'linear-gradient(180deg, #FFD3B7 0%, #F6A6A6 100%)'
+                }}
+              >
+                <button
+                  onClick={handleAddAssets}
+                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[24px] h-full w-full hover:opacity-90 transition-opacity"
+                >
+                  {/* Plus Icon - Figma: 24px x 24px */}
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]">
+                    <Image
+                      src="/assets/u_plus-circle.svg"
+                      alt="Add"
+                      width={24}
+                      height={24}
+                      className="w-full h-full"
+                    />
+                  </div>
+                  {/* Font size consistent with other chat elements */}
+                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">Add Assets</span>
+                </button>
+              </div>
+              
+              {/* Display pending assets as chips (assets attached from modal, waiting to be sent) - ROW VIEW ONLY */}
+              {pendingAssets.length > 0 ? (
+                <div className="flex flex-row items-center gap-2 flex-1 min-w-0 flex-nowrap overflow-x-auto">
+                  {(() => {
+                    // Separate assets by type for proper display
+                    const logo = pendingAssets.find(a => a.id.startsWith('logo-'));
+                    const productImages = pendingAssets.filter(a => a.id.startsWith('product-'));
+                    const url = pendingAssets.find(a => a.id.startsWith('url-'));
+                    
+                    return (
+                      <>
+                        {/* Logo - Always show if exists */}
+                        {logo && (
+                          <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                            <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                              {logo.preview ? (
+                                <img src={logo.preview} alt={logo.name} className="w-full h-full object-cover rounded" />
+                              ) : (
+                                <Image src="/assets/u_paperclip.svg" alt="Logo" width={16} height={16} className="w-full h-full" />
+                              )}
+                            </div>
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black truncate max-w-[140px]">
+                              {logo.name}
+                            </span>
+                            <button 
+                              onClick={() => removePendingAsset(logo.id)} 
+                              className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center flex-shrink-0"
+                            >
+                              <X className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                            </button>
+                          </div>
+                        )}
+                        
+                        {/* First Product Image - Always show if exists */}
+                        {productImages.length > 0 && (
+                          <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                            <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                              {productImages[0].preview ? (
+                                <img src={productImages[0].preview} alt={productImages[0].name} className="w-full h-full object-cover rounded" />
+                              ) : (
+                                <Image src="/assets/u_paperclip.svg" alt="Product" width={16} height={16} className="w-full h-full" />
+                              )}
+                            </div>
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black truncate max-w-[140px]">
+                              {productImages[0].name}
+                            </span>
+                            <button 
+                              onClick={() => removePendingAsset(productImages[0].id)} 
+                              className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center flex-shrink-0"
+                            >
+                              <X className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                            </button>
+                          </div>
+                        )}
+                        
+                        {/* +N indicator - Only for additional product images beyond the first */}
+                        {productImages.length > 1 && (
+                          <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black">
+                              +{productImages.length - 1}
+                            </span>
+                          </div>
+                        )}
+                        
+                        {/* URL - Always show if exists */}
+                        {url && (
+                          <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                            <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                              <Image src="/assets/u_link.svg" alt="URL" width={16} height={16} className="w-full h-full" />
+                            </div>
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black truncate max-w-[194px]">
+                              {url.name}
+                            </span>
+                            <button 
+                              onClick={() => removePendingAsset(url.id)} 
+                              className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center flex-shrink-0"
+                            >
+                              <X className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* File type hint - Only show when no assets are selected */
+                <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] flex-1 hidden md:block">
+                  Supports files type .png & .jpg only of max 5 MB each.
+                </span>
+              )}
+              
+              {/* Send button - only enabled when pending assets exist */}
+              <button
+                onClick={handleSendAssets}
+                disabled={pendingAssets.length === 0}
+                className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+              >
                 <Image
-                  src="/assets/u_plus-circle.svg"
-                  alt="Add"
+                  src="/assets/fi_send.svg"
+                  alt="Send"
                   width={24}
                   height={24}
-                  className="w-full h-full"
+                  className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
                 />
+              </button>
+            </div>
+          )}
+
+          {/* Script Input Bar - Show when assets are attached or script-input step */}
+          {(currentStep === 'assets-attached' || currentStep === 'script-input') && (
+            <div 
+              className={cn(
+                "rounded-[40px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0 transition-all box-border",
+                inputFocused 
+                  ? "p-[2px]"
+                  : "p-0 shadow-[0px_3px_19.5px_rgba(224,140,138,0.4)]"
+              )}
+              style={inputFocused ? {
+                background: 'linear-gradient(278.75deg, rgba(254, 89, 191, 0.4) 13.19%, rgba(231, 76, 60, 0.4) 46.27%, rgba(254, 201, 89, 0.4) 74.45%, rgba(231, 57, 19, 0.4) 96.51%)'
+              } : {}}
+            >
+              <div className={cn(
+                "flex flex-row justify-center items-center gap-[clamp(0.75rem,1.56vh,16px)] bg-white rounded-[40px] w-full h-full box-border",
+                inputFocused ? "px-[clamp(0.375rem,0.59vh,6px)] py-[clamp(0.375rem,0.59vh,6px)]" : "px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)]"
+              )}>
+                <input
+                  type="text"
+                  placeholder="Share your ideas here..."
+                  value={scriptInput}
+                  onChange={(e) => setScriptInput(e.target.value)}
+                  onFocus={() => setInputFocused(true)}
+                  onBlur={() => setInputFocused(false)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && scriptInput.trim() && !isGeneratingScript) {
+                      handleSendScript();
+                    }
+                  }}
+                  disabled={isGeneratingScript}
+                  className={cn(
+                    "flex-1 font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#616161] outline-none px-[clamp(0.5rem,0.98vh,10px)] bg-transparent",
+                    isGeneratingScript && "opacity-50 cursor-not-allowed"
+                  )}
+                />
+                
+                {/* Send button */}
+                <button
+                  onClick={() => scriptInput.trim() && !isGeneratingScript && handleSendScript()}
+                  disabled={!scriptInput.trim() || isGeneratingScript}
+                  className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+                >
+                  {isGeneratingScript ? (
+                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Image
+                      src="/assets/fi_send.svg"
+                      alt="Send"
+                      width={24}
+                      height={24}
+                      className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
+                    />
+                  )}
+                </button>
               </div>
-              {/* Figma: font: 18px, line-height: 28px */}
-              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1.25rem,2.73vh,28px)] text-[#212121]">Add Assets</span>
-            </button>
-            {/* Figma: font: 16px, line-height: 21px */}
-            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] flex-1 truncate">
-              Supports files type .png & .jpg only of max 5 MB each.
-            </span>
-            {/* Send Button - Figma: width: 52px, height: 52px, border-radius: 26px */}
-            <button className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px]">
-              <Image
-                src="/assets/fi_send.svg"
-                alt="Send"
-                width={24}
-                height={24}
-                className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
-              />
-            </button>
-          </div>
+            </div>
           )}
 
           {/* Suggested Actions - Only show on welcome step - Height responsive */}
@@ -453,14 +2491,14 @@ function AIChatPageContent() {
           />
           
           {/* Modal */}
-          <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
-            <div className="bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl p-10 w-full max-w-[546px] flex flex-col gap-5">
+          <div className="fixed inset-0 flex items-center justify-center z-50 p-4 overflow-y-auto">
+            <div className="bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl p-10 w-full max-w-[546px] flex flex-col gap-5 my-auto">
               {/* Modal Header */}
-              <div className="flex flex-row items-start w-full">
-                <h2 className="font-heading text-[28px] font-normal leading-7 text-[#212121] flex-1">Add Assets</h2>
+              <div className="flex flex-row items-center justify-between w-full flex-shrink-0">
+                <h2 className="font-heading text-[28px] font-normal leading-7 text-[#212121] flex-1 pr-4">Add Assets</h2>
                 <button
                   onClick={handleCloseModal}
-                  className="w-8 h-8 flex items-center justify-center"
+                  className="w-8 h-8 flex items-center justify-center flex-shrink-0 hover:opacity-70"
                 >
                   <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M8 8L24 24M24 8L8 24" stroke="#212121" strokeWidth="2" strokeLinecap="round"/>
@@ -469,51 +2507,146 @@ function AIChatPageContent() {
               </div>
 
               {/* Form Fields */}
-              <div className="flex flex-col gap-4">
-                {/* Attach Logo */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex flex-row items-start gap-2.5 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl h-[52px]">
-                    <input
-                      type="text"
-                      placeholder="Attach Logo"
-                      className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none"
-                    />
-                    <div className="w-6 h-6 flex items-center justify-center">
-                      <Image
-                        src="/assets/u_paperclip.svg"
-                        alt="Attach"
-                        width={24}
-                        height={24}
-                        className="w-6 h-6"
+              <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto">
+                {/* Attach Logo - Single Image */}
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <div className="flex flex-row items-center gap-2.5 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl min-h-[52px] w-full">
+                    {/* Preview or Placeholder */}
+                    {modalLogoAsset ? (
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 relative flex-shrink-0">
+                          {modalLogoAsset.preview ? (
+                            <img 
+                              src={modalLogoAsset.preview} 
+                              alt={modalLogoAsset.name}
+                              className="w-full h-full object-cover rounded"
+                            />
+                          ) : (
+                            <Image src="/assets/u_paperclip.svg" alt="Image" width={24} height={24} className="w-6 h-6" />
+                          )}
+                        </div>
+                        <span className="flex-1 font-heading text-base font-normal leading-5 text-[#212121] truncate min-w-0">
+                          {modalLogoAsset.name}
+                        </span>
+                        <button
+                          onClick={removeModalLogo}
+                          className="w-6 h-6 flex items-center justify-center flex-shrink-0 hover:opacity-70"
+                        >
+                          <X className="w-5 h-5 text-[#212121]" strokeWidth={2} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="Attach Logo"
+                          readOnly
+                          className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none cursor-pointer min-w-0"
+                          onClick={() => logoFileInputRef.current?.click()}
+                        />
+                        {/* Hidden file input */}
+                        <input
+                          ref={logoFileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg"
+                          onChange={handleLogoUpload}
+                          className="hidden"
+                        />
+                        {/* Paperclip icon - clickable when no asset */}
+                        <button
+                          onClick={() => logoFileInputRef.current?.click()}
+                          className="w-6 h-6 flex items-center justify-center cursor-pointer hover:opacity-70 flex-shrink-0"
+                        >
+                          <Image
+                            src="/assets/u_paperclip.svg"
+                            alt="Attach"
+                            width={24}
+                            height={24}
+                            className="w-6 h-6"
+                          />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Product Images - Multiple Images */}
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <div className="flex flex-row items-center gap-2 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl min-h-[52px] w-full flex-wrap">
+                    {/* Display selected images as chips - show first 3 */}
+                    {modalProductImages.slice(0, 3).map((asset) => (
+                      <div key={asset.id} className="flex items-center gap-2 px-2 py-1 bg-gray-100 rounded-lg flex-shrink-0">
+                        <div className="w-4 h-4 relative flex-shrink-0">
+                          {asset.preview ? (
+                            <img 
+                              src={asset.preview} 
+                              alt={asset.name}
+                              className="w-full h-full object-cover rounded"
+                            />
+                          ) : (
+                            <Image src="/assets/u_paperclip.svg" alt="Image" width={16} height={16} className="w-4 h-4" />
+                          )}
+                        </div>
+                        <span className="text-sm font-heading text-[#212121] truncate max-w-[100px]">
+                          {asset.name}
+                        </span>
+                        <button
+                          onClick={() => removeModalProductImage(asset.id)}
+                          className="w-4 h-4 flex items-center justify-center hover:opacity-70 flex-shrink-0"
+                        >
+                          <X className="w-3 h-3 text-[#212121]" strokeWidth={2} />
+                        </button>
+                      </div>
+                    ))}
+                    
+                    {/* Show +N indicator if more than 3 images */}
+                    {modalProductImages.length > 3 && (
+                      <div className="flex items-center gap-2 px-2 py-1 bg-gray-100 rounded-lg flex-shrink-0">
+                        <span className="text-sm font-heading text-[#212121]">
+                          +{modalProductImages.length - 3}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Input area or add button */}
+                    <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                      <input
+                        type="text"
+                        placeholder={modalProductImages.length > 0 ? "Add more images..." : "Product Images"}
+                        readOnly
+                        className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none cursor-pointer min-w-0"
+                        onClick={() => productImagesInputRef.current?.click()}
                       />
+                      
+                      <input
+                        ref={productImagesInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg"
+                        multiple
+                        onChange={handleProductImagesUpload}
+                        className="hidden"
+                      />
+                      
+                      <button
+                        onClick={() => productImagesInputRef.current?.click()}
+                        className="w-6 h-6 flex items-center justify-center cursor-pointer hover:opacity-70 flex-shrink-0"
+                      >
+                        <Image
+                          src="/assets/u_paperclip.svg"
+                          alt="Attach"
+                          width={24}
+                          height={24}
+                          className="w-6 h-6"
+                        />
+                      </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Product Images */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex flex-row items-start gap-2.5 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl h-[52px]">
-                    <input
-                      type="text"
-                      placeholder="Product Images"
-                      className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none"
-                    />
-                    <div className="w-6 h-6 flex items-center justify-center">
-                      <Image
-                        src="/assets/u_paperclip.svg"
-                        alt="Attach"
-                        width={24}
-                        height={24}
-                        className="w-6 h-6"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Type URL */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex flex-row items-start gap-2.5 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl h-[52px]">
-                    <div className="w-6 h-6 flex items-center justify-center">
+                {/* Company URL - Text input (no file upload) */}
+                <div className="flex flex-col gap-1 flex-shrink-0">
+                  <div className="flex flex-row items-center gap-2.5 px-4 py-3 border-2 border-[#E0E0E0] rounded-xl h-[52px] w-full">
+                    <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
                       <Image
                         src="/assets/u_link.svg"
                         alt="Link"
@@ -523,22 +2656,152 @@ function AIChatPageContent() {
                       />
                     </div>
                     <input
-                      type="text"
-                      placeholder="Type URL"
-                      className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none"
+                      type="url"
+                      placeholder="Type URL (e.g., https://www.companywebsite.com)"
+                      value={modalCompanyUrl}
+                      onChange={handleCompanyUrlChange}
+                      className="flex-1 font-heading text-base font-normal leading-5 text-[#616161] outline-none min-w-0"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Attach Button */}
-              <button
-                onClick={handleAttachAssets}
-                className="flex flex-row justify-center items-center px-5 py-4 bg-[#FFD3B7] rounded-[26px] h-[52px] min-w-[150px]"
-              >
-                <span className="font-heading text-base font-semibold leading-4 text-[#616161]">Attach</span>
-              </button>
+              {/* Attach Button - Fixed at bottom */}
+              <div className="flex-shrink-0 pt-2">
+                <button
+                  onClick={handleAttachAssets}
+                  disabled={!hasModalAssets}
+                  className={cn(
+                    "w-full flex flex-row justify-center items-center px-5 py-4 rounded-[26px] h-[52px] transition-all",
+                    !hasModalAssets
+                      ? "bg-gray-200 opacity-50 cursor-not-allowed"
+                      : "bg-gradient-to-r from-[#E86412] to-[#F12A4C] hover:opacity-90 cursor-pointer active:opacity-80"
+                  )}
+                >
+                  <span className={cn(
+                    "font-heading text-base font-semibold leading-4",
+                    !hasModalAssets ? "text-[#616161]" : "text-white"
+                  )}>Attach</span>
+                </button>
+              </div>
             </div>
+          </div>
+        </>
+      )}
+
+      {/* Avatar Preview Modal */}
+      {showAvatarPreview && previewAvatar && (
+        <>
+          {/* Overlay */}
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            style={{
+              background: 'linear-gradient(116.46deg, rgba(191, 143, 100, 0.5) 17.88%, rgba(179, 104, 56, 0.5) 89.93%)',
+              opacity: 0.9,
+            }}
+            onClick={() => setShowAvatarPreview(false)}
+          >
+            {/* Modal Content */}
+            <div
+              className="relative w-[clamp(17rem,35.42vh,340px)] rounded-[8px] p-[clamp(0.3125rem,0.49vh,5px)] bg-white"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Avatar Image - Wrapper to center image without cropping */}
+              <div className="relative w-full rounded-[12px] overflow-hidden flex items-center justify-center bg-gray-50" style={{ minHeight: 'clamp(21.875rem,43.65vh,447px)' }}>
+                {(() => {
+                  const avatarImageUrl = previewAvatar.avatarUrl || previewAvatar.thumbnailUrl || previewAvatar.originalImageUrl;
+                  const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                    ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                    : 'http://localhost:9001';
+                  const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                    ? avatarImageUrl 
+                    : avatarImageUrl 
+                      ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                      : null;
+                  
+                  return (
+                    <div className="relative w-full h-full flex items-center justify-center p-4">
+                      {fullImageUrl && !previewImageFailed ? (
+                        <Image
+                          src={fullImageUrl}
+                          alt={previewAvatar.name || 'Avatar'}
+                          width={300}
+                          height={400}
+                          className="object-contain max-w-full max-h-full"
+                          unoptimized
+                          onError={() => {
+                            setPreviewImageFailed(true);
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                          <span className="text-sm text-gray-400">No Image Available</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Close Button - Updated positioning to match Figma */}
+                <button
+                  onClick={() => setShowAvatarPreview(false)}
+                  className="absolute top-[clamp(0.75rem,1.17vh,12px)] right-[clamp(0.75rem,1.17vh,12px)] w-[clamp(2.25rem,3.52vh,36px)] h-[clamp(2.25rem,3.52vh,36px)] bg-white/60 rounded-[32px] flex items-center justify-center hover:bg-white/80 transition-colors z-10"
+                >
+                  <X className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] text-[#212121]" strokeWidth={1.5} />
+                </button>
+
+                {/* Play Button - Center - COMMENTED OUT since we only have images, not videos */}
+                {/* <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-[clamp(4.875rem,9.77vh,78px)] h-[clamp(4.875rem,9.77vh,78px)] bg-[rgba(242,126,53,0.5)] rounded-[48px] flex items-center justify-center">
+                    <div className="w-[clamp(2.25rem,4.69vh,36px)] h-[clamp(2.25rem,4.69vh,36px)] border-[2.5px] border-white rounded-full flex items-center justify-center">
+                      <div className="w-0 h-0 border-l-[clamp(0.625rem,1.17vh,12px)] border-t-[clamp(0.375rem,0.59vh,6px)] border-b-[clamp(0.375rem,0.59vh,6px)] border-t-transparent border-b-transparent border-l-white ml-[clamp(0.125rem,0.2vh,2px)]" />
+                    </div>
+                  </div>
+                </div> */}
+
+                {/* Video Controls Bar - Bottom - COMMENTED OUT since we only have images, not videos */}
+                {/* <div className="absolute bottom-[clamp(0.5rem,0.78vh,8px)] left-[clamp(0.5rem,0.78vh,8px)] right-[clamp(0.5rem,0.78vh,8px)] bg-white/60 rounded-[8px] p-[clamp(0.25rem,0.39vh,4px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.78vh,8px)]">
+                    <div className="flex flex-row justify-between items-center px-[clamp(0.5rem,0.78vh,8px)]">
+                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal leading-[clamp(1.5rem,2.34vh,24px)] text-[#212121]">
+                        00:30
+                      </span>
+                      <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M8 2.5V8.5M6 4.5L4 6.5H2V9.5H4L6 11.5V4.5ZM10 5.5L12 7.5M12 7.5L14 5.5M12 7.5L14 9.5M12 7.5L10 9.5" stroke="#212121" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="relative w-full h-[clamp(0.625rem,0.98vh,10px)] bg-white rounded-[18px] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.25rem,0.39vh,4px)]">
+                      <div className="w-full h-[2px] bg-[#E0E0E0] rounded-full" />
+                      <div className="absolute left-[clamp(0.0625rem,0.1vh,1px)] top-1/2 -translate-y-1/2 w-[clamp(0.5rem,0.78vh,8px)] h-[clamp(0.5rem,0.78vh,8px)] bg-white border-2 border-[#E86412] rounded-full" />
+                    </div>
+                  </div>
+                </div> */}
+              </div>
+            </div>
+
+            {/* Select Avatar Button - Updated positioning and icon to match Figma */}
+            <button
+              onClick={() => {
+                handleSelectAvatar(previewAvatar);
+                setShowAvatarPreview(false);
+              }}
+              className="absolute bottom-[clamp(1.5rem,2.93vh,30px)] left-1/2 -translate-x-1/2 flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[24px] h-[clamp(2.75rem,5.47vh,44px)] hover:opacity-90 transition-opacity z-10"
+            >
+              <div className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] flex items-center justify-center">
+                <Image
+                  src="/assets/u_check.svg"
+                  alt="Select"
+                  width={24}
+                  height={24}
+                  className="w-full h-full"
+                />
+              </div>
+              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1.75rem,3.42vh,28px)] text-[#212121]">
+                Select Avatar
+              </span>
+            </button>
           </div>
         </>
       )}

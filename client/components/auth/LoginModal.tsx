@@ -87,8 +87,21 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
         
         setTimeout(() => {
           const finalRedirectUrl = redirectUrl || searchParams?.get('redirect') || sessionStorage.getItem('pendingRedirect') || '/';
+          const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
+          
+          // Clear the flag after checking
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem('fromCreateVideo');
+          }
+          
           if (finalRedirectUrl.includes('/create-video')) {
-            router.push('/create-video/style');
+            // If user came from "Create a Video" button, go to new chat flow
+            if (fromCreateVideo) {
+              router.push('/create-video/ai-chat');
+            } else {
+              // Otherwise, go to old style selection flow
+              router.push('/create-video/style');
+            }
           } else if (finalRedirectUrl === '/dashboard' || finalRedirectUrl === '/dashboard/projects') {
             router.push('/projects');
           } else {

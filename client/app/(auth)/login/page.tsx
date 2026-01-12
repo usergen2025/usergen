@@ -113,9 +113,22 @@ function LoginPageContent() {
         
         // Small delay to show success toast and ensure auth state is updated
         setTimeout(() => {
+          const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
+          
+          // Clear the flag after checking
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem('fromCreateVideo');
+          }
+          
           // Always redirect to the style page if coming from create-video flow
           if (redirectUrl.includes('/create-video')) {
-            router.push('/create-video/style');
+            // If user came from "Create a Video" button, go to new chat flow
+            if (fromCreateVideo) {
+              router.push('/create-video/ai-chat');
+            } else {
+              // Otherwise, go to old style selection flow
+              router.push('/create-video/style');
+            }
           } else if (redirectUrl === '/dashboard' || redirectUrl === '/dashboard/projects') {
             // Redirect to main projects page instead of dashboard
             router.push('/projects');
