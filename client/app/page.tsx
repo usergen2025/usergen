@@ -23,7 +23,7 @@ export default function HomePage() {
 
   const handleCreateVideoClick = () => {
     if (isAuthenticated) {
-      router.push('/create-video/ai-chat');
+      router.push('/create-video');
     } else {
       // Set flag to indicate user came from "Create a Video" button
       if (typeof window !== 'undefined') {

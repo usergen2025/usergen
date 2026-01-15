@@ -465,6 +465,8 @@ class ApiClient {
     userPrompt: string;
     videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
     duration?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
+    tags?: string[];
     projectId?: string;
   }): Promise<ApiResponse<any>> {
     const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
@@ -491,6 +493,7 @@ class ApiClient {
     originalUserPrompt: string;
     operation: 'regenerate' | 'edit';
     newVoiceover?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<ApiResponse<{ scene: any; tokensUsed: number; processingTime: number; model: string }>> {
     const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
