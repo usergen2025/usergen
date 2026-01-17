@@ -20,7 +20,11 @@ interface Asset {
 }
 
 // Define chat flow steps
-type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'avatar-selected' | 'voice-selection';
+type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection';
+
+// Define substeps for multi-stage steps
+type AvatarSubstep = 'question' | 'selection' | 'confirmed';
+type VoiceSubstep = 'question' | 'selection' | 'confirmed';
 
 function AIChatPageContent() {
   const router = useRouter();
@@ -59,9 +63,13 @@ function AIChatPageContent() {
   const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(new Set());
   const [previewImageFailed, setPreviewImageFailed] = useState(false);
   const [selectedAvatar, setSelectedAvatar] = useState<any | null>(null); // Store selected avatar object for preview
+  const [avatarConfirmed, setAvatarConfirmed] = useState<boolean>(false); // Track if avatar is confirmed and ready to proceed
+  const [avatarSubstep, setAvatarSubstep] = useState<AvatarSubstep>('question'); // Track avatar selection substep
   // Voice selection state
   const [voicePreference, setVoicePreference] = useState<'yes' | 'no' | null>(null);
   const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
+  const [voiceConfirmed, setVoiceConfirmed] = useState<boolean>(false); // Track if voice is confirmed and ready to proceed
+  const [voiceSubstep, setVoiceSubstep] = useState<VoiceSubstep>('question'); // Track voice selection substep
   const [activeVoiceTab, setActiveVoiceTab] = useState<'library' | 'upload' | 'record'>('library');
   const [voices, setVoices] = useState<any[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
@@ -124,7 +132,7 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, voiceYesMessage, voices, selectedVoiceId]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep]);
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -578,14 +586,16 @@ function AIChatPageContent() {
       sessionStorage.setItem('avatarPreference', preference);
     }
     
-    if (preference === 'no') {
-      // Move to voice selection step instead of redirecting
-      setCurrentStep('voice-selection');
-    } else {
-      // Show user's "Yes" message and avatar selection UI within the same step
+    if (preference === 'yes') {
+      // Move to selection substep
       setAvatarYesMessage(true);
+      setAvatarSubstep('selection');
       // Load avatars for the active tab
       loadAvatars(activeAvatarTab);
+    } else {
+      // Skip avatar selection and move to voice selection
+      setAvatarSubstep('question'); // Reset substep
+      setCurrentStep('voice-selection');
     }
   };
 
@@ -664,15 +674,15 @@ function AIChatPageContent() {
     }
   }, [activeVoiceTab, currentStep, voiceYesMessage]);
 
-  // Auto-advance to voice selection after showing avatar preview
+  // Auto-advance to voice selection after confirming avatar selection
   useEffect(() => {
-    if (currentStep === 'avatar-selected' && selectedAvatar) {
+    if (avatarSubstep === 'confirmed' && currentStep === 'avatar-selection' && selectedAvatar) {
       const timer = setTimeout(() => {
         setCurrentStep('voice-selection');
-      }, 2000);
+      }, 1500); // Show preview for 1.5 seconds before moving to voice selection
       return () => clearTimeout(timer);
     }
-  }, [currentStep, selectedAvatar]);
+  }, [avatarSubstep, currentStep, selectedAvatar]);
 
   // Handle voice selection
   const handleVoiceSelection = (preference: 'yes' | 'no') => {
@@ -681,12 +691,14 @@ function AIChatPageContent() {
       sessionStorage.setItem('voicePreference', preference);
     }
     
-    if (preference === 'no') {
-      // Navigate to style selection
-      router.push('/create-video/style');
-    } else {
+    if (preference === 'yes') {
       setVoiceYesMessage(true);
+      setVoiceSubstep('selection'); // Move to selection substep
       loadVoices(activeVoiceTab);
+    } else {
+      // Navigate to style selection
+      setVoiceSubstep('question'); // Reset substep
+      router.push('/create-video/style');
     }
   };
 
@@ -746,10 +758,17 @@ function AIChatPageContent() {
   // Handle proceed with selected voice
   const handleProceedWithVoice = () => {
     if (selectedVoiceId) {
+      // Mark as confirmed and move to confirmed substep
+      setVoiceConfirmed(true);
+      setVoiceSubstep('confirmed');
+      // Store in sessionStorage
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('selectedVoiceId', selectedVoiceId);
       }
-      router.push('/create-video/style');
+      // Show preview briefly, then navigate to style selection
+      setTimeout(() => {
+        router.push('/create-video/style');
+      }, 1500); // Show preview for 1.5 seconds before navigating
     } else {
       showToast('Please select a voice first', 'warning');
     }
@@ -786,12 +805,14 @@ function AIChatPageContent() {
       if (avatar) {
         setSelectedAvatar(avatar);
       }
+      // Mark as confirmed and move to confirmed substep
+      setAvatarConfirmed(true);
+      setAvatarSubstep('confirmed');
       // Store in sessionStorage
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('selectedAvatarId', selectedAvatarId);
       }
-      // Move to avatar-selected step to show preview
-      setCurrentStep('avatar-selected');
+      // Stay in avatar-selection step - preview will be shown and then auto-advance to voice-selection
     } else {
       showToast('Please select an avatar first', 'warning');
     }
@@ -813,8 +834,15 @@ function AIChatPageContent() {
       });
       setPendingAssets([]);
     } else if (currentStep === 'avatar-selection') {
-      // If user has selected "yes" and is viewing avatar selection, go back to the question
-      if (avatarYesMessage) {
+      // Navigate back through substeps
+      if (avatarSubstep === 'confirmed') {
+        // Go back to selection substep
+        setAvatarSubstep('selection');
+        setAvatarConfirmed(false);
+        setSelectedAvatar(null);
+      } else if (avatarSubstep === 'selection') {
+        // Go back to question substep
+        setAvatarSubstep('question');
         setAvatarYesMessage(false);
         setSelectedAvatarId(null);
         setShowAvatarPreview(false);
@@ -823,19 +851,24 @@ function AIChatPageContent() {
         // Go back to script-generated step
         setCurrentStep('script-generated');
         setProceedConfirmed(false);
+        setAvatarSubstep('question'); // Reset substep
       }
-    } else if (currentStep === 'avatar-selected') {
-      // Go back to avatar selection
-      setCurrentStep('avatar-selection');
-      setSelectedAvatar(null);
     } else if (currentStep === 'voice-selection') {
-      // If user has selected "yes" and is viewing voice selection, go back to the question
-      if (voiceYesMessage) {
+      // Navigate back through substeps
+      if (voiceSubstep === 'confirmed') {
+        // Go back to selection substep
+        setVoiceSubstep('selection');
+        setVoiceConfirmed(false);
+        setSelectedVoiceId(null);
+      } else if (voiceSubstep === 'selection') {
+        // Go back to question substep
+        setVoiceSubstep('question');
         setVoiceYesMessage(false);
         setSelectedVoiceId(null);
       } else {
-        // Go back to avatar-selected step
-        setCurrentStep('avatar-selected');
+        // Go back to avatar-selection step
+        setCurrentStep('avatar-selection');
+        setVoiceSubstep('question'); // Reset substep
       }
     } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {
       // Clear attached assets and script data, go back to asset-upload
@@ -872,9 +905,8 @@ function AIChatPageContent() {
       case 'assets-attached': return 2;
       case 'script-input': return 2;
       case 'script-generated': return 3;
-      case 'avatar-selection': return 4; // Both sub-parts are step 4
-      case 'avatar-selected': return 4;
-      case 'voice-selection': return 5; // Both sub-parts are step 5
+      case 'avatar-selection': return 4;
+      case 'voice-selection': return 5;
       default: return 0;
     }
   };
@@ -888,7 +920,6 @@ function AIChatPageContent() {
       case 'script-input': return "Awesome! Now share your idea for video or paste your script.";
       case 'script-generated': return "Nice! Your story is set.";
       case 'avatar-selection': return "Choose your avatar style to bring the story to life.";
-      case 'avatar-selected': return "Choose your avatar style to bring the story to life.";
       case 'voice-selection': return "Time to give your avatar a voice.";
       default: return "Let's kick things off!";
     }
@@ -896,10 +927,32 @@ function AIChatPageContent() {
 
   // Helper function to check if a step has been reached (for cumulative rendering)
   const hasReachedStep = (step: ChatStep): boolean => {
-    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'avatar-selected', 'voice-selection'];
+    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'voice-selection'];
     const currentIndex = stepOrder.indexOf(currentStep);
     const targetIndex = stepOrder.indexOf(step);
     return currentIndex >= targetIndex;
+  };
+
+  // Helper function to check if a substep has been reached
+  const hasReachedSubstep = (step: ChatStep, substep: string): boolean => {
+    if (!hasReachedStep(step)) return false;
+    
+    switch (step) {
+      case 'avatar-selection': {
+        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'confirmed'];
+        const targetIndex = substepOrder.indexOf(substep as AvatarSubstep);
+        const currentIndex = substepOrder.indexOf(avatarSubstep);
+        return targetIndex !== -1 && currentIndex >= targetIndex;
+      }
+      case 'voice-selection': {
+        const substepOrder: VoiceSubstep[] = ['question', 'selection', 'confirmed'];
+        const targetIndex = substepOrder.indexOf(substep as VoiceSubstep);
+        const currentIndex = substepOrder.indexOf(voiceSubstep);
+        return targetIndex !== -1 && currentIndex >= targetIndex;
+      }
+      default:
+        return false;
+    }
   };
 
   if (isLoading) {
@@ -977,7 +1030,7 @@ function AIChatPageContent() {
           {/* Chat Content Container - Figma: gap: 18px, justify-content: flex-end */}
           <div 
             ref={chatContainerRef}
-            className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto scroll-smooth"
+            className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto scroll-smooth pb-[clamp(1rem,3vh,60px)] pr-[clamp(0.5rem,1vw,16px)]"
             style={{ scrollBehavior: 'smooth' }}
           >
             {/* Welcome Message - Step 0 - Figma: gap: 10px */}
@@ -1256,7 +1309,7 @@ function AIChatPageContent() {
             )}
 
             {/* Avatar Selection Step - Only show NEW avatar-specific content */}
-            {hasReachedStep('avatar-selection') && currentStep === 'avatar-selection' && (
+            {hasReachedStep('avatar-selection') && (
               <>
                 {/* User Confirmation Message - "Looks good, let's go ahead!" - Only show if we just came from script-generated */}
                 {proceedConfirmed && (
@@ -1271,9 +1324,9 @@ function AIChatPageContent() {
 
                 {/* Avatar Selection Question and UI - Only show NEW content for avatar selection */}
 
-                {/* SUB-PART 1: Question and Buttons - Only show if user hasn't selected "Yes" yet */}
-                {!avatarYesMessage && (
-                  <>
+                {/* SUB-PART 1: Question Substep - Show question, disable when past question */}
+                {hasReachedSubstep('avatar-selection', 'question') && (
+                  <div className={cn(hasReachedSubstep('avatar-selection', 'selection') && "opacity-50 pointer-events-none")}>
                     {/* AI Question - "Would you like an avatar in the video?" */}
                     <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                       <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
@@ -1304,11 +1357,11 @@ function AIChatPageContent() {
                         </p>
                       </div>
                     </div>
-                  </>
+                  </div>
                 )}
 
-                {/* SUB-PART 2: User "Yes" Message and Avatar Selection UI - Only show if user selected "Yes" */}
-                {avatarYesMessage && (
+                {/* SUB-PART 2: Selection Substep - User "Yes" Message and Avatar Selection UI */}
+                {hasReachedSubstep('avatar-selection', 'selection') && (
                   <>
                     {/* User "Yes" Message - "Yes, I need an avatar in the video" */}
                     <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -1327,7 +1380,7 @@ function AIChatPageContent() {
                     </div>
 
                     {/* Avatar Selection Container with Gradient Border - Reduced width to 3/4 */}
-                    <div className="relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]" style={{
+                    <div className={cn("relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]", hasReachedSubstep('avatar-selection', 'confirmed') && "opacity-50 pointer-events-none")} style={{
                       background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
                     }}>
                       <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
@@ -1429,17 +1482,17 @@ function AIChatPageContent() {
                           </div>
                         </div>
 
-                        {/* Avatar Grid - Fixed height for 2 rows, then scrollable */}
-                        <div className="h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                        {/* Avatar Grid - Constrained height with internal scrolling */}
+                        <div className="max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
                           {loadingAvatars ? (
-                            <div className="flex items-center justify-center h-full">
+                            <div className="flex items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]">
                               <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
                             </div>
                           ) : activeAvatarTab !== 'library' ? (
                             // Upload and Hire tabs - show placeholder message
                             <div 
                               key={`placeholder-${activeAvatarTab}`}
-                              className="flex flex-col items-center justify-center h-full"
+                              className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
                               style={{
                                 animation: 'fadeIn 0.3s ease-in-out'
                               }}
@@ -1452,7 +1505,7 @@ function AIChatPageContent() {
                           ) : avatars.length === 0 ? (
                             <div 
                               key={`empty-${activeAvatarTab}`}
-                              className="flex flex-col items-center justify-center h-full"
+                              className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
                               style={{
                                 animation: 'fadeIn 0.3s ease-in-out'
                               }}
@@ -1559,11 +1612,9 @@ function AIChatPageContent() {
               </>
             )}
 
-          </div>
-
-          {/* Avatar Selection Buttons - Only show if user hasn't selected "Yes" yet */}
-          {currentStep === 'avatar-selection' && !avatarYesMessage && (
-            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto justify-end">
+            {/* Avatar Selection Buttons - Only show in question substep */}
+            {currentStep === 'avatar-selection' && avatarSubstep === 'question' && (
+            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               {/* Yes, I need an avatar */}
               <button
                 onClick={() => handleAvatarSelection('yes')}
@@ -1602,11 +1653,11 @@ function AIChatPageContent() {
                 </span>
               </button>
             </div>
-          )}
+            )}
 
-          {/* Proceed Button for Avatar Selection - Show when avatar is selected */}
-          {currentStep === 'avatar-selection' && avatarYesMessage && selectedAvatarId && (
-            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
+            {/* Proceed Button for Avatar Selection - Show in selection substep when avatar is selected */}
+            {currentStep === 'avatar-selection' && avatarSubstep === 'selection' && selectedAvatarId && (
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               <button
                 onClick={handleProceedWithAvatar}
                 className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
@@ -1625,105 +1676,11 @@ function AIChatPageContent() {
                 </span>
               </button>
             </div>
-          )}
+            )}
 
-          {/* Avatar Selected Step - Show selected avatar preview */}
-          {hasReachedStep('avatar-selected') && selectedAvatar && (
+            {/* Avatar Preview - Show in confirmed substep */}
+            {hasReachedSubstep('avatar-selection', 'confirmed') && selectedAvatar && (
             <>
-              {/* Show ALL previous chat messages - always visible */}
-              {/* Attached Assets */}
-              {attachedAssets.length > 0 && (
-                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,600px)]">
-                    <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)]">
-                      {attachedAssets.map((asset) => (
-                        <div
-                          key={asset.id}
-                          className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.25rem,0.39vh,4px)] bg-white rounded-[40px]"
-                        >
-                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
-                            {asset.type === 'image' && asset.preview ? (
-                              <img
-                                src={asset.preview}
-                                alt={asset.name}
-                                className="w-full h-full object-cover rounded-full"
-                              />
-                            ) : asset.type === 'url' ? (
-                              <Image
-                                src="/assets/u_link.svg"
-                                alt="URL"
-                                width={16}
-                                height={16}
-                                className="w-full h-full"
-                              />
-                            ) : (
-                              <div className="w-full h-full bg-gray-200 rounded-full flex items-center justify-center">
-                                <span className="text-[10px]">IMG</span>
-                              </div>
-                            )}
-                          </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black max-w-[140px] truncate">
-                            {asset.name}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Show user script message if exists */}
-              {userScriptMessage && (
-                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
-                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
-                      {userScriptMessage}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Show previously generated script */}
-              {formattedScript && (
-                <>
-                  {/* AI Response - "Here's your script!" */}
-                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
-                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                      Here's your script!
-                    </p>
-                  </div>
-
-                  {/* Formatted Script Box */}
-                  <div className="relative max-w-full sm:max-w-[637px] mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
-                    background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
-                  }}>
-                    <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
-                      <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
-                        {formattedScript}
-                      </pre>
-                    </div>
-                  </div>
-
-                  {/* "Want me to regenerate?" Message */}
-                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
-                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                      Want me to regenerate or should we move to the next step?
-                    </p>
-                  </div>
-                </>
-              )}
-
-              {/* User Confirmation Message - "Looks good, let's go ahead!" */}
-              {proceedConfirmed && (
-                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,568px)]">
-                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right whitespace-pre-wrap break-words">
-                      Looks good, let's go ahead!
-                    </span>
-                  </div>
-                </div>
-              )}
-
               {/* Selected Avatar Preview */}
               <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                 <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
@@ -1775,67 +1732,19 @@ function AIChatPageContent() {
               {/* AI Message - "Great! Your avatar is ready..." */}
               <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                 <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                  Great! Your avatar is ready. How would you like it to appear in the video? Choose a visual style:
+                  Great! Your avatar is ready.
                 </p>
               </div>
-
             </>
-          )}
+            )}
 
-          {/* Voice Selection Step - Only show NEW voice-specific content */}
-          {hasReachedStep('voice-selection') && currentStep === 'voice-selection' && (
+            {/* Voice Selection Step - Only show NEW voice-specific content */}
+            {hasReachedStep('voice-selection') && (
             <>
-              {/* Show selected avatar if exists (from previous step) */}
-              {selectedAvatar && (
-                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
-                    <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
-                      <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
-                        <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
-                          {(() => {
-                            const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
-                            const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
-                              ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
-                              : 'http://localhost:9001';
-                            const fullImageUrl = avatarImageUrl?.startsWith('http') 
-                              ? avatarImageUrl 
-                              : avatarImageUrl 
-                                ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
-                                : null;
-                            
-                            return fullImageUrl ? (
-                              <Image
-                                src={fullImageUrl}
-                                alt={selectedAvatar.name || 'Avatar'}
-                                fill
-                                className="object-cover"
-                                unoptimized
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                                <span className="text-xs text-gray-400">No Image</span>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                        <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
-                          <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
-                            {selectedAvatar.name || 'Avatar'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="px-[clamp(0.5rem,0.78vh,8px)]">
-                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
-                          Selected Avatar
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* DO NOT show selected avatar here - it's already shown in avatar-selection confirmed substep */}
 
-              {/* SUB-PART 1: Question and Buttons - Only show if user hasn't selected "Yes" yet */}
-              {!voiceYesMessage && (
+              {/* SUB-PART 1: Question Substep - Show question, disable when past question */}
+              {hasReachedSubstep('voice-selection', 'question') && (
                 <>
                   {/* AI Message - "Amazing, your video has a face now..." */}
                   <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -1846,8 +1755,8 @@ function AIChatPageContent() {
                 </>
               )}
 
-              {/* SUB-PART 2: User "Yes" Message and Voice Selection UI - Only show if user selected "Yes" */}
-              {voiceYesMessage && (
+              {/* SUB-PART 2: Selection Substep - User "Yes" Message and Voice Selection UI */}
+              {hasReachedSubstep('voice-selection', 'selection') && (
                 <>
                   {/* User "Yes" Message */}
                   <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -1968,16 +1877,16 @@ function AIChatPageContent() {
                         </div>
                       </div>
 
-                      {/* Voice List - Fixed height, then scrollable */}
-                      <div className="h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                      {/* Voice List - Constrained height with internal scrolling */}
+                      <div className="max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
                         {loadingVoices ? (
-                          <div className="flex items-center justify-center h-full">
+                          <div className="flex items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]">
                             <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
                           </div>
                         ) : activeVoiceTab !== 'library' ? (
                           <div 
                             key={`placeholder-${activeVoiceTab}`}
-                            className="flex flex-col items-center justify-center h-full"
+                            className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
                             style={{
                               animation: 'fadeIn 0.3s ease-in-out'
                             }}
@@ -1990,7 +1899,7 @@ function AIChatPageContent() {
                         ) : voices.length === 0 ? (
                           <div 
                             key={`empty-${activeVoiceTab}`}
-                            className="flex flex-col items-center justify-center h-full"
+                            className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
                             style={{
                               animation: 'fadeIn 0.3s ease-in-out'
                             }}
@@ -2089,11 +1998,11 @@ function AIChatPageContent() {
                 </>
               )}
             </>
-          )}
+            )}
 
-          {/* Voice Selection Buttons - Only show if user hasn't selected "Yes" yet */}
-          {currentStep === 'voice-selection' && !voiceYesMessage && (
-            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto justify-end">
+            {/* Voice Selection Buttons - Only show in question substep */}
+            {currentStep === 'voice-selection' && voiceSubstep === 'question' && (
+            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               {/* Yes, I need to change the voice */}
               <button
                 onClick={() => handleVoiceSelection('yes')}
@@ -2132,11 +2041,11 @@ function AIChatPageContent() {
                 </span>
               </button>
             </div>
-          )}
+            )}
 
-          {/* Proceed Button for Voice Selection - Show when voice is selected */}
-          {currentStep === 'voice-selection' && voiceYesMessage && selectedVoiceId && (
-            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
+            {/* Proceed Button for Voice Selection - Show in selection substep when voice is selected */}
+            {currentStep === 'voice-selection' && voiceSubstep === 'selection' && selectedVoiceId && (
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               <button
                 onClick={handleProceedWithVoice}
                 className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
@@ -2155,7 +2064,67 @@ function AIChatPageContent() {
                 </span>
               </button>
             </div>
-          )}
+            )}
+
+            {/* Voice Preview - Show in confirmed substep */}
+            {hasReachedSubstep('voice-selection', 'confirmed') && selectedVoiceId && (() => {
+            const selectedVoice = voices.find(v => v.voice_id === selectedVoiceId);
+            if (!selectedVoice) return null;
+            
+            const voiceLabel = selectedVoice.labels?.gender 
+              ? `${selectedVoice.labels.gender.charAt(0).toUpperCase() + selectedVoice.labels.gender.slice(1)}${selectedVoice.labels.accent ? `, ${selectedVoice.labels.accent}` : ''}${selectedVoice.labels.age ? `, ${selectedVoice.labels.age}` : ''}`
+              : 'Voice';
+            const duration = selectedVoice.preview_url 
+              ? formatDuration(30) // Default duration, can be extracted from voice data if available
+              : '';
+            
+            return (
+              <>
+                {/* Selected Voice Preview */}
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,400px)]">
+                    {/* Selected Voice Info */}
+                    <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                      <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                        <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                          <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)]">
+                            <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                              {selectedVoice.name}
+                            </span>
+                            <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#616161]">
+                              |
+                            </span>
+                            <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#616161]">
+                              {voiceLabel}
+                            </span>
+                          </div>
+                          {duration && (
+                            <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(1.5rem,2.34vh,24px)] text-[#616161]">
+                              {duration}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
+                          Selected Voice
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Message - "Perfect! Your video is ready..." */}
+                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                    Perfect! Your video is ready to be created.
+                  </p>
+                </div>
+              </>
+            );
+          })()}
+
+          </div>
 
           {/* Regenerate and Proceed Buttons - Outside scrollable container to ensure visibility */}
           {currentStep === 'script-generated' && formattedScript && !proceedConfirmed && (
