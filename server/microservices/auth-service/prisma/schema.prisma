@@ -26,6 +26,12 @@ model User {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
+  // Brand-specific fields (optional)
+  brandName         String?
+  brandDescription  String?
+  brandLogo         String?
+  brandWebsite      String?
+
   // Social login accounts
   socialAccounts    SocialAccount[]
   
@@ -106,6 +112,7 @@ enum UserRole {
   USER
   ADMIN
   AVATAR_CREATOR
+  BRAND
 }
 
 enum OtpType {

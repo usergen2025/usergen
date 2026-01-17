@@ -4,6 +4,7 @@ import { Request, Response } from 'express';
 import { AuthService, RegisterDto, LoginDto, SocialLoginDto, ForgotPasswordDto, ResetPasswordDto, SendOtpDto, VerifyOtpDto } from './auth.service';
 import { JwtAuthGuard, LocalAuthGuard, GoogleAuthGuard, FacebookAuthGuard } from './guards';
 import { ResponseHelper } from '@shared/utils';
+import { UserRole } from '@prisma/client';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -401,13 +402,33 @@ export class AuthController {
       }
     }
   })
-  async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto & { name?: string; mobile?: string }) {
+  async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto & { name?: string; mobile?: string; brandName?: string; brandDescription?: string; brandLogo?: string; brandWebsite?: string; role?: string }) {
     console.log('✅ [AuthController] verifyOtp called:', { 
       email: verifyOtpDto.email, 
       type: verifyOtpDto.type,
       hasOtp: !!verifyOtpDto.otp 
     });
-    const result = await this.authService.verifyOtp(verifyOtpDto);
+    
+    // Convert string role to UserRole enum if provided
+    let roleEnum: UserRole | undefined;
+    if (verifyOtpDto.role) {
+      // Validate and convert the role string to UserRole enum
+      const validRoles = Object.values(UserRole);
+      if (validRoles.includes(verifyOtpDto.role as UserRole)) {
+        roleEnum = verifyOtpDto.role as UserRole;
+      } else {
+        // If invalid role provided, default to USER
+        roleEnum = UserRole.USER;
+      }
+    }
+    
+    // Create a new object with the converted role
+    const serviceDto = {
+      ...verifyOtpDto,
+      role: roleEnum
+    };
+    
+    const result = await this.authService.verifyOtp(serviceDto);
     return ResponseHelper.success(result, 'OTP verified successfully');
   }
 

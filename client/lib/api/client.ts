@@ -150,6 +150,10 @@ class ApiClient {
     type: 'EMAIL_VERIFICATION' | 'MOBILE_VERIFICATION' | 'LOGIN' | 'PASSWORD_RESET';
     name?: string;
     mobile?: string;
+    brandName?: string;
+    brandDescription?: string;
+    brandLogo?: string;
+    role?: string;
   }): Promise<ApiResponse<{ user?: User; tokens?: AuthTokens }>> {
     return this.request('/auth/verify-otp', {
       method: 'POST',
@@ -746,6 +750,167 @@ class ApiClient {
       {
         headers: {
           'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  // Campaign endpoints (will connect to campaign service once backend is ready)
+  async getCampaigns(params?: { status?: string; page?: number; limit?: number }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (params?.status) queryParams.append('status', params.status);
+    if (params?.page) queryParams.append('page', params.page.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${campaignServiceUrl}/campaigns${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getCampaign(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<any>>(
+      `${campaignServiceUrl}/campaigns/${campaignId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async createCampaign(data: {
+    name: string;
+    description: string;
+    brandAssetsUrl?: string;
+    deadlineToApply: string;
+    startDate: string;
+    endDate: string;
+    payoutRate: number;
+    totalBudget: number;
+  }): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${campaignServiceUrl}/campaigns`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async updateCampaign(campaignId: string, data: Partial<{
+    name: string;
+    description: string;
+    brandAssetsUrl: string;
+    deadlineToApply: string;
+    startDate: string;
+    endDate: string;
+    payoutRate: number;
+    totalBudget: number;
+  }>): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.put<ApiResponse<any>>(
+      `${campaignServiceUrl}/campaigns/${campaignId}`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async pauseCampaign(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${campaignServiceUrl}/campaigns/${campaignId}/pause`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getCampaignApplicants(campaignId: string, params?: { status?: string }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (params?.status) queryParams.append('status', params.status);
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${campaignServiceUrl}/campaigns/${campaignId}/applicants${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async shortlistApplicant(campaignId: string, applicantId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${campaignServiceUrl}/campaigns/${campaignId}/applicants/${applicantId}/shortlist`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getBrandDashboardStats(params?: { dateRange?: string }): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (params?.dateRange) queryParams.append('dateRange', params.dateRange);
+
+    const response = await axios.get<ApiResponse<any>>(
+      `${campaignServiceUrl}/brands/dashboard/stats${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
+      {
+        headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
