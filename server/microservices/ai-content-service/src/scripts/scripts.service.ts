@@ -153,6 +153,13 @@ export class ScriptsService {
       // Parse JSON response
       let scriptData = JSON.parse(responseContent);
 
+      // Validate scene count matches duration
+      const sceneCountValidation = this.validateSceneCountForDuration(scriptData, duration);
+      if (!sceneCountValidation.valid) {
+        this.logger.warn(`Scene count validation: ${sceneCountValidation.issues.join(', ')}`, 'ScriptsService');
+        // Log warning but don't fail - AI should fix this, but we log for monitoring
+      }
+
       // Normalize prompts to ensure visual consistency
       scriptData = this.normalizePrompts(scriptData);
 
@@ -628,7 +635,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
 
     const lang = languageDescriptions[language] || languageDescriptions['hinglish'];
 
-    const prompts = {
+  const prompts = {
       'HALF_N_HALF': `You are a professional video director and AI content composer who creates structured video scripts for "half-and-half" style videos, where the top half of the frame shows b-roll (visual footage related to the narration) and the bottom half shows an Indian-looking avatar delivering ${lang.dialogue}.
 
 Your task is to produce a complete creative breakdown for a video based on a user's input topic or idea, fully adapted for an Indian audience.
@@ -641,9 +648,18 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 
 Output Requirements:
 
-Video Duration:
-- If user specifies a duration (e.g., "1 minute" or "30 seconds"), divide the script accordingly.
-- If not specified, default to 30 seconds.
+Video Duration and Scene Planning (CRITICAL):
+- Each scene should be 4-6 seconds long for natural pacing
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5 (e.g., 45 seconds = 9 scenes, 90 seconds = 18 scenes)
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+- Example: For 30 seconds, scenes should be numbered 1, 2, 3, 4, 5, 6 with time ranges like "0-5s", "5-10s", "10-15s", "15-20s", "20-25s", "25-30s"
+- If user specifies a duration, calculate and generate the appropriate number of scenes accordingly
+- If not specified, default to 30 seconds with 5-7 scenes
 
 IMPORTANT: You must return your response as a valid JSON object.
 
@@ -670,8 +686,19 @@ Structure Your Output in This JSON Format:
       "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors, people walking, colorful stalls, dynamic movement]",
       "avatar_action": "Explain how the Indian-looking avatar speaks and reacts.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'smile', 'gesture'"
+    },
+    {
+      "scene_number": 2,
+      "time_range": "5-10s",
+      "voiceover": "${lang.example}",
+      "broll_visual_description": "Describe next Indian-context visuals",
+      "broll_image_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description]",
+      "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description with motion]",
+      "avatar_action": "Explain avatar's reaction",
+      "avatar_motion": "smile"
     }
   ],
+  "IMPORTANT NOTE": "You must generate MULTIPLE scenes (5-7 for 30 seconds, 10-12 for 1 minute, etc.) to cover the entire video duration. The scenes array above shows only the structure - you must create enough scenes to fill the requested duration.",
   "notes": "Transitions, color tone, and any visual guidance fitting the Indian mood. This should reference the visual_style_guide for consistency."
 }
 
@@ -705,6 +732,20 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 
 IMPORTANT: You must return your response as a valid JSON object.
 
+Video Duration and Scene Planning (CRITICAL):
+- Each scene (avatar or b-roll) should be 5-7 seconds long for natural pacing
+- Calculate the total number of scenes based on duration:
+  * For 30 seconds: Generate 5-6 scenes total (alternating between avatar and b-roll)
+  * For 1 minute (60 seconds): Generate 10-12 scenes total
+  * For 2 minutes (120 seconds): Generate 20-24 scenes total
+  * For custom durations: Calculate scenes by dividing total seconds by 6 (e.g., 45 seconds = 7-8 scenes, 90 seconds = 15 scenes)
+- Alternate between avatar and b-roll scenes, but allow flexibility for narrative flow (multiple consecutive scenes of same type are acceptable)
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+- Example: For 30 seconds with 5 scenes, time ranges could be "0-6s", "6-12s", "12-18s", "18-24s", "24-30s"
+- If user specifies a duration, calculate and generate the appropriate number of scenes accordingly
+- If not specified, default to 30 seconds with 5-6 scenes
+
 Output Format:
 {
   "video_type": "Alternating",
@@ -729,6 +770,17 @@ Output Format:
       "broll_video_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
       "avatar_action": "If avatar scene, describe Indian avatar's expression and delivery.",
       "avatar_motion": "If avatar scene, give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
+    },
+    {
+      "scene_number": 2,
+      "type": "b-roll",
+      "time_range": "7-14s",
+      "voiceover": "${lang.alternate}",
+      "broll_visual_description": "Describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
+      "broll_image_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
+      "broll_video_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
+      "avatar_action": null,
+      "avatar_motion": null
     }
   ],
   "notes": {
@@ -752,10 +804,11 @@ Guidelines:
 - B-roll must visually reflect Indian environments unless user specifies otherwise.
 - Maintain logical narrative continuity across scenes.
 - Multiple avatar or multiple b-roll scenes in a row are fine if they improve flow.
-- Default video duration is 30 seconds if not specified.
+- CRITICAL: Generate enough scenes to cover the entire video duration (5-6 scenes for 30 seconds, 10-12 for 1 minute, etc.)
+- Each scene should be 5-7 seconds, and the total number of scenes must cover the full duration without gaps
 - VISUAL CONSISTENCY IS CRITICAL: All b-roll scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
-      'AVATAR_CUTOUT': `You are a motion graphics director and AI content composer who creates cutout-style videos, where an Indian-looking avatar (green-screen cutout) appears over full-frame Indian-context b-roll.
+    'AVATAR_CUTOUT': `You are a motion graphics director and AI content composer who creates cutout-style videos, where an Indian-looking avatar (green-screen cutout) appears over full-frame Indian-context b-roll.
 
 The avatar is smaller (placed at bottom or corner) while b-roll fills the background.
 
@@ -766,6 +819,18 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 
 IMPORTANT: You must return your response as a valid JSON object.
+
+Video Duration and Scene Planning (CRITICAL):
+- Keep scenes around 4-6 seconds each for natural pacing
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5 (e.g., 45 seconds = 9 scenes, 90 seconds = 18 scenes)
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+- Example: For 30 seconds, scenes should be numbered 1, 2, 3, 4, 5, 6 with time ranges like "0-5s", "5-10s", "10-15s", "15-20s", "20-25s", "25-30s"
+- If user specifies duration, adjust number and lengths of scenes accordingly; otherwise default to 30 seconds with 5-7 scenes
 
 Output Format:
 {
@@ -783,7 +848,7 @@ Output Format:
   "scenes": [
     {
       "scene_number": 1,
-      "time_range": "0-6s",
+      "time_range": "0-5s",
       "voiceover": "${lang.cutout}",
       "broll_visual_description": "Describe Indian environment — cafes, offices, markets, metro, festivals, streets, villages.",
       "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
@@ -791,8 +856,20 @@ Output Format:
       "avatar_cutout_position": "bottom-left" | "bottom-right" | "center" | etc.,
       "avatar_action": "Describe Indian avatar gestures, expressions, tone.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'raise-hand', 'smile'"
+    },
+    {
+      "scene_number": 2,
+      "time_range": "5-10s",
+      "voiceover": "${lang.cutout}",
+      "broll_visual_description": "Describe next Indian environment",
+      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description with motion]",
+      "avatar_cutout_position": "bottom-left",
+      "avatar_action": "Describe avatar gestures",
+      "avatar_motion": "smile"
     }
   ],
+  "IMPORTANT NOTE": "You must generate MULTIPLE scenes (5-7 for 30 seconds, 10-12 for 1 minute, etc.) to cover the entire video duration. The scenes array above shows only the structure - you must create enough scenes to fill the requested duration.",
   "notes": {
     "overlay_style": "Soft edges, light blending, realistic shadows; match Indian lighting.",
     "color_tone": "Warm, cinematic, vibrant Indian aesthetic.",
@@ -813,14 +890,15 @@ Guidelines:
 - ${lang.instruction} - this is CRITICAL.
 - Avatar must always be visible and should appear Indian.
 - B-roll must reflect Indian context unless user says otherwise.
-- Keep scenes around 4–6 seconds for natural pacing.
+- Keep scenes around 4-6 seconds each for natural pacing.
+- CRITICAL: Generate enough scenes to cover the entire video duration (5-7 scenes for 30 seconds, 10-12 for 1 minute, etc.)
+- Each scene should be 4-6 seconds, and the total number of scenes must cover the full duration without gaps
 - Maintain consistency in avatar position and lighting.
-- If user specifies duration, adjust number and lengths of scenes accordingly; otherwise default to 30 seconds.
 - VISUAL CONSISTENCY IS CRITICAL: All b-roll backgrounds must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
-    };
+  };
 
-    return prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
-  }
+  return prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
+}
 
 
   /**
@@ -960,6 +1038,85 @@ Guidelines:
     });
 
     return scriptData;
+  }
+
+  /**
+   * Parse duration string to seconds
+   */
+  private parseDurationToSeconds(duration: string): number {
+    if (!duration) return 30; // Default
+    
+    const normalized = duration.toLowerCase().trim();
+    
+    // Match patterns like "30 seconds", "1 minute", "2 minutes", etc.
+    const secondMatch = normalized.match(/(\d+)\s*(?:second|sec)/);
+    if (secondMatch) {
+      return parseInt(secondMatch[1], 10);
+    }
+    
+    const minuteMatch = normalized.match(/(\d+)\s*(?:minute|min)/);
+    if (minuteMatch) {
+      return parseInt(minuteMatch[1], 10) * 60;
+    }
+    
+    // Default fallback
+    return 30;
+  }
+
+  /**
+   * Validate that scene count matches the requested duration
+   */
+  private validateSceneCountForDuration(scriptData: any, requestedDuration: string): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    const scenes = scriptData.scenes || scriptData.scene_plan || [];
+    
+    if (scenes.length === 0) {
+      issues.push('No scenes found in script');
+      return { valid: false, issues };
+    }
+
+    // Parse requested duration to seconds
+    const requestedSeconds = this.parseDurationToSeconds(requestedDuration);
+    
+    // Calculate expected scene count (5 seconds per scene for HALF_N_HALF/AVATAR_CUTOUT, 6 seconds for ALTERNATE)
+    const videoType = (scriptData.video_type || '').toLowerCase();
+    const secondsPerScene = videoType === 'alternating' ? 6 : 5;
+    const expectedMinScenes = Math.floor(requestedSeconds / (secondsPerScene + 1)); // Slightly lower threshold
+    const expectedMaxScenes = Math.ceil(requestedSeconds / (secondsPerScene - 1)); // Slightly higher threshold
+    
+    // For 30 seconds: expect 5-7 scenes (30/5 = 6, so range 4-8 is acceptable)
+    // For 60 seconds: expect 10-12 scenes (60/5 = 12, so range 10-15 is acceptable)
+    if (scenes.length < expectedMinScenes || scenes.length > expectedMaxScenes) {
+      issues.push(
+        `Scene count mismatch: Expected ${expectedMinScenes}-${expectedMaxScenes} scenes for ${requestedDuration} (${requestedSeconds}s), but got ${scenes.length} scenes. ` +
+        `Please ensure you generate enough scenes to cover the entire video duration.`
+      );
+    }
+
+    // Validate that time ranges cover the full duration
+    const videoTypeFromScript = (scriptData.video_type || '').toLowerCase();
+    const lastScene = scenes[scenes.length - 1];
+    const lastTimeRange = lastScene?.time_range || '';
+    
+    if (lastTimeRange) {
+      // Extract end time from last scene (e.g., "25-30s" -> 30)
+      const endTimeMatch = lastTimeRange.match(/-(\d+)s?$/);
+      if (endTimeMatch) {
+        const lastEndTime = parseInt(endTimeMatch[1], 10);
+        // Allow 1-2 seconds tolerance
+        if (lastEndTime < requestedSeconds - 2) {
+          issues.push(
+            `Time range coverage: Last scene ends at ${lastEndTime}s, but video duration is ${requestedSeconds}s. ` +
+            `Scenes should cover the entire ${requestedDuration} duration.`
+          );
+        }
+      }
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues,
+    };
   }
 
   /**

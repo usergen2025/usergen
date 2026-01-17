@@ -34,17 +34,49 @@ export class VoiceService {
   }
 
   /**
+   * Get language-specific voice settings for optimal quality
+   */
+  private getVoiceSettingsForLanguage(
+    language?: 'english' | 'hindi' | 'hinglish'
+  ): {
+    stability: number;
+    similarity_boost: number;
+    use_speaker_boost: boolean;
+    style?: number;
+  } {
+    const baseSettings = {
+      stability: 0.5,
+      similarity_boost: 0.75,
+      use_speaker_boost: true,
+      style: 0.0,
+    };
+
+    // Hindi/Hinglish might need different settings for accent clarity
+    if (language === 'hindi' || language === 'hinglish') {
+      return {
+        ...baseSettings,
+        stability: 0.6,  // Slightly more stable for accent clarity
+        similarity_boost: 0.85,  // Higher similarity for accent preservation
+      };
+    }
+
+    return baseSettings;
+  }
+
+  /**
    * Get list of available voices from ElevenLabs
    */
   async getVoices(options?: {
     pageSize?: number;
     search?: string;
     category?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<ElevenLabsVoice[]> {
     const response = await this.elevenLabsProvider.listVoices({
       pageSize: options?.pageSize || 100,
       search: options?.search,
       category: options?.category,
+      language: options?.language,
     });
     return response.voices;
   }
@@ -131,6 +163,7 @@ export class VoiceService {
     options?: {
       model_id?: string;
       output_format?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
       voice_settings?: {
         stability?: number;
         similarity_boost?: number;
@@ -152,12 +185,22 @@ export class VoiceService {
       const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
       
       try {
+        // Merge language-specific settings with provided settings
+        const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
+        const mergedSettings = {
+          ...languageSettings,
+          ...options?.voice_settings, // User-provided settings override defaults
+        };
+
         const result = await this.generateSpeechAudio(
           voiceId,
           scene.voiceover,
           filename,
           userId,
-          options
+          {
+            ...options,
+            voice_settings: mergedSettings,
+          }
         );
 
         console.log(`[VoiceService] Audio generated for scene ${scene.sceneNumber}: ${result.localUrl}, duration: ${result.duration}s`);

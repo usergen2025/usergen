@@ -276,7 +276,7 @@ export class VoiceController {
   @Get('voices')
   @ApiOperation({ 
     summary: 'List ElevenLabs voices', 
-    description: 'Get list of all available voices from ElevenLabs library. Can filter by search term or category.' 
+    description: 'Get list of all available voices from ElevenLabs library. Can filter by search term, category, or language.' 
   })
   @ApiBearerAuth('JWT-auth')
   @ApiResponse({ 
@@ -323,11 +323,13 @@ export class VoiceController {
     @Query('search') search?: string,
     @Query('category') category?: string,
     @Query('pageSize') pageSize?: number,
+    @Query('language') language?: 'english' | 'hindi' | 'hinglish',
   ) {
     const voices = await this.voiceService.getVoices({
       search,
       category,
       pageSize: pageSize || 100,
+      language,
     });
 
     return {
@@ -439,6 +441,7 @@ export class VoiceController {
       projectId: string;
       model_id?: string;
       output_format?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
     },
     @Request() req: any,
   ) {
@@ -464,6 +467,7 @@ export class VoiceController {
       {
         model_id: body.model_id,
         output_format: body.output_format,
+        language: body.language,
       }
     );
 

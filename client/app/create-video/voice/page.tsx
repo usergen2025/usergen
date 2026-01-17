@@ -181,14 +181,49 @@ function VoicePageContent() {
     loadOrCreateProject();
   }, [isAuthenticated, authLoading, projectId, router, showToast]);
 
+  // Extract language from script
+  const extractLanguageFromScript = (script: any): 'english' | 'hindi' | 'hinglish' | null => {
+    if (!script) return null;
+    
+    try {
+      const scriptData = typeof script === 'string' ? JSON.parse(script) : script;
+      // Language might be stored in script metadata
+      if (scriptData.language) {
+        return scriptData.language;
+      }
+      // Check if script contains Hindi characters to infer language
+      const scriptText = JSON.stringify(scriptData);
+      const hasHindi = /[\u0900-\u097F]/.test(scriptText);
+      const hasEnglish = /[a-zA-Z]/.test(scriptText);
+      
+      if (hasHindi && hasEnglish) return 'hinglish';
+      if (hasHindi) return 'hindi';
+      if (hasEnglish) return 'english';
+    } catch (e) {
+      // If parsing fails, return null
+    }
+    
+    return null;
+  };
+
   // Load ElevenLabs voices immediately when page loads (not just when library is selected)
   // This ensures voices are available when restoring selection
+  // Filter voices by language if available from script
   useEffect(() => {
     const loadVoices = async () => {
       if (voices.length === 0 && projectId) {
         setLoading(true);
         try {
-          const response = await apiClient.getElevenLabsVoices();
+          // Extract language from project script if available
+          let language: 'english' | 'hindi' | 'hinglish' | undefined = undefined;
+          if (project?.script) {
+            const extractedLanguage = extractLanguageFromScript(project.script);
+            if (extractedLanguage) {
+              language = extractedLanguage;
+            }
+          }
+          
+          const response = await apiClient.getElevenLabsVoices(undefined, undefined, language);
           if (response.success && response.data) {
             setVoices(response.data);
           } else {
@@ -204,7 +239,7 @@ function VoicePageContent() {
     };
 
     loadVoices();
-  }, [projectId, showToast]); // Load voices when projectId is available
+  }, [projectId, project?.script, showToast]); // Load voices when projectId or script changes
 
   // Load and restore project state (runs after voices might be loaded)
   useEffect(() => {

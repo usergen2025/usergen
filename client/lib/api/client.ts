@@ -513,12 +513,17 @@ class ApiClient {
   }
 
   // Voice/Audio endpoints
-  async getElevenLabsVoices(search?: string, category?: string): Promise<ApiResponse<any[]>> {
+  async getElevenLabsVoices(
+    search?: string, 
+    category?: string,
+    language?: 'english' | 'hindi' | 'hinglish'
+  ): Promise<ApiResponse<any[]>> {
     const voiceServiceUrl = VOICE_SERVICE_URL;
     const token = this.getToken();
     const params = new URLSearchParams();
     if (search) params.append('search', search);
     if (category) params.append('category', category);
+    if (language) params.append('language', language);
     params.append('pageSize', '100');
 
     const response = await axios.get<ApiResponse<any[]>>(
@@ -577,6 +582,7 @@ class ApiClient {
     projectId: string;
     model_id?: string;
     output_format?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<ApiResponse<any[]>> {
     const voiceServiceUrl = VOICE_SERVICE_URL;
     const token = this.getToken();

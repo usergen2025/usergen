@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 
+export interface VerifiedVoiceLanguage {
+  language: string;  // e.g., "hi" for Hindi, "en" for English
+  model_id: string;
+  locale?: string | null;
+  preview_url?: string | null;
+}
+
 export interface ElevenLabsVoice {
   voice_id: string;
   name: string;
@@ -9,6 +16,7 @@ export interface ElevenLabsVoice {
   description?: string | null;
   labels?: Record<string, string> | null;
   preview_url?: string | null;
+  verified_languages?: VerifiedVoiceLanguage[] | null;
   settings?: {
     stability: number;
     similarity_boost: number;
@@ -68,6 +76,32 @@ export class ElevenLabsProvider {
   }
 
   /**
+   * Map application language to ElevenLabs language code
+   */
+  private mapLanguageToCode(language: string): string | null {
+    const languageMap: Record<string, string> = {
+      'english': 'en',
+      'hindi': 'hi',
+      'hinglish': 'hi', // Use Hindi voices for Hinglish
+    };
+    return languageMap[language.toLowerCase()] || null;
+  }
+
+  /**
+   * Check if voice supports the requested language
+   */
+  private voiceSupportsLanguage(voice: ElevenLabsVoice, languageCode: string): boolean {
+    if (!voice.verified_languages || voice.verified_languages.length === 0) {
+      return false; // Skip voices without language info
+    }
+    
+    // Match language code (e.g., "hi" matches "hi" or "hi-IN")
+    return voice.verified_languages.some(vl => 
+      vl.language?.toLowerCase().startsWith(languageCode.toLowerCase())
+    );
+  }
+
+  /**
    * List all available voices from ElevenLabs
    */
   async listVoices(options?: {
@@ -75,6 +109,7 @@ export class ElevenLabsProvider {
     search?: string;
     category?: string;
     voiceType?: string;
+    language?: string;  // e.g., "english", "hindi", "hinglish"
   }): Promise<ElevenLabsVoicesResponse> {
     try {
       const params: any = {};
@@ -90,7 +125,21 @@ export class ElevenLabsProvider {
         },
       });
 
-      return response.data;
+      // Filter by language if specified
+      let filteredVoices = response.data.voices;
+      if (options?.language) {
+        const languageCode = this.mapLanguageToCode(options.language);
+        if (languageCode) {
+          filteredVoices = response.data.voices.filter(voice => 
+            this.voiceSupportsLanguage(voice, languageCode)
+          );
+        }
+      }
+
+      return {
+        ...response.data,
+        voices: filteredVoices,
+      };
     } catch (error: any) {
       if (error.response) {
         throw new Error(`ElevenLabs API error: ${error.response.status} - ${error.response.data?.detail?.message || error.response.statusText}`);
