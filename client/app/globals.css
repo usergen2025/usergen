@@ -93,3 +93,15 @@ body {
 .shadow-modal {
   box-shadow: var(--shadow-modal);
 }
+
+/* Fade-in animation for avatar grid content */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

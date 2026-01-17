@@ -120,8 +120,23 @@ function SignupPageContent() {
         
         // Small delay to show success toast
         setTimeout(() => {
-          // If coming from style page, redirect to video type page
-          if (fromParam === 'style' || redirectUrl === '/create-video') {
+          const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
+          
+          // Clear the flag after checking
+          if (typeof window !== 'undefined') {
+            sessionStorage.removeItem('fromCreateVideo');
+          }
+          
+          // If coming from create-video flow
+          if (redirectUrl.includes('/create-video')) {
+            // If user came from "Create a Video" button, go to new chat flow
+            if (fromCreateVideo) {
+              router.push('/create-video/ai-chat');
+            } else {
+              // Otherwise, go to old style selection flow
+              router.push('/create-video/style');
+            }
+          } else if (fromParam === 'style' || redirectUrl === '/create-video') {
             router.push('/create-video');
           } else {
             router.push(redirectUrl);

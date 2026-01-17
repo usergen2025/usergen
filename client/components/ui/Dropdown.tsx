@@ -44,7 +44,7 @@ export default function Dropdown({ trigger, children, className, align = 'right'
           )}
         >
           <div className="flex flex-col gap-2 p-2">
-            {children}
+          {children}
           </div>
         </div>
       )}

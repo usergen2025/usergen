@@ -177,6 +177,8 @@ export class ScriptsController {
         userPrompt: { type: 'string', example: 'Introduction to artificial intelligence and its applications', description: 'User input topic or idea for the video' },
         videoStyle: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT'], example: 'HALF_N_HALF', description: 'Video style/format' },
         duration: { type: 'string', example: '30 seconds', description: 'Desired video duration' },
+        language: { type: 'string', enum: ['english', 'hindi', 'hinglish'], example: 'hinglish', description: 'Language for script dialogue (defaults to hinglish if not provided)' },
+        tags: { type: 'array', items: { type: 'string' }, example: ['technology', 'professional', 'modern'], description: 'Optional tags for visual style guidance (e.g., technology, professional, modern, food, casual)' },
         projectId: { type: 'string', example: 'cmhj8oa2p00004v3uh68khd1r', description: 'Video project ID (optional)' }
       },
       required: ['userPrompt', 'videoStyle']
@@ -257,7 +259,8 @@ export class ScriptsController {
         existingScript: { type: 'object', description: 'Full existing script for context' },
         originalUserPrompt: { type: 'string', example: 'Introduction to AI', description: 'Original user prompt for context' },
         operation: { type: 'string', enum: ['regenerate', 'edit'], example: 'regenerate', description: 'Operation type: regenerate or edit' },
-        newVoiceover: { type: 'string', example: 'New voiceover text', description: 'New voiceover text (required if operation is edit)' }
+        newVoiceover: { type: 'string', example: 'New voiceover text', description: 'New voiceover text (required if operation is edit)' },
+        language: { type: 'string', enum: ['english', 'hindi', 'hinglish'], example: 'hinglish', description: 'Language for script dialogue (defaults to hinglish if not provided)' }
       },
       required: ['sceneNumber', 'videoStyle', 'existingScript', 'originalUserPrompt', 'operation']
     }

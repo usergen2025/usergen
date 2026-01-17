@@ -224,26 +224,51 @@ export class VoiceController {
         },
       );
 
+      // Log full result for debugging
+      console.log(`[VoiceController] Voice cloning result:`, JSON.stringify(result, null, 2));
+
+      // Validate result before proceeding
+      if (!result || !result.voice_id) {
+        throw new Error(`Voice cloning failed: Invalid response from ElevenLabs. voice_id is missing. Response: ${JSON.stringify(result)}`);
+      }
+
       console.log(`[VoiceController] Voice cloned successfully: ${result.voice_id}, requires_verification: ${result.requires_verification}`);
 
       return {
         success: true,
         data: {
           voiceId: result.voice_id,
-          requiresVerification: result.requires_verification,
+          requiresVerification: result.requires_verification ?? false,
           sampleUrl: storedSample.localUrl,
         },
         message: 'Voice cloned successfully',
         timestamp: new Date().toISOString(),
       };
     } catch (error: any) {
+      console.error(`[VoiceController] Voice cloning error:`, {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+      });
+
+      // Determine appropriate HTTP status code based on error type
+      let httpStatus = HttpStatus.BAD_GATEWAY;
+      if (error.message?.includes('Invalid API key') || error.message?.includes('Unauthorized')) {
+        httpStatus = HttpStatus.UNAUTHORIZED;
+      } else if (error.message?.includes('validation failed') || error.message?.includes('Invalid')) {
+        httpStatus = HttpStatus.BAD_REQUEST;
+      } else if (error.message?.includes('rate limit')) {
+        httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+      }
+
       throw new HttpException(
         {
           success: false,
           message: error.message || 'Failed to clone voice',
           error: 'Voice cloning failed',
+          timestamp: new Date().toISOString(),
         },
-        HttpStatus.BAD_GATEWAY,
+        httpStatus,
       );
     }
   }
@@ -251,7 +276,7 @@ export class VoiceController {
   @Get('voices')
   @ApiOperation({ 
     summary: 'List ElevenLabs voices', 
-    description: 'Get list of all available voices from ElevenLabs library. Can filter by search term or category.' 
+    description: 'Get list of all available voices from ElevenLabs library. Can filter by search term, category, or language.' 
   })
   @ApiBearerAuth('JWT-auth')
   @ApiResponse({ 
@@ -298,11 +323,13 @@ export class VoiceController {
     @Query('search') search?: string,
     @Query('category') category?: string,
     @Query('pageSize') pageSize?: number,
+    @Query('language') language?: 'english' | 'hindi' | 'hinglish',
   ) {
     const voices = await this.voiceService.getVoices({
       search,
       category,
       pageSize: pageSize || 100,
+      language,
     });
 
     return {
@@ -414,6 +441,7 @@ export class VoiceController {
       projectId: string;
       model_id?: string;
       output_format?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
     },
     @Request() req: any,
   ) {
@@ -439,6 +467,7 @@ export class VoiceController {
       {
         model_id: body.model_id,
         output_format: body.output_format,
+        language: body.language,
       }
     );
 

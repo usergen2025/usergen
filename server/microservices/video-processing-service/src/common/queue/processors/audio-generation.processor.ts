@@ -48,6 +48,12 @@ export class AudioGenerationProcessor extends WorkerHost {
       
       const scenes = script.scenes || script.scene_plan || [];
       
+      // Extract language from script metadata or project metadata
+      // Language might be stored in script metadata or project metadata
+      const scriptLanguage = (script as any)?.language || 
+                            (project as any)?.metadata?.language || 
+                            'hinglish'; // Default fallback
+      
       // Call voice-audio-service to generate audio
       const voiceServiceUrl = this.configService.get<string>('VOICE_AUDIO_SERVICE_URL') || 'http://localhost:9002/api';
       const token = authToken ? (authToken.startsWith('Bearer ') ? authToken : `Bearer ${authToken}`) : null;
@@ -72,6 +78,7 @@ export class AudioGenerationProcessor extends WorkerHost {
           userId,
           model_id: 'eleven_multilingual_v2',
           output_format: 'mp3_44100_128',
+          language: scriptLanguage, // Pass language for voice settings optimization
         },
         {
           headers: {

@@ -9,6 +9,7 @@ import type { Multer } from 'multer';
 @Injectable()
 export class VoiceService {
   private readonly uploadsDir: string;
+  private readonly ffmpegAvailable: boolean;
 
   constructor(
     private readonly elevenLabsProvider: ElevenLabsProvider,
@@ -19,6 +20,47 @@ export class VoiceService {
     if (!fs.existsSync(this.uploadsDir)) {
       fs.mkdirSync(this.uploadsDir, { recursive: true });
     }
+
+    // Check FFmpeg availability on startup
+    try {
+      execFileSync('ffmpeg', ['-version'], { stdio: 'ignore', timeout: 5000 });
+      this.ffmpegAvailable = true;
+      console.log('[VoiceService] FFmpeg is available for audio conversion');
+    } catch (error) {
+      this.ffmpegAvailable = false;
+      console.warn('[VoiceService] WARNING: FFmpeg not found. WebM/OGG audio conversion will fail.');
+      console.warn('[VoiceService] Please install FFmpeg or upload MP3/WAV/M4A format files.');
+    }
+  }
+
+  /**
+   * Get language-specific voice settings for optimal quality
+   */
+  private getVoiceSettingsForLanguage(
+    language?: 'english' | 'hindi' | 'hinglish'
+  ): {
+    stability: number;
+    similarity_boost: number;
+    use_speaker_boost: boolean;
+    style?: number;
+  } {
+    const baseSettings = {
+      stability: 0.5,
+      similarity_boost: 0.75,
+      use_speaker_boost: true,
+      style: 0.0,
+    };
+
+    // Hindi/Hinglish might need different settings for accent clarity
+    if (language === 'hindi' || language === 'hinglish') {
+      return {
+        ...baseSettings,
+        stability: 0.6,  // Slightly more stable for accent clarity
+        similarity_boost: 0.85,  // Higher similarity for accent preservation
+      };
+    }
+
+    return baseSettings;
   }
 
   /**
@@ -28,11 +70,13 @@ export class VoiceService {
     pageSize?: number;
     search?: string;
     category?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<ElevenLabsVoice[]> {
     const response = await this.elevenLabsProvider.listVoices({
       pageSize: options?.pageSize || 100,
       search: options?.search,
       category: options?.category,
+      language: options?.language,
     });
     return response.voices;
   }
@@ -119,6 +163,7 @@ export class VoiceService {
     options?: {
       model_id?: string;
       output_format?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
       voice_settings?: {
         stability?: number;
         similarity_boost?: number;
@@ -140,12 +185,22 @@ export class VoiceService {
       const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
       
       try {
+        // Merge language-specific settings with provided settings
+        const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
+        const mergedSettings = {
+          ...languageSettings,
+          ...options?.voice_settings, // User-provided settings override defaults
+        };
+
         const result = await this.generateSpeechAudio(
           voiceId,
           scene.voiceover,
           filename,
           userId,
-          options
+          {
+            ...options,
+            voice_settings: mergedSettings,
+          }
         );
 
         console.log(`[VoiceService] Audio generated for scene ${scene.sceneNumber}: ${result.localUrl}, duration: ${result.duration}s`);
@@ -258,6 +313,14 @@ export class VoiceService {
       
       console.log(`[VoiceService] Stored audio file: ${filename}, size: ${bufferToSend.length} bytes`);
     } else {
+      // Check if FFmpeg is available before attempting conversion
+      if (!this.ffmpegAvailable) {
+        throw new Error(
+          'FFmpeg is not installed on the server. WebM/OGG audio conversion is not available. ' +
+          'Please upload audio files in MP3, WAV, or M4A format, or contact support to install FFmpeg.'
+        );
+      }
+
       // Write to temp file and convert to mp3 using ffmpeg
       const tempInput = path.join(baseDir, `${Date.now()}_${safeName}.tmp${detectedExt}`);
       fs.writeFileSync(tempInput, audioFile.buffer);
@@ -267,7 +330,19 @@ export class VoiceService {
       console.log(`[VoiceService] Converting audio from ${detectedExt} to MP3 using ffmpeg`);
 
       try {
-        execFileSync('ffmpeg', ['-y', '-i', tempInput, finalPath], { stdio: 'ignore' });
+        // Convert audio with specific codec settings for better compatibility
+        execFileSync('ffmpeg', [
+          '-y',
+          '-i', tempInput,
+          '-acodec', 'libmp3lame',
+          '-ar', '44100',
+          '-ac', '2',
+          '-b:a', '128k',
+          finalPath
+        ], { 
+          stdio: 'ignore',
+          maxBuffer: 10 * 1024 * 1024 // 10MB max buffer
+        });
         
         // Verify converted file exists and is not empty
         if (!fs.existsSync(finalPath)) {
@@ -283,17 +358,41 @@ export class VoiceService {
       } catch (error: any) {
         // Clean up temp file before throwing
         if (fs.existsSync(tempInput)) {
-          fs.unlinkSync(tempInput);
+          try {
+            fs.unlinkSync(tempInput);
+          } catch (unlinkError) {
+            // Ignore cleanup errors
+          }
         }
         if (fs.existsSync(finalPath)) {
-          fs.unlinkSync(finalPath);
+          try {
+            fs.unlinkSync(finalPath);
+          } catch (unlinkError) {
+            // Ignore cleanup errors
+          }
         }
+
+        // Provide more specific error messages
+        let errorMessage = 'Failed to convert audio sample';
+        if (error?.code === 'ENOENT') {
+          errorMessage = 'FFmpeg executable not found. Please contact support.';
+        } else if (error?.signal === 'SIGTERM' || error?.killed) {
+          errorMessage = 'Audio conversion timed out. The file may be too large or corrupted.';
+        } else if (error?.message) {
+          errorMessage = `Audio conversion failed: ${error.message}`;
+        }
+
         throw new Error(
-          `Failed to convert audio sample using ffmpeg. Please upload MP3, WAV, or M4A format. (${error?.message || 'Unknown error'})`,
+          `${errorMessage} Please upload MP3, WAV, or M4A format files, or try a shorter audio sample.`
         );
       } finally {
+        // Clean up temp file
         if (fs.existsSync(tempInput)) {
-          fs.unlinkSync(tempInput);
+          try {
+            fs.unlinkSync(tempInput);
+          } catch (unlinkError) {
+            // Ignore cleanup errors
+          }
         }
       }
 

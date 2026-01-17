@@ -1,6 +1,7 @@
 FROM node:18-alpine AS base
+# Install FFmpeg and FFprobe for audio conversion (needed in all stages)
+RUN apk add --no-cache ffmpeg ffprobe libc6-compat
 FROM base AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production

@@ -1,15 +1,68 @@
 'use client';
 
-import Link from 'next/link';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Button from '@/components/ui/Button';
 import FeatureBadge from '@/components/ui/FeatureBadge';
 import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { useAuth } from '@/hooks/useAuth';
 import Image from 'next/image';
+import GetStartedModal from '@/components/auth/GetStartedModal';
+import BrandSignupModal from '@/components/auth/BrandSignupModal';
+import CreatorSignupModal from '@/components/auth/CreatorSignupModal';
+import LoginModal from '@/components/auth/LoginModal';
 
 export default function HomePage() {
+  const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
+  const [getStartedModalOpen, setGetStartedModalOpen] = useState(false);
+  const [brandSignupModalOpen, setBrandSignupModalOpen] = useState(false);
+  const [creatorSignupModalOpen, setCreatorSignupModalOpen] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+
+  const handleCreateVideoClick = () => {
+    if (isAuthenticated) {
+      router.push('/create-video');
+    } else {
+      // Set flag to indicate user came from "Create a Video" button
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('fromCreateVideo', 'true');
+      }
+      setGetStartedModalOpen(true);
+    }
+  };
+
+  const handleSelectCreator = () => {
+    setGetStartedModalOpen(false);
+    setCreatorSignupModalOpen(true);
+  };
+
+  const handleSelectBrand = () => {
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(true);
+  };
+
+  const handleShowLogin = () => {
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+    setLoginModalOpen(true);
+  };
+
+  const handleShowGetStarted = () => {
+    setLoginModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+    setGetStartedModalOpen(true);
+  };
+
+  const closeAllModals = () => {
+    setLoginModalOpen(false);
+    setGetStartedModalOpen(false);
+    setBrandSignupModalOpen(false);
+    setCreatorSignupModalOpen(false);
+  };
 
   return (
     <div className="relative h-screen bg-background overflow-hidden flex flex-col pt-[calc(43px+64px)]">
@@ -52,11 +105,14 @@ export default function HomePage() {
           </div>
 
           {/* CTA Button */}
-          <Link href="/create-video/style">
-            <Button variant="primary" size="lg" className="mb-3 md:mb-4">
-              {isLoading ? 'Loading...' : (isAuthenticated ? 'CREATE A VIDEO NOW' : 'Create a your First Video')}
-            </Button>
-          </Link>
+          <Button 
+            variant="primary" 
+            size="lg" 
+            className="mb-3 md:mb-4"
+            onClick={handleCreateVideoClick}
+          >
+            {isLoading ? 'Loading...' : (isAuthenticated ? 'CREATE A VIDEO NOW' : 'Create a your First Video')}
+          </Button>
 
           {/* Tagline */}
           <p className="font-sans text-lg md:text-xl lg:text-2xl text-black mb-4 md:mb-6">
@@ -74,47 +130,61 @@ export default function HomePage() {
           <div className="flex flex-wrap items-center justify-center gap-2 md:gap-3">
             <FeatureBadge
               icon={
-                <div className="w-6 h-6 flex items-center justify-center">
-                  <Image src="/assets/icon-video.svg" alt="Video" width={24} height={24} />
-                </div>
+                <Image src="/assets/icon-video.svg" alt="Video" width={24} height={24} className="w-full h-full" />
               }
               label="Auto-Generated Videos"
             />
             <FeatureBadge
               icon={
-                <div className="w-6 h-6 flex items-center justify-center">
-                  <Image src="/assets/icon-captions.svg" alt="Captions" width={24} height={24} />
-                </div>
+                <Image src="/assets/icon-captions.svg" alt="Captions" width={24} height={24} className="w-full h-full" />
               }
               label="Captions"
             />
             <FeatureBadge
               icon={
-                <div className="w-6 h-6 flex items-center justify-center">
-                  <Image src="/assets/icon-voice.svg" alt="Voice" width={24} height={24} />
-                </div>
+                <Image src="/assets/icon-voice.svg" alt="Voice" width={24} height={24} className="w-full h-full" />
               }
               label="Voice Cloning"
             />
             <FeatureBadge
               icon={
-                <div className="w-6 h-6 flex items-center justify-center">
-                  <Image src="/assets/icon-avatar.svg" alt="Avatar" width={24} height={24} />
-                </div>
+                <Image src="/assets/icon-avatar.svg" alt="Avatar" width={24} height={24} className="w-full h-full" />
               }
               label="Hire an Avatar"
             />
             <FeatureBadge
               icon={
-                <div className="w-6 h-6 flex items-center justify-center">
-                  <Image src="/assets/icon-script.svg" alt="Script" width={24} height={24} />
-                </div>
+                <Image src="/assets/icon-script.svg" alt="Script" width={24} height={24} className="w-full h-full" />
               }
               label="Script Generation"
             />
           </div>
         </div>
       </div>
+
+      {/* Modals */}
+      <GetStartedModal
+        isOpen={getStartedModalOpen}
+        onClose={closeAllModals}
+        onSelectCreator={handleSelectCreator}
+        onSelectBrand={handleSelectBrand}
+        onShowLogin={handleShowLogin}
+      />
+      <CreatorSignupModal
+        isOpen={creatorSignupModalOpen}
+        onClose={closeAllModals}
+        onShowLogin={handleShowLogin}
+      />
+      <BrandSignupModal
+        isOpen={brandSignupModalOpen}
+        onClose={closeAllModals}
+        onShowLogin={handleShowLogin}
+      />
+      <LoginModal
+        isOpen={loginModalOpen}
+        onClose={closeAllModals}
+        onShowGetStarted={handleShowGetStarted}
+      />
     </div>
   );
 }

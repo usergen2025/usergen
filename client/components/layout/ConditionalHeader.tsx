@@ -10,12 +10,16 @@ interface ConditionalHeaderProps {
 export default function ConditionalHeader({ position = 'fixed' }: ConditionalHeaderProps) {
   const pathname = usePathname();
   const isAuthPage = pathname === '/login' || pathname === '/signup';
+  const isAIChatPage = pathname === '/create-video/ai-chat';
   
   // Don't show header on auth pages (they have overlay design)
   if (isAuthPage) {
     return null;
   }
   
-  return <Header position={position} />;
+  // Use relative positioning for AI chat page to prevent overlap
+  const headerPosition = isAIChatPage ? 'relative' : position;
+  
+  return <Header position={headerPosition} />;
 }
 

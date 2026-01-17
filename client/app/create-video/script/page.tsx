@@ -6,6 +6,8 @@ import { ArrowLeft, X, Send, Loader2, RefreshCw, Edit2, Check, X as XIcon } from
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
+import TagAwareInput from '@/components/ui/TagAwareInput';
+import Textarea from '@/components/ui/Textarea';
 import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
@@ -30,12 +32,15 @@ function ScriptPageContent() {
   const [chatInput, setChatInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [selectedOption, setSelectedOption] = useState<'own-script' | 'generate-ai' | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<'english' | 'hindi' | 'hinglish' | null>(null);
   const [videoStyle, setVideoStyle] = useState<'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | null>(null);
   const [lastUserPrompt, setLastUserPrompt] = useState<string>('');
   const [isInitialized, setIsInitialized] = useState(false);
   const [editingScene, setEditingScene] = useState<number | null>(null);
   const [editValue, setEditValue] = useState<string>('');
   const [regeneratingScenes, setRegeneratingScenes] = useState<Set<number>>(new Set());
+  // Script input state for "own-script" option
+  const [scriptInput, setScriptInput] = useState('');
 
   // Reset state on mount or when projectId changes
   useEffect(() => {
@@ -46,10 +51,12 @@ function ScriptPageContent() {
     setChatInput('');
     setIsGenerating(false);
     setSelectedOption(null);
+    setSelectedLanguage(null);
     setVideoStyle(null);
     setLastUserPrompt('');
     setProjectId(projectIdFromUrl);
     setIsInitialized(false);
+    setScriptInput('');
   }, [projectIdFromUrl]);
 
   // Load project info to get video style - only load if projectId is in URL
@@ -185,6 +192,23 @@ function ScriptPageContent() {
     }));
   };
 
+  // Extract tags and content from input
+  // Replaces @tag with tag (without @) in content
+  const extractTagsAndContent = (input: string): { content: string; tags: string[] } => {
+    const tagRegex = /@(\w+)/g;
+    const matches = Array.from(input.matchAll(tagRegex));
+    const extractedTags = matches.map(match => match[1].toLowerCase().trim());
+    
+    // Replace @tag with tag (without @) in content
+    // Example: "Generate a @technology related video" -> "Generate a technology related video"
+    const content = input
+      .replace(/@(\w+)/g, '$1')  // Replace @tag with tag
+      .replace(/\s+/g, ' ')       // Normalize whitespace
+      .trim();
+    
+    return { content, tags: Array.from(new Set(extractedTags)) };
+  };
+
   const handleOptionSelect = (option: 'own-script' | 'generate-ai') => {
     // Prevent switching once an option is already selected
     if (selectedOption !== null) {
@@ -197,20 +221,80 @@ function ScriptPageContent() {
     const optionText = option === 'own-script' ? 'Have your own script' : 'Generate with AI';
     setChatMessages(prev => [...prev, { role: 'user' as const, content: optionText }]);
     
+    // If "Generate with AI" is selected, reset language selection
+    if (option === 'generate-ai') {
+      setSelectedLanguage(null);
+      setScriptInput('');
+    }
+    
+    // If "Have your own script" is selected, reset language and chat input
+    if (option === 'own-script') {
+      setSelectedLanguage(null);
+      setChatInput('');
+    }
+    
     // If "Have your own script" is selected, we can implement manual script entry later
     // For now, we focus on AI generation
   };
 
   const handleChatSubmit = async () => {
-    if (!chatInput.trim() || !selectedOption) return;
+    if (!selectedOption) return;
     
-    const userMessage = chatInput.trim();
+    // Validate based on selected option
+    if (selectedOption === 'generate-ai') {
+      if (!chatInput.trim() || !selectedLanguage) {
+        if (!selectedLanguage) {
+          showToast('Please select a language first', 'warning');
+        }
+        return;
+      }
+    } else if (selectedOption === 'own-script') {
+      if (!scriptInput.trim()) {
+        showToast('Please enter your script', 'warning');
+        return;
+      }
+    }
+    
+    // Extract content and tags
+    let userMessage: string;
+    let extractedTags: string[] = [];
+    
+    if (selectedOption === 'own-script') {
+      const { content, tags } = extractTagsAndContent(scriptInput);
+      userMessage = content;
+      extractedTags = tags;
+      
+      if (!userMessage.trim()) {
+        showToast('Please enter script content', 'warning');
+        return;
+      }
+    } else {
+      // For generate-ai, extract tags from chatInput and replace @tag with tag
+      const { content, tags } = extractTagsAndContent(chatInput);
+      userMessage = content;
+      extractedTags = tags;
+      
+      if (!userMessage.trim()) {
+        showToast('Please enter your ideas', 'warning');
+        return;
+      }
+    }
+    
     setLastUserPrompt(userMessage);
     
-    // Add user message to chat
-    const newMessages = [...chatMessages, { role: 'user' as const, content: userMessage }];
+    // Add user message to chat (show original with tags for display)
+    const displayMessage = extractedTags.length > 0 
+      ? `${selectedOption === 'own-script' ? scriptInput : chatInput} [Tags: ${extractedTags.join(', ')}]`
+      : (selectedOption === 'own-script' ? scriptInput : chatInput);
+    const newMessages = [...chatMessages, { role: 'user' as const, content: displayMessage }];
     setChatMessages(newMessages);
-    setChatInput('');
+    
+    if (selectedOption === 'own-script') {
+      setScriptInput('');
+    } else {
+      setChatInput('');
+    }
+    
     setIsGenerating(true);
 
     // Get current projectId - create if doesn't exist
@@ -260,8 +344,8 @@ function ScriptPageContent() {
       }
     }
 
-    // Only generate script if "Generate with AI" is selected
-    if (selectedOption === 'generate-ai' && styleToUse) {
+    // Generate script for both options
+    if (styleToUse && (selectedOption === 'generate-ai' ? selectedLanguage : true)) {
       if (!currentProjectId) {
         showToast('Project not found. Please try again.', 'error');
         setIsGenerating(false);
@@ -270,8 +354,10 @@ function ScriptPageContent() {
       
       try {
         const response = await apiClient.generateVideoScript({
-          userPrompt: userMessage,
+          userPrompt: userMessage, // Cleaned content (with @tag replaced by tag)
           videoStyle: styleToUse || videoStyle,
+          language: selectedOption === 'generate-ai' ? selectedLanguage : undefined,
+          tags: extractedTags.length > 0 ? extractedTags : undefined, // Send tags for both options
           projectId: currentProjectId,
         });
 
@@ -325,13 +411,6 @@ function ScriptPageContent() {
       } finally {
         setIsGenerating(false);
       }
-    } else if (selectedOption === 'own-script') {
-      // For "Have your own script", we'll implement manual entry later
-      setChatMessages(prev => [...prev, { 
-        role: 'ai', 
-        content: 'Manual script entry will be available soon. For now, please use "Generate with AI" to create your script.' 
-      }]);
-      setIsGenerating(false);
     } else {
       setIsGenerating(false);
     }
@@ -378,11 +457,17 @@ function ScriptPageContent() {
       return;
     }
     
+    if (!selectedLanguage) {
+      showToast('Language not selected. Please start again.', 'error');
+      return;
+    }
+    
     setIsGenerating(true);
     try {
       const response = await apiClient.generateVideoScript({
         userPrompt: promptToUse,
         videoStyle: styleToUse,
+        language: selectedLanguage,
         projectId: currentProjectId,
       });
 
@@ -444,6 +529,11 @@ function ScriptPageContent() {
       return;
     }
     
+    if (!selectedLanguage) {
+      showToast('Language not selected', 'error');
+      return;
+    }
+    
     // Use lastUserPrompt if available, otherwise use a generic prompt
     const promptToUse = lastUserPrompt || 'Update the scene with the provided voiceover';
 
@@ -461,6 +551,7 @@ function ScriptPageContent() {
         originalUserPrompt: promptToUse,
         operation: 'edit',
         newVoiceover: editValue.trim(),
+        language: selectedLanguage,
       });
 
       if (response.success && response.data) {
@@ -509,6 +600,11 @@ function ScriptPageContent() {
       return;
     }
     
+    if (!selectedLanguage) {
+      showToast('Language not selected', 'error');
+      return;
+    }
+    
     // Use lastUserPrompt if available, otherwise use a generic prompt based on script
     const promptToUse = lastUserPrompt || 'Regenerate the scene with new creative content';
 
@@ -528,6 +624,7 @@ function ScriptPageContent() {
         existingScript: script,
         originalUserPrompt: promptToUse,
         operation: 'regenerate',
+        language: selectedLanguage,
       });
 
       if (response.success && response.data) {
@@ -614,7 +711,9 @@ function ScriptPageContent() {
                       // Reset chat state - clear messages except initial, clear options, clear input
                       setChatMessages([{ role: 'ai', content: "Hey there! Tell me about your video." }]);
                       setSelectedOption(null);
+                      setSelectedLanguage(null);
                       setChatInput('');
+                      setScriptInput('');
                       setScript(null);
                       setScriptFormatted('');
                       setLastUserPrompt('');
@@ -648,40 +747,117 @@ function ScriptPageContent() {
                         
                         {/* Show options below first AI message */}
                         {isFirstMessage && (
-                          <div className="flex flex-row gap-3 mr-auto max-w-[80%]">
-                          <Button
-                              variant={selectedOption === 'own-script' ? 'primary' : 'outline'}
-                              size="lg"
-                              onClick={() => handleOptionSelect('own-script')}
-                              disabled={selectedOption !== null && selectedOption !== 'own-script'}
-                              className={cn(
-                                "h-12 px-6 flex-1 transition-all duration-200",
-                                selectedOption === 'own-script' 
-                                  ? "bg-primary text-white border-primary" 
-                                  : selectedOption === null
-                                  ? "hover:bg-primary-light hover:border-primary hover:text-primary"
-                                  : "opacity-50 cursor-not-allowed"
-                              )}
-                            >
-                              Have your own script
-                          </Button>
-                            <Button
-                              variant={selectedOption === 'generate-ai' ? 'primary' : 'outline'}
-                              size="lg"
-                              onClick={() => handleOptionSelect('generate-ai')}
-                              disabled={selectedOption !== null && selectedOption !== 'generate-ai'}
-                              className={cn(
-                                "h-12 px-6 flex-1 transition-all duration-200",
-                                selectedOption === 'generate-ai' 
-                                  ? "bg-primary text-white border-primary" 
-                                  : selectedOption === null
-                                  ? "hover:bg-primary-light hover:border-primary hover:text-primary"
-                                  : "opacity-50 cursor-not-allowed"
-                              )}
-                            >
-                              Generate with AI
-                            </Button>
-                          </div>
+                          <>
+                            <div className="flex flex-row gap-3 mr-auto max-w-[80%]">
+                              <Button
+                                variant={selectedOption === 'own-script' ? 'primary' : 'outline'}
+                                size="lg"
+                                onClick={() => handleOptionSelect('own-script')}
+                                disabled={selectedOption !== null && selectedOption !== 'own-script'}
+                                className={cn(
+                                  "h-12 px-6 flex-1 transition-all duration-200",
+                                  selectedOption === 'own-script' 
+                                    ? "bg-primary text-white border-primary" 
+                                    : selectedOption === null
+                                    ? "hover:bg-primary-light hover:border-primary hover:text-primary"
+                                    : "opacity-50 cursor-not-allowed"
+                                )}
+                              >
+                                Have your own script
+                              </Button>
+                              <Button
+                                variant={selectedOption === 'generate-ai' ? 'primary' : 'outline'}
+                                size="lg"
+                                onClick={() => handleOptionSelect('generate-ai')}
+                                disabled={selectedOption !== null && selectedOption !== 'generate-ai'}
+                                className={cn(
+                                  "h-12 px-6 flex-1 transition-all duration-200",
+                                  selectedOption === 'generate-ai' 
+                                    ? "bg-primary text-white border-primary" 
+                                    : selectedOption === null
+                                    ? "hover:bg-primary-light hover:border-primary hover:text-primary"
+                                    : "opacity-50 cursor-not-allowed"
+                                )}
+                              >
+                                Generate with AI
+                              </Button>
+                            </div>
+                            
+                            {/* Show language selection after "Generate with AI" is selected */}
+                            {selectedOption === 'generate-ai' && (
+                              <div className="mr-auto max-w-[80%] space-y-2">
+                                <p className={cn(typography.body.small, "text-text-secondary mb-2")}>
+                                  Select language for your script:
+                                </p>
+                                <div className="flex flex-row gap-3">
+                                  <Button
+                                    variant={selectedLanguage === 'english' ? 'primary' : 'outline'}
+                                    size="md"
+                                    onClick={() => setSelectedLanguage('english')}
+                                    disabled={selectedLanguage !== null && selectedLanguage !== 'english'}
+                                    className={cn(
+                                      "h-10 px-4 flex-1 transition-all duration-200",
+                                      selectedLanguage === 'english' 
+                                        ? "bg-primary text-white border-primary" 
+                                        : selectedLanguage === null
+                                        ? "hover:bg-primary-light hover:border-primary hover:text-primary"
+                                        : "opacity-50 cursor-not-allowed"
+                                    )}
+                                  >
+                                    English
+                                  </Button>
+                                  <Button
+                                    variant={selectedLanguage === 'hindi' ? 'primary' : 'outline'}
+                                    size="md"
+                                    onClick={() => setSelectedLanguage('hindi')}
+                                    disabled={selectedLanguage !== null && selectedLanguage !== 'hindi'}
+                                    className={cn(
+                                      "h-10 px-4 flex-1 transition-all duration-200",
+                                      selectedLanguage === 'hindi' 
+                                        ? "bg-primary text-white border-primary" 
+                                        : selectedLanguage === null
+                                        ? "hover:bg-primary-light hover:border-primary hover:text-primary"
+                                        : "opacity-50 cursor-not-allowed"
+                                    )}
+                                  >
+                                    Hindi
+                                  </Button>
+                                  <Button
+                                    variant={selectedLanguage === 'hinglish' ? 'primary' : 'outline'}
+                                    size="md"
+                                    onClick={() => setSelectedLanguage('hinglish')}
+                                    disabled={selectedLanguage !== null && selectedLanguage !== 'hinglish'}
+                                    className={cn(
+                                      "h-10 px-4 flex-1 transition-all duration-200",
+                                      selectedLanguage === 'hinglish' 
+                                        ? "bg-primary text-white border-primary" 
+                                        : selectedLanguage === null
+                                        ? "hover:bg-primary-light hover:border-primary hover:text-primary"
+                                        : "opacity-50 cursor-not-allowed"
+                                    )}
+                                  >
+                                    Hinglish
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Show textarea for "Have your own script" option */}
+                            {selectedOption === 'own-script' && (
+                              <div className="mr-auto max-w-[80%] space-y-2">
+                                <p className={cn(typography.body.small, "text-text-secondary mb-2")}>
+                                  Write your script below:
+                                </p>
+                                <Textarea
+                                  value={scriptInput}
+                                  onChange={(e) => setScriptInput(e.target.value)}
+                                  placeholder="Write your script here..."
+                                  disabled={isGenerating}
+                                  rows={6}
+                                />
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     );
@@ -804,32 +980,58 @@ function ScriptPageContent() {
                   )}
                   </div>
 
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && selectedOption && handleChatSubmit()}
-                    placeholder={selectedOption ? "Type your ideas here..." : "Please select an option above"}
-                    disabled={!selectedOption}
-                    className={cn(
-                      "flex-1 px-4 py-2 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary transition-opacity",
-                      !selectedOption && "opacity-50 cursor-not-allowed"
-                    )}
-                    />
-                    <Button
-                      variant="primary"
-                      size="sm"
-                    icon={isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                      onClick={handleChatSubmit}
-                    disabled={!selectedOption || !chatInput.trim() || isGenerating || !videoStyle}
-                    className={cn(
-                      "rounded-full w-10 h-10 p-0 transition-opacity",
-                      (!selectedOption || !chatInput.trim() || isGenerating || !videoStyle) && "opacity-50 cursor-not-allowed"
-                    )}
-                      aria-label="Send message"
-                    />
-                  </div>
+                  {/* Input area - different for each option */}
+                  {selectedOption === 'own-script' ? (
+                    <div className="flex gap-2">
+                      <div className="flex-1" /> {/* Spacer */}
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                        onClick={handleChatSubmit}
+                        disabled={!scriptInput.trim() || isGenerating || !videoStyle}
+                        className={cn(
+                          "rounded-full w-10 h-10 p-0 transition-opacity",
+                          (!scriptInput.trim() || isGenerating || !videoStyle) && "opacity-50 cursor-not-allowed"
+                        )}
+                        aria-label="Generate script"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <TagAwareInput
+                        value={chatInput}
+                        onChange={setChatInput}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter' && selectedOption === 'generate-ai' && selectedLanguage && chatInput.trim()) {
+                            handleChatSubmit();
+                          }
+                        }}
+                        placeholder={
+                          selectedOption === 'generate-ai' 
+                            ? selectedLanguage 
+                              ? "Type your ideas here... Use @tags for themes (e.g., @technology @professional)" 
+                              : "Please select a language first"
+                            : selectedOption 
+                              ? "Type your ideas here..." 
+                              : "Please select an option above"
+                        }
+                        disabled={!selectedOption || (selectedOption === 'generate-ai' && !selectedLanguage)}
+                      />
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                        onClick={handleChatSubmit}
+                        disabled={!selectedOption || !chatInput.trim() || isGenerating || !videoStyle || (selectedOption === 'generate-ai' && !selectedLanguage)}
+                        className={cn(
+                          "rounded-full w-10 h-10 p-0 transition-opacity",
+                          (!selectedOption || !chatInput.trim() || isGenerating || !videoStyle || (selectedOption === 'generate-ai' && !selectedLanguage)) && "opacity-50 cursor-not-allowed"
+                        )}
+                        aria-label="Send message"
+                      />
+                    </div>
+                  )}
                 </Card>
           </div>
         </div>
