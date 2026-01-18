@@ -8,6 +8,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
 import { useToast } from '@/lib/toast/toast';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
 
 // Define asset types
@@ -21,11 +22,12 @@ interface Asset {
 }
 
 // Define chat flow steps
-type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'style-selection';
+type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'style-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
 type AvatarSubstep = 'question' | 'selection' | 'confirmed';
 type VoiceSubstep = 'question' | 'selection' | 'confirmed';
+type StyleSubstep = 'selection' | 'confirmed';
 
 function AIChatPageContent() {
   const router = useRouter();
@@ -84,6 +86,13 @@ function AIChatPageContent() {
   const productImagesInputRef = useRef<HTMLInputElement>(null);
   // Style selection state
   const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
+  const [styleSubstep, setStyleSubstep] = useState<StyleSubstep>('selection');
+  // Generation tracking state
+  const [isGeneratingVoice, setIsGeneratingVoice] = useState(false);
+  const [isGeneratingBroll, setIsGeneratingBroll] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const audioJobIdRef = useRef<string | null>(null); // Use ref instead of state to avoid closure issues
+  const imageJobIdsRef = useRef<Set<string>>(new Set());
 
   // Fetch user profile when authenticated
   useEffect(() => {
@@ -177,6 +186,7 @@ function AIChatPageContent() {
                 'HALF_N_HALF': 'half-n-half',
                 'ALTERNATE': 'alternate',
                 'AVATAR_CUTOUT': 'avatar-cutout',
+                'AVATAR_ONLY': 'avatar-only',
               };
               const frontendStyle = styleMap[project.style];
               if (frontendStyle) {
@@ -186,13 +196,52 @@ function AIChatPageContent() {
             
             // Restore step and substeps
             if (project.metadata?.aiChatStep) {
-              setCurrentStep(project.metadata.aiChatStep as ChatStep);
+              const restoredStep = project.metadata.aiChatStep as ChatStep;
+              
+              // If restoring from workspace, navigate directly to workspace page
+              if (restoredStep === 'workspace') {
+                console.log('[AIChat] Restoring to workspace, navigating to workspace page');
+                router.replace(`/create-video/workspace?projectId=${project.id}`);
+                return; // Don't restore to workspace step in chat
+              }
+              
+              // Check if we're restoring from audio-image-generation step
+              // If generation is already complete, navigate to workspace instead
+              if (restoredStep === 'audio-image-generation') {
+                const hasAudio = project.audioFiles && Array.isArray(project.audioFiles) && project.audioFiles.length > 0;
+                const hasImages = project.bRollImages && Array.isArray(project.bRollImages) && project.bRollImages.length > 0;
+                const scriptScenes = project.script 
+                  ? (typeof project.script === 'string' ? JSON.parse(project.script) : project.script)
+                  : null;
+                const expectedSceneCount = scriptScenes?.scenes?.length || 0;
+                const actualImageCount = project.bRollImages?.length || 0;
+                
+                // If both audio and images exist (and images match scene count), generation is complete
+                if (hasAudio && hasImages && actualImageCount >= expectedSceneCount) {
+                  console.log('[AIChat] Generation already complete, navigating to workspace');
+                  // Use router.replace instead of push to avoid back button issues
+                  router.replace(`/create-video/workspace?projectId=${project.id}`);
+                  return; // Don't restore to audio-image-generation step
+                } else {
+                  // Generation not complete, restore to style-selection with confirmed substep
+                  // This allows user to see what was selected and potentially go back
+                  console.log('[AIChat] Generation not complete, restoring to style-selection');
+                  setCurrentStep('style-selection');
+                  setStyleSubstep('confirmed');
+                }
+              } else {
+                // Set the step AFTER all other state is restored
+                setCurrentStep(restoredStep);
+              }
             }
             if (project.metadata?.aiChatAvatarSubstep) {
               setAvatarSubstep(project.metadata.aiChatAvatarSubstep as AvatarSubstep);
             }
             if (project.metadata?.aiChatVoiceSubstep) {
               setVoiceSubstep(project.metadata.aiChatVoiceSubstep as VoiceSubstep);
+            }
+            if (project.metadata?.aiChatStyleSubstep) {
+              setStyleSubstep(project.metadata.aiChatStyleSubstep as StyleSubstep);
             }
             
             showToast('Project resumed successfully', 'success');
@@ -252,7 +301,96 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep]);
+
+  // WebSocket effect for tracking generation progress
+  const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
+    onJobStatusUpdate: (update) => {
+      console.log('[AIChat] WebSocket update received:', {
+        jobId: update.jobId,
+        queueType: update.queueType,
+        state: update.state,
+        progress: update.progress,
+        audioJobId: audioJobIdRef.current,
+        imageJobIds: Array.from(imageJobIdsRef.current),
+        matchesAudio: update.queueType === 'audio-generation' && update.jobId === audioJobIdRef.current,
+        matchesImage: update.queueType === 'image-generation' && imageJobIdsRef.current.has(update.jobId),
+      });
+
+      if (update.queueType === 'audio-generation' && update.jobId === audioJobIdRef.current) {
+        console.log('[AIChat] Processing audio generation update:', update.state);
+        if (update.state === 'completed') {
+          setIsGeneratingVoice(false);
+          setGenerationProgress(prev => Math.min(prev + 50, 100));
+          if (audioJobIdRef.current) {
+            unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+            audioJobIdRef.current = null;
+          }
+        } else if (update.state === 'failed') {
+          setIsGeneratingVoice(false);
+          showToast('Voice generation failed', 'error');
+          if (audioJobIdRef.current) {
+            unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+            audioJobIdRef.current = null;
+          }
+        } else if (update.progress !== undefined) {
+          // Update progress for voice (0-50% range)
+          setGenerationProgress(update.progress * 0.5);
+        }
+      } else if (update.queueType === 'image-generation' && imageJobIdsRef.current.has(update.jobId)) {
+        console.log('[AIChat] Processing image generation update:', update.state, 'Remaining jobs:', imageJobIdsRef.current.size);
+        if (update.state === 'completed') {
+          imageJobIdsRef.current.delete(update.jobId);
+          if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
+            setIsGeneratingBroll(false);
+            setGenerationProgress(100);
+            // Navigate to workspace page after a brief delay
+            setTimeout(() => {
+              if (projectId) {
+                console.log('[AIChat] All generation complete, navigating to workspace');
+                router.push(`/create-video/workspace?projectId=${projectId}`);
+              }
+            }, 1000);
+          }
+        } else if (update.state === 'failed') {
+          imageJobIdsRef.current.delete(update.jobId);
+          showToast(`Image generation failed for a scene`, 'error');
+          if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
+            setIsGeneratingBroll(false);
+          }
+        } else if (update.progress !== undefined) {
+          // Update progress for images (50-100% range, distributed across all images)
+          const baseProgress = isGeneratingVoice ? 50 : 0;
+          const remainingJobs = imageJobIdsRef.current.size;
+          const imageProgress = remainingJobs > 0 
+            ? (update.progress / remainingJobs) * 50
+            : 0;
+          setGenerationProgress(baseProgress + imageProgress);
+        }
+      } else {
+        console.warn('[AIChat] WebSocket update received but not handled:', {
+          jobId: update.jobId,
+          queueType: update.queueType,
+          audioJobId: audioJobIdRef.current,
+          imageJobIds: Array.from(imageJobIdsRef.current),
+        });
+      }
+    },
+  });
+
+  // Cleanup WebSocket subscriptions on unmount or when generation completes
+  useEffect(() => {
+    if (!isGeneratingVoice && !isGeneratingBroll) {
+      if (audioJobIdRef.current) {
+        unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+        audioJobIdRef.current = null;
+      }
+      imageJobIdsRef.current.forEach(jobId => {
+        unsubscribeFromJob(jobId, 'image-generation');
+      });
+      imageJobIdsRef.current.clear();
+    }
+  }, [isGeneratingVoice, isGeneratingBroll, unsubscribeFromJob]);
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -967,37 +1105,123 @@ function AIChatPageContent() {
       return;
     }
     
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+
     // Map style to backend format
     const styleMap: Record<string, string> = {
       'half-n-half': 'HALF_N_HALF',
       'alternate': 'ALTERNATE',
       'avatar-cutout': 'AVATAR_CUTOUT',
+      'avatar-only': 'AVATAR_ONLY',
     };
     
-    // Update project if it exists
-    if (projectId) {
-      try {
-        await apiClient.updateVideoProject(projectId, {
-          style: styleMap[selectedVideoStyle] as any,
-          currentStep: 'STYLE_SELECTION', // For compatibility with old flow
-          metadata: {
-            generationFlow: 'AI_CHAT',
-            aiChatStep: 'style-selection',
-          },
-        });
-      } catch (error: any) {
-        console.error('Failed to save style to project:', error);
-        // Don't block navigation on save error
-      }
-    }
+    // Update project with selected style
+    try {
+      await apiClient.updateVideoProject(projectId, {
+        style: styleMap[selectedVideoStyle] as any,
+        currentStep: 'STYLE_SELECTION',
+        metadata: {
+          generationFlow: 'AI_CHAT',
+          aiChatStep: 'style-selection',
+          aiChatStyleSubstep: 'confirmed',
+        },
+      });
+
+    // First show the selected style confirmation
+    setStyleSubstep('confirmed');
     
-    // Store in sessionStorage for backward compatibility
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('videoCreationStyle', selectedVideoStyle);
+    // After 1.5 seconds, move to audio-image-generation step
+    setTimeout(async () => {
+      setCurrentStep('audio-image-generation');
+      setGenerationProgress(0);
+        
+        // Start voice generation
+        try {
+          setIsGeneratingVoice(true);
+          const audioResponse = await apiClient.generateAudio(projectId);
+          if (audioResponse.success && audioResponse.data?.jobId) {
+            audioJobIdRef.current = audioResponse.data.jobId;
+            console.log('[AIChat] Started audio generation, jobId:', audioResponse.data.jobId);
+            subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+          } else if (audioResponse.success && audioResponse.data?.existing) {
+            // Audio already exists, skip voice generation
+            setIsGeneratingVoice(false);
+            setGenerationProgress(50);
+          } else {
+            throw new Error('Failed to start voice generation');
+          }
+        } catch (error: any) {
+          console.error('Failed to generate audio:', error);
+          setIsGeneratingVoice(false);
+          showToast('Failed to start voice generation', 'error');
+        }
+
+        // Start broll image generation for all scenes
+        if (generatedScript && generatedScript.scenes) {
+          try {
+            setIsGeneratingBroll(true);
+            const scenes = generatedScript.scenes;
+            const promises = scenes.map(async (scene: any, index: number) => {
+              const sceneNumber = scene.scene_number || (index + 1);
+              const prompt = scene.broll || scene.prompt || '';
+              const modelId = 'model-1'; // Default model
+
+              try {
+                const imageResponse = await apiClient.regenerateImage(
+                  projectId,
+                  sceneNumber,
+                  prompt,
+                  modelId
+                );
+
+                if (imageResponse.success && imageResponse.data?.jobId) {
+                  imageJobIdsRef.current.add(imageResponse.data.jobId);
+                  console.log('[AIChat] Started image generation for scene', sceneNumber, 'jobId:', imageResponse.data.jobId, 'Total jobs:', imageJobIdsRef.current.size);
+                  subscribeToJob(imageResponse.data.jobId, 'image-generation');
+                } else if (imageResponse.success && imageResponse.data?.existing) {
+                  // Image already exists, skip
+                }
+              } catch (error: any) {
+                console.error(`Failed to generate image for scene ${sceneNumber}:`, error);
+              }
+            });
+
+            // Wait for all API calls to complete (they're non-blocking)
+            await Promise.all(promises);
+
+            // If no images needed generation and voice is done, navigate immediately
+            if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
+              setIsGeneratingBroll(false);
+              setGenerationProgress(100);
+              setTimeout(() => {
+                console.log('[AIChat] No images needed, navigating to workspace');
+                router.push(`/create-video/workspace?projectId=${projectId}`);
+              }, 1000);
+            }
+          } catch (error: any) {
+            console.error('Failed to start image generation:', error);
+            setIsGeneratingBroll(false);
+            showToast('Failed to start image generation', 'error');
+          }
+        } else {
+          // No script, just navigate if voice is done
+          if (!isGeneratingVoice) {
+            setIsGeneratingBroll(false);
+            setGenerationProgress(100);
+            setTimeout(() => {
+              console.log('[AIChat] No script, navigating to workspace');
+              router.push(`/create-video/workspace?projectId=${projectId}`);
+            }, 1000);
+          }
+        }
+      }, 1500);
+    } catch (error: any) {
+      console.error('Failed to save style to project:', error);
+      showToast('Failed to save style. Please try again.', 'error');
     }
-    
-    // Navigate to style page with selected style
-    router.push(`/create-video/style?style=${selectedVideoStyle}${projectId ? `&projectId=${projectId}` : ''}`);
   };
 
   // Auto-save current step and substeps to project metadata
@@ -1014,12 +1238,15 @@ function AIChatPageContent() {
       if (currentStep === 'voice-selection') {
         metadataUpdate.aiChatVoiceSubstep = voiceSubstep;
       }
+      if (currentStep === 'style-selection') {
+        metadataUpdate.aiChatStyleSubstep = styleSubstep;
+      }
       
       apiClient.updateVideoProject(projectId, {
         metadata: metadataUpdate,
       }).catch(err => console.error('Failed to save step progress:', err));
     }
-  }, [projectId, currentStep, avatarSubstep, voiceSubstep]);
+  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep]);
 
   // Auto-save avatar selection to project
   useEffect(() => {
@@ -1047,14 +1274,20 @@ function AIChatPageContent() {
         'half-n-half': 'HALF_N_HALF',
         'alternate': 'ALTERNATE',
         'avatar-cutout': 'AVATAR_CUTOUT',
+        'avatar-only': 'AVATAR_ONLY',
       };
       
       apiClient.updateVideoProject(projectId, {
         style: styleMap[selectedVideoStyle] as any,
         currentStep: 'STYLE_SELECTION', // For compatibility with old flow
+        metadata: {
+          generationFlow: 'AI_CHAT',
+          aiChatStep: 'style-selection',
+          aiChatStyleSubstep: styleSubstep,
+        },
       }).catch(err => console.error('Failed to save style:', err));
     }
-  }, [projectId, selectedVideoStyle, currentStep]);
+  }, [projectId, selectedVideoStyle, currentStep, styleSubstep]);
 
   // Format duration helper
   const formatDuration = (seconds: number): string => {
@@ -1153,10 +1386,33 @@ function AIChatPageContent() {
         setVoiceSubstep('question'); // Reset substep
       }
     } else if (currentStep === 'style-selection') {
-      // Go back to voice-selection step
-      setCurrentStep('voice-selection');
-      setVoiceSubstep('confirmed'); // Go back to voice confirmed state
-      setSelectedVideoStyle(null);
+      // Navigate back through substeps
+      if (styleSubstep === 'confirmed') {
+        // Go back to selection substep
+        setStyleSubstep('selection');
+      } else {
+        // Go back to voice-selection step (from 'selection' substep)
+        setCurrentStep('voice-selection');
+        setVoiceSubstep('confirmed'); // Go back to voice confirmed state
+        setSelectedVideoStyle(null);
+        setStyleSubstep('selection'); // Reset style substep
+      }
+    } else if (currentStep === 'audio-image-generation') {
+      // Go back to style-selection with confirmed substep
+      setCurrentStep('style-selection');
+      setStyleSubstep('confirmed');
+      // Stop generation if in progress
+      setIsGeneratingVoice(false);
+      setIsGeneratingBroll(false);
+      setGenerationProgress(0);
+      if (audioJobIdRef.current) {
+        unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+        audioJobIdRef.current = null;
+      }
+      imageJobIdsRef.current.forEach(jobId => {
+        unsubscribeFromJob(jobId, 'image-generation');
+      });
+      imageJobIdsRef.current.clear();
     } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {
       // Clear attached assets and script data, go back to asset-upload
       attachedAssets.forEach(asset => {
@@ -1195,6 +1451,8 @@ function AIChatPageContent() {
       case 'avatar-selection': return 4;
       case 'voice-selection': return 5;
       case 'style-selection': return 6;
+      case 'audio-image-generation': return 6; // Keep at 6 since workspace is a separate page
+      case 'workspace': return 6; // Keep at 6 since workspace is a separate page
       default: return 0;
     }
   };
@@ -1210,13 +1468,15 @@ function AIChatPageContent() {
       case 'avatar-selection': return "Choose your avatar style to bring the story to life.";
       case 'voice-selection': return "Time to give your avatar a voice.";
       case 'style-selection': return "You're almost done! Pick your video style...";
+      case 'audio-image-generation': return "Generating audio and images...";
+      case 'workspace': return "Your workspace is ready!";
       default: return "Let's kick things off!";
     }
   };
 
   // Helper function to check if a step has been reached (for cumulative rendering)
   const hasReachedStep = (step: ChatStep): boolean => {
-    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'voice-selection', 'style-selection'];
+    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'voice-selection', 'style-selection', 'audio-image-generation', 'workspace'];
     const currentIndex = stepOrder.indexOf(currentStep);
     const targetIndex = stepOrder.indexOf(step);
     return currentIndex >= targetIndex;
@@ -1237,6 +1497,12 @@ function AIChatPageContent() {
         const substepOrder: VoiceSubstep[] = ['question', 'selection', 'confirmed'];
         const targetIndex = substepOrder.indexOf(substep as VoiceSubstep);
         const currentIndex = substepOrder.indexOf(voiceSubstep);
+        return targetIndex !== -1 && currentIndex >= targetIndex;
+      }
+      case 'style-selection': {
+        const substepOrder: StyleSubstep[] = ['selection', 'confirmed'];
+        const targetIndex = substepOrder.indexOf(substep as StyleSubstep);
+        const currentIndex = substepOrder.indexOf(styleSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
       }
       default:
@@ -1298,7 +1564,7 @@ function AIChatPageContent() {
               </div>
               {/* Figma: height: 10px, gap: 6px */}
               <div className="flex flex-row items-center gap-[clamp(0.25rem,0.6vh,6px)] w-full h-[clamp(6px,0.98vh,10px)]">
-                {[0, 1, 2, 3, 4, 5].map((index) => (
+                {[0, 1, 2, 3, 4, 5, 6].map((index) => (
                   <div
                     key={index}
                     className={cn(
@@ -2589,7 +2855,7 @@ function AIChatPageContent() {
               )}
 
               {/* Proceed Button for Style Selection */}
-              {currentStep === 'style-selection' && selectedVideoStyle && (
+              {currentStep === 'style-selection' && selectedVideoStyle && styleSubstep === 'selection' && (
                 <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
                   <button
                     onClick={handleProceedWithStyle}
@@ -2609,6 +2875,87 @@ function AIChatPageContent() {
                     </span>
                   </button>
                 </div>
+              )}
+
+              {/* Selected Style Confirmation */}
+              {hasReachedSubstep('style-selection', 'confirmed') && selectedVideoStyle && (
+                <>
+                  {/* User message showing selected style */}
+                  <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                    <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(275px,21.4vw,275px)]">
+                      <span className="font-heading text-[clamp(1.125rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right">
+                        I want {selectedVideoStyle === 'half-n-half' ? 'Half-n-Half' : 
+                                selectedVideoStyle === 'avatar-only' ? 'Avatar Only' : 
+                                selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
+                                'Alternate'} visual style
+                      </span>
+                      
+                      {/* Selected style card preview */}
+                      <div className="flex flex-row justify-center items-center p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[12px] w-full">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                          <Image
+                            src={`/assets/style-${selectedVideoStyle === 'half-n-half' ? 'half-n-half' : 
+                                         selectedVideoStyle === 'avatar-only' ? 'avatar-only' : 
+                                         selectedVideoStyle === 'avatar-cutout' ? 'avatar-cutout' : 
+                                         'alternate'}.svg`}
+                            alt={selectedVideoStyle}
+                            width={120}
+                            height={160}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                        <div className="flex flex-col justify-center items-start gap-[clamp(0.125rem,0.2vh,2px)] flex-1 min-w-0">
+                          <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                            <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                              <Image
+                                src={`/assets/${selectedVideoStyle === 'avatar-cutout' ? 'fi_scissors' : 
+                                         selectedVideoStyle === 'alternate' ? 'u_sync' : 
+                                         'u_user-square'}.svg`}
+                                alt={selectedVideoStyle}
+                                width={24}
+                                height={24}
+                                className="w-full h-full"
+                              />
+                            </div>
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                              {selectedVideoStyle === 'half-n-half' ? 'Half-n-Half' : 
+                               selectedVideoStyle === 'avatar-only' ? 'Avatar Only' : 
+                               selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
+                               'Alternate'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Video Generation Step */}
+          {hasReachedStep('audio-image-generation') && (
+            <>
+              {/* Generating state with loader */}
+              {currentStep === 'audio-image-generation' && (
+                <>
+                  {/* AI message */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] text-center w-full">
+                      Perfect! We're stitching everything together — scenes, voice, avatar, effects… the whole magic potion. Sit tight for a moment... Your video is being crafted!
+                    </p>
+                  </div>
+
+                  {/* Progress loader */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                    <div className="flex flex-col items-start w-full px-[clamp(0.25rem,0.39vh,4px)] py-[clamp(0.25rem,0.39vh,4px)] bg-[#F6F6F6] rounded-[18px]">
+                      <div 
+                        className="flex flex-col justify-center items-center py-[clamp(0.25rem,0.39vh,4px)] px-[clamp(0.5rem,0.78vh,8px)] bg-[#E86412] rounded-[20px] transition-all duration-300"
+                        style={{ width: `${generationProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                </>
               )}
             </>
           )}
