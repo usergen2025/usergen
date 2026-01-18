@@ -29,6 +29,11 @@ interface VideoProject {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  metadata?: {
+    generationFlow?: string;
+    aiChatStep?: string;
+    [key: string]: any;
+  };
 }
 
 export default function ProjectsPage() {
@@ -126,7 +131,14 @@ export default function ProjectsPage() {
   };
 
   const handleContinue = (project: VideoProject) => {
-    // Use step configuration for route mapping (single source of truth)
+    // Check if this is an AI chat flow project
+    if (project.metadata?.generationFlow === 'AI_CHAT') {
+      // Route to AI chat page
+      router.push(`/create-video/ai-chat?projectId=${project.id}`);
+      return;
+    }
+    
+    // Old flow - use existing step mapping
     const stepToRouteMap = getStepToRouteMap();
     
     // Get route from step config, fallback to /create-video if step not found

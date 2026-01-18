@@ -127,7 +127,7 @@ function LoginPageContent() {
               router.push('/create-video/ai-chat');
             } else {
               // Otherwise, go to old style selection flow
-              router.push('/create-video/style');
+            router.push('/create-video/style');
             }
           } else if (redirectUrl === '/dashboard' || redirectUrl === '/dashboard/projects') {
             // Redirect to main projects page instead of dashboard
@@ -210,7 +210,7 @@ function LoginPageContent() {
             iconPosition="right"
             onIconClick={!otpSent && mobileEmail.trim() && !isLoading ? handleSendOtp : undefined}
           />
-          
+
           {otpSent && (
             <Input
               placeholder="One Time Password"
@@ -221,9 +221,9 @@ function LoginPageContent() {
               onChange={(e) => {
                 const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
                 setOtp(value);
-              }}
+                }}
               maxLength={6}
-              disabled={isLoading}
+                disabled={isLoading}
               className="text-center text-2xl tracking-widest font-mono mb-4"
               required
               autoFocus
@@ -262,14 +262,14 @@ function LoginPageContent() {
           </div>
 
           {!otpSent ? (
-            <Button 
-              type="submit" 
-              variant="primary" 
-              size="lg" 
-              fullWidth 
-              className="mt-6"
+          <Button 
+            type="submit" 
+            variant="primary" 
+            size="lg" 
+            fullWidth 
+            className="mt-6"
               disabled={isLoading}
-            >
+          >
               {isLoading ? 'Sending...' : 'SEND OTP'}
             </Button>
           ) : (
@@ -283,7 +283,7 @@ function LoginPageContent() {
               onClick={handleVerifyOtp}
             >
               {isLoading ? 'Verifying...' : 'Login'}
-            </Button>
+          </Button>
           )}
 
           <div className="text-center">

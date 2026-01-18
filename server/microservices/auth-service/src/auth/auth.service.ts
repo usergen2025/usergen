@@ -85,6 +85,13 @@ export class AuthService {
     });
 
     if (existingUser) {
+      // If user exists with BRAND role, provide specific error
+      if (existingUser.role === UserRole.BRAND) {
+        throw new BadRequestException(
+          'This email is already registered as a Brand account. ' +
+          'Please use a different email or login with your existing Brand account.'
+        );
+      }
       throw new BadRequestException('User with this email already exists');
     }
 
@@ -392,8 +399,8 @@ export class AuthService {
     }
   }
 
-  async verifyOtp(verifyOtpDto: VerifyOtpDto & { name?: string; mobile?: string }): Promise<{ user?: User; tokens?: any }> {
-    const { email, otp, type, name, mobile } = verifyOtpDto;
+  async verifyOtp(verifyOtpDto: VerifyOtpDto & { name?: string; mobile?: string; brandName?: string; brandDescription?: string; brandLogo?: string; brandWebsite?: string; role?: UserRole }): Promise<{ user?: User; tokens?: any }> {
+    const { email, otp, type, name, mobile, brandName, brandDescription, brandLogo, brandWebsite, role } = verifyOtpDto;
 
     this.logger.log(`🔐 Verifying OTP for ${email} (type: ${type})`, 'AuthService');
 
@@ -453,6 +460,9 @@ export class AuthService {
         where: { email },
       });
 
+      // Determine user role - default to USER unless explicitly set to BRAND
+      const userRole = role || UserRole.USER;
+
       if (!user && name) {
         // Create new user for OTP-based registration
         user = await this.databaseService.user.create({
@@ -461,26 +471,47 @@ export class AuthService {
             email,
             mobile,
             credits: 100,
-            role: UserRole.USER,
+            role: userRole,
             isEmailVerified: true, // Already verified via OTP
             isActive: true,
+            // Brand-specific fields (only set if role is BRAND)
+            ...(userRole === UserRole.BRAND && {
+              brandName: brandName || name,
+              brandDescription,
+              brandLogo,
+              brandWebsite,
+            }),
           },
         });
 
         // Generate tokens for newly created user
         const tokens = await this.generateTokens(user);
 
-        this.logger.log(`User registered via OTP: ${email}`, 'AuthService');
+        this.logger.log(`User registered via OTP: ${email} (role: ${userRole})`, 'AuthService');
         return { user, tokens };
       } else if (user) {
-        // User exists, just verify email
+        // User exists - validate that the role matches
+        if (user.role !== userRole) {
+          const roleDisplayName = user.role === UserRole.BRAND ? 'Brand' : user.role === UserRole.USER ? 'User' : user.role;
+          const requestedRoleDisplayName = userRole === UserRole.BRAND ? 'Brand' : userRole === UserRole.USER ? 'User' : userRole;
+          throw new BadRequestException(
+            `This email is already registered as a ${roleDisplayName} account. ` +
+            `You cannot register the same email as a ${requestedRoleDisplayName}. ` +
+            `Please use a different email or login with your existing account.`
+          );
+        }
+        
+        // User exists with same role, just verify email
         await this.databaseService.user.update({
           where: { email },
           data: { isEmailVerified: true },
         });
 
-        this.logger.log(`Email verified via OTP: ${email}`, 'AuthService');
-        return {};
+        // Generate tokens for login
+        const tokens = await this.generateTokens(user);
+
+        this.logger.log(`Email verified for existing user: ${email}`, 'AuthService');
+        return { user, tokens };
       } else {
         throw new BadRequestException('Name is required for registration');
       }

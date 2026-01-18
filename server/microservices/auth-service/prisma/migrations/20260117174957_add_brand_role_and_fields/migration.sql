@@ -1,0 +1,9 @@
+-- AlterEnum
+ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'BRAND';
+
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandName" TEXT;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandDescription" TEXT;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandLogo" TEXT;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandWebsite" TEXT;
+

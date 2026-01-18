@@ -1,0 +1,151 @@
+<svg width="130" height="170" viewBox="0 0 130 170" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="3.32764" y="0.5" width="124" height="169" rx="7.5" stroke="white"/>
+
+  <!-- Top Half -->
+  <g filter="url(#filter0_d_halfnhalf)">
+    <rect x="35.1736" y="19" width="59.6491" height="38.1754" rx="10" fill="url(#paint0_linear_halfnhalf)"/>
+  </g>
+
+  <foreignObject x="18.5736" y="13.8828" width="91.6362" height="64.4961">
+    <div xmlns="http://www.w3.org/1999/xhtml"
+      style="backdrop-filter:blur(2px);
+             clip-path:url(#bgblur_0_halfnhalf_clip_path);
+             height:100%;width:100%">
+    </div>
+  </foreignObject>
+
+  <g filter="url(#filter1_d_halfnhalf)" data-figma-bg-blur-radius="4">
+    <path d="M50.574 30.7773L34.1792 57.2739C32.5304 59.9387 34.4471 63.3786 37.5807 63.3786H91.2042C94.3419 63.3786 96.2579 59.9308 94.601 57.2663L84.1722 40.4957C82.5999 37.9672 78.9149 37.9815 77.3623 40.5222L73.687 46.5363C72.1211 49.0988 68.395 49.0861 66.8466 46.513L57.4028 30.8195C55.8594 28.2547 52.149 28.2318 50.574 30.7773Z"
+      fill="url(#paint1_linear_halfnhalf)" fill-opacity="0.4" shape-rendering="crispEdges"/>
+    <path d="M51.4244 31.3037C52.6056 29.3947 55.3878 29.4117 56.5455 31.335L65.9898 47.0283C67.9254 50.2447 72.5832 50.2607 74.5406 47.0576L78.2154 41.0439C79.3798 39.1386 82.1435 39.1274 83.3228 41.0234L93.7515 57.7939C94.9942 59.7922 93.5577 62.3786 91.2047 62.3789H37.5806C35.2305 62.3789 33.7932 59.7984 35.0299 57.7998L51.4244 31.3037Z"
+      stroke="#FFD4B8" stroke-opacity="0.4" stroke-width="2" shape-rendering="crispEdges"/>
+  </g>
+
+  <g filter="url(#filter2_d_halfnhalf)">
+    <circle cx="73.1101" cy="30.2137" r="5.01053" fill="white"/>
+  </g>
+
+  <!-- Divider -->
+  <line x1="3.82764" y1="85" x2="126.672" y2="85" stroke="white" stroke-width="2" stroke-opacity="0.3"/>
+
+  <!-- Avatar Body (FIXED) -->
+  <g filter="url(#filter6_d_halfnhalf)">
+    <path d="
+      M88 153
+      C91.5 153 94.5 150.2 93.7 146.9
+      C92.5 141.8 90 137.1 86.4 133.5
+      C81.1 128.2 74.1 127 65 127
+      C55.9 127 48.9 128.2 43.6 133.5
+      C40 137.1 37.5 141.8 36.3 146.9
+      C35.5 150.2 38.5 153 42 153
+      Z"
+      fill="url(#paint4_linear_halfnhalf)"/>
+  </g>
+
+  <!-- Avatar Head -->
+  <foreignObject x="33.5" y="88" width="63" height="63">
+    <div xmlns="http://www.w3.org/1999/xhtml"
+      style="backdrop-filter:blur(2px);
+             clip-path:url(#bgblur_1_halfnhalf_clip_path);
+             height:100%;width:100%">
+    </div>
+  </foreignObject>
+
+  <g filter="url(#filter3_d_halfnhalf)" data-figma-bg-blur-radius="4">
+    <circle cx="65" cy="119" r="16" fill="url(#paint2_linear_halfnhalf)" fill-opacity="0.4"/>
+    <circle cx="65" cy="119" r="15" stroke="#FFD4B8" stroke-opacity="0.4" stroke-width="2"/>
+  </g>
+
+  <!-- Smile -->
+  <g filter="url(#filter4_d_halfnhalf)">
+    <path d="M58.5272 123.637C58.1266 123.929 58.0352 124.495 58.3654 124.865C59.1056 125.695 59.9951 126.383 60.99 126.889C62.2523 127.532 63.6484 127.866 65.0643 127.865C66.4802 127.863 67.8756 127.526 69.1365 126.881C70.1304 126.372 71.0185 125.683 71.757 124.851C72.0864 124.48 71.9938 123.915 71.5926 123.623C71.1914 123.332 70.6342 123.426 70.2956 123.789C69.7297 124.395 69.0618 124.9 68.3202 125.279C67.3115 125.796 66.1952 126.066 65.0624 126.067C63.9297 126.068 62.8128 125.8 61.803 125.286C61.0607 124.908 60.3917 124.404 59.8245 123.8C59.4852 123.438 58.9278 123.345 58.5272 123.637Z"
+      fill="white"/>
+  </g>
+
+  <defs>
+    <filter id="filter0_d_halfnhalf" x="20.1736" y="4" width="89.6492" height="68.1758" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="7.5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.94902 0 0 0 0 0.494118 0 0 0 0 0.207843 0 0 0 0.5 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_halfnhalf"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_halfnhalf" result="shape"/>
+    </filter>
+
+    <filter id="filter1_d_halfnhalf" x="18.5736" y="13.8828" width="91.6362" height="64.4961" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="7.5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.94902 0 0 0 0 0.494118 0 0 0 0 0.207843 0 0 0 0.5 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_halfnhalf"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_halfnhalf" result="shape"/>
+    </filter>
+
+    <clipPath id="bgblur_0_halfnhalf_clip_path" transform="translate(-18.5736 -13.8828)">
+      <path d="M50.574 30.7773L34.1792 57.2739C32.5304 59.9387 34.4471 63.3786 37.5807 63.3786H91.2042C94.3419 63.3786 96.2579 59.9308 94.601 57.2663L84.1722 40.4957C82.5999 37.9672 78.9149 37.9815 77.3623 40.5222L73.687 46.5363C72.1211 49.0988 68.395 49.0861 66.8466 46.513L57.4028 30.8195C55.8594 28.2547 52.149 28.2318 50.574 30.7773Z"/>
+    </clipPath>
+
+    <filter id="filter2_d_halfnhalf" x="63.0996" y="20.2031" width="20.021" height="20.0215" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feMorphology radius="5" operator="dilate" in="SourceAlpha" result="effect1_dropShadow_halfnhalf"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="7.5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.94902 0 0 0 0 0.494118 0 0 0 0 0.207843 0 0 0 0.5 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_halfnhalf"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_halfnhalf" result="shape"/>
+    </filter>
+
+    <filter id="filter3_d_halfnhalf" x="33.5" y="88" width="63" height="63" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="7.5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.94902 0 0 0 0 0.494118 0 0 0 0 0.207843 0 0 0 0.5 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_halfnhalf"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_halfnhalf" result="shape"/>
+    </filter>
+
+    <clipPath id="bgblur_1_halfnhalf_clip_path" transform="translate(-33.5 -88)">
+      <circle cx="65" cy="119" r="16"/>
+    </clipPath>
+
+    <filter id="filter4_d_halfnhalf" x="37.6641" y="103.4512" width="54.7932" height="44.4141" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feMorphology radius="5" operator="dilate" in="SourceAlpha" result="effect1_dropShadow_halfnhalf"/>
+      <feOffset/>
+      <feGaussianBlur stdDeviation="7.5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.94902 0 0 0 0 0.494118 0 0 0 0 0.207843 0 0 0 0.5 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_halfnhalf"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_halfnhalf" result="shape"/>
+    </filter>
+
+    <linearGradient id="paint0_linear_halfnhalf" x1="65.09815" y1="19" x2="65.09815" y2="57.1754" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5874"/>
+      <stop offset="1" stop-color="#FFAC4C"/>
+    </linearGradient>
+
+    <linearGradient id="paint1_linear_halfnhalf" x1="64.50205" y1="25.2031" x2="64.50205" y2="63.3786" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5874"/>
+      <stop offset="1" stop-color="#FFAC4C"/>
+    </linearGradient>
+
+    <linearGradient id="paint2_linear_halfnhalf" x1="65" y1="103" x2="65" y2="135" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5874"/>
+      <stop offset="1" stop-color="#FFAC4C"/>
+    </linearGradient>
+
+    <linearGradient id="paint4_linear_halfnhalf" x1="59.13" y1="129.5" x2="59.13" y2="156" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5874"/>
+      <stop offset="1" stop-color="#FFAC4C"/>
+    </linearGradient>
+  </defs>
+</svg>

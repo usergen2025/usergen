@@ -11,14 +11,15 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   const pathname = usePathname();
   const isAuthPage = pathname === '/login' || pathname === '/signup';
   const isAIChatPage = pathname === '/create-video/ai-chat';
+  const isBrandRoute = pathname?.startsWith('/brand');
   
   // Don't show header on auth pages (they have overlay design)
   if (isAuthPage) {
     return null;
   }
   
-  // Use relative positioning for AI chat page to prevent overlap
-  const headerPosition = isAIChatPage ? 'relative' : position;
+  // Use relative positioning for AI chat page and brand routes to prevent overlap
+  const headerPosition = (isAIChatPage || isBrandRoute) ? 'relative' : position;
   
   return <Header position={headerPosition} />;
 }

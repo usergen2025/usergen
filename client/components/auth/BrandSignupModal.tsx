@@ -83,39 +83,27 @@ function BrandSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }: 
         otp,
         type: 'EMAIL_VERIFICATION',
         name: formData.brandName.trim(),
-        // Note: Brand description and logo would be sent separately if backend supports it
+        brandName: formData.brandName.trim(),
+        brandDescription: formData.brandDescription.trim(),
+        brandLogo: formData.logo.trim() || undefined,
+        role: 'BRAND',
       });
 
       if (response.data?.tokens && response.data.tokens.accessToken) {
-        login(response.data.tokens.accessToken);
+        const userData = response.data.user;
+        login(response.data.tokens.accessToken, false, userData);
         
         if (response.data.tokens.refreshToken) {
           localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
         }
 
-        showToast('Registration successful! Welcome to UserGen.ai', 'success');
+        showToast('Registration successful! Welcome to UserGen.ai FOR BRANDS', 'success');
         onClose();
         
         setTimeout(() => {
-          const finalRedirectUrl = redirectUrl || sessionStorage.getItem('pendingRedirect') || '/create-video/style';
-          const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
-          
-          // Clear the flag after checking
-          if (typeof window !== 'undefined') {
-            sessionStorage.removeItem('fromCreateVideo');
-          }
-          
-          if (finalRedirectUrl.includes('/create-video')) {
-            // If user came from "Create a Video" button, go to new chat flow
-            if (fromCreateVideo) {
-              router.push('/create-video/ai-chat');
-            } else {
-              // Otherwise, go to old style selection flow
-              router.push('/create-video/style');
-            }
-          } else {
-            router.push(finalRedirectUrl);
-          }
+          // Redirect brands to brand dashboard
+          const finalRedirectUrl = redirectUrl || sessionStorage.getItem('pendingRedirect') || '/brand/dashboard';
+          router.push(finalRedirectUrl);
         }, 500);
       } else {
         throw new Error('Invalid response from server');

@@ -22,15 +22,38 @@ const notifyListeners = () => {
   authState.listeners.forEach(listener => listener());
 };
 
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  credits?: number;
+}
+
 export function useAuth() {
   // Initialize with false to avoid SSR issues
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
     // Only check auth on client side
     if (typeof window !== 'undefined') {
-      setIsAuthenticated(checkAuth());
+      const authenticated = checkAuth();
+      setIsAuthenticated(authenticated);
+      
+      // Load user from localStorage if authenticated
+      if (authenticated) {
+        const userStr = localStorage.getItem('user');
+        if (userStr) {
+          try {
+            setUser(JSON.parse(userStr));
+          } catch (e) {
+            // Invalid JSON, ignore
+          }
+        }
+      }
+      
       setIsLoading(false);
     } else {
       setIsLoading(false);
@@ -71,7 +94,7 @@ export function useAuth() {
     };
   }, [isAuthenticated]);
 
-  const login = useCallback((token: string, useSession = false) => {
+  const login = useCallback((token: string, useSession = false, userData?: User) => {
     // Check if we're in the browser environment
     if (typeof window === 'undefined') {
       return;
@@ -81,6 +104,13 @@ export function useAuth() {
     } else {
       localStorage.setItem('authToken', token);
     }
+    
+    // Store user data if provided
+    if (userData) {
+      localStorage.setItem('user', JSON.stringify(userData));
+      setUser(userData);
+    }
+    
     notifyListeners();
   }, []);
 
@@ -91,9 +121,27 @@ export function useAuth() {
     }
     localStorage.removeItem('authToken');
     sessionStorage.removeItem('authToken');
+    localStorage.removeItem('user');
+    setUser(null);
     notifyListeners();
   }, []);
 
-  return { isAuthenticated, isLoading, login, logout };
+  const isBrand = useCallback(() => {
+    return user?.role === 'BRAND';
+  }, [user]);
+
+  const isCreator = useCallback(() => {
+    return user?.role === 'USER' || user?.role === 'AVATAR_CREATOR';
+  }, [user]);
+
+  return { 
+    isAuthenticated, 
+    isLoading, 
+    user,
+    login, 
+    logout,
+    isBrand,
+    isCreator,
+  };
 }
 

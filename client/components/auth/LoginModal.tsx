@@ -76,7 +76,8 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
       });
 
       if (response.data?.tokens && response.data.tokens.accessToken) {
-        login(response.data.tokens.accessToken);
+        const userData = response.data.user;
+        login(response.data.tokens.accessToken, false, userData);
         
         if (response.data.tokens.refreshToken) {
           localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
@@ -86,7 +87,17 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
         onClose();
         
         setTimeout(() => {
-          const finalRedirectUrl = redirectUrl || searchParams?.get('redirect') || sessionStorage.getItem('pendingRedirect') || '/';
+          // Determine redirect based on user role
+          const userRole = userData?.role;
+          let defaultRedirect = '/';
+          
+          if (userRole === 'BRAND') {
+            defaultRedirect = '/brand/dashboard';
+          } else if (userRole === 'USER' || userRole === 'AVATAR_CREATOR') {
+            defaultRedirect = '/dashboard';
+          }
+
+          const finalRedirectUrl = redirectUrl || searchParams?.get('redirect') || sessionStorage.getItem('pendingRedirect') || defaultRedirect;
           const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
           
           // Clear the flag after checking
@@ -94,7 +105,10 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
             sessionStorage.removeItem('fromCreateVideo');
           }
           
-          if (finalRedirectUrl.includes('/create-video')) {
+          // Brands don't use create-video flow
+          if (userRole === 'BRAND') {
+            router.push(finalRedirectUrl);
+          } else if (finalRedirectUrl.includes('/create-video')) {
             // If user came from "Create a Video" button, go to new chat flow
             if (fromCreateVideo) {
               router.push('/create-video/ai-chat');
