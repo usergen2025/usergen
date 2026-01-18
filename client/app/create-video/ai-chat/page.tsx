@@ -1,13 +1,14 @@
 'use client';
 
 import { useState, useEffect, useRef, Suspense } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, X } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
 import { useToast } from '@/lib/toast/toast';
+import { VideoStyle } from '@/types';
 
 // Define asset types
 interface Asset {
@@ -20,7 +21,7 @@ interface Asset {
 }
 
 // Define chat flow steps
-type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection';
+type ChatStep = 'welcome' | 'option-selected' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'style-selection';
 
 // Define substeps for multi-stage steps
 type AvatarSubstep = 'question' | 'selection' | 'confirmed';
@@ -28,6 +29,7 @@ type VoiceSubstep = 'question' | 'selection' | 'confirmed';
 
 function AIChatPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
   const { showToast } = useToast();
   const [user, setUser] = useState<User | null>(null);
@@ -80,6 +82,8 @@ function AIChatPageContent() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
   const productImagesInputRef = useRef<HTMLInputElement>(null);
+  // Style selection state
+  const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
 
   // Fetch user profile when authenticated
   useEffect(() => {
@@ -103,6 +107,122 @@ function AIChatPageContent() {
       router.replace('/login?redirect=/create-video/ai-chat');
     }
   }, [isAuthenticated, isLoading, router]);
+
+  // Load project if projectId exists in URL (resume functionality)
+  useEffect(() => {
+    const loadProject = async () => {
+      const projectIdParam = searchParams.get('projectId');
+      if (!projectIdParam || !isAuthenticated || isLoading) return;
+      
+      // Don't reload if we already have this projectId loaded
+      if (projectId === projectIdParam) return;
+      
+      try {
+        const response = await apiClient.getVideoProject(projectIdParam);
+        if (response.success && response.data) {
+          const project = response.data;
+          
+          // Only restore if it's an AI chat flow project
+          if (project.metadata?.generationFlow === 'AI_CHAT') {
+            setProjectId(project.id);
+            
+            // Restore script
+            if (project.script) {
+              const script = typeof project.script === 'string' 
+                ? JSON.parse(project.script) 
+                : project.script;
+              setGeneratedScript(script);
+              
+              // Restore formatted script
+              if (project.metadata?.formattedScript) {
+                setFormattedScript(project.metadata.formattedScript);
+              }
+            }
+            
+            // Restore assets
+            if (project.metadata?.assets) {
+              const assets = typeof project.metadata.assets === 'string'
+                ? JSON.parse(project.metadata.assets)
+                : project.metadata.assets;
+              setAttachedAssets(assets || []);
+            }
+            
+            // Restore selected option
+            if (project.metadata?.selectedOption) {
+              setSelectedOption(project.metadata.selectedOption);
+            }
+            
+            // Restore user script message
+            if (project.metadata?.userScriptMessage) {
+              setUserScriptMessage(project.metadata.userScriptMessage);
+            }
+            
+            // Restore avatar
+            if (project.avatarId) {
+              setSelectedAvatarId(project.avatarId);
+              setAvatarPreference('yes');
+              setAvatarYesMessage(true);
+            }
+            
+            // Restore voice
+            if (project.voiceId) {
+              setSelectedVoiceId(project.voiceId);
+              setVoicePreference('yes');
+              setVoiceYesMessage(true);
+            }
+            
+            // Restore style
+            if (project.style) {
+              const styleMap: Record<string, VideoStyle> = {
+                'HALF_N_HALF': 'half-n-half',
+                'ALTERNATE': 'alternate',
+                'AVATAR_CUTOUT': 'avatar-cutout',
+              };
+              const frontendStyle = styleMap[project.style];
+              if (frontendStyle) {
+                setSelectedVideoStyle(frontendStyle);
+              }
+            }
+            
+            // Restore step and substeps
+            if (project.metadata?.aiChatStep) {
+              setCurrentStep(project.metadata.aiChatStep as ChatStep);
+            }
+            if (project.metadata?.aiChatAvatarSubstep) {
+              setAvatarSubstep(project.metadata.aiChatAvatarSubstep as AvatarSubstep);
+            }
+            if (project.metadata?.aiChatVoiceSubstep) {
+              setVoiceSubstep(project.metadata.aiChatVoiceSubstep as VoiceSubstep);
+            }
+            
+            showToast('Project resumed successfully', 'success');
+          } else {
+            // Not an AI chat project, redirect to old flow
+            showToast('This project uses the classic flow. Redirecting...', 'info');
+            router.push(`/create-video?projectId=${project.id}`);
+          }
+        }
+      } catch (error: any) {
+        console.error('Failed to load project:', error);
+        showToast('Failed to load project', 'error');
+      }
+    };
+    
+    loadProject();
+  }, [searchParams, isAuthenticated, isLoading, projectId, router]);
+
+  // Load avatars/voices when resuming to selection substeps (after project is loaded)
+  useEffect(() => {
+    if (projectId && currentStep === 'avatar-selection' && avatarSubstep === 'selection' && avatars.length === 0 && avatarYesMessage) {
+      loadAvatars(activeAvatarTab);
+    }
+  }, [projectId, currentStep, avatarSubstep, avatars.length, activeAvatarTab, avatarYesMessage]);
+
+  useEffect(() => {
+    if (projectId && currentStep === 'voice-selection' && voiceSubstep === 'selection' && voices.length === 0 && voiceYesMessage) {
+      loadVoices(activeVoiceTab);
+    }
+  }, [projectId, currentStep, voiceSubstep, voices.length, activeVoiceTab, voiceYesMessage]);
 
   // Auto-scroll to bottom on initial mount
   useEffect(() => {
@@ -132,7 +252,7 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle]);
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -765,14 +885,176 @@ function AIChatPageContent() {
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('selectedVoiceId', selectedVoiceId);
       }
-      // Show preview briefly, then navigate to style selection
+      // Show preview briefly, then move to style selection step
       setTimeout(() => {
-        router.push('/create-video/style');
-      }, 1500); // Show preview for 1.5 seconds before navigating
+        setCurrentStep('style-selection');
+      }, 1500); // Show preview for 1.5 seconds before moving to style selection
     } else {
       showToast('Please select a voice first', 'warning');
     }
   };
+
+  // Handle proceed to avatar selection (create project after script generation)
+  const handleProceedToAvatarSelection = async () => {
+    if (!generatedScript) {
+      showToast('Please generate a script first', 'warning');
+      return;
+    }
+
+    try {
+      // Map selectedOption to videoType (infer from avatar preference)
+      const videoType = avatarPreference === 'yes' ? 'WITH_AVATAR' : 'WITHOUT_AVATAR';
+      
+      // Map style if available (default to AVATAR_CUTOUT for script generation compatibility)
+      const styleMap: Record<string, string> = {
+        'half-n-half': 'HALF_N_HALF',
+        'alternate': 'ALTERNATE',
+        'avatar-cutout': 'AVATAR_CUTOUT',
+      };
+      
+      const createResponse = await apiClient.createVideoProject({
+        videoType: videoType || 'WITHOUT_AVATAR',
+        script: JSON.stringify(generatedScript),
+        scriptGenerated: true,
+        currentStep: 'SCRIPT', // Backend step for compatibility
+        style: 'AVATAR_CUTOUT', // Default, will be updated when user selects style
+        metadata: {
+          generationFlow: 'AI_CHAT',
+          aiChatStep: 'avatar-selection',
+          aiChatAvatarSubstep: 'question',
+          aiChatVoiceSubstep: 'question',
+          assets: JSON.stringify(attachedAssets),
+          formattedScript: formattedScript,
+          selectedOption: selectedOption,
+          userScriptMessage: userScriptMessage,
+        },
+        status: 'DRAFT',
+      });
+      
+      if (createResponse.success && createResponse.data) {
+        const newProjectId = createResponse.data.id;
+        setProjectId(newProjectId);
+        
+        // Update URL with projectId
+        router.replace(`/create-video/ai-chat?projectId=${newProjectId}`);
+        
+        // Clear sessionStorage now that we have a project
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem('pendingScriptData');
+          sessionStorage.removeItem('pendingScriptFormatted');
+          sessionStorage.removeItem('pendingUserPrompt');
+        }
+        
+        // Advance to avatar selection
+        setProceedConfirmed(true);
+        setCurrentStep('avatar-selection');
+        
+        showToast('Project saved successfully', 'success');
+      } else {
+        showToast('Failed to create project. Please try again.', 'error');
+      }
+    } catch (error: any) {
+      console.error('Failed to create project:', error);
+      const errorMessage = error.response?.data?.message || error.message || 'Failed to create project. Please try again.';
+      showToast(errorMessage, 'error');
+    }
+  };
+
+  // Handle proceed with selected style
+  const handleProceedWithStyle = async () => {
+    if (!selectedVideoStyle) {
+      showToast('Please select a video style first', 'warning');
+      return;
+    }
+    
+    // Map style to backend format
+    const styleMap: Record<string, string> = {
+      'half-n-half': 'HALF_N_HALF',
+      'alternate': 'ALTERNATE',
+      'avatar-cutout': 'AVATAR_CUTOUT',
+    };
+    
+    // Update project if it exists
+    if (projectId) {
+      try {
+        await apiClient.updateVideoProject(projectId, {
+          style: styleMap[selectedVideoStyle] as any,
+          currentStep: 'STYLE_SELECTION', // For compatibility with old flow
+          metadata: {
+            generationFlow: 'AI_CHAT',
+            aiChatStep: 'style-selection',
+          },
+        });
+      } catch (error: any) {
+        console.error('Failed to save style to project:', error);
+        // Don't block navigation on save error
+      }
+    }
+    
+    // Store in sessionStorage for backward compatibility
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('videoCreationStyle', selectedVideoStyle);
+    }
+    
+    // Navigate to style page with selected style
+    router.push(`/create-video/style?style=${selectedVideoStyle}${projectId ? `&projectId=${projectId}` : ''}`);
+  };
+
+  // Auto-save current step and substeps to project metadata
+  useEffect(() => {
+    if (projectId && currentStep !== 'welcome' && currentStep !== 'option-selected' && currentStep !== 'asset-upload' && currentStep !== 'assets-attached' && currentStep !== 'script-input') {
+      const metadataUpdate: any = {
+        generationFlow: 'AI_CHAT',
+        aiChatStep: currentStep,
+      };
+      
+      if (currentStep === 'avatar-selection') {
+        metadataUpdate.aiChatAvatarSubstep = avatarSubstep;
+      }
+      if (currentStep === 'voice-selection') {
+        metadataUpdate.aiChatVoiceSubstep = voiceSubstep;
+      }
+      
+      apiClient.updateVideoProject(projectId, {
+        metadata: metadataUpdate,
+      }).catch(err => console.error('Failed to save step progress:', err));
+    }
+  }, [projectId, currentStep, avatarSubstep, voiceSubstep]);
+
+  // Auto-save avatar selection to project
+  useEffect(() => {
+    if (projectId && selectedAvatarId && currentStep === 'avatar-selection') {
+      apiClient.updateVideoProject(projectId, {
+        avatarId: selectedAvatarId,
+      }).catch(err => console.error('Failed to save avatar:', err));
+    }
+  }, [projectId, selectedAvatarId, currentStep]);
+
+  // Auto-save voice selection to project
+  useEffect(() => {
+    if (projectId && selectedVoiceId && currentStep === 'voice-selection') {
+      apiClient.updateVideoProject(projectId, {
+        voiceId: selectedVoiceId,
+        voiceType: 'SYNTHETIC',
+      }).catch(err => console.error('Failed to save voice:', err));
+    }
+  }, [projectId, selectedVoiceId, currentStep]);
+
+  // Auto-save style selection to project
+  useEffect(() => {
+    if (projectId && selectedVideoStyle && currentStep === 'style-selection') {
+      const styleMap: Record<string, string> = {
+        'half-n-half': 'HALF_N_HALF',
+        'alternate': 'ALTERNATE',
+        'avatar-cutout': 'AVATAR_CUTOUT',
+      };
+      
+      apiClient.updateVideoProject(projectId, {
+        style: styleMap[selectedVideoStyle] as any,
+        currentStep: 'STYLE_SELECTION', // For compatibility with old flow
+      }).catch(err => console.error('Failed to save style:', err));
+    }
+  }, [projectId, selectedVideoStyle, currentStep]);
 
   // Format duration helper
   const formatDuration = (seconds: number): string => {
@@ -870,6 +1152,11 @@ function AIChatPageContent() {
         setCurrentStep('avatar-selection');
         setVoiceSubstep('question'); // Reset substep
       }
+    } else if (currentStep === 'style-selection') {
+      // Go back to voice-selection step
+      setCurrentStep('voice-selection');
+      setVoiceSubstep('confirmed'); // Go back to voice confirmed state
+      setSelectedVideoStyle(null);
     } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {
       // Clear attached assets and script data, go back to asset-upload
       attachedAssets.forEach(asset => {
@@ -907,6 +1194,7 @@ function AIChatPageContent() {
       case 'script-generated': return 3;
       case 'avatar-selection': return 4;
       case 'voice-selection': return 5;
+      case 'style-selection': return 6;
       default: return 0;
     }
   };
@@ -921,13 +1209,14 @@ function AIChatPageContent() {
       case 'script-generated': return "Nice! Your story is set.";
       case 'avatar-selection': return "Choose your avatar style to bring the story to life.";
       case 'voice-selection': return "Time to give your avatar a voice.";
+      case 'style-selection': return "You're almost done! Pick your video style...";
       default: return "Let's kick things off!";
     }
   };
 
   // Helper function to check if a step has been reached (for cumulative rendering)
   const hasReachedStep = (step: ChatStep): boolean => {
-    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'voice-selection'];
+    const stepOrder: ChatStep[] = ['welcome', 'option-selected', 'asset-upload', 'assets-attached', 'script-input', 'script-generated', 'avatar-selection', 'voice-selection', 'style-selection'];
     const currentIndex = stepOrder.indexOf(currentStep);
     const targetIndex = stepOrder.indexOf(step);
     return currentIndex >= targetIndex;
@@ -2124,6 +2413,206 @@ function AIChatPageContent() {
             );
           })()}
 
+          {/* Style Selection Step */}
+          {hasReachedStep('style-selection') && (
+            <>
+              {/* AI Message - "Great now your video has a voice, last question..." */}
+              <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                  Great now your video has a voice, last question... How would you like your video to be?
+                </p>
+              </div>
+
+              {/* Style Selection Cards */}
+              {currentStep === 'style-selection' && (
+                <div className="flex flex-row items-center gap-[clamp(0.75rem,1.56vh,16px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full flex-wrap sm:flex-nowrap pl-[clamp(0.5rem,1vw,16px)]">
+                  {/* Half-n-Half Card */}
+                  <button
+                    onClick={() => setSelectedVideoStyle('half-n-half')}
+                    className={cn(
+                      "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                      selectedVideoStyle === 'half-n-half' ? "p-[2px]" : "p-0"
+                    )}
+                    style={selectedVideoStyle === 'half-n-half' ? {
+                      background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                    } : {}}
+                  >
+                    <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      {/* Illustration */}
+                      <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <Image
+                          src="/assets/style-half-n-half.svg"
+                          alt="Half-n-Half"
+                          width={120}
+                          height={160}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+                      {/* Label */}
+                      <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_user-square.svg"
+                            alt="Half-n-Half"
+                            width={24}
+                            height={24}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          Half-n-Half
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Avatar Only Card */}
+                  <button
+                    onClick={() => setSelectedVideoStyle('avatar-cutout')}
+                    className={cn(
+                      "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                      selectedVideoStyle === 'avatar-cutout' ? "p-[2px]" : "p-0"
+                    )}
+                    style={selectedVideoStyle === 'avatar-cutout' ? {
+                      background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                    } : {}}
+                  >
+                    <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      {/* Illustration */}
+                      <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <Image
+                          src="/assets/style-avatar-only.svg"
+                          alt="Avatar Only"
+                          width={120}
+                          height={160}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+                      {/* Label */}
+                      <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_user-square.svg"
+                            alt="Avatar Only"
+                            width={24}
+                            height={24}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          Avatar Only
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Avatar Cut-out Card */}
+                  <button
+                    onClick={() => setSelectedVideoStyle('avatar-cutout')}
+                    className={cn(
+                      "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                      selectedVideoStyle === 'avatar-cutout' ? "p-[2px]" : "p-0"
+                    )}
+                    style={selectedVideoStyle === 'avatar-cutout' ? {
+                      background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                    } : {}}
+                  >
+                    <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      {/* Illustration */}
+                      <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <Image
+                          src="/assets/style-avatar-cutout.svg"
+                          alt="Avatar Cut-out"
+                          width={120}
+                          height={160}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+                      {/* Label */}
+                      <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/fi_scissors.svg"
+                            alt="Avatar Cut-out"
+                            width={24}
+                            height={24}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          Avatar Cut-out
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Alternate Card */}
+                  <button
+                    onClick={() => setSelectedVideoStyle('alternate')}
+                    className={cn(
+                      "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                      selectedVideoStyle === 'alternate' ? "p-[2px]" : "p-0"
+                    )}
+                    style={selectedVideoStyle === 'alternate' ? {
+                      background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                    } : {}}
+                  >
+                    <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      {/* Illustration */}
+                      <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <Image
+                          src="/assets/style-alternate.svg"
+                          alt="Alternate"
+                          width={120}
+                          height={160}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+                      {/* Label */}
+                      <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_sync.svg"
+                            alt="Alternate"
+                            width={24}
+                            height={24}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          Alternate
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              {/* Proceed Button for Style Selection */}
+              {currentStep === 'style-selection' && selectedVideoStyle && (
+                <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                  <button
+                    onClick={handleProceedWithStyle}
+                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                  >
+                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                      <Image
+                        src="/assets/u_arrow-right.svg"
+                        alt="Proceed"
+                        width={12}
+                        height={12}
+                        className="w-fit"
+                      />
+                    </div>
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                      Proceed
+                    </span>
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
           </div>
 
           {/* Regenerate and Proceed Buttons - Outside scrollable container to ensure visibility */}
@@ -2155,11 +2644,7 @@ function AIChatPageContent() {
 
                 {/* Proceed Button */}
                 <button
-                  onClick={() => {
-                    // Show user confirmation message and advance to avatar selection step
-                    setProceedConfirmed(true);
-                    setCurrentStep('avatar-selection');
-                  }}
+                  onClick={handleProceedToAvatarSelection}
                   className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.625rem,1.17vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
                 >
                   <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
