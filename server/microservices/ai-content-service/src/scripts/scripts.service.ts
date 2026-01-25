@@ -20,11 +20,14 @@ export interface ScriptGenerationResponse {
 
 export interface VideoScriptGenerationRequest {
   userPrompt: string;
-  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
   duration?: string; // e.g., "30 seconds", "1 minute"
   language?: 'english' | 'hindi' | 'hinglish';
   tags?: string[]; // Optional tags for visual style guidance
   projectId?: string;
+  productImageUrl?: string; // URL of the product image uploaded by user
+  hasAvatar?: boolean; // Whether an avatar is being used
+  avatarId?: string; // ID of the selected avatar (if any)
 }
 
 export interface VideoScriptGenerationResponse {
@@ -37,7 +40,7 @@ export interface VideoScriptGenerationResponse {
 
 export interface SceneRegenerationRequest {
   sceneNumber: number;
-  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
   existingScript: any; // Full script for context
   originalUserPrompt: string; // Original prompt for context
   operation: 'regenerate' | 'edit';
@@ -126,8 +129,14 @@ export class ScriptsService {
         throw new Error('OpenAI API key is not configured');
       }
 
-      // Get the system prompt based on video style, language, and tags
-      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language, tags);
+      // Get the system prompt based on video style, language, tags, product image, and avatar info
+      const systemPrompt = this.getSystemPromptForStyle(
+        request.videoStyle, 
+        language, 
+        tags,
+        request.productImageUrl,
+        request.hasAvatar
+      );
       
       // Build user prompt with duration
       const duration = request.duration || '30 seconds';
@@ -207,7 +216,7 @@ export class ScriptsService {
       }
 
       // Get system prompt (same as script generation to maintain consistency)
-      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language);
+      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language, [], undefined, undefined);
       
       // Build conversation history for context
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -607,7 +616,13 @@ The visual_style_guide you create should be a synthesis of these tag preferences
   /**
    * Get system prompt based on video style, language, and tags
    */
-  private getSystemPromptForStyle(style: string, language: 'english' | 'hindi' | 'hinglish' = 'hinglish', tags: string[] = []): string {
+  private getSystemPromptForStyle(
+    style: string, 
+    language: 'english' | 'hindi' | 'hinglish' = 'hinglish', 
+    tags: string[] = [],
+    productImageUrl?: string,
+    hasAvatar?: boolean
+  ): string {
     // Language-specific descriptions
     const languageDescriptions = {
       'english': {
@@ -895,6 +910,195 @@ Guidelines:
 - Each scene should be 4-6 seconds, and the total number of scenes must cover the full duration without gaps
 - Maintain consistency in avatar position and lighting.
 - VISUAL CONSISTENCY IS CRITICAL: All b-roll backgrounds must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+
+    'AVATAR_ONLY': `You are a professional video director creating avatar-only videos where an Indian-looking avatar delivers ${lang.dialogue} in a full-screen format.
+
+CRITICAL REQUIREMENTS:
+- Avatar must be prominently featured in every scene
+- No b-roll backgrounds - focus entirely on the avatar
+- Avatar should deliver engaging ${lang.dialogue}
+- Visual style must be consistent
+
+Output Requirements:
+
+Video Duration and Scene Planning (CRITICAL):
+- Each scene should be 4-6 seconds long for natural pacing
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+
+IMPORTANT: You must return your response as a valid JSON object.
+
+Structure Your Output in This JSON Format:
+{
+  "video_type": "Avatar Only",
+  "duration": "30 seconds",
+  "visual_style_guide": {
+    "color_palette": "Describe the consistent color scheme",
+    "lighting": "Avatar-focused lighting",
+    "mood": "Engaging presentation mood",
+    "camera_style": "Avatar cinematography",
+    "time_of_day": "Specify consistent time",
+    "visual_tone": "Professional avatar presentation"
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "time_range": "0-5s",
+      "voiceover": "${lang.example}",
+      "avatar_action": "Describe avatar's expression and delivery",
+      "avatar_motion": "nod", "smile", "gesture", etc.
+    }
+  ],
+  "notes": "Avatar-only video - no b-roll"
+}
+
+Guidelines:
+- ${lang.instruction}
+- Keep pacing aligned with the requested duration.
+- VISUAL CONSISTENCY IS CRITICAL: All scenes must maintain consistent avatar presentation style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+
+    'PRODUCT_ONLY': `You are a professional product video director who creates product showcase video scripts. The video will feature ONLY the product (no avatar, no human presenter, no person).
+
+CRITICAL REQUIREMENTS:
+- NO avatar, NO human, NO person in any scene
+- Focus entirely on the product
+- Product image will be provided by the user${productImageUrl ? ` (URL: ${productImageUrl})` : ''}
+- All b-roll should showcase the product from different angles, contexts, and uses
+- Visual style must be consistent across all scenes
+
+Output Requirements:
+
+Video Duration and Scene Planning (CRITICAL):
+- Each scene should be 4-6 seconds long for natural pacing
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+
+IMPORTANT: You must return your response as a valid JSON object.
+
+Structure Your Output in This JSON Format:
+{
+  "video_type": "Product Only",
+  "duration": "30 seconds",
+  "product_focus": true,
+  "visual_style_guide": {
+    "color_palette": "Describe the consistent color scheme (product-focused)",
+    "lighting": "Product-focused lighting (studio, natural, etc.)",
+    "mood": "Product showcase mood (engaging, professional, etc.)",
+    "camera_style": "Product cinematography (close-ups, 360 views, etc.)",
+    "time_of_day": "Specify consistent time",
+    "visual_tone": "Professional product presentation"
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "time_range": "0-5s",
+      "voiceover": "${lang.example}",
+      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person",
+      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
+    }
+  ],
+  "notes": "Product showcase video - no avatar or human elements"
+}
+
+CRITICAL PROMPT GENERATION RULES:
+1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
+2. Focus on product angles, features, uses, and contexts
+3. Create engaging product-focused visuals
+4. Maintain visual consistency across all scenes
+5. FIRST, determine the visual_style_guide based on the user's topic/idea
+6. The visual_style_guide MUST be consistent across ALL scenes
+7. EVERY broll_image_prompt MUST start with the visual style parameters in this exact format:
+   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description] [CRITICAL: NO human, NO avatar, NO person in image]"
+8. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+
+Guidelines:
+- All visuals should focus on the product
+- ${lang.instruction}
+- Keep pacing aligned with the requested duration.
+- VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+
+    'AVATAR_PRODUCT': `You are a professional video director creating product advertisement videos featuring a presenter (avatar or auto-generated person) showcasing a product.
+
+The video will feature:
+- A presenter (${hasAvatar ? 'user-selected avatar' : 'auto-generated person'}) interacting with the product
+- Product image uploaded by the user${productImageUrl ? ` (URL: ${productImageUrl})` : ''}
+- Engaging product demonstration and advertisement
+
+CRITICAL REQUIREMENTS:
+- Product must be prominently featured in every scene
+- Presenter (avatar or person) should interact with the product naturally
+- Create engaging product demonstration scenarios
+- Visual style must be consistent
+
+Output Requirements:
+
+Video Duration and Scene Planning (CRITICAL):
+- Each scene should be 4-6 seconds long for natural pacing
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+
+IMPORTANT: You must return your response as a valid JSON object.
+
+Structure Your Output in This JSON Format:
+{
+  "video_type": "Avatar with Product",
+  "duration": "30 seconds",
+  "product_focus": true,
+  "visual_style_guide": {
+    "color_palette": "Describe the consistent color scheme",
+    "lighting": "Product + presenter lighting",
+    "mood": "Engaging product advertisement mood",
+    "camera_style": "Product demonstration cinematography",
+    "time_of_day": "Specify consistent time",
+    "visual_tone": "Professional product advertisement"
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "time_range": "0-5s",
+      "voiceover": "${lang.example}",
+      "broll_visual_description": "Presenter (avatar or person) showcasing/using the product",
+      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product with motion]",
+      "avatar_action": "Presenter showcasing the product...",
+      "avatar_motion": "point", "hold", "demonstrate", etc.
+    }
+  ],
+  "notes": "Product advertisement with presenter"
+}
+
+CRITICAL PROMPT GENERATION RULES:
+1. Product must be visible and prominent in every scene
+2. Presenter must interact with product naturally
+3. Create engaging product demonstration scenarios
+4. Maintain visual consistency across all scenes
+5. FIRST, determine the visual_style_guide based on the user's topic/idea
+6. The visual_style_guide MUST be consistent across ALL scenes
+7. EVERY broll_image_prompt MUST start with the visual style parameters in this exact format:
+   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]"
+8. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+
+Guidelines:
+- All visuals should feature product + presenter interaction
+- ${lang.instruction}
+- Keep pacing aligned with the requested duration.
+- VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
   };
 
   return prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
