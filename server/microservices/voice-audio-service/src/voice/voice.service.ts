@@ -4,7 +4,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { ElevenLabsProvider, ElevenLabsVoice, GenerateSpeechRequest } from './providers/elevenlabs.provider';
+import { PublicUrlService } from '../common/storage/public-url.service';
 import type { Multer } from 'multer';
+
+/**
+ * Extended result type that includes GCS URL
+ */
+export interface AudioFileResult {
+  filePath: string;
+  localUrl: string;
+  duration?: number;
+  gcsUrl?: string;
+  publicUrl?: string;
+}
 
 @Injectable()
 export class VoiceService {
@@ -14,6 +26,7 @@ export class VoiceService {
   constructor(
     private readonly elevenLabsProvider: ElevenLabsProvider,
     private readonly configService: ConfigService,
+    private readonly publicUrlService: PublicUrlService,
   ) {
     // Create uploads directory for storing generated audio files
     this.uploadsDir = path.join(process.cwd(), 'uploads', 'audio');
@@ -90,7 +103,7 @@ export class VoiceService {
 
   /**
    * Generate speech audio file from text
-   * Returns the local file path of the saved audio
+   * Returns the local file path of the saved audio with optional GCS URL
    */
   async generateSpeechAudio(
     voiceId: string,
@@ -108,7 +121,7 @@ export class VoiceService {
         speed?: number;
       };
     }
-  ): Promise<{ filePath: string; localUrl: string; duration?: number }> {
+  ): Promise<AudioFileResult> {
     // Create user-specific directory
     const userDir = path.join(this.uploadsDir, userId);
     if (!fs.existsSync(userDir)) {
@@ -145,10 +158,30 @@ export class VoiceService {
       // Duration will be undefined, caller can handle it
     }
 
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string | undefined;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        filePath,
+        `audio/${userId}`,
+        outputFilename,
+        'audio/mpeg'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+    } catch (error: any) {
+      console.warn(`[VoiceService] GCS upload failed for ${outputFilename}: ${error.message}`);
+      // Fall back to local URL
+      publicUrl = localUrl;
+    }
+
     return {
       filePath,
       localUrl,
       duration,
+      gcsUrl,
+      publicUrl,
     };
   }
 
@@ -172,8 +205,8 @@ export class VoiceService {
         speed?: number;
       };
     }
-  ): Promise<Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number }>> {
-    const audioFiles: Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number }> = [];
+  ): Promise<Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number; gcsUrl?: string; publicUrl?: string }>> {
+    const audioFiles: Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number; gcsUrl?: string; publicUrl?: string }> = [];
 
     console.log(`[VoiceService] Generating audio for ${scenes.length} scenes for project ${projectId}`);
     console.log(`[VoiceService] Scenes:`, scenes.map(s => ({ sceneNumber: s.sceneNumber, voiceoverLength: s.voiceover.length })));
@@ -203,7 +236,7 @@ export class VoiceService {
           }
         );
 
-        console.log(`[VoiceService] Audio generated for scene ${scene.sceneNumber}: ${result.localUrl}, duration: ${result.duration}s`);
+        console.log(`[VoiceService] Audio generated for scene ${scene.sceneNumber}: ${result.localUrl}, duration: ${result.duration}s${result.gcsUrl ? ', GCS: ' + result.gcsUrl : ''}`);
 
         audioFiles.push({
           sceneNumber: scene.sceneNumber,
@@ -211,6 +244,8 @@ export class VoiceService {
           localUrl: result.localUrl,
           voiceover: scene.voiceover,
           duration: result.duration,
+          gcsUrl: result.gcsUrl,
+          publicUrl: result.publicUrl,
         });
       } catch (error: any) {
         console.error(`[VoiceService] Failed to generate audio for scene ${scene.sceneNumber}:`, error.message);
@@ -274,6 +309,8 @@ export class VoiceService {
     filename: string;
     mimetype: string;
     duration?: number;
+    gcsUrl?: string;
+    publicUrl?: string;
   }> {
     // Validate input file
     if (!audioFile || !audioFile.buffer) {
@@ -426,6 +463,23 @@ export class VoiceService {
 
     const localUrl = `/uploads/audio/cloned/${userId}/${path.basename(finalPath)}`;
 
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string | undefined;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalPath,
+        `cloned/${userId}`,
+        path.basename(finalPath),
+        finalMimetype
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+    } catch (error: any) {
+      console.warn(`[VoiceService] GCS upload failed for cloned audio: ${error.message}`);
+      publicUrl = localUrl;
+    }
+
     return {
       filePath: finalPath,
       localUrl,
@@ -433,6 +487,8 @@ export class VoiceService {
       filename: path.basename(finalPath),
       mimetype: finalMimetype,
       duration,
+      gcsUrl,
+      publicUrl,
     };
   }
 }
