@@ -10,6 +10,7 @@ export interface ImageGenerationRequest {
   resolution?: string; // "1K", "2K", "4K" (if supported)
   numImages?: number; // Default: 1
   outputFormat?: 'png' | 'jpeg' | 'webp'; // Default: 'png'
+  referenceImages?: string[]; // Array of image URLs for image-to-image generation (multi-reference support)
   additionalParams?: Record<string, any>; // Provider-specific
 }
 

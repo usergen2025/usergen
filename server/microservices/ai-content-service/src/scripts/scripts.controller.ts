@@ -1,11 +1,19 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
+import { Controller, Post, Body, Get, Param, HttpException, HttpStatus, UseInterceptors, UploadedFile, Request, ParseFilePipe, MaxFileSizeValidator } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import * as fs from 'fs';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { ScriptsService, ScriptGenerationRequest, VideoScriptGenerationRequest, SceneRegenerationRequest } from './scripts.service';
+import { PublicUrlService } from '../common/storage/public-url.service';
 
 @ApiTags('scripts')
 @Controller('scripts')
 export class ScriptsController {
-  constructor(private readonly scriptsService: ScriptsService) {}
+  constructor(
+    private readonly scriptsService: ScriptsService,
+    private readonly publicUrlService: PublicUrlService,
+  ) {}
 
   @Post('generate')
   @ApiOperation({ 
@@ -238,13 +246,33 @@ export class ScriptsController {
     }
   })
   async generateVideoScript(@Body() request: VideoScriptGenerationRequest) {
-    const result = await this.scriptsService.generateVideoScript(request);
-    return {
-      success: true,
-      data: result,
-      message: 'Video script generated successfully',
-      timestamp: new Date().toISOString(),
-    };
+    try {
+      const result = await this.scriptsService.generateVideoScript(request);
+      return {
+        success: true,
+        data: result,
+        message: 'Video script generated successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      // Log error for debugging
+      console.error('[ScriptsController] Error generating video script:', error);
+      
+      // Determine appropriate status code
+      const statusCode = error.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      const errorMessage = error.message || 'Failed to generate video script. Please try again.';
+      
+      // Throw HttpException with proper status code
+      throw new HttpException(
+        {
+          success: false,
+          message: errorMessage,
+          error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+          timestamp: new Date().toISOString(),
+        },
+        statusCode
+      );
+    }
   }
 
   @Post('regenerate-scene')
@@ -305,5 +333,149 @@ export class ScriptsController {
       message: request.operation === 'edit' ? 'Scene edited successfully' : 'Scene regenerated successfully',
       timestamp: new Date().toISOString(),
     };
+  }
+
+  @Post('upload-product-image')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          // Extract userId from request (from JWT or query param)
+          const userId = (req as any).user?.userId || (req as any).query?.userId || 'anonymous';
+          const uploadsDir = join(process.cwd(), 'uploads', 'product-images', userId);
+          
+          // Create directory if it doesn't exist
+          if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
+          }
+          
+          cb(null, uploadsDir);
+        },
+        filename: (req, file, cb) => {
+          // Generate unique filename with timestamp
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+          const ext = extname(file.originalname);
+          cb(null, `product-${uniqueSuffix}${ext}`);
+        },
+      }),
+      limits: {
+        fileSize: 20 * 1024 * 1024, // 20MB max
+      },
+      fileFilter: (req, file, cb) => {
+        // Accept only image files
+        if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
+          return cb(new Error('Only image files are allowed'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  @ApiBearerAuth('JWT-auth')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload product image and get public URL',
+    description: 'Upload a product image file, save it locally, and return a public URL (FAL storage in local env, backend URL in prod). This URL can be used for GPT-4 Vision API in script generation.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Product image file (JPEG, PNG, GIF, or WebP, max 20MB)',
+        },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Product image uploaded successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            publicUrl: { type: 'string', example: 'https://fal.run/storage/...', description: 'Public URL for the uploaded image (FAL storage in local, backend URL in prod)' },
+            localUrl: { type: 'string', example: '/uploads/product-images/user123/product-1234567890.jpg', description: 'Local URL path relative to backend' },
+          },
+        },
+        message: { type: 'string', example: 'Product image uploaded successfully' },
+        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Invalid file or file too large',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  async uploadProductImage(
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 20 * 1024 * 1024 }), // 20MB
+        ],
+      }),
+    )
+    file: Express.Multer.File,
+    @Request() req: any,
+  ) {
+    try {
+      if (!file) {
+        throw new HttpException('File is required', HttpStatus.BAD_REQUEST);
+      }
+
+      // Extract userId from request
+      const userId = req.user?.userId || req.query?.userId || 'anonymous';
+      
+      // Construct local URL path
+      const localUrl = `/uploads/product-images/${userId}/${file.filename}`;
+      
+      // Get public URL using PublicUrlService
+      // In local env, this will upload to FAL storage
+      // In prod env, this will return backend URL
+      const publicUrl = await this.publicUrlService.getPublicUrl(file.path, localUrl);
+
+      return {
+        success: true,
+        data: {
+          publicUrl,
+          localUrl,
+        },
+        message: 'Product image uploaded successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      console.error('[ScriptsController] Error uploading product image:', error);
+      
+      // Clean up uploaded file if it exists
+      if (file?.path && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.error('[ScriptsController] Failed to cleanup file:', unlinkError);
+        }
+      }
+
+      const statusCode = error.status || HttpStatus.INTERNAL_SERVER_ERROR;
+      const errorMessage = error.message || 'Failed to upload product image. Please try again.';
+
+      throw new HttpException(
+        {
+          success: false,
+          message: errorMessage,
+          error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+          timestamp: new Date().toISOString(),
+        },
+        statusCode,
+      );
+    }
   }
 }

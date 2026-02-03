@@ -111,6 +111,9 @@ enum VideoStyle {
   HALF_N_HALF
   ALTERNATE
   AVATAR_CUTOUT
+  AVATAR_ONLY
+  PRODUCT_ONLY
+  AVATAR_PRODUCT
 }
 
 enum VoiceType {

@@ -10,6 +10,9 @@ export enum VideoStyleDto {
   HALF_N_HALF = 'HALF_N_HALF',
   ALTERNATE = 'ALTERNATE',
   AVATAR_CUTOUT = 'AVATAR_CUTOUT',
+  AVATAR_ONLY = 'AVATAR_ONLY',
+  PRODUCT_ONLY = 'PRODUCT_ONLY',
+  AVATAR_PRODUCT = 'AVATAR_PRODUCT',
 }
 
 export enum VoiceTypeDto {
@@ -86,6 +89,11 @@ export class CreateVideoProjectDto {
   @IsOptional()
   @IsString()
   avatarUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  avatarMode?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

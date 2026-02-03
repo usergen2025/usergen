@@ -10,6 +10,7 @@ import {
   ValidationResult,
 } from '../interfaces/image-generation.interface';
 import { FalProviderError, FalErrorType } from './fal-errors';
+import { preWarmUrls, withRetry, isRetryableError } from '@shared/storage';
 
 /**
  * FAL API Response Types
@@ -219,12 +220,16 @@ export class FalProvider implements IImageGenerationProvider {
    */
   private async submitRequest(
     modelPath: string,
-    payload: any
+    payload: any,
+    hasReferenceImages: boolean = false
   ): Promise<FalSubmitResponse> {
     try {
-      const url = `/fal-ai/${modelPath}`;
+      // Use new endpoint builder
+      const url = this.buildEndpointUrl(modelPath, hasReferenceImages);
+      
       console.log(`[FalProvider] Submitting request to model: ${modelPath}`);
       console.log(`[FalProvider] Request URL: ${this.baseUrl}${url}`);
+      console.log(`[FalProvider] Has reference images: ${hasReferenceImages}`);
       console.log(`[FalProvider] Request payload:`, JSON.stringify(payload, null, 2));
       console.log(`[FalProvider] Authorization header present:`, !!this.axiosInstance.defaults.headers['Authorization']);
 
@@ -269,6 +274,69 @@ export class FalProvider implements IImageGenerationProvider {
     // Take the first part before any '/' separator
     const parts = modelPath.split('/');
     return parts[0];
+  }
+
+  /**
+   * Determine FAL endpoint suffix based on model and whether reference images are provided
+   * @param modelPath - Full model path (e.g., "imagen4/preview/ultra", "nano-banana", "reve/text-to-image")
+   * @param hasReferenceImages - Whether reference images are provided
+   * @returns Endpoint suffix (e.g., "", "/edit", "/remix")
+   */
+  private determineEndpointSuffix(modelPath: string, hasReferenceImages: boolean): string {
+    const baseModel = this.extractBaseModelName(modelPath);
+    
+    // imagen4 is text-to-image only - no endpoint suffix
+    if (baseModel === 'imagen4') {
+      if (hasReferenceImages) {
+        throw new FalProviderError(
+          FalErrorType.VALIDATION_ERROR,
+          422,
+          false,
+          [{
+            loc: ['body', 'referenceImages'],
+            msg: 'imagen4 model does not support reference images. Use nano-banana-pro or reve models for image-to-image.',
+            type: FalErrorType.VALIDATION_ERROR,
+            url: 'https://docs.fal.ai/errors',
+          }]
+        );
+      }
+      return ''; // No suffix for imagen4
+    }
+    
+    // nano-banana and nano-banana-pro use /edit endpoint for image-to-image
+    if (baseModel === 'nano-banana' || baseModel === 'nano-banana-pro') {
+      return hasReferenceImages ? '/edit' : ''; // Can also do text-to-image without /edit
+    }
+    
+    // reve uses /remix endpoint for multi-reference
+    if (baseModel === 'reve') {
+      return hasReferenceImages ? '/remix' : '/text-to-image'; // Default to text-to-image if no references
+    }
+    
+    // Default: no suffix
+    return '';
+  }
+
+  /**
+   * Build FAL endpoint URL
+   * @param modelPath - Full model path
+   * @param hasReferenceImages - Whether reference images are provided
+   * @returns Full endpoint path
+   */
+  private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
+    const baseModel = this.extractBaseModelName(modelPath);
+    const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
+    
+    // For models with sub-paths (like imagen4/preview/ultra), use full path
+    // For base models (like nano-banana), use base model name
+    if (modelPath.includes('/') && baseModel !== 'reve') {
+      // imagen4/preview/ultra -> /fal-ai/imagen4/preview/ultra
+      return `/fal-ai/${modelPath}${suffix}`;
+    } else {
+      // nano-banana -> /fal-ai/nano-banana/edit
+      // reve -> /fal-ai/reve/remix
+      return `/fal-ai/${baseModel}${suffix}`;
+    }
   }
 
   /**
@@ -472,9 +540,8 @@ export class FalProvider implements IImageGenerationProvider {
    */
   private normalizeRequest(request: ImageGenerationRequest): any {
     const modelId = request.modelId;
-
-    // Extract model name from full ID (e.g., "fal-ai/imagen4/preview/ultra" -> "imagen4/preview/ultra")
     const modelPath = modelId.replace('fal-ai/', '');
+    const baseModel = this.extractBaseModelName(modelPath);
 
     // Build base payload
     const payload: any = {
@@ -496,6 +563,34 @@ export class FalProvider implements IImageGenerationProvider {
 
     if (request.resolution && modelsWithResolution.some(m => modelPath.includes(m))) {
       payload.resolution = request.resolution;
+    }
+
+    // Add reference images for image-to-image generation (if supported)
+    // Use image_urls array (correct parameter name for FAL)
+    if (request.referenceImages && request.referenceImages.length > 0) {
+      // Validate imagen4 doesn't support reference images
+      if (baseModel === 'imagen4') {
+        throw new FalProviderError(
+          FalErrorType.VALIDATION_ERROR,
+          422,
+          false,
+          [{
+            loc: ['body', 'referenceImages'],
+            msg: 'imagen4 model does not support reference images. Use nano-banana-pro or reve models for image-to-image generation.',
+            type: FalErrorType.VALIDATION_ERROR,
+            url: 'https://docs.fal.ai/errors',
+          }]
+        );
+      }
+
+      // Use image_urls array (correct parameter name for FAL API)
+      payload.image_urls = request.referenceImages;
+      console.log(`[FalProvider] Using image-to-image with ${request.referenceImages.length} reference image(s) via image_urls`);
+    }
+
+    // Merge any additional params (provider-specific)
+    if (request.additionalParams) {
+      Object.assign(payload, request.additionalParams);
     }
 
     return payload;
@@ -583,21 +678,47 @@ export class FalProvider implements IImageGenerationProvider {
 
       // Extract model path
       const modelPath = request.modelId.replace('fal-ai/', '');
+      const hasReferenceImages = !!(request.referenceImages && request.referenceImages.length > 0);
 
-      // Submit request
+      // Pre-warm reference images before submitting to FAL
+      // This ensures GCS/CDN has the files cached and accessible
+      if (hasReferenceImages && request.referenceImages) {
+        console.log(`[FalProvider] Pre-warming ${request.referenceImages.length} reference image(s)...`);
+        onProgress?.(2);
+        const warmResult = await preWarmUrls(request.referenceImages, 3);
+        if (warmResult.failedUrls.length > 0) {
+          console.warn(`[FalProvider] ⚠️ Some URLs failed to pre-warm, proceeding anyway...`);
+        }
+        // Small delay after pre-warming to ensure propagation
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Submit request with reference image flag and retry logic
       onProgress?.(5);
-      const submitResponse = await this.submitRequest(modelPath, falRequest);
+      const submitResponse = await withRetry(
+        async () => this.submitRequest(modelPath, falRequest, hasReferenceImages),
+        3,
+        (attempt, error) => {
+          console.log(`[FalProvider] Submit retry ${attempt}/3 after error: ${error.message}`);
+        }
+      );
       const requestId = submitResponse.request_id;
 
-      // Poll until complete
+      // Poll until complete with retry logic for transient errors
       onProgress?.(10);
-      const result = await this.pollUntilComplete(
-        modelPath,
-        requestId,
-        (progress) => {
-          // Map polling progress to 10-90% range
-          const mappedProgress = 10 + (progress * 0.8);
-          onProgress?.(mappedProgress);
+      const result = await withRetry(
+        async () => this.pollUntilComplete(
+          modelPath,
+          requestId,
+          (progress) => {
+            // Map polling progress to 10-90% range
+            const mappedProgress = 10 + (progress * 0.8);
+            onProgress?.(mappedProgress);
+          }
+        ),
+        2, // Fewer retries for polling since it already has internal retry
+        (attempt, error) => {
+          console.log(`[FalProvider] Poll retry ${attempt}/2 after error: ${error.message}`);
         }
       );
 
@@ -644,6 +765,30 @@ export class FalProvider implements IImageGenerationProvider {
 
     if (request.numImages && (request.numImages < 1 || request.numImages > 4)) {
       return { valid: false, error: 'num_images must be between 1 and 4' };
+    }
+
+    // Validate imagen4 doesn't support reference images
+    if (request.referenceImages && request.referenceImages.length > 0) {
+      const modelId = request.modelId;
+      const modelPath = modelId.replace('fal-ai/', '');
+      const baseModel = this.extractBaseModelName(modelPath);
+      
+      if (baseModel === 'imagen4') {
+        return {
+          valid: false,
+          error: 'imagen4 model does not support reference images. Use nano-banana-pro (model-4) or reve (model-3) for image-to-image generation.'
+        };
+      }
+      
+      // Validate reference images are URLs
+      for (const refUrl of request.referenceImages) {
+        if (!refUrl.startsWith('http://') && !refUrl.startsWith('https://')) {
+          return {
+            valid: false,
+            error: `Invalid reference image URL: ${refUrl}. Must be a valid HTTP/HTTPS URL.`
+          };
+        }
+      }
     }
 
     // Validate aspect ratio

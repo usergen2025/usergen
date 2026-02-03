@@ -399,6 +399,8 @@ export class VideoController {
       modelId?: string; // e.g., "model-1", "model-2", etc.
       aspectRatio?: string; // Optional override
       resolution?: string; // Optional override
+      productImageUrl?: string; // Product image URL for product-focused styles
+      videoStyle?: string; // Video style to determine generation method
     } = {},
   ) {
     const userId = this.extractUserIdFromToken(req);
@@ -413,9 +415,13 @@ export class VideoController {
     }
 
     const sceneNum = parseInt(sceneNumber, 10);
+    const projectData = project.data as any;
+    const style = body.videoStyle || projectData.style;
+    // Normalize style to uppercase for comparison
+    const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
 
     // Check if image already exists for this scene
-    const bRollImages = ((project.data as any).bRollImages as any[]) || [];
+    const bRollImages = ((projectData).bRollImages as any[]) || [];
     const existingImage = bRollImages.find((img: any) => 
       img.sceneNumber === sceneNum && 
       (img.localUrl || img.localPath || img.imageUrl)
@@ -434,20 +440,91 @@ export class VideoController {
       };
     }
 
-    const script = typeof project.data.script === 'string' 
-      ? JSON.parse(project.data.script) 
-      : project.data.script;
+    const script = typeof projectData.script === 'string' 
+      ? JSON.parse(projectData.script) 
+      : projectData.script;
     const scenes = script.scenes || script.scene_plan || [];
     const scene = scenes.find((s: any) => (s.scene_number || s.sceneNumber) === sceneNum);
-    // Try multiple prompt fields: broll_image_prompt, broll_prompt, broll_visual_description
-    const prompt = body.prompt || scene?.broll_image_prompt || scene?.broll_prompt || scene?.broll_visual_description;
+    
+    // For ALTERNATE style, ALL scenes need b-roll images (odd: full, even: top half)
+    // So we need to handle cases where avatar-type scenes might not have explicit broll_image_prompt
+    let prompt = body.prompt || scene?.broll_image_prompt || scene?.broll_prompt || scene?.broll_visual_description;
+    
+    // For ALTERNATE style, handle both odd and even scenes
+    if (!prompt && normalizedStyle === 'ALTERNATE') {
+      if (sceneNum % 2 === 0) {
+        // Even scene: 3:4 b-roll for top half
+        prompt = scene?.broll_visual_description || `Scene ${sceneNum} b-roll for half-n-half composition`;
+      } else {
+        // Odd scene: Full 9:16 b-roll
+        prompt = scene?.broll_visual_description || `Scene ${sceneNum} full-screen b-roll for ALTERNATE style`;
+      }
+    }
 
     if (!prompt) {
       throw new HttpException('Image prompt not found for this scene', HttpStatus.BAD_REQUEST);
     }
 
-    // Get model ID from body or use default
-    const modelId = body.modelId || 'model-1'; // Default to Model 1 (FAL imagen4)
+    // Extract product image URL from project assets if not provided
+    let productImageUrl = body.productImageUrl;
+    if (!productImageUrl && (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT')) {
+      // Check both projectData.assets and projectData.metadata.assets
+      let assets: any[] = [];
+      
+      // First, try projectData.assets (for old projects)
+      if (projectData.assets) {
+        assets = typeof projectData.assets === 'string' 
+          ? JSON.parse(projectData.assets) 
+          : projectData.assets;
+      }
+      
+      // If not found, try metadata.assets (for AI chat flow projects)
+      if (assets.length === 0 && projectData.metadata?.assets) {
+        const metadataAssets = typeof projectData.metadata.assets === 'string'
+          ? JSON.parse(projectData.metadata.assets)
+          : projectData.metadata.assets;
+        assets = Array.isArray(metadataAssets) ? metadataAssets : [];
+      }
+      
+      // Find product image - check multiple possible structures
+      const productImage = assets.find((asset: any) => {
+        if (asset.type !== 'image') return false;
+        // Check multiple identifiers
+        return asset.id?.startsWith('product-') || 
+               asset.name?.toLowerCase().includes('product') ||
+               // For AI chat flow, if there's only one image asset, it's likely the product
+               (assets.filter((a: any) => a.type === 'image').length === 1);
+      });
+      
+      // Extract URL - check multiple possible URL fields
+      productImageUrl = productImage?.url || 
+                        productImage?.publicUrl || 
+                        productImage?.imageUrl ||
+                        null;
+      
+      if (!productImageUrl && (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT')) {
+        console.error('[VideoController] Product image not found in assets:', {
+          assetsCount: assets.length,
+          imageAssets: assets.filter((a: any) => a.type === 'image'),
+          projectMetadata: projectData.metadata,
+        });
+        throw new HttpException('Product image is required for this video style', HttpStatus.BAD_REQUEST);
+      }
+      
+      console.log(`[VideoController] Extracted product image URL: ${productImageUrl}`);
+    }
+
+    // Get model ID from body or use style-appropriate default
+    let modelId = body.modelId;
+    if (!modelId) {
+      // Use model-1 (imagen4) as default for non-product styles, model-4 for product styles
+      const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
+      if (normalizedStyle === 'PRODUCT_ONLY' || normalizedStyle === 'AVATAR_PRODUCT') {
+        modelId = 'model-4'; // nano-banana-pro for product styles (supports image-to-image)
+      } else {
+        modelId = 'model-1'; // imagen4 for non-product styles
+      }
+    }
 
     const jobId = await this.queueManager.addImageGenerationJob({
       projectId,
@@ -457,6 +534,8 @@ export class VideoController {
       modelId, // Pass model selection
       aspectRatio: body.aspectRatio, // Optional override
       resolution: body.resolution, // Optional override
+      productImageUrl: productImageUrl || undefined, // Pass product image URL
+      videoStyle: style, // Pass video style
     });
 
     return {
@@ -520,6 +599,18 @@ export class VideoController {
       throw new HttpException('Image not found for this scene', HttpStatus.BAD_REQUEST);
     }
 
+    const projectData = project.data as any;
+    const style = projectData.style;
+
+    // For AVATAR_PRODUCT style, extract heygenImageKey from image data
+    let heygenImageKey: string | undefined = undefined;
+    if (style === 'AVATAR_PRODUCT') {
+      heygenImageKey = image.heygenImageKey || image.compositeImageKey;
+      if (!heygenImageKey) {
+        throw new HttpException('HeyGen image_key not found for AVATAR_PRODUCT style. Please regenerate the image first.', HttpStatus.BAD_REQUEST);
+      }
+    }
+
     // Get public URL for the image - prefer local file over provider URL (which may expire)
     let publicImageUrl: string;
     if (image.localPath && image.localUrl) {
@@ -569,7 +660,7 @@ export class VideoController {
       );
     }
 
-    console.log(`[VideoController] Scene ${sceneNumber}: Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}`);
+    console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
 
     const jobId = await this.queueManager.addVideoGenerationJob({
       projectId,
@@ -579,6 +670,8 @@ export class VideoController {
       prompt: image.prompt,
       duration: videoDuration, // Use exact duration matching audio file
       modelId: body.modelId || 'video-model-1', // Use selected model or default
+      heygenImageKey: heygenImageKey || undefined, // Pass HeyGen image_key for AVATAR_PRODUCT
+      videoStyle: style, // Pass video style
     });
 
     return {

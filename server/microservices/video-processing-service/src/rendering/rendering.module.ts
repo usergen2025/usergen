@@ -10,9 +10,10 @@ import { VideoProviderFactory } from './providers/video-provider-factory.service
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { DatabaseModule } from '../common/database/database.module';
+import { StorageModule } from '../common/storage/storage.module';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule],
+  imports: [ConfigModule, DatabaseModule, StorageModule],
   providers: [
     RenderingService,
     BytePlusProvider,

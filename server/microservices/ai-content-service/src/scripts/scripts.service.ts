@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoggerService } from '../common/logger/logger.service';
 import OpenAI from 'openai';
+import axios from 'axios';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -71,6 +72,89 @@ export class ScriptsService {
     }
   }
 
+  /**
+   * Pre-warm a URL by making a GET request to ensure it's accessible and cached
+   * This helps with CDN caching and ensures the file is propagated before OpenAI tries to fetch it
+   */
+  private async preWarmUrl(url: string, maxAttempts = 3): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await axios.get(url, {
+          timeout: 10000, // 10 second timeout
+          responseType: 'arraybuffer', // Download the full file to warm cache
+          headers: {
+            'User-Agent': 'UserGen-PreWarm/1.0',
+          },
+        });
+        
+        if (response.status === 200) {
+          const contentLength = response.headers['content-length'] || response.data?.length || 0;
+          this.logger.log(`URL pre-warmed successfully (${contentLength} bytes): ${url.substring(0, 60)}...`, 'ScriptsService');
+          return true;
+        }
+      } catch (error: any) {
+        this.logger.warn(`URL pre-warm attempt ${attempt}/${maxAttempts} failed: ${error.message}`, 'ScriptsService');
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Wait 1s, 2s, 3s
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Call OpenAI with retry logic specifically for vision API image fetch timeouts
+   * OpenAI has an internal ~3 second timeout when fetching external images
+   */
+  private async callOpenAIWithRetry(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    model: string,
+    useVisionAPI: boolean,
+    maxRetries = 3
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    let lastError: any;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const completion = await this.openai.chat.completions.create({
+          model: model,
+          messages: messages,
+          response_format: { type: 'json_object' },
+          temperature: 0.7,
+          max_tokens: useVisionAPI ? 4000 : 3000,
+        });
+        
+        if (attempt > 1) {
+          this.logger.log(`OpenAI call succeeded on attempt ${attempt}`, 'ScriptsService');
+        }
+        
+        return completion;
+      } catch (error: any) {
+        lastError = error;
+        
+        // Check if it's an image timeout error - only retry for these
+        const isImageTimeoutError = 
+          error.code === 'invalid_image_url' || 
+          (error.message && error.message.includes('Timeout while downloading'));
+        
+        if (isImageTimeoutError && attempt < maxRetries) {
+          const delay = Math.min(2000 * attempt, 6000); // 2s, 4s, 6s max
+          this.logger.warn(
+            `OpenAI image fetch timeout (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`,
+            'ScriptsService'
+          );
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        // For non-timeout errors or last attempt, throw
+        throw error;
+      }
+    }
+    
+    throw lastError;
+  }
+
   async generateScript(request: ScriptGenerationRequest): Promise<ScriptGenerationResponse> {
     const startTime = Date.now();
     
@@ -138,21 +222,122 @@ export class ScriptsService {
         request.hasAvatar
       );
       
-      // Build user prompt with duration
       const duration = request.duration || '30 seconds';
-      const userPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}. Return the response as a JSON object.`;
+      
+      // Determine if we need to use vision API (for PRODUCT_ONLY or AVATAR_PRODUCT with product image)
+      const useVisionAPI: boolean = !!(request.videoStyle === 'PRODUCT_ONLY' || request.videoStyle === 'AVATAR_PRODUCT') && !!request.productImageUrl;
+      
+      // Build messages array - include image if using vision API
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+      
+      // Add system message
+      messages.push({ role: 'system', content: systemPrompt });
 
-      // Call OpenAI API
+      if (useVisionAPI) {
+        // Validate productImageUrl exists
+        if (!request.productImageUrl) {
+          throw new Error('Product image URL is required for PRODUCT_ONLY and AVATAR_PRODUCT styles');
+        }
+        
+        // Use vision API format with image for product analysis
+        const imageUrlPreview = request.productImageUrl.length > 50 
+          ? `${request.productImageUrl.substring(0, 50)}...` 
+          : request.productImageUrl;
+        this.logger.log(`Using GPT-4 Vision API to analyze product image: ${imageUrlPreview}`, 'ScriptsService');
+        
+        // Validate that URL is a public HTTP(S) URL
+        let imageUrl = request.productImageUrl;
+        
+        if (!imageUrl) {
+          throw new Error('Product image URL is required but was not provided');
+        }
+        
+        // Only accept public HTTP(S) URLs - no base64 data URLs
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+          // Try to construct a public URL if it's a local path (for backward compatibility)
+          const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
+                                this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
+                                'http://localhost:9001';
+          if (imageUrl.startsWith('/uploads')) {
+            imageUrl = `${backendBaseUrl}${imageUrl}`;
+            this.logger.log(`Converted local path to public URL: ${imageUrl}`, 'ScriptsService');
+          } else {
+            throw new Error(`Product image URL must be a publicly accessible HTTP(S) URL. Received: ${imageUrl.substring(0, 100)}`);
+          }
+        }
+        
+        // Ensure imageUrl is still valid after processing
+        if (!imageUrl) {
+          throw new Error('Failed to process product image URL');
+        }
+        
+        messages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Analyze this product image carefully and create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}.
+
+CRITICAL PRODUCT ANALYSIS REQUIREMENTS:
+- Look at the image carefully and identify what the product actually is (e.g., notebook, diary, planner, smartphone, watch, clothing, food item, electronics, etc.)
+- Identify the exact product name from the image (if visible) or create a descriptive name based on what you see
+- Identify the product type and category accurately
+- Note key features visible in the image:
+  * For notebooks/diaries: pages, binding, cover material, texture, clasp, nameplate, size, color scheme
+  * For electronics: screen, buttons, ports, design elements, brand markings
+  * For other products: materials, colors, design elements, textures, size, shape
+- Identify the color scheme and design style
+- Determine use cases and contexts where this product would be used
+- Identify the target audience based on product appearance
+
+SCRIPT GENERATION REQUIREMENTS:
+- Use the ACTUAL product name you identify from the image throughout the script
+- Do NOT use placeholders like "[Product Name]" or "[Product]" - use the real product name
+- Reference specific features visible in the image (e.g., if it's a notebook, mention pages, binding, cover, clasp, etc.)
+- Create scenes that showcase the product accurately based on what you see
+- Ensure all voiceover and descriptions match the actual product in the image
+- If the product is a notebook/diary/planner, focus on writing, organization, planning, personalization, note-taking features
+- If the product is an electronic device, focus on technology, connectivity, features, display
+- Match the product category accurately - do not confuse notebooks with gadgets or vice versa
+
+Return the response as a valid JSON object following the specified format.`
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: imageUrl // Use the public HTTP(S) URL
+              }
+            }
+          ]
+        });
+      } else {
+        // Standard text-only prompt
+        messages.push({
+          role: 'user',
+          content: `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}. Return the response as a JSON object.`
+        });
+      }
+
+      // Use GPT-4o or gpt-4-turbo for vision, otherwise use configured model
+      const model = useVisionAPI 
+        ? 'gpt-4o' // GPT-4o has better vision capabilities
+        : this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
+
+      // Pre-warm the image URL before calling OpenAI (for vision API only)
+      // This helps ensure the image is cached and accessible when OpenAI tries to fetch it
+      if (useVisionAPI && request.productImageUrl) {
+        this.logger.log('Pre-warming image URL before OpenAI call...', 'ScriptsService');
+        const warmed = await this.preWarmUrl(request.productImageUrl);
+        if (!warmed) {
+          this.logger.warn('URL pre-warming failed, proceeding with OpenAI call anyway...', 'ScriptsService');
+        }
+        // Small delay after pre-warming to ensure propagation
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Call OpenAI API with retry logic for vision timeouts
       // Note: response_format: json_object requires gpt-4-turbo, gpt-4o, or gpt-3.5-turbo
-      const completion = await this.openai.chat.completions.create({
-        model: this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo'),
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-      });
+      const completion = await this.callOpenAIWithRetry(messages, model, useVisionAPI, 3);
 
       const responseContent = completion.choices[0]?.message?.content;
       if (!responseContent) {
@@ -297,8 +482,8 @@ export class ScriptsService {
         if (styleParams && styleParams.colorPalette) {
           const stylePrefix = this.buildStylePrefix(styleParams);
           
-          // Only process if this is a b-roll scene (for ALTERNATE style)
-          const isBrollScene = request.existingScript.video_type !== 'Alternating' || sceneData.type === 'b-roll';
+          // Only process if this is a b-roll or half-n-half scene (for ALTERNATE style)
+          const isBrollScene = request.existingScript.video_type !== 'Alternating' || sceneData.type === 'b-roll' || sceneData.type === 'half-n-half';
           
           if (isBrollScene) {
             // Normalize image prompt
@@ -661,10 +846,18 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple angles in one image, tiled views, or mosaic layouts
+- Each scene should have its own unique single-image composition
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
+
 Output Requirements:
 
 Video Duration and Scene Planning (CRITICAL):
 - Each scene should be 4-6 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
 - Calculate the number of scenes based on total duration:
   * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
   * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
@@ -674,7 +867,6 @@ Video Duration and Scene Planning (CRITICAL):
 - Scene time ranges should not overlap and should sequentially cover the full duration
 - Example: For 30 seconds, scenes should be numbered 1, 2, 3, 4, 5, 6 with time ranges like "0-5s", "5-10s", "10-15s", "15-20s", "20-25s", "25-30s"
 - If user specifies a duration, calculate and generate the appropriate number of scenes accordingly
-- If not specified, default to 30 seconds with 5-7 scenes
 
 IMPORTANT: You must return your response as a valid JSON object.
 
@@ -697,7 +889,7 @@ Structure Your Output in This JSON Format:
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals.",
-      "broll_image_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors and colorful stalls]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors and colorful stalls]",
       "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors, people walking, colorful stalls, dynamic movement]",
       "avatar_action": "Explain how the Indian-looking avatar speaks and reacts.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'smile', 'gesture'"
@@ -707,7 +899,7 @@ Structure Your Output in This JSON Format:
       "time_range": "5-10s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Describe next Indian-context visuals",
-      "broll_image_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description]",
       "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description with motion]",
       "avatar_action": "Explain avatar's reaction",
       "avatar_motion": "smile"
@@ -720,35 +912,50 @@ Structure Your Output in This JSON Format:
 CRITICAL PROMPT GENERATION RULES:
 1. FIRST, determine the visual_style_guide based on the user's topic/idea - this is the MOST IMPORTANT step
 2. The visual_style_guide MUST be consistent across ALL scenes
-3. EVERY broll_image_prompt MUST start with the visual style parameters in this exact format:
-   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-4. EVERY broll_video_prompt MUST follow the same format but include motion/action words
-5. The scene-specific part should vary, but ALL style parameters (color, lighting, mood, camera, time, tone) MUST remain IDENTICAL across all scenes
-6. Use the EXACT same wording for style parameters in every prompt to ensure AI image/video models generate consistent visuals
-7. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+3. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
+4. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
+5. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+6. The scene-specific part should vary, but ALL style parameters (color, lighting, mood, camera, time, tone) MUST remain IDENTICAL across all scenes
+7. Use the EXACT same wording for style parameters in every prompt to ensure AI image/video models generate consistent visuals
+8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
 - All visuals should reflect Indian context unless user explicitly asks otherwise.
 - ${lang.instruction}
 - Maintain continuity between avatar and b-roll.
 - B-roll should support, enhance, or contrast the spoken dialogue.
-- Keep pacing aligned with the requested duration.
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
       'ALTERNATE': `You are a creative director and film editor AI who creates alternating-scene style video scripts, where some scenes feature a full-screen Indian-looking avatar speaking ${lang.dialogue}, and others feature full-screen Indian-style b-roll.
 
 Your task is to script a balanced, engaging alternating-scene video with smooth narrative continuity for an Indian audience.
 
+CRITICAL RENDERING REQUIREMENTS (MUST READ):
+- ALL scenes require b-roll images to be generated
+- Odd-numbered scenes (1, 3, 5, ...): Use full-screen 9:16 b-roll images (type: "b-roll")
+- Even-numbered scenes (2, 4, 6, ...): Use 3:4 b-roll images for the top half (type: "half-n-half")
+- Therefore, EVERY scene MUST have a broll_image_prompt, regardless of type
+
 CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
-- ALL b-roll scenes must share the SAME visual style, color palette, lighting, mood, and aesthetic
-- You MUST create a "visual_style_guide" that defines consistent parameters for ALL b-roll scenes
-- EVERY broll_image_prompt and broll_video_prompt for b-roll scenes MUST include the visual style guide at the beginning
+- ALL b-roll images must share the SAME visual style, color palette, lighting, mood, and aesthetic
+- You MUST create a "visual_style_guide" that defines consistent parameters for ALL b-roll images
+- EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
+
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple angles in one image, tiled views, or mosaic layouts
+- Each scene should have its own unique single-image composition
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
 
 IMPORTANT: You must return your response as a valid JSON object.
 
 Video Duration and Scene Planning (CRITICAL):
 - Each scene (avatar or b-roll) should be 5-7 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-6 scenes
 - Calculate the total number of scenes based on duration:
   * For 30 seconds: Generate 5-6 scenes total (alternating between avatar and b-roll)
   * For 1 minute (60 seconds): Generate 10-12 scenes total
@@ -759,7 +966,6 @@ Video Duration and Scene Planning (CRITICAL):
 - Scene time ranges should not overlap and should sequentially cover the full duration
 - Example: For 30 seconds with 5 scenes, time ranges could be "0-6s", "6-12s", "12-18s", "18-24s", "24-30s"
 - If user specifies a duration, calculate and generate the appropriate number of scenes accordingly
-- If not specified, default to 30 seconds with 5-6 scenes
 
 Output Format:
 {
@@ -777,25 +983,25 @@ Output Format:
   "scene_plan": [
     {
       "scene_number": 1,
-      "type": "avatar" | "b-roll",
+      "type": "b-roll",
       "time_range": "0-7s",
       "voiceover": "${lang.alternate}",
-      "broll_visual_description": "If this is a b-roll scene, describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
-      "broll_image_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
-      "broll_video_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
-      "avatar_action": "If avatar scene, describe Indian avatar's expression and delivery.",
-      "avatar_motion": "If avatar scene, give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
+      "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. REQUIRED for ALL scenes.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]. REQUIRED for ALL scenes (odd scenes = full 9:16, even scenes = 3:4 for top half).",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]. REQUIRED for ALL scenes.",
+      "avatar_action": null,
+      "avatar_motion": null
     },
     {
       "scene_number": 2,
-      "type": "b-roll",
+      "type": "half-n-half",
       "time_range": "7-14s",
       "voiceover": "${lang.alternate}",
       "broll_visual_description": "Describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
-      "broll_image_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
-      "broll_video_prompt": "If type is b-roll: [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
-      "avatar_action": null,
-      "avatar_motion": null
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
+      "avatar_action": "Describe Indian avatar's expression and delivery for this half-n-half scene.",
+      "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
     }
   ],
   "notes": {
@@ -807,12 +1013,15 @@ Output Format:
 
 CRITICAL PROMPT GENERATION RULES:
 1. FIRST, determine the visual_style_guide based on the user's topic/idea - this is the MOST IMPORTANT step
-2. The visual_style_guide MUST be consistent across ALL b-roll scenes
-3. EVERY broll_image_prompt and broll_video_prompt for b-roll scenes MUST start with the visual style parameters in this exact format:
-   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-4. Use the EXACT same wording for style parameters in every b-roll scene prompt
-5. Only the scene-specific part should vary between scenes
-6. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+2. The visual_style_guide MUST be consistent across ALL scenes (both avatar-type and b-roll-type)
+3. EVERY scene (regardless of type) MUST have a broll_image_prompt - this is REQUIRED for rendering
+4. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
+5. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
+6. Use the EXACT same wording for style parameters in every scene prompt (both avatar and b-roll scenes)
+7. Only the scene-specific part should vary between scenes
+8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+10. For avatar-type scenes, generate broll_image_prompt based on the voiceover context and visual style guide
 
 Guidelines:
 - Use ${lang.dialogue} voiceover across all scenes.
@@ -821,6 +1030,7 @@ Guidelines:
 - Multiple avatar or multiple b-roll scenes in a row are fine if they improve flow.
 - CRITICAL: Generate enough scenes to cover the entire video duration (5-6 scenes for 30 seconds, 10-12 for 1 minute, etc.)
 - Each scene should be 5-7 seconds, and the total number of scenes must cover the full duration without gaps
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All b-roll scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
     'AVATAR_CUTOUT': `You are a motion graphics director and AI content composer who creates cutout-style videos, where an Indian-looking avatar (green-screen cutout) appears over full-frame Indian-context b-roll.
@@ -833,10 +1043,18 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple angles in one image, tiled views, or mosaic layouts
+- Each scene should have its own unique single-image composition
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
+
 IMPORTANT: You must return your response as a valid JSON object.
 
 Video Duration and Scene Planning (CRITICAL):
 - Keep scenes around 4-6 seconds each for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
 - Calculate the number of scenes based on total duration:
   * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
   * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
@@ -845,7 +1063,7 @@ Video Duration and Scene Planning (CRITICAL):
 - Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
 - Scene time ranges should not overlap and should sequentially cover the full duration
 - Example: For 30 seconds, scenes should be numbered 1, 2, 3, 4, 5, 6 with time ranges like "0-5s", "5-10s", "10-15s", "15-20s", "20-25s", "25-30s"
-- If user specifies duration, adjust number and lengths of scenes accordingly; otherwise default to 30 seconds with 5-7 scenes
+- If user specifies duration, adjust number and lengths of scenes accordingly
 
 Output Format:
 {
@@ -866,7 +1084,7 @@ Output Format:
       "time_range": "0-5s",
       "voiceover": "${lang.cutout}",
       "broll_visual_description": "Describe Indian environment — cafes, offices, markets, metro, festivals, streets, villages.",
-      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
       "avatar_cutout_position": "bottom-left" | "bottom-right" | "center" | etc.,
       "avatar_action": "Describe Indian avatar gestures, expressions, tone.",
@@ -877,7 +1095,7 @@ Output Format:
       "time_range": "5-10s",
       "voiceover": "${lang.cutout}",
       "broll_visual_description": "Describe next Indian environment",
-      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description with motion]",
       "avatar_cutout_position": "bottom-left",
       "avatar_action": "Describe avatar gestures",
@@ -895,11 +1113,12 @@ Output Format:
 CRITICAL PROMPT GENERATION RULES:
 1. FIRST, determine the visual_style_guide based on the user's topic/idea - this is the MOST IMPORTANT step
 2. The visual_style_guide MUST be consistent across ALL scenes
-3. EVERY broll_image_prompt and broll_video_prompt MUST start with the visual style parameters in this exact format:
-   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-4. Use the EXACT same wording for style parameters in every prompt
-5. Only the scene-specific part should vary between scenes
-6. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+3. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
+4. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
+5. Use the EXACT same wording for style parameters in every prompt
+6. Only the scene-specific part should vary between scenes
+7. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+8. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
 - ${lang.instruction} - this is CRITICAL.
@@ -908,6 +1127,7 @@ Guidelines:
 - Keep scenes around 4-6 seconds each for natural pacing.
 - CRITICAL: Generate enough scenes to cover the entire video duration (5-7 scenes for 30 seconds, 10-12 for 1 minute, etc.)
 - Each scene should be 4-6 seconds, and the total number of scenes must cover the full duration without gaps
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - Maintain consistency in avatar position and lighting.
 - VISUAL CONSISTENCY IS CRITICAL: All b-roll backgrounds must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
@@ -923,6 +1143,7 @@ Output Requirements:
 
 Video Duration and Scene Planning (CRITICAL):
 - Each scene should be 4-6 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
 - Calculate the number of scenes based on total duration:
   * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
   * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
@@ -959,7 +1180,7 @@ Structure Your Output in This JSON Format:
 
 Guidelines:
 - ${lang.instruction}
-- Keep pacing aligned with the requested duration.
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must maintain consistent avatar presentation style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
     'PRODUCT_ONLY': `You are a professional product video director who creates product showcase video scripts. The video will feature ONLY the product (no avatar, no human presenter, no person).
@@ -967,14 +1188,29 @@ Guidelines:
 CRITICAL REQUIREMENTS:
 - NO avatar, NO human, NO person in any scene
 - Focus entirely on the product
-- Product image will be provided by the user${productImageUrl ? ` (URL: ${productImageUrl})` : ''}
+${productImageUrl ? `- A product image has been provided - ANALYZE IT CAREFULLY to identify:
+  * The exact product name (use this throughout the script, NOT placeholders)
+  * Product type and category
+  * Key features, colors, and design elements visible in the image
+  * Use cases and contexts appropriate for this product
+  * Target audience based on product appearance
+- Use the ACTUAL product details from the image in your script` : '- Product image will be provided by the user'}
 - All b-roll should showcase the product from different angles, contexts, and uses
 - Visual style must be consistent across all scenes
+- IMPORTANT: If a product image is provided, use the actual product name and features you identify from the image. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple product angles in one image, tiled views, or mosaic layouts
+- Each scene should have its own unique single-image composition showing the product from ONE angle or in ONE context
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
 
 Output Requirements:
 
 Video Duration and Scene Planning (CRITICAL):
 - Each scene should be 4-6 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
 - Calculate the number of scenes based on total duration:
   * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
   * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
@@ -1004,7 +1240,7 @@ Structure Your Output in This JSON Format:
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person",
-      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
     }
   ],
@@ -1013,26 +1249,33 @@ Structure Your Output in This JSON Format:
 
 CRITICAL PROMPT GENERATION RULES:
 1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
-2. Focus on product angles, features, uses, and contexts
-3. Create engaging product-focused visuals
-4. Maintain visual consistency across all scenes
-5. FIRST, determine the visual_style_guide based on the user's topic/idea
-6. The visual_style_guide MUST be consistent across ALL scenes
-7. EVERY broll_image_prompt MUST start with the visual style parameters in this exact format:
-   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description] [CRITICAL: NO human, NO avatar, NO person in image]"
-8. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+2. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
+3. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]"
+4. Focus on product angles, features, uses, and contexts - ONE product shot per scene
+5. Create engaging product-focused visuals - NEVER grids, collages, or multiple product views in one image
+6. Maintain visual consistency across all scenes
+7. FIRST, determine the visual_style_guide based on the user's topic/idea
+8. The visual_style_guide MUST be consistent across ALL scenes
+9. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
 
 Guidelines:
-- All visuals should focus on the product
+- All visuals should focus on the product - ONE focused shot per scene
 - ${lang.instruction}
-- Keep pacing aligned with the requested duration.
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
     'AVATAR_PRODUCT': `You are a professional video director creating product advertisement videos featuring a presenter (avatar or auto-generated person) showcasing a product.
 
 The video will feature:
 - A presenter (${hasAvatar ? 'user-selected avatar' : 'auto-generated person'}) interacting with the product
-- Product image uploaded by the user${productImageUrl ? ` (URL: ${productImageUrl})` : ''}
+${productImageUrl ? `- A product image has been provided - ANALYZE IT CAREFULLY to identify:
+  * The exact product name (use this throughout the script, NOT placeholders)
+  * Product type and category
+  * Key features, colors, and design elements visible in the image
+  * Use cases and contexts appropriate for this product
+  * Target audience based on product appearance
+- Use the ACTUAL product details from the image in your script` : '- Product image uploaded by the user'}
 - Engaging product demonstration and advertisement
 
 CRITICAL REQUIREMENTS:
@@ -1040,11 +1283,20 @@ CRITICAL REQUIREMENTS:
 - Presenter (avatar or person) should interact with the product naturally
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
+- IMPORTANT: If a product image is provided, use the actual product name and features you identify from the image. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple product angles in one image, tiled views, or mosaic layouts
+- Each scene should have its own unique single-image composition
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
 
 Output Requirements:
 
 Video Duration and Scene Planning (CRITICAL):
 - Each scene should be 4-6 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
 - Calculate the number of scenes based on total duration:
   * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
   * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
@@ -1074,7 +1326,7 @@ Structure Your Output in This JSON Format:
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Presenter (avatar or person) showcasing/using the product",
-      "broll_image_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product with motion]",
       "avatar_action": "Presenter showcasing the product...",
       "avatar_motion": "point", "hold", "demonstrate", etc.
@@ -1090,14 +1342,15 @@ CRITICAL PROMPT GENERATION RULES:
 4. Maintain visual consistency across all scenes
 5. FIRST, determine the visual_style_guide based on the user's topic/idea
 6. The visual_style_guide MUST be consistent across ALL scenes
-7. EVERY broll_image_prompt MUST start with the visual style parameters in this exact format:
-   "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]"
-8. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+7. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
+8. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]"
+9. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
-- All visuals should feature product + presenter interaction
+- All visuals should feature product + presenter interaction - ONE focused shot per scene
 - ${lang.instruction}
-- Keep pacing aligned with the requested duration.
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
   };
 
@@ -1210,10 +1463,14 @@ Guidelines:
 
     // Normalize each scene's prompts
     scenes.forEach((scene: any) => {
-      // Only process b-roll scenes for ALTERNATE style
+      // For ALTERNATE style, ALL scenes (both avatar and b-roll type) need b-roll images
+      // So we process ALL scenes, not just b-roll type scenes
       const videoType = (scriptData.video_type || '').toLowerCase();
-      if (videoType === 'alternating' && scene.type !== 'b-roll') {
-        return;
+      
+      // For ALTERNATE style, if a scene doesn't have broll_image_prompt, generate one from broll_visual_description
+      if (videoType === 'alternating' && !scene.broll_image_prompt && scene.broll_visual_description) {
+        const sceneSpecific = scene.broll_visual_description || 'Indian context scene';
+        scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
       }
 
       // Normalize image prompt
@@ -1339,7 +1596,8 @@ Guidelines:
     const videoType = (scriptData.video_type || '').toLowerCase();
     const firstScene = scenes.find((s: any) => {
       if (videoType === 'alternating') {
-        return s.type === 'b-roll' && (s.broll_image_prompt || s.broll_video_prompt);
+        // For ALTERNATE style, check both "b-roll" (odd) and "half-n-half" (even) scenes
+        return (s.type === 'b-roll' || s.type === 'half-n-half') && (s.broll_image_prompt || s.broll_video_prompt);
       }
       return s.broll_image_prompt || s.broll_video_prompt;
     });
@@ -1354,8 +1612,9 @@ Guidelines:
 
     // Check all b-roll scenes
     scenes.forEach((scene: any, index: number) => {
-      // Skip non-b-roll scenes for ALTERNATE style
-      if (videoType === 'alternating' && scene.type !== 'b-roll') {
+      // For ALTERNATE style, process both "b-roll" (odd scenes) and "half-n-half" (even scenes)
+      // Skip only if type is explicitly "avatar" (old format)
+      if (videoType === 'alternating' && scene.type === 'avatar') {
         return;
       }
 

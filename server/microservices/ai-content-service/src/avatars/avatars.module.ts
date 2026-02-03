@@ -8,12 +8,14 @@ import { ImageProcessorService } from './services/image-processor.service';
 import { DatabaseModule } from '../common/database/database.module';
 import { LoggerModule } from '../common/logger/logger.module';
 import { AvatarQueueModule } from './queue/avatar-queue.module';
+import { StorageModule } from '../common/storage/storage.module';
 
 @Module({
   imports: [
     ConfigModule,
     DatabaseModule,
     LoggerModule,
+    StorageModule,
     forwardRef(() => AvatarQueueModule),
   ],
   controllers: [AvatarsController],

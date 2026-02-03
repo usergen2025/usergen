@@ -4,6 +4,7 @@ import { DatabaseService } from '../common/database/database.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
+import { PublicUrlService } from '../common/storage/public-url.service';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -20,6 +21,7 @@ export class RenderingService {
     private readonly bytePlusProvider: BytePlusProvider,
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly videoCompositor: VideoCompositorProvider,
+    private readonly publicUrlService: PublicUrlService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
@@ -444,6 +446,12 @@ export class RenderingService {
         await this.processCutout(projectId, userId, audioFiles, bRollVideos, project, authToken);
       } else if (project.style === 'ALTERNATE') {
         await this.processAlternate(projectId, userId, audioFiles, bRollVideos, project, authToken);
+      } else if (project.style === 'AVATAR_ONLY') {
+        await this.processAvatarOnly(projectId, userId, audioFiles, project, authToken);
+      } else if (project.style === 'PRODUCT_ONLY') {
+        await this.processProductOnly(projectId, userId, audioFiles, bRollVideos, project);
+      } else if (project.style === 'AVATAR_PRODUCT') {
+        await this.processAvatarProduct(projectId, userId, audioFiles, bRollVideos, project, authToken);
       } else {
         throw new Error(`Unsupported video style: ${project.style}`);
       }
@@ -940,7 +948,26 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const finalVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalVideoWithAudioPath,
+        `videos/${userId}`,
+        path.basename(finalVideoWithAudioPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ HALF_N_HALF final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for HALF_N_HALF final video: ${error.message}`);
+    }
 
     await this.databaseService.videoProject.update({
       where: { id: projectId },
@@ -948,14 +975,14 @@ export class RenderingService {
         status: 'COMPLETED',
         renderingStatus: 'completed' as any,
         renderingProgress: 100 as any,
-        videoUrl: finalVideoUrl,
+        videoUrl: publicUrl || localVideoUrl,
         duration: totalDuration,
         currentStep: 'COMPLETED',
         completedAt: new Date(),
-      },
+      } as any,
     });
 
-    console.log(`[RenderingService] HALF_N_HALF video completed: ${finalVideoUrl}`);
+    console.log(`[RenderingService] HALF_N_HALF video completed: ${publicUrl || localVideoUrl}`);
   }
 
   /**
@@ -1426,7 +1453,26 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const finalVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalVideoPath,
+        `videos/${userId}`,
+        path.basename(finalVideoPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ CUTOUT final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for CUTOUT final video: ${error.message}`);
+    }
 
     await this.databaseService.videoProject.update({
       where: { id: projectId },
@@ -1434,22 +1480,164 @@ export class RenderingService {
         status: 'COMPLETED',
         renderingStatus: 'completed' as any,
         renderingProgress: 100 as any,
-        videoUrl: finalVideoUrl,
+        videoUrl: publicUrl || localVideoUrl,
         duration: totalDuration,
         currentStep: 'COMPLETED',
         completedAt: new Date(),
-      },
+      } as any,
     });
 
-    console.log(`[RenderingService] CUTOUT video completed: ${finalVideoUrl}`);
+    console.log(`[RenderingService] CUTOUT video completed: ${publicUrl || localVideoUrl}`);
   }
 
   /**
-   * Process ALTERNATE style:
-   * - Generate avatar videos only for avatar scenes (not b-roll scenes), 9:16 ratio
-   * - Stitch b-roll videos with audio (for b-roll scenes)
-   * - Stitch avatar videos (for avatar scenes)
-   * - Stitch everything together in order
+   * Generate a per-scene avatar video for ALTERNATE style (even scenes)
+   * Uses the same avatar image logic as HALF_N_HALF for consistency
+   */
+  private async generateAlternateSceneAvatarVideo(
+    projectId: string,
+    userId: string,
+    sceneNumber: number,
+    audioFilePath: string,
+    avatarMode: string,
+    talkingPhotoId: string,
+    imageKey: string | undefined,
+    imageKeyHalfNHalfWithWhite: string | undefined,
+    avatarDir: string,
+    project: any
+  ): Promise<string> {
+    const audioBuffer = fs.readFileSync(audioFilePath);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
+
+    let videoResponse: { video_id: string };
+
+    if (avatarMode === 'PREMIUM') {
+      // Use Avatar IV API for Premium mode
+      // Use processed image key with white top for HALF_N_HALF-style consistency (same as HALF_N_HALF)
+      const imageKeyToUse = imageKeyHalfNHalfWithWhite || imageKey;
+      
+      if (!imageKeyToUse) {
+        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
+      }
+      
+      if (imageKeyHalfNHalfWithWhite) {
+        console.log(`[RenderingService] ALTERNATE: Using Avatar IV (Premium) for scene ${sceneNumber} with processed HALF_N_HALF image_key: ${imageKeyHalfNHalfWithWhite}`);
+      } else {
+        console.log(`[RenderingService] ALTERNATE: Using Avatar IV (Premium) for scene ${sceneNumber} with default image_key: ${imageKey} (processed key not available)`);
+      }
+      
+      // For Premium mode, we generate 9:16 and crop to bottom 960px (same as HALF_N_HALF)
+      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+        image_key: imageKeyToUse,
+        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait', // 9:16 is portrait
+        fit: 'cover', // Cover the screen
+      });
+    } else {
+      // Use standard Avatar API for Basic mode (generate 1080x960 directly)
+      if (!talkingPhotoId) {
+        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+      }
+      
+      console.log(`[RenderingService] ALTERNATE: Using standard Avatar API (Basic) for scene ${sceneNumber} with talking_photo_id: ${talkingPhotoId}`);
+      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
+        talking_photo_id: talkingPhotoId, // Use motion avatar ID
+        audio_asset_id: audioAssetId,
+        dimension: {
+          width: 1080,
+          height: 960, // Bottom half dimension (1080x960)
+        },
+        caption: false,
+      });
+    }
+
+    console.log(`[RenderingService] ALTERNATE: Created avatar video task ${videoResponse.video_id} for scene ${sceneNumber}`);
+    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+
+    if (!completedVideo.data.video_url) {
+      throw new Error(`Avatar video generation completed but no video URL for scene ${sceneNumber}`);
+    }
+
+    const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
+    await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+
+    // For Premium mode, if video is 9:16, crop to bottom 960px (same as HALF_N_HALF)
+    // CRITICAL: Always scale to 1080x1920 first (if needed), then crop to bottom 960px
+    // This ensures the white top portion is properly removed, not compressed
+    if (avatarMode === 'PREMIUM') {
+      const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
+      if (!videoRes) {
+        throw new Error('Failed to get video resolution for avatar video');
+      }
+      
+      console.log(`[RenderingService] ALTERNATE: Premium avatar video dimensions for scene ${sceneNumber}: ${videoRes.width}x${videoRes.height}`);
+      
+      // If video is not 1080x1920, scale it first (same as HALF_N_HALF)
+      if (videoRes.width !== 1080 || videoRes.height !== 1920) {
+        console.log(`[RenderingService] ALTERNATE: Scaling Premium avatar video for scene ${sceneNumber} from ${videoRes.width}x${videoRes.height} to 1080x1920 before cropping`);
+        const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
+        await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
+        
+        if (fs.existsSync(scaledPath)) {
+          // Use scaled version for cropping
+          const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
+          await this.videoCompositor.cropVideo(
+            scaledPath,
+            croppedPath,
+            0,      // x offset
+            960,    // y offset (start from 960px down - skip white top)
+            1080,   // width
+            960     // height (crop to 1080x960)
+          );
+          
+          // Cleanup scaled version after cropping
+          try {
+            fs.unlinkSync(scaledPath);
+          } catch (e) {
+            console.warn(`[RenderingService] Failed to cleanup scaled video: ${e}`);
+          }
+          
+          // Replace original with cropped version
+          if (fs.existsSync(croppedPath)) {
+            fs.unlinkSync(avatarVideoPath);
+            fs.renameSync(croppedPath, avatarVideoPath);
+            console.log(`[RenderingService] ALTERNATE: Cropped Premium avatar video for scene ${sceneNumber} to 1080x960`);
+          } else {
+            throw new Error('Video cropping failed');
+          }
+        } else {
+          throw new Error('Video scaling failed');
+        }
+      } else {
+        // Video is already correct size, just crop it
+        const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
+        await this.videoCompositor.cropVideo(
+          avatarVideoPath,
+          croppedPath,
+          0,      // x offset
+          960,    // y offset (start from 960px down - skip white top)
+          1080,   // width
+          960     // height (crop to 1080x960)
+        );
+        
+        // Replace original with cropped version
+        if (fs.existsSync(croppedPath)) {
+          fs.unlinkSync(avatarVideoPath);
+          fs.renameSync(croppedPath, avatarVideoPath);
+          console.log(`[RenderingService] ALTERNATE: Cropped Premium avatar video for scene ${sceneNumber} to 1080x960`);
+        }
+      }
+    }
+
+    return avatarVideoPath;
+  }
+
+  /**
+   * Process ALTERNATE style (merged with HALF_N_HALF):
+   * - Odd scenes (1, 3, 5...): Full-screen 9:16 b-roll video with audio (complete per-scene video)
+   * - Even scenes (2, 4, 6...): Half-n-half composition (top: 3:4 b-roll, bottom: 1080x960 avatar) with audio (complete per-scene video)
+   * - Stitch all complete per-scene videos together in order (no additional audio layer)
    */
   private async processAlternate(
     projectId: string,
@@ -1483,30 +1671,39 @@ export class RenderingService {
       }))
     );
     
-    // Identify avatar scenes (scenes that don't have b-roll)
-    const avatarScenes = scenes.filter((scene: any) => {
+    // Sort scenes by scene number
+    const sortedScenes = [...scenes].sort((a, b) => 
+      (a.scene_number || a.sceneNumber || 1) - (b.scene_number || b.sceneNumber || 1)
+    );
+    
+    // Classify scenes: odd = full b-roll, even = half-n-half
+    const halfNHalfScenes = sortedScenes.filter((scene: any) => {
       const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
-      return !bRollVideos.some(v => v.sceneNumber === sceneNumber);
-    }).map((scene: any) => ({
-      sceneNumber: scene.scene_number || scene.sceneNumber || 1,
-      audioFile: audioFiles.find(af => af.sceneNumber === (scene.scene_number || scene.sceneNumber || 1)),
-    })).filter((s: any) => s.audioFile);
+      return sceneNumber % 2 === 0; // Even scenes need half-n-half composition
+    });
 
-    await this.updateRenderingStatus(projectId, 'avatar_generating', 30);
+    console.log(`[RenderingService] ALTERNATE: Total scenes: ${sortedScenes.length}, Half-n-half scenes: ${halfNHalfScenes.length}`);
+
+    // Get avatar mode (BASIC or PREMIUM)
+    // For new AI chat flow, default to PREMIUM; for old flow, default to BASIC
+    const metadata = (project.metadata as any) || {};
+    const isAIChatFlow = metadata.generationFlow === 'AI_CHAT';
+    const avatarMode = (project.avatarMode as string) || (isAIChatFlow ? 'PREMIUM' : 'BASIC');
+    console.log(`[RenderingService] ALTERNATE: Using avatar mode: ${avatarMode} (flow: ${isAIChatFlow ? 'AI_CHAT' : 'OLD'})`);
+
+    await this.updateRenderingStatus(projectId, 'avatar_generating', 20);
 
     // Fetch avatar details to get talking_photo_id and imageKey
-    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
+    // For HALF_N_HALF Premium, fetch the processed image key with white top (same as HALF_N_HALF style)
+    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, false, true);
     const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
     const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
+    const imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite; // For HALF_N_HALF Premium (same logic for ALTERNATE)
 
-    // Get avatar mode (BASIC or PREMIUM) - default to BASIC
-    const avatarMode = (project.avatarMode as string) || 'BASIC';
-    console.log(`[RenderingService] ALTERNATE: Using avatar mode: ${avatarMode}`);
-
-    // Generate avatar videos for avatar scenes only (9:16 ratio)
+    // Generate avatar videos for half-n-half scenes only (1080x960 for bottom half)
     // Create directory structure: avatars/{projectId}/{styleType}/{avatarType}/
     const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
-    const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+    const styleType = this.getStyleDirectoryName(project.style); // 'alternate'
     const avatarDir = path.join(this.uploadsDir, 'videos', userId, 'avatars', projectId, styleType, avatarType);
     if (!fs.existsSync(avatarDir)) {
       fs.mkdirSync(avatarDir, { recursive: true });
@@ -1516,10 +1713,19 @@ export class RenderingService {
     const serverRoot = path.join(process.cwd(), '..', '..');
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
     
-    for (const scene of avatarScenes) {
-      // Resolve audio file path (same logic as above)
+    // Generate avatar videos for each half-n-half scene using the helper function
+    for (const scene of halfNHalfScenes) {
+      const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
+      const audioFile = audioFiles.find(af => af.sceneNumber === sceneNumber);
+      
+      if (!audioFile) {
+        console.error(`[RenderingService] ALTERNATE: No audio file found for half-n-half scene ${sceneNumber}`);
+        throw new Error(`Missing audio file for scene ${sceneNumber}. Cannot generate avatar video for half-n-half composition.`);
+      }
+      
+      // Resolve audio file path
       let audioPath: string | null = null;
-      const originalPath = scene.audioFile.filePath;
+      const originalPath = audioFile.filePath;
       
       if (path.isAbsolute(originalPath) && fs.existsSync(originalPath)) {
         audioPath = originalPath;
@@ -1541,84 +1747,87 @@ export class RenderingService {
       }
       
       if (!audioPath || !fs.existsSync(audioPath)) {
-        console.warn(`[RenderingService] Audio file not found for scene ${scene.sceneNumber}: ${originalPath}, skipping`);
-        continue;
+        console.error(`[RenderingService] ALTERNATE: Audio file not found for half-n-half scene ${sceneNumber}: ${originalPath}`);
+        throw new Error(`Missing audio file for scene ${sceneNumber}. Cannot generate avatar video.`);
       }
 
-      const audioBuffer = fs.readFileSync(audioPath);
-      const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${scene.sceneNumber}_audio.mp3`);
+      try {
+        const avatarVideoPath = await this.generateAlternateSceneAvatarVideo(
+          projectId,
+          userId,
+          sceneNumber,
+          audioPath,
+          avatarMode,
+          talkingPhotoId,
+          imageKey,
+          imageKeyHalfNHalfWithWhite,
+          avatarDir,
+          project
+        );
 
-      let videoResponse: { video_id: string };
-
-      if (avatarMode === 'PREMIUM') {
-        // Use Avatar IV API for Premium mode
-        if (!imageKey) {
-          throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-        }
-        
-        console.log(`[RenderingService] Using Avatar IV (Premium) for scene ${scene.sceneNumber} with image_key: ${imageKey}`);
-        videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-          image_key: imageKey,
-          video_title: `Avatar Video Scene ${scene.sceneNumber} - ${projectId}`,
-          audio_asset_id: audioAssetId,
-          video_orientation: 'portrait', // 9:16 is portrait
-          fit: 'cover', // Cover the screen
+        avatarVideos.push({
+          sceneNumber: sceneNumber,
+          localPath: avatarVideoPath,
+          duration: audioFile.duration,
         });
-      } else {
-        // Use standard Avatar API for Basic mode
-        if (!talkingPhotoId) {
-          throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-        }
         
-        console.log(`[RenderingService] Using standard Avatar API (Basic) for scene ${scene.sceneNumber} with talking_photo_id: ${talkingPhotoId}`);
-        videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-          talking_photo_id: talkingPhotoId, // Use motion avatar ID
-          audio_asset_id: audioAssetId,
-          dimension: {
-            width: 1080,
-            height: 1920, // 9:16
-          },
-          caption: false,
-        });
+        console.log(`[RenderingService] ALTERNATE: Generated avatar video for scene ${sceneNumber}, duration: ${audioFile.duration}s`);
+      } catch (error: any) {
+        console.error(`[RenderingService] ALTERNATE: Failed to generate avatar video for scene ${sceneNumber}: ${error.message}`);
+        throw error;
       }
-
-      console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id} for scene ${scene.sceneNumber}`);
-      const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
-
-      if (!completedVideo.data.video_url) {
-        throw new Error(`Avatar video generation completed but no video URL for scene ${scene.sceneNumber}`);
-      }
-
-      const avatarVideoPath = path.join(avatarDir, `avatar_scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp4`);
-      await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
-
-      avatarVideos.push({
-        sceneNumber: scene.sceneNumber,
-        localPath: avatarVideoPath,
-        duration: scene.audioFile.duration,
-      });
     }
 
-    await this.updateRenderingStatus(projectId, 'stitching', 70);
-
-    // Sort all scenes by scene number and create final video sequence
-    const sortedScenes = [...scenes].sort((a, b) => 
-      (a.scene_number || a.sceneNumber || 1) - (b.scene_number || b.sceneNumber || 1)
-    );
+    await this.updateRenderingStatus(projectId, 'compositing', 40);
 
     const userDir = path.join(this.uploadsDir, 'videos', userId);
     const sceneVideoPaths: string[] = [];
-    const sceneAudioPaths: string[] = [];
+    const sceneDurations: number[] = []; // Track durations of scenes that made it into final video
 
+    // Process each scene to create complete per-scene videos (with audio already attached)
     for (const scene of sortedScenes) {
       const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
+      const isOddScene = sceneNumber % 2 === 1;
+      const isEvenScene = sceneNumber % 2 === 0;
+      
       const brollVideo = bRollVideos.find(v => v.sceneNumber === sceneNumber);
       const avatarVideo = avatarVideos.find(v => v.sceneNumber === sceneNumber);
       const audioFile = audioFiles.find(af => af.sceneNumber === sceneNumber);
 
-      if (brollVideo && audioFile) {
-        // B-roll scene: add audio to b-roll video
-        // Resolve b-roll video path (try localPath first, then derive from localUrl)
+      if (!audioFile) {
+        console.error(`[RenderingService] ALTERNATE: No audio file for scene ${sceneNumber}`);
+        throw new Error(`Missing audio file for scene ${sceneNumber}. Cannot process scene.`);
+      }
+
+      // Resolve audio file path
+      const serverRoot = path.join(process.cwd(), '..', '..');
+      let audioFilePath: string | null = null;
+      if (path.isAbsolute(audioFile.filePath) && fs.existsSync(audioFile.filePath)) {
+        audioFilePath = audioFile.filePath;
+      } else {
+        const voiceServicePath = path.join(voiceServiceDir, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
+        if (fs.existsSync(voiceServicePath)) {
+          audioFilePath = voiceServicePath;
+        } else {
+          const serverRootPath = path.join(serverRoot, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
+          if (fs.existsSync(serverRootPath)) {
+            audioFilePath = serverRootPath;
+          } else {
+            const cwdPath = path.join(process.cwd(), audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
+            if (fs.existsSync(cwdPath)) {
+              audioFilePath = cwdPath;
+            }
+          }
+        }
+      }
+      
+      if (!audioFilePath || !fs.existsSync(audioFilePath)) {
+        console.error(`[RenderingService] ALTERNATE: Audio file not found for scene ${sceneNumber}: ${audioFile.filePath}`);
+        throw new Error(`Missing audio file for scene ${sceneNumber}. Cannot process scene.`);
+      }
+
+      if (isOddScene && brollVideo) {
+        // Odd scene: Full-screen 9:16 b-roll with audio (complete per-scene video)
         let brollVideoPath: string | null = null;
         
         if (brollVideo.localPath) {
@@ -1626,24 +1835,612 @@ export class RenderingService {
             ? brollVideo.localPath 
             : path.resolve(brollVideo.localPath);
         } else if (brollVideo.localUrl) {
-          // If no localPath, try to derive from localUrl
-          // localUrl format: /uploads/videos/{userId}/{filename}
           const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
           const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
           brollVideoPath = path.join(userDir, relativePath);
         }
         
         if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
-          console.warn(`[RenderingService] ALTERNATE: B-roll video not found for scene ${sceneNumber}, localPath: ${brollVideo.localPath}, localUrl: ${brollVideo.localUrl}`);
-          // Skip this scene if video doesn't exist
+          console.error(`[RenderingService] ALTERNATE: B-roll video not found for odd scene ${sceneNumber}`);
+          throw new Error(`Missing b-roll video for odd scene ${sceneNumber}. Cannot process scene.`);
+        }
+        
+        // Validate b-roll video is 9:16 (log warning if not, but scale as fallback)
+        const brollRes = await this.videoCompositor.getVideoResolution(brollVideoPath);
+        if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
+          console.warn(`[RenderingService] ALTERNATE: B-roll video for odd scene ${sceneNumber} is ${brollRes.width}x${brollRes.height}, expected 1080x1920. Scaling as fallback.`);
+          // Scale as fallback
+          const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+          await this.videoCompositor.scaleVideoToDimensions(brollVideoPath, scaledPath, 1080, 1920);
+          if (fs.existsSync(scaledPath)) {
+            brollVideoPath = scaledPath;
+          }
+        }
+        
+        // Add audio to b-roll video to create complete per-scene video
+        const completeScenePath = path.join(userDir, `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
+        await this.videoCompositor.addAudioToVideo(brollVideoPath, audioFilePath, completeScenePath);
+        
+        const absoluteScenePath = path.isAbsolute(completeScenePath) 
+          ? completeScenePath 
+          : path.resolve(completeScenePath);
+        sceneVideoPaths.push(absoluteScenePath);
+        sceneDurations.push(audioFile.duration || 0);
+        
+        console.log(`[RenderingService] ALTERNATE: Processed odd scene ${sceneNumber} (full b-roll) with audio, duration: ${audioFile.duration}s`);
+      } else if (isEvenScene) {
+        // Even scene: Half-n-half composition (top: 3:4 b-roll, bottom: 1080x960 avatar) with audio (complete per-scene video)
+        if (!brollVideo) {
+          console.error(`[RenderingService] ALTERNATE: B-roll video missing for half-n-half scene ${sceneNumber}`);
+          throw new Error(`B-roll video is required for half-n-half scene ${sceneNumber} but was not found.`);
+        }
+        
+        if (!avatarVideo) {
+          console.error(`[RenderingService] ALTERNATE: Avatar video missing for half-n-half scene ${sceneNumber}`);
+          throw new Error(`Avatar video is required for half-n-half scene ${sceneNumber} but was not generated.`);
+        }
+        
+        let brollVideoPath: string | null = null;
+        
+        if (brollVideo.localPath) {
+          brollVideoPath = path.isAbsolute(brollVideo.localPath) 
+            ? brollVideo.localPath 
+            : path.resolve(brollVideo.localPath);
+        } else if (brollVideo.localUrl) {
+          const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
+          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+          brollVideoPath = path.join(userDir, relativePath);
+        }
+        
+        if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
+          console.error(`[RenderingService] ALTERNATE: B-roll video file not found for half-n-half scene ${sceneNumber} at path: ${brollVideoPath}`);
+          throw new Error(`B-roll video file not found for scene ${sceneNumber} at path: ${brollVideoPath || 'unknown'}`);
+        }
+
+        let avatarVideoPath: string | null = null;
+        if (avatarVideo.localPath) {
+          avatarVideoPath = path.isAbsolute(avatarVideo.localPath)
+            ? avatarVideo.localPath
+            : path.resolve(avatarVideo.localPath);
+        }
+        
+        if (!avatarVideoPath || !fs.existsSync(avatarVideoPath)) {
+          console.error(`[RenderingService] ALTERNATE: Avatar video file not found for half-n-half scene ${sceneNumber} at path: ${avatarVideoPath}`);
+          throw new Error(`Avatar video file not found for scene ${sceneNumber} at path: ${avatarVideoPath || 'unknown'}`);
+        }
+
+        // Validate dimensions (log warnings, but scale as fallback if needed)
+        const brollRes = await this.videoCompositor.getVideoResolution(brollVideoPath);
+        const avatarRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
+        
+        // B-roll should be 3:4 (1080x960) for top half
+        if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 960)) {
+          console.warn(`[RenderingService] ALTERNATE: B-roll video for even scene ${sceneNumber} is ${brollRes.width}x${brollRes.height}, expected 1080x960. Scaling as fallback.`);
+          // Scale as fallback
+          const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+          await this.videoCompositor.scaleVideoToDimensions(brollVideoPath, scaledPath, 1080, 960);
+          if (fs.existsSync(scaledPath)) {
+            brollVideoPath = scaledPath;
+          }
+        }
+        
+        // Avatar should be 1080x960 for bottom half
+        if (avatarRes && (avatarRes.width !== 1080 || avatarRes.height !== 960)) {
+          console.warn(`[RenderingService] ALTERNATE: Avatar video for even scene ${sceneNumber} is ${avatarRes.width}x${avatarRes.height}, expected 1080x960. Scaling as fallback.`);
+          // Scale as fallback
+          const scaledPath = path.join(userDir, `avatar_scaled_${sceneNumber}_${projectId}.mp4`);
+          await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 960);
+          if (fs.existsSync(scaledPath)) {
+            avatarVideoPath = scaledPath;
+          }
+        }
+
+        // Composite half-n-half: stack b-roll (top) + avatar (bottom) = 9:16
+        const compositePath = path.join(userDir, `half_n_half_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
+        await this.videoCompositor.compositeHalfAndHalf(
+          brollVideoPath,
+          avatarVideoPath,
+          compositePath,
+          1080,
+          1920 // Final 9:16 output
+        );
+
+        // Add audio to composite to create complete per-scene video
+        const completeScenePath = path.join(userDir, `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
+        await this.videoCompositor.addAudioToVideo(compositePath, audioFilePath, completeScenePath);
+        
+        const absoluteScenePath = path.isAbsolute(completeScenePath) 
+          ? completeScenePath 
+          : path.resolve(completeScenePath);
+        sceneVideoPaths.push(absoluteScenePath);
+        sceneDurations.push(audioFile.duration || 0);
+        
+        console.log(`[RenderingService] ALTERNATE: Processed even scene ${sceneNumber} (half-n-half composition) with audio, duration: ${audioFile.duration}s`);
+      } else {
+        console.error(`[RenderingService] ALTERNATE: Missing required videos for scene ${sceneNumber} (isOdd: ${isOddScene}, hasBroll: ${!!brollVideo}, hasAvatar: ${!!avatarVideo})`);
+        throw new Error(`Missing required videos for scene ${sceneNumber}. Cannot process scene.`);
+      }
+    }
+
+    if (sceneVideoPaths.length === 0) {
+      throw new Error('No valid scene videos to stitch together');
+    }
+
+    console.log(`[RenderingService] ALTERNATE: Processed ${sceneVideoPaths.length} complete scene videos. Total expected duration: ${sceneDurations.reduce((sum, d) => sum + d, 0).toFixed(2)}s`);
+
+    await this.updateRenderingStatus(projectId, 'stitching', 70);
+
+    // Stitch all complete per-scene videos together (each already has its own audio)
+    const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+    const absoluteSceneVideoPaths = sceneVideoPaths
+      .map(vp => {
+        if (!vp) return null;
+        const absolutePath = path.isAbsolute(vp) 
+          ? vp 
+          : path.resolve(vp);
+        return absolutePath;
+      })
+      .filter(p => p && fs.existsSync(p)) as string[];
+    
+    if (absoluteSceneVideoPaths.length === 0) {
+      throw new Error('No valid scene videos to stitch together');
+    }
+    
+    console.log(`[RenderingService] ALTERNATE: Stitching ${absoluteSceneVideoPaths.length} complete scene videos together...`);
+    await this.videoCompositor.concatenateVideos(absoluteSceneVideoPaths, finalVideoPath);
+
+    // Calculate total duration from scenes that made it into the final video
+    // Use ffprobe to get actual video duration as the source of truth
+    let totalDuration: number;
+    try {
+      const videoDuration = await this.videoCompositor.getVideoDuration(finalVideoPath);
+      totalDuration = videoDuration;
+      console.log(`[RenderingService] ALTERNATE: Final video duration (from ffprobe): ${totalDuration.toFixed(2)}s`);
+      
+      // Log comparison with expected duration
+      const expectedDuration = sceneDurations.reduce((sum, d) => sum + d, 0);
+      const durationDiff = Math.abs(totalDuration - expectedDuration);
+      if (durationDiff > 0.5) {
+        console.warn(`[RenderingService] ALTERNATE: Duration mismatch! Expected: ${expectedDuration.toFixed(2)}s, Actual: ${totalDuration.toFixed(2)}s, Diff: ${durationDiff.toFixed(2)}s`);
+      } else {
+        console.log(`[RenderingService] ALTERNATE: Duration matches expected (${expectedDuration.toFixed(2)}s)`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] ALTERNATE: Failed to get video duration from ffprobe, using sum of scene durations: ${error.message}`);
+      // Fallback to sum of scene durations
+      totalDuration = sceneDurations.reduce((sum, d) => sum + d, 0);
+    }
+
+    // Final video already has all audio, no need to add stitched audio again
+    const finalVideoWithAudioPath = finalVideoPath;
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalVideoWithAudioPath,
+        `videos/${userId}`,
+        path.basename(finalVideoWithAudioPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ ALTERNATE final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for ALTERNATE final video: ${error.message}`);
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'COMPLETED',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        videoUrl: publicUrl || localVideoUrl,
+        duration: totalDuration,
+        currentStep: 'COMPLETED',
+        completedAt: new Date(),
+      } as any,
+    });
+
+    console.log(`[RenderingService] ✅ ALTERNATE video completed: ${publicUrl || localVideoUrl}, duration: ${totalDuration.toFixed(2)}s, scenes: ${sceneVideoPaths.length}`);
+  }
+
+  /**
+   * Process AVATAR_ONLY style:
+   * - Generate one full avatar video from stitched audio (9:16)
+   * - No b-roll overlay, just the avatar video
+   */
+  private async processAvatarOnly(
+    projectId: string,
+    userId: string,
+    audioFiles: any[],
+    project: any,
+    authToken?: string
+  ): Promise<void> {
+    console.log(`[RenderingService] Processing AVATAR_ONLY style for project ${projectId}`);
+
+    if (!project.avatarId) {
+      throw new Error('Avatar ID required for AVATAR_ONLY style');
+    }
+
+    // Sort audio files by scene number
+    const sortedAudioFiles = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+    await this.updateRenderingStatus(projectId, 'stitching_audio', 20);
+
+    // Stitch all audio files together
+    const userDir = path.join(this.uploadsDir, 'videos', userId);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+
+    const audioPaths = sortedAudioFiles.map(af => {
+      if (!af.filePath) return null;
+      
+      let resolvedPath: string | null = null;
+      
+      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
+        resolvedPath = af.filePath;
+      } else {
+        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        if (fs.existsSync(voiceServicePath)) {
+          resolvedPath = voiceServicePath;
+        } else {
+          const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+          if (fs.existsSync(serverRootPath)) {
+            resolvedPath = serverRootPath;
+          } else {
+            const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+            if (fs.existsSync(cwdPath)) {
+              resolvedPath = cwdPath;
+            }
+          }
+        }
+      }
+      
+      if (!resolvedPath) {
+        console.warn(`[RenderingService] Audio file not found: ${af.filePath}`);
+      }
+      return resolvedPath;
+    }).filter(p => p !== null && fs.existsSync(p)) as string[];
+
+    if (audioPaths.length === 0) {
+      throw new Error('No valid audio file paths found for stitching');
+    }
+
+    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}.mp3`);
+    console.log(`[RenderingService] AVATAR_ONLY: Stitching ${audioPaths.length} audio files...`);
+    await this.videoCompositor.concatenateAudios(audioPaths, stitchedAudioPath);
+
+    await this.updateRenderingStatus(projectId, 'avatar_generating', 40);
+
+    // Generate avatar video from stitched audio
+    const audioBuffer = fs.readFileSync(stitchedAudioPath);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
+
+    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
+    const talkingPhotoId = avatarDetails.providerAvatarId;
+    const imageKey = avatarDetails.imageKey;
+
+    const avatarMode = (project.avatarMode as string) || 'BASIC';
+    console.log(`[RenderingService] AVATAR_ONLY: Using avatar mode: ${avatarMode}`);
+
+      let videoResponse: { video_id: string };
+
+      if (avatarMode === 'PREMIUM') {
+        if (!imageKey) {
+          throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
+        }
+        
+      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
+        videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+          image_key: imageKey,
+        video_title: `Avatar Video ${projectId}`,
+          audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+        });
+      } else {
+        if (!talkingPhotoId) {
+          throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
+        }
+        
+      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
+        videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
+        talking_photo_id: talkingPhotoId,
+          audio_asset_id: audioAssetId,
+          dimension: {
+            width: 1080,
+          height: 1920,
+          },
+          caption: false,
+        });
+      }
+
+    console.log(`[RenderingService] AVATAR_ONLY: Created avatar video task ${videoResponse.video_id}`);
+    await this.updateRenderingStatus(projectId, 'avatar_generating', 60);
+
+      const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+
+      if (!completedVideo.data.video_url) {
+      throw new Error('Avatar video generation completed but no video URL returned');
+      }
+
+    await this.updateRenderingStatus(projectId, 'stitching', 80);
+
+    const avatarVideoPath = path.join(userDir, `avatar_only_${projectId}_${Date.now()}.mp4`);
+      await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+
+    // Calculate total duration
+    const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(avatarVideoPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        avatarVideoPath,
+        `videos/${userId}`,
+        path.basename(avatarVideoPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ AVATAR_ONLY final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for AVATAR_ONLY final video: ${error.message}`);
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'COMPLETED',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        videoUrl: publicUrl || localVideoUrl,
+        duration: totalDuration,
+        currentStep: 'COMPLETED',
+        completedAt: new Date(),
+      } as any,
+    });
+
+    console.log(`[RenderingService] AVATAR_ONLY video completed: ${publicUrl || localVideoUrl}`);
+  }
+
+  /**
+   * Process PRODUCT_ONLY style:
+   * - Stitch all b-roll videos together
+   * - Stitch all audio files together
+   * - Combine into final video (no avatar)
+   */
+  private async processProductOnly(
+    projectId: string,
+    userId: string,
+    audioFiles: any[],
+    bRollVideos: any[],
+    project: any
+  ): Promise<void> {
+    console.log(`[RenderingService] Processing PRODUCT_ONLY style for project ${projectId}`);
+
+    // Sort by scene number
+    const sortedBrollVideos = [...bRollVideos].sort((a, b) => a.sceneNumber - b.sceneNumber);
+    const sortedAudioFiles = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+    await this.updateRenderingStatus(projectId, 'stitching_audio', 20);
+
+    // Setup paths
+    const userDir = path.join(this.uploadsDir, 'videos', userId);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+
+    // Resolve audio paths
+    const audioPaths = sortedAudioFiles.map(af => {
+      if (!af.filePath) return null;
+      
+      let resolvedPath: string | null = null;
+      
+      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
+        resolvedPath = af.filePath;
+      } else {
+        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        if (fs.existsSync(voiceServicePath)) {
+          resolvedPath = voiceServicePath;
+        } else {
+          const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+          if (fs.existsSync(serverRootPath)) {
+            resolvedPath = serverRootPath;
+          } else {
+            const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+            if (fs.existsSync(cwdPath)) {
+              resolvedPath = cwdPath;
+            }
+          }
+        }
+      }
+      
+      if (!resolvedPath) {
+        console.warn(`[RenderingService] Audio file not found: ${af.filePath}`);
+      }
+      return resolvedPath;
+    }).filter(p => p !== null && fs.existsSync(p)) as string[];
+
+    if (audioPaths.length === 0) {
+      throw new Error('No valid audio file paths found for stitching');
+    }
+
+    // Stitch audio
+    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}.mp3`);
+    console.log(`[RenderingService] PRODUCT_ONLY: Stitching ${audioPaths.length} audio files...`);
+    await this.videoCompositor.concatenateAudios(audioPaths, stitchedAudioPath);
+
+    await this.updateRenderingStatus(projectId, 'stitching_broll', 40);
+
+    // Resolve b-roll video paths
+    const videoPaths = sortedBrollVideos.map(v => {
+      let videoPath: string | null = null;
+      
+      if (v.localPath) {
+        videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
+      } else if (v.localUrl) {
+        const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
+        const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+        videoPath = path.join(userDir, relativePath);
+      }
+      
+      if (!videoPath || !fs.existsSync(videoPath)) {
+        console.warn(`[RenderingService] B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`);
+        return null;
+      }
+      return videoPath;
+    }).filter(p => p !== null) as string[];
+
+    if (videoPaths.length === 0) {
+      throw new Error('No valid b-roll video paths found for stitching');
+    }
+
+    // Stitch b-roll videos
+    const stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}_${Date.now()}.mp4`);
+    console.log(`[RenderingService] PRODUCT_ONLY: Stitching ${videoPaths.length} b-roll videos...`);
+    await this.videoCompositor.concatenateVideos(videoPaths, stitchedBrollPath);
+
+    await this.updateRenderingStatus(projectId, 'stitching', 70);
+
+    // Add stitched audio to stitched video
+    const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+    await this.videoCompositor.addAudioToVideo(stitchedBrollPath, stitchedAudioPath, finalVideoPath);
+
+    // Calculate total duration
+    const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalVideoPath,
+        `videos/${userId}`,
+        path.basename(finalVideoPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ PRODUCT_ONLY final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for PRODUCT_ONLY final video: ${error.message}`);
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'COMPLETED',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        videoUrl: publicUrl || localVideoUrl,
+        duration: totalDuration,
+        currentStep: 'COMPLETED',
+        completedAt: new Date(),
+      } as any,
+    });
+
+    console.log(`[RenderingService] PRODUCT_ONLY video completed: ${publicUrl || localVideoUrl}`);
+  }
+
+  /**
+   * Process AVATAR_PRODUCT style:
+   * - Similar to ALTERNATE but with product context
+   * - B-roll videos already have avatar+product composited (from image generation)
+   * - Stitch all scene videos with their audio
+   * - Combine into final video
+   */
+  private async processAvatarProduct(
+    projectId: string,
+    userId: string,
+    audioFiles: any[],
+    bRollVideos: any[],
+    project: any,
+    authToken?: string
+  ): Promise<void> {
+    console.log(`[RenderingService] Processing AVATAR_PRODUCT style for project ${projectId}`);
+
+    // Parse script to get scene info
+    const script = typeof project.script === 'string' 
+      ? JSON.parse(project.script) 
+      : project.script;
+    
+    const scenes = script.scenes || script.scene_plan || [];
+
+    // Sort by scene number
+    const sortedAudioFiles = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
+    const sortedScenes = [...scenes].sort((a: any, b: any) => 
+      (a.scene_number || a.sceneNumber || 1) - (b.scene_number || b.sceneNumber || 1)
+    );
+
+    await this.updateRenderingStatus(projectId, 'stitching_audio', 20);
+
+    // Setup paths
+    const userDir = path.join(this.uploadsDir, 'videos', userId);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+
+    await this.updateRenderingStatus(projectId, 'stitching_broll', 40);
+
+    const sceneVideoPaths: string[] = [];
+    const sceneAudioPaths: string[] = [];
+
+    // Process each scene
+    for (const scene of sortedScenes) {
+      const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
+      const brollVideo = bRollVideos.find((v: any) => v.sceneNumber === sceneNumber);
+      const audioFile = sortedAudioFiles.find((af: any) => af.sceneNumber === sceneNumber);
+
+      if (!brollVideo || !audioFile) {
+        console.warn(`[RenderingService] AVATAR_PRODUCT: Missing video or audio for scene ${sceneNumber}`);
+        continue;
+      }
+
+      // Resolve b-roll video path
+      let brollVideoPath: string | null = null;
+        if (brollVideo.localPath) {
+          brollVideoPath = path.isAbsolute(brollVideo.localPath) 
+            ? brollVideo.localPath 
+            : path.resolve(brollVideo.localPath);
+        } else if (brollVideo.localUrl) {
+          const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
+          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+          brollVideoPath = path.join(userDir, relativePath);
+        }
+        
+        if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
+        console.warn(`[RenderingService] AVATAR_PRODUCT: B-roll video not found for scene ${sceneNumber}`);
           continue;
         }
         
-        const brollWithAudioPath = path.join(userDir, `broll_audio_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
-        // Convert audio file path to absolute (same logic as above)
-        const serverRoot = path.join(process.cwd(), '..', '..');
-        const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
-        
+      // Resolve audio path
         let audioFilePath: string | null = null;
         if (path.isAbsolute(audioFile.filePath) && fs.existsSync(audioFile.filePath)) {
           audioFilePath = audioFile.filePath;
@@ -1665,83 +2462,51 @@ export class RenderingService {
         }
         
         if (!audioFilePath || !fs.existsSync(audioFilePath)) {
-          throw new Error(`Audio file not found for scene ${sceneNumber}: ${audioFile.filePath}`);
-        }
-        await this.videoCompositor.addAudioToVideo(brollVideoPath, audioFilePath, brollWithAudioPath);
-        // Ensure brollWithAudioPath is absolute
-        const absoluteBrollPath = path.isAbsolute(brollWithAudioPath) 
-          ? brollWithAudioPath 
-          : path.resolve(brollWithAudioPath);
-        sceneVideoPaths.push(absoluteBrollPath);
-        sceneAudioPaths.push(audioFilePath);
-      } else if (avatarVideo) {
-        // Avatar scene
-        // Ensure avatarVideo.localPath is absolute
-        const absoluteAvatarPath = avatarVideo.localPath && path.isAbsolute(avatarVideo.localPath)
-          ? avatarVideo.localPath
-          : avatarVideo.localPath ? path.resolve(avatarVideo.localPath) : null;
-        if (absoluteAvatarPath && fs.existsSync(absoluteAvatarPath)) {
-          sceneVideoPaths.push(absoluteAvatarPath);
-        }
-        if (audioFile && audioFile.filePath) {
-          // Convert audio file path to absolute (same logic as above)
-          const serverRoot = path.join(process.cwd(), '..', '..');
-          const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
-          
-          let audioFilePath: string | null = null;
-          if (path.isAbsolute(audioFile.filePath) && fs.existsSync(audioFile.filePath)) {
-            audioFilePath = audioFile.filePath;
-          } else {
-            const voiceServicePath = path.join(voiceServiceDir, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-            if (fs.existsSync(voiceServicePath)) {
-              audioFilePath = voiceServicePath;
-            } else {
-              const serverRootPath = path.join(serverRoot, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-              if (fs.existsSync(serverRootPath)) {
-                audioFilePath = serverRootPath;
-              } else {
-                const cwdPath = path.join(process.cwd(), audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-                if (fs.existsSync(cwdPath)) {
-                  audioFilePath = cwdPath;
-                }
-              }
-            }
-          }
-          
-          if (audioFilePath && fs.existsSync(audioFilePath)) {
+        console.warn(`[RenderingService] AVATAR_PRODUCT: Audio not found for scene ${sceneNumber}`);
+        continue;
+      }
+
+      // Add audio to b-roll video
+      const sceneWithAudioPath = path.join(userDir, `scene_${sceneNumber}_with_audio_${projectId}_${Date.now()}.mp4`);
+      await this.videoCompositor.addAudioToVideo(brollVideoPath, audioFilePath, sceneWithAudioPath);
+      
+      sceneVideoPaths.push(sceneWithAudioPath);
             sceneAudioPaths.push(audioFilePath);
           }
-        }
-      }
+
+    if (sceneVideoPaths.length === 0) {
+      throw new Error('No valid scene videos found for AVATAR_PRODUCT style');
     }
+
+    await this.updateRenderingStatus(projectId, 'stitching', 70);
 
     // Stitch all scene videos together
     const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
-    // Ensure all scene video paths are absolute before concatenation
-    const absoluteSceneVideoPaths = sceneVideoPaths
-      .map(vp => {
-        if (!vp) return null;
-        // Convert to absolute path if relative
-        const absolutePath = path.isAbsolute(vp) 
-          ? vp 
-          : path.resolve(vp);
-        return absolutePath;
-      })
-      .filter(p => p && fs.existsSync(p)) as string[];
-    await this.videoCompositor.concatenateVideos(absoluteSceneVideoPaths, finalVideoPath);
-
-    // Stitch all audio files together
-    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}_${Date.now()}.mp3`);
-    await this.videoCompositor.concatenateAudios(sceneAudioPaths, stitchedAudioPath);
-
-    // Add final stitched audio to final video
-    const finalVideoWithAudioPath = path.join(userDir, `final_with_audio_${projectId}_${Date.now()}.mp4`);
-    await this.videoCompositor.addAudioToVideo(finalVideoPath, stitchedAudioPath, finalVideoWithAudioPath);
+    await this.videoCompositor.concatenateVideos(sceneVideoPaths, finalVideoPath);
 
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const finalVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
+
+    // Upload to GCS if available
+    let gcsUrl: string | undefined;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalVideoPath,
+        `videos/${userId}`,
+        path.basename(finalVideoPath),
+        'video/mp4'
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+      if (gcsUrl) {
+        console.log(`[RenderingService] ✅ AVATAR_PRODUCT final video uploaded to GCS: ${gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for AVATAR_PRODUCT final video: ${error.message}`);
+    }
 
     await this.databaseService.videoProject.update({
       where: { id: projectId },
@@ -1749,14 +2514,14 @@ export class RenderingService {
         status: 'COMPLETED',
         renderingStatus: 'completed' as any,
         renderingProgress: 100 as any,
-        videoUrl: finalVideoUrl,
+        videoUrl: publicUrl || localVideoUrl,
         duration: totalDuration,
         currentStep: 'COMPLETED',
         completedAt: new Date(),
-      },
+      } as any,
     });
 
-    console.log(`[RenderingService] ALTERNATE video completed: ${finalVideoUrl}`);
+    console.log(`[RenderingService] AVATAR_PRODUCT video completed: ${publicUrl || localVideoUrl}`);
   }
 
   /**

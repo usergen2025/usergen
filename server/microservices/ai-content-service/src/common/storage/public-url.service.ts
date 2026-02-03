@@ -28,7 +28,7 @@ export class PublicUrlService {
     this.nodeEnv = this.configService.get<string>('NODE_ENV') || 'local';
     
     // Get backend base URL - for local, use localhost with service port
-    const servicePort = this.configService.get<number>('SERVICE_PORT', 9004);
+    const servicePort = this.configService.get<number>('SERVICE_PORT', 9001);
     this.backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
       `http://localhost:${servicePort}`;
     
@@ -56,12 +56,12 @@ export class PublicUrlService {
       gcs: gcsConfig,
       backendBaseUrl: this.backendBaseUrl,
       uploadsBaseDir: this.uploadsBaseDir,
-      service: 'video-processing',
+      service: 'ai-content',
     });
 
     // Log initialization status
     if (this.unifiedStorage.isGcsAvailable()) {
-      console.log(`[PublicUrlService] ✅ GCS storage initialized for video-processing-service (bucket: ${gcsConfig.bucketName})`);
+      console.log(`[PublicUrlService] ✅ GCS storage initialized for ai-content-service (bucket: ${gcsConfig.bucketName})`);
     } else {
       console.log(`[PublicUrlService] Using local/backend URL fallback (GCS not available)`);
     }
@@ -71,7 +71,7 @@ export class PublicUrlService {
    * Get public URL for a local file
    * @param localPath - Full path to the local file (e.g., /path/to/uploads/images/user123/file.jpg)
    * @param localUrl - Relative URL path (e.g., /uploads/images/user123/file.jpg)
-   * @returns Public URL that can be used by external services (BytePlus, FAL, HeyGen, etc.)
+   * @returns Public URL that can be used by external services (GPT-4 Vision, HeyGen, etc.)
    */
   async getPublicUrl(localPath: string, localUrl: string): Promise<string> {
     // Validate file exists
@@ -104,7 +104,7 @@ export class PublicUrlService {
   /**
    * Upload a file from buffer and get storage result with both local and GCS URLs
    * @param buffer - File content as buffer
-   * @param subPath - Sub-path within service folder (e.g., "images/user123")
+   * @param subPath - Sub-path within service folder (e.g., "avatars/user123/avatar456")
    * @param filename - Filename for the uploaded file
    * @param contentType - MIME content type (auto-detected if not provided)
    * @returns StorageResult with local and GCS URLs
@@ -126,7 +126,7 @@ export class PublicUrlService {
       localDir,
       filename,
       contentType: mimeType,
-      service: 'video-processing',
+      service: 'ai-content',
       subPath,
       makePublic: true,
     });
@@ -161,7 +161,7 @@ export class PublicUrlService {
       localPath,
       filename: finalFilename,
       contentType: mimeType,
-      service: 'video-processing',
+      service: 'ai-content',
       subPath,
       makePublic: true,
     });

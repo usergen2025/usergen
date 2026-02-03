@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import { preWarmUrl, withRetry } from '@shared/storage';
 
 export interface HeyGenVideoGenerationRequest {
   avatar_id?: string; // Deprecated - use talking_photo_id instead
@@ -125,6 +126,16 @@ export class HeyGenVideoProvider {
 
       if (!avatarId) {
         throw new Error('Either talking_photo_id or avatar_id must be provided');
+      }
+
+      // Pre-warm audio URL if provided (helps HeyGen download the file faster)
+      if (request.audio_url && !request.audio_asset_id) {
+        console.log(`[HeyGen] Pre-warming audio URL...`);
+        const warmed = await preWarmUrl(request.audio_url, 3);
+        if (!warmed) {
+          console.warn(`[HeyGen] ⚠️ Audio URL pre-warming failed, proceeding anyway...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       const payload = {
@@ -420,6 +431,16 @@ export class HeyGenVideoProvider {
       
       if (!request.audio_url && !request.audio_asset_id && (!request.script || !request.voice_id)) {
         throw new Error('Either audio_url/audio_asset_id or script+voice_id must be provided');
+      }
+
+      // Pre-warm audio URL if provided (helps HeyGen download the file faster)
+      if (request.audio_url && !request.audio_asset_id) {
+        console.log(`[HeyGen] Pre-warming audio URL for Avatar IV...`);
+        const warmed = await preWarmUrl(request.audio_url, 3);
+        if (!warmed) {
+          console.warn(`[HeyGen] ⚠️ Audio URL pre-warming failed, proceeding anyway...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       const payload: any = {
