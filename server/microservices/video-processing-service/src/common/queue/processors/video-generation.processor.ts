@@ -313,9 +313,11 @@ export class VideoGenerationProcessor extends WorkerHost {
     const capabilities = model.capabilities;
 
     // Map duration based on provider capabilities
+    // Note: Audio duration is already rounded up during generation, so we use it as-is
     let finalDuration: number;
     if (capabilities.supportedDurations) {
       // FAL: Map to enum (4s, 6s, 8s)
+      // Audio is already rounded up, so we use the rounded value
       const durationValue = duration;
       if (durationValue <= 4) {
         finalDuration = 4;
@@ -326,7 +328,8 @@ export class VideoGenerationProcessor extends WorkerHost {
       }
     } else {
       // BytePlus: Ensure minimum duration
-      finalDuration = Math.max(Math.floor(duration), capabilities.minDuration || 2);
+      // Audio is already rounded up, so we use Math.ceil to match
+      finalDuration = Math.max(Math.ceil(duration), capabilities.minDuration || 2);
     }
 
     if (finalDuration <= 0) {

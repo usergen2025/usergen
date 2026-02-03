@@ -906,6 +906,53 @@ export class VideoCompositorProvider {
   }
 
   /**
+   * Apply fade-out to audio file
+   * @param audioPath Path to input audio file
+   * @param outputPath Path for output audio file with fade-out
+   * @param fadeDuration Duration of fade-out in seconds (default: 1.0)
+   * @returns Path to processed audio file
+   */
+  async applyAudioFadeOut(
+    audioPath: string,
+    outputPath: string,
+    fadeDuration: number = 1.0
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get audio duration using getVideoDuration (works for audio too)
+    const audioDuration = await this.getVideoDuration(audioPath);
+    if (audioDuration <= 0) {
+      throw new Error(`Invalid audio duration: ${audioDuration}`);
+    }
+
+    // Calculate fade start time
+    const fadeStart = Math.max(0, audioDuration - fadeDuration);
+    
+    console.log(`[VideoCompositor] Applying fade-out to audio: duration=${audioDuration.toFixed(2)}s, fade starts at ${fadeStart.toFixed(2)}s, fade duration=${fadeDuration}s`);
+
+    try {
+      const ffmpegCommand = `
+        ffmpeg -i "${audioPath}" \
+        -af "afade=t=out:st=${fadeStart}:d=${fadeDuration}" \
+        -c:a libmp3lame -b:a 192k \
+        -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      execSync(ffmpegCommand, { stdio: 'inherit' });
+      console.log(`[VideoCompositor] Audio fade-out applied successfully: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg audio fade-out error:`, error.message);
+      throw new Error(`Failed to apply audio fade-out: ${error.message}`);
+    }
+  }
+
+  /**
    * Crop video to specific dimensions
    * @param videoPath Path to input video
    * @param outputPath Path for output video

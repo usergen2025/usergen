@@ -650,9 +650,9 @@ export class VideoController {
       );
     }
 
-    // Ensure duration matches audio file duration exactly (not exceeding it)
-    // Round down to nearest second to ensure video doesn't exceed audio duration
-    const videoDuration = Math.floor(audioDuration);
+    // Ensure duration matches audio file duration exactly
+    // Round up to nearest second to match rounded audio duration (audio is rounded up during generation)
+    const videoDuration = Math.ceil(audioDuration);
     if (videoDuration <= 0) {
       throw new HttpException(
         `Invalid duration for scene ${sceneNumber}: ${audioDuration} seconds`,

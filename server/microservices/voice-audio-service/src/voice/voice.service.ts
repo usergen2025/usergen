@@ -186,6 +186,209 @@ export class VoiceService {
   }
 
   /**
+   * Round up audio duration to next integer and add padding (with threshold-based logic)
+   * This ensures video generation has exact duration matching without excessive silence
+   * @param audioPath Path to audio file
+   * @param outputPath Path for processed audio file
+   * @param paddingSeconds Padding to add when needed (default: 1 second for final scene)
+   * @param roundUp Whether to round up to next integer (default: true)
+   * @param threshold Decimal threshold to determine if extra padding is needed (default: 0.7)
+   *                  If decimal part <= threshold: only round up (no extra padding)
+   *                  If decimal part > threshold: round up + add padding
+   *                  If decimal = 0.0 (exact integer): round up + add padding
+   * @returns New duration after processing
+   */
+  async processAudioWithPadding(
+    audioPath: string,
+    outputPath: string,
+    paddingSeconds: number = 1.0,
+    roundUp: boolean = true,
+    threshold: number = 0.7
+  ): Promise<number> {
+    if (!this.ffmpegAvailable) {
+      throw new Error('FFmpeg is required for audio processing but is not available');
+    }
+
+    // Ensure output directory exists
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get current audio duration using ffprobe
+    let currentDuration: number;
+    try {
+      const { execSync } = require('child_process');
+      const output = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+        { encoding: 'utf-8' }
+      );
+      currentDuration = parseFloat(output.trim());
+      if (isNaN(currentDuration) || currentDuration <= 0) {
+        throw new Error(`Invalid audio duration: ${output.trim()}`);
+      }
+    } catch (error: any) {
+      throw new Error(`Failed to get audio duration: ${error.message}`);
+    }
+
+    console.log(`[VoiceService] Processing audio with padding: original duration=${currentDuration.toFixed(2)}s`);
+
+    // Calculate target duration with threshold-based logic
+    let targetDuration: number;
+    let actualPadding: number = 0;
+    
+    if (roundUp) {
+      const decimalPart = currentDuration % 1;
+      const roundedDuration = Math.ceil(currentDuration);
+      
+      // Special case: if already an integer (decimal = 0.0), add padding
+      if (decimalPart === 0.0) {
+        targetDuration = roundedDuration + paddingSeconds;
+        actualPadding = paddingSeconds;
+        console.log(`[VoiceService] Exact integer (${currentDuration.toFixed(2)}s), rounding up and adding ${paddingSeconds}s padding`);
+      } else if (decimalPart <= threshold) {
+        // Decimal <= threshold: Only round up, no extra padding
+        targetDuration = roundedDuration;
+        actualPadding = 0;
+        console.log(`[VoiceService] Decimal part (${decimalPart.toFixed(2)}) <= threshold (${threshold}), only rounding up to ${roundedDuration}s, no extra padding`);
+      } else {
+        // Decimal > threshold: Round up + add padding
+        targetDuration = roundedDuration + paddingSeconds;
+        actualPadding = paddingSeconds;
+        console.log(`[VoiceService] Decimal part (${decimalPart.toFixed(2)}) > threshold (${threshold}), rounding up to ${roundedDuration}s and adding ${paddingSeconds}s padding`);
+      }
+    } else {
+      targetDuration = currentDuration + paddingSeconds;
+      actualPadding = paddingSeconds;
+    }
+
+    console.log(`[VoiceService] Target duration: ${targetDuration.toFixed(2)}s (padding: ${actualPadding.toFixed(2)}s)`);
+
+    try {
+      // Use FFmpeg to extend audio with silence padding
+      // Calculate the total padding needed (difference between target and original)
+      const totalPaddingNeeded = targetDuration - currentDuration;
+      
+      const ffmpegArgs = ['-i', audioPath];
+      
+      if (totalPaddingNeeded > 0) {
+        // Add padding filter to extend audio to target duration
+        ffmpegArgs.push('-af', `apad=pad_dur=${totalPaddingNeeded}`);
+      }
+      
+      ffmpegArgs.push(
+        '-t', targetDuration.toString(),
+        '-c:a', 'libmp3lame',
+        '-b:a', '192k',
+        '-y',
+        outputPath
+      );
+      
+      execFileSync('ffmpeg', ffmpegArgs, {
+        stdio: 'inherit',
+        maxBuffer: 10 * 1024 * 1024, // 10MB max buffer
+      });
+
+      // Verify output file was created
+      if (!fs.existsSync(outputPath)) {
+        throw new Error('FFmpeg processing completed but output file was not created');
+      }
+
+      // Get actual duration of processed file
+      let actualDuration: number;
+      try {
+        const { execSync } = require('child_process');
+        const output = execSync(
+          `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`,
+          { encoding: 'utf-8' }
+        );
+        actualDuration = parseFloat(output.trim());
+        if (isNaN(actualDuration)) {
+          actualDuration = targetDuration; // Fallback to target duration
+        }
+      } catch (error: any) {
+        console.warn(`[VoiceService] Failed to verify processed audio duration, using target duration: ${error.message}`);
+        actualDuration = targetDuration;
+      }
+
+      console.log(`[VoiceService] Audio processed successfully: ${actualDuration.toFixed(2)}s`);
+      return actualDuration;
+    } catch (error: any) {
+      console.error(`[VoiceService] Failed to process audio with padding:`, error.message);
+      throw new Error(`Failed to process audio with padding: ${error.message}`);
+    }
+  }
+
+  /**
+   * Apply fade-out to audio file
+   * @param audioPath Path to input audio file
+   * @param outputPath Path for output audio file with fade-out
+   * @param fadeDuration Duration of fade-out in seconds (default: 1.0)
+   * @returns Path to processed audio file
+   */
+  async applyAudioFadeOut(
+    audioPath: string,
+    outputPath: string,
+    fadeDuration: number = 1.0
+  ): Promise<string> {
+    if (!this.ffmpegAvailable) {
+      throw new Error('FFmpeg is required for audio fade-out but is not available');
+    }
+
+    // Ensure output directory exists
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get audio duration using ffprobe
+    let audioDuration: number;
+    try {
+      const { execSync } = require('child_process');
+      const output = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+        { encoding: 'utf-8' }
+      );
+      audioDuration = parseFloat(output.trim());
+      if (isNaN(audioDuration) || audioDuration <= 0) {
+        throw new Error(`Invalid audio duration: ${output.trim()}`);
+      }
+    } catch (error: any) {
+      throw new Error(`Failed to get audio duration: ${error.message}`);
+    }
+
+    // Calculate fade start time
+    const fadeStart = Math.max(0, audioDuration - fadeDuration);
+    
+    console.log(`[VoiceService] Applying fade-out to audio: duration=${audioDuration.toFixed(2)}s, fade starts at ${fadeStart.toFixed(2)}s, fade duration=${fadeDuration}s`);
+
+    try {
+      execFileSync('ffmpeg', [
+        '-i', audioPath,
+        '-af', `afade=t=out:st=${fadeStart}:d=${fadeDuration}`,
+        '-c:a', 'libmp3lame',
+        '-b:a', '192k',
+        '-y',
+        outputPath,
+      ], {
+        stdio: 'inherit',
+        maxBuffer: 10 * 1024 * 1024, // 10MB max buffer
+      });
+
+      // Verify output file was created
+      if (!fs.existsSync(outputPath)) {
+        throw new Error('FFmpeg fade-out completed but output file was not created');
+      }
+
+      console.log(`[VoiceService] Audio fade-out applied successfully: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VoiceService] Failed to apply audio fade-out:`, error.message);
+      throw new Error(`Failed to apply audio fade-out: ${error.message}`);
+    }
+  }
+
+  /**
    * Generate multiple speech audio files for script scenes
    */
   async generateScriptAudio(
@@ -204,6 +407,10 @@ export class VoiceService {
         use_speaker_boost?: boolean;
         speed?: number;
       };
+      applyPaddingToLastScene?: boolean; // Default: true
+      paddingSeconds?: number; // Default: 1.0
+      applyFadeOutToLastScene?: boolean; // Default: true
+      fadeOutDuration?: number; // Default: 1.0
     }
   ): Promise<Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number; gcsUrl?: string; publicUrl?: string }>> {
     const audioFiles: Array<{ sceneNumber: number; filePath: string; localUrl: string; voiceover: string; duration?: number; gcsUrl?: string; publicUrl?: string }> = [];
@@ -211,9 +418,20 @@ export class VoiceService {
     console.log(`[VoiceService] Generating audio for ${scenes.length} scenes for project ${projectId}`);
     console.log(`[VoiceService] Scenes:`, scenes.map(s => ({ sceneNumber: s.sceneNumber, voiceoverLength: s.voiceover.length })));
 
+    // Identify the last scene (highest sceneNumber)
+    const lastSceneNumber = Math.max(...scenes.map(s => s.sceneNumber));
+    console.log(`[VoiceService] Last scene identified: scene ${lastSceneNumber}`);
+
+    // Get options with defaults
+    const applyPadding = options?.applyPaddingToLastScene !== false; // Default: true
+    const paddingSeconds = options?.paddingSeconds ?? 1.0;
+    const applyFadeOut = options?.applyFadeOutToLastScene !== false; // Default: true
+    const fadeOutDuration = options?.fadeOutDuration ?? 1.0;
+
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
-      console.log(`[VoiceService] Generating audio for scene ${scene.sceneNumber} (${i + 1}/${scenes.length})`);
+      const isLastScene = scene.sceneNumber === lastSceneNumber;
+      console.log(`[VoiceService] Generating audio for scene ${scene.sceneNumber} (${i + 1}/${scenes.length})${isLastScene ? ' [LAST SCENE - will apply padding and fade-out]' : ''}`);
       
       const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
       
@@ -238,14 +456,136 @@ export class VoiceService {
 
         console.log(`[VoiceService] Audio generated for scene ${scene.sceneNumber}: ${result.localUrl}, duration: ${result.duration}s${result.gcsUrl ? ', GCS: ' + result.gcsUrl : ''}`);
 
+        let finalFilePath = result.filePath;
+        let finalLocalUrl = result.localUrl;
+        let finalDuration = result.duration;
+        let finalGcsUrl = result.gcsUrl;
+        let finalPublicUrl = result.publicUrl;
+
+        // CRITICAL: Only process the last scene with padding and fade-out
+        if (isLastScene && (applyPadding || applyFadeOut)) {
+          console.log(`[VoiceService] Processing last scene ${scene.sceneNumber} with padding=${applyPadding} and fade-out=${applyFadeOut}`);
+          
+          let processedAudioPath = result.filePath;
+
+          // Step 1: Apply padding (round up + add padding)
+          if (applyPadding) {
+            const paddedFilename = `scene_${scene.sceneNumber}_${projectId}_padded_${Date.now()}.mp3`;
+            const paddedPath = path.join(path.dirname(result.filePath), paddedFilename);
+            
+            try {
+              finalDuration = await this.processAudioWithPadding(
+                processedAudioPath,
+                paddedPath,
+                paddingSeconds,
+                true, // roundUp
+                0.7   // threshold: if decimal <= 0.7, only round up; if > 0.7, round up + add padding
+              );
+              
+              // Update processed audio path for next step
+              processedAudioPath = paddedPath;
+              
+              // Clean up original file if it's different from processed
+              if (processedAudioPath !== result.filePath && fs.existsSync(result.filePath)) {
+                try {
+                  fs.unlinkSync(result.filePath);
+                } catch (e) {
+                  console.warn(`[VoiceService] Failed to cleanup original audio file: ${e}`);
+                }
+              }
+              
+              console.log(`[VoiceService] Last scene padding applied: new duration=${finalDuration.toFixed(2)}s`);
+            } catch (error: any) {
+              console.error(`[VoiceService] Failed to apply padding to last scene: ${error.message}`);
+              throw new Error(`Failed to apply padding to last scene: ${error.message}`);
+            }
+          }
+
+          // Step 2: Apply fade-out
+          if (applyFadeOut) {
+            const fadedFilename = `scene_${scene.sceneNumber}_${projectId}_faded_${Date.now()}.mp3`;
+            const fadedPath = path.join(path.dirname(processedAudioPath), fadedFilename);
+            
+            try {
+              await this.applyAudioFadeOut(
+                processedAudioPath,
+                fadedPath,
+                fadeOutDuration
+              );
+              
+              // Clean up intermediate padded file if it exists
+              if (fadedPath !== processedAudioPath && fs.existsSync(processedAudioPath)) {
+                try {
+                  fs.unlinkSync(processedAudioPath);
+                } catch (e) {
+                  console.warn(`[VoiceService] Failed to cleanup intermediate audio file: ${e}`);
+                }
+              }
+              
+              finalFilePath = fadedPath;
+              finalLocalUrl = `/uploads/audio/${userId}/${fadedFilename}`;
+              
+              // Re-upload to GCS if original was uploaded
+              if (result.gcsUrl) {
+                try {
+                  const storageResult = await this.publicUrlService.uploadFromPath(
+                    finalFilePath,
+                    `audio/${userId}`,
+                    fadedFilename,
+                    'audio/mpeg'
+                  );
+                  finalGcsUrl = storageResult.gcsUrl;
+                  finalPublicUrl = storageResult.publicUrl;
+                } catch (error: any) {
+                  console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
+                  finalPublicUrl = finalLocalUrl;
+                }
+              } else {
+                finalPublicUrl = finalLocalUrl;
+              }
+              
+              console.log(`[VoiceService] Last scene fade-out applied successfully`);
+            } catch (error: any) {
+              console.error(`[VoiceService] Failed to apply fade-out to last scene: ${error.message}`);
+              throw new Error(`Failed to apply fade-out to last scene: ${error.message}`);
+            }
+          } else {
+            // If only padding was applied, update URLs
+            if (applyPadding && processedAudioPath !== result.filePath) {
+              const paddedFilename = path.basename(processedAudioPath);
+              finalFilePath = processedAudioPath;
+              finalLocalUrl = `/uploads/audio/${userId}/${paddedFilename}`;
+              
+              // Re-upload to GCS if original was uploaded
+              if (result.gcsUrl) {
+                try {
+                  const storageResult = await this.publicUrlService.uploadFromPath(
+                    finalFilePath,
+                    `audio/${userId}`,
+                    paddedFilename,
+                    'audio/mpeg'
+                  );
+                  finalGcsUrl = storageResult.gcsUrl;
+                  finalPublicUrl = storageResult.publicUrl;
+                } catch (error: any) {
+                  console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
+                  finalPublicUrl = finalLocalUrl;
+                }
+              } else {
+                finalPublicUrl = finalLocalUrl;
+              }
+            }
+          }
+        }
+
         audioFiles.push({
           sceneNumber: scene.sceneNumber,
-          filePath: result.filePath,
-          localUrl: result.localUrl,
+          filePath: finalFilePath,
+          localUrl: finalLocalUrl,
           voiceover: scene.voiceover,
-          duration: result.duration,
-          gcsUrl: result.gcsUrl,
-          publicUrl: result.publicUrl,
+          duration: finalDuration,
+          gcsUrl: finalGcsUrl,
+          publicUrl: finalPublicUrl,
         });
       } catch (error: any) {
         console.error(`[VoiceService] Failed to generate audio for scene ${scene.sceneNumber}:`, error.message);
