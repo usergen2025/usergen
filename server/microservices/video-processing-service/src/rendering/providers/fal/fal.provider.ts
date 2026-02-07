@@ -585,7 +585,15 @@ export class FalProvider implements IImageGenerationProvider {
 
       // Use image_urls array (correct parameter name for FAL API)
       payload.image_urls = request.referenceImages;
+      
+      // ✅ Enhanced logging for reference images in payload
+      console.log(`[FalProvider] ========== REFERENCE IMAGES IN PAYLOAD ==========`);
+      console.log(`[FalProvider] image_urls count: ${payload.image_urls.length}`);
+      console.log(`[FalProvider] image_urls array:`, payload.image_urls);
+      console.log(`[FalProvider] All URLs valid:`, payload.image_urls.every(url => url && (url.startsWith('http://') || url.startsWith('https://'))));
       console.log(`[FalProvider] Using image-to-image with ${request.referenceImages.length} reference image(s) via image_urls`);
+    } else {
+      console.log(`[FalProvider] ⚠️ No reference images provided - will use text-to-image generation`);
     }
 
     // Merge any additional params (provider-specific)

@@ -129,3 +129,4 @@ export function buildGcsPublicUrl(bucketName: string, objectPath: string): strin
   return `https://storage.googleapis.com/${bucketName}/${objectPath}`;
 }
 
+

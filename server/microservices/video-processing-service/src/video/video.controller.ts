@@ -417,8 +417,25 @@ export class VideoController {
     const sceneNum = parseInt(sceneNumber, 10);
     const projectData = project.data as any;
     const style = body.videoStyle || projectData.style;
-    // Normalize style to uppercase for comparison
-    const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
+    // ✅ Enhanced style normalization to handle multiple format variations
+    let normalizedStyle: string;
+    if (typeof style === 'string') {
+      // Convert to uppercase and normalize separators (handle avatar-product, avatar_product, AVATAR_PRODUCT)
+      normalizedStyle = style.toUpperCase().replace(/[-_]/g, '_');
+    } else {
+      normalizedStyle = style;
+    }
+    
+    // ✅ Enhanced logging for regenerate endpoint
+    console.log(`[VideoController] ========== REGENERATE IMAGE ==========`);
+    console.log(`[VideoController] Project ID: ${projectId}, Scene: ${sceneNum}`);
+    console.log(`[VideoController] Style detection:`, {
+      bodyVideoStyle: body.videoStyle,
+      projectStyle: projectData.style,
+      styleVariable: style,
+      normalizedStyle,
+      isAvatarProduct: normalizedStyle === 'AVATAR_PRODUCT',
+    });
 
     // Check if image already exists for this scene
     const bRollImages = ((projectData).bRollImages as any[]) || [];
@@ -465,50 +482,60 @@ export class VideoController {
       throw new HttpException('Image prompt not found for this scene', HttpStatus.BAD_REQUEST);
     }
 
-    // Extract product image URL from project assets if not provided
+    // Extract product image URL from body, metadata or project assets if not provided
     let productImageUrl = body.productImageUrl;
     if (!productImageUrl && (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT')) {
-      // Check both projectData.assets and projectData.metadata.assets
-      let assets: any[] = [];
-      
-      // First, try projectData.assets (for old projects)
-      if (projectData.assets) {
-        assets = typeof projectData.assets === 'string' 
-          ? JSON.parse(projectData.assets) 
-          : projectData.assets;
-      }
-      
-      // If not found, try metadata.assets (for AI chat flow projects)
-      if (assets.length === 0 && projectData.metadata?.assets) {
-        const metadataAssets = typeof projectData.metadata.assets === 'string'
-          ? JSON.parse(projectData.metadata.assets)
-          : projectData.metadata.assets;
-        assets = Array.isArray(metadataAssets) ? metadataAssets : [];
-      }
-      
-      // Find product image - check multiple possible structures
-      const productImage = assets.find((asset: any) => {
-        if (asset.type !== 'image') return false;
-        // Check multiple identifiers
-        return asset.id?.startsWith('product-') || 
-               asset.name?.toLowerCase().includes('product') ||
-               // For AI chat flow, if there's only one image asset, it's likely the product
-               (assets.filter((a: any) => a.type === 'image').length === 1);
-      });
-      
-      // Extract URL - check multiple possible URL fields
-      productImageUrl = productImage?.url || 
-                        productImage?.publicUrl || 
-                        productImage?.imageUrl ||
-                        null;
-      
-      if (!productImageUrl && (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT')) {
-        console.error('[VideoController] Product image not found in assets:', {
-          assetsCount: assets.length,
-          imageAssets: assets.filter((a: any) => a.type === 'image'),
-          projectMetadata: projectData.metadata,
+      // 1) Check if product image URL is stored directly in metadata (preferred for regenerate flow)
+      if (projectData.metadata?.productImageUrl) {
+        productImageUrl = projectData.metadata.productImageUrl;
+        console.log(`[VideoController] Found product image URL in metadata: ${productImageUrl}`);
+      } else {
+        // 2) Check both projectData.assets and projectData.metadata.assets
+        let assets: any[] = [];
+        
+        // First, try projectData.assets (for old projects)
+        if (projectData.assets) {
+          assets = typeof projectData.assets === 'string' 
+            ? JSON.parse(projectData.assets) 
+            : projectData.assets;
+        }
+        
+        // If not found, try metadata.assets (for AI chat flow projects)
+        if (assets.length === 0 && projectData.metadata?.assets) {
+          const metadataAssets = typeof projectData.metadata.assets === 'string'
+            ? JSON.parse(projectData.metadata.assets)
+            : projectData.metadata.assets;
+          assets = Array.isArray(metadataAssets) ? metadataAssets : [];
+        }
+        
+        // Find product image - check multiple possible structures
+        const productImage = assets.find((asset: any) => {
+          if (asset.type !== 'image') return false;
+          // Check multiple identifiers
+          return asset.id?.startsWith('product-') || 
+                 asset.name?.toLowerCase().includes('product') ||
+                 // For AI chat flow, if there's only one image asset, it's likely the product
+                 (assets.filter((a: any) => a.type === 'image').length === 1);
         });
-        throw new HttpException('Product image is required for this video style', HttpStatus.BAD_REQUEST);
+        
+        // Extract URL - check multiple possible URL fields
+        productImageUrl = productImage?.url || 
+                          productImage?.publicUrl || 
+                          productImage?.imageUrl ||
+                          null;
+
+        if (!productImageUrl && (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT')) {
+          console.error('[VideoController] Product image not found in assets or metadata:', {
+            assetsCount: assets.length,
+            imageAssets: assets.filter((a: any) => a.type === 'image'),
+            projectMetadata: projectData.metadata,
+            hasMetadataProductImageUrl: !!projectData.metadata?.productImageUrl,
+          });
+          throw new HttpException(
+            'Product image is required for this video style. Please provide productImageUrl in the request body or ensure it is stored in project metadata.',
+            HttpStatus.BAD_REQUEST
+          );
+        }
       }
       
       console.log(`[VideoController] Extracted product image URL: ${productImageUrl}`);
@@ -526,6 +553,31 @@ export class VideoController {
       }
     }
 
+    // Validate AVATAR_PRODUCT style requirements
+    if (normalizedStyle === 'AVATAR_PRODUCT') {
+      if (!productImageUrl) {
+        throw new HttpException('Product image URL is required for AVATAR_PRODUCT style', HttpStatus.BAD_REQUEST);
+      }
+      // Log avatarId for debugging
+      console.log(`[VideoController] AVATAR_PRODUCT: Project avatarId: ${projectData.avatarId}, metadata:`, {
+        metadataAvatarId: projectData.metadata?.avatarId,
+        metadataSelectedAvatarId: projectData.metadata?.selectedAvatarId,
+      });
+      if (!projectData.avatarId && !projectData.metadata?.avatarId && !projectData.metadata?.selectedAvatarId) {
+        console.warn(`[VideoController] AVATAR_PRODUCT: Warning - No avatarId found in project. Image generation may fail.`);
+      }
+    }
+
+    // ✅ Enhanced logging before queuing job
+    console.log(`[VideoController] Queuing image generation job with:`, {
+      projectId,
+      sceneNumber: sceneNum,
+      modelId,
+      hasProductImageUrl: !!productImageUrl,
+      videoStyle: style,
+      normalizedStyle,
+    });
+
     const jobId = await this.queueManager.addImageGenerationJob({
       projectId,
       userId,
@@ -535,8 +587,10 @@ export class VideoController {
       aspectRatio: body.aspectRatio, // Optional override
       resolution: body.resolution, // Optional override
       productImageUrl: productImageUrl || undefined, // Pass product image URL
-      videoStyle: style, // Pass video style
+      videoStyle: style, // Pass video style (will be normalized in processor)
     });
+    
+    console.log(`[VideoController] ✅ Image generation job queued: ${jobId}`);
 
     return {
       success: true,
@@ -602,13 +656,12 @@ export class VideoController {
     const projectData = project.data as any;
     const style = projectData.style;
 
-    // For AVATAR_PRODUCT style, extract heygenImageKey from image data
+    // For AVATAR_PRODUCT style, we prefer to use a HeyGen image_key if already cached
+    // on the image data, but we no longer require it here. The video-generation worker
+    // will lazily upload the composite image to HeyGen and cache the key if needed.
     let heygenImageKey: string | undefined = undefined;
     if (style === 'AVATAR_PRODUCT') {
       heygenImageKey = image.heygenImageKey || image.compositeImageKey;
-      if (!heygenImageKey) {
-        throw new HttpException('HeyGen image_key not found for AVATAR_PRODUCT style. Please regenerate the image first.', HttpStatus.BAD_REQUEST);
-      }
     }
 
     // Get public URL for the image - prefer local file over provider URL (which may expire)

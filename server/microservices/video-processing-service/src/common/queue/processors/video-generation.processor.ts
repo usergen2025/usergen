@@ -66,8 +66,10 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       const style = videoStyle || project.style;
 
-      // Handle AVATAR_PRODUCT style - use HeyGen Avatar IV
-      if (style === 'AVATAR_PRODUCT' && heygenImageKey) {
+      // Handle AVATAR_PRODUCT style - always route through Avatar IV helper.
+      // If heygenImageKey is missing, the helper will lazily upload the composite image
+      // to HeyGen and persist the image_key back into bRollImages.
+      if (style === 'AVATAR_PRODUCT') {
         return await this.processAvatarProductVideo(
           job,
           project,
@@ -116,14 +118,86 @@ export class VideoGenerationProcessor extends WorkerHost {
     job: Job<VideoGenerationJobData>,
     project: any,
     sceneNumber: number,
-    heygenImageKey: string,
+    heygenImageKeyFromJob: string | undefined,
     duration: number,
     userId: string,
     projectId: string
   ): Promise<any> {
-    console.log(`[VideoGenerationProcessor] Processing AVATAR_PRODUCT style for scene ${sceneNumber} with image_key: ${heygenImageKey}`);
+    console.log(`[VideoGenerationProcessor] Processing AVATAR_PRODUCT style for scene ${sceneNumber}`);
 
     await job.updateProgress(10);
+
+    // Ensure we have a HeyGen image_key for this scene. If not provided in the job,
+    // lazily upload the composite image for this scene and cache the key in bRollImages.
+    let heygenImageKey = heygenImageKeyFromJob;
+
+    if (!heygenImageKey) {
+      // Re-fetch latest project to avoid stale bRollImages when multiple workers update concurrently
+      const latestProject = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+      });
+
+      if (!latestProject) {
+        throw new Error('Project not found while resolving HeyGen image_key for AVATAR_PRODUCT');
+      }
+
+      const bRollImages = ((latestProject as any).bRollImages as any[]) || [];
+      const image = bRollImages.find((img: any) => img.sceneNumber === sceneNumber);
+
+      if (!image) {
+        throw new Error(`Composite image not found in bRollImages for AVATAR_PRODUCT scene ${sceneNumber}`);
+      }
+
+      // Try any previously stored key first
+      heygenImageKey = image.heygenImageKey || image.compositeImageKey;
+
+      if (!heygenImageKey) {
+        // Resolve local image path from localPath or localUrl
+        let imagePath: string | null = image.localPath || null;
+
+        if (!imagePath && image.localUrl) {
+          // localUrl is typically /uploads/images/{userId}/{filename}
+          const relative = image.localUrl.replace(/^\/uploads\//, 'uploads/');
+          if (this.uploadsDir) {
+            imagePath = path.join(this.uploadsDir, relative.replace(/^uploads\//, ''));
+          } else {
+            imagePath = path.join(process.cwd(), relative);
+          }
+        }
+
+        if (!imagePath || !fs.existsSync(imagePath)) {
+          throw new Error(
+            `Local composite image file not found for AVATAR_PRODUCT scene ${sceneNumber}. ` +
+            `localPath=${image.localPath || 'N/A'}, localUrl=${image.localUrl || 'N/A'}`
+          );
+        }
+
+        console.log(
+          `[VideoGenerationProcessor] Uploading AVATAR_PRODUCT composite for scene ${sceneNumber} to HeyGen from ${imagePath}`
+        );
+
+        const filename = path.basename(imagePath);
+        heygenImageKey = await this.heygenVideoProvider.uploadImageAndGetKey(imagePath, filename);
+
+        // Cache the key back into bRollImages so subsequent runs reuse it
+        image.heygenImageKey = heygenImageKey;
+
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: {
+            bRollImages: bRollImages as any,
+          } as any,
+        });
+
+        console.log(
+          `[VideoGenerationProcessor] Cached HeyGen image_key for AVATAR_PRODUCT scene ${sceneNumber}: ${heygenImageKey}`
+        );
+      }
+    }
+
+    if (!heygenImageKey) {
+      throw new Error(`Failed to resolve HeyGen image_key for AVATAR_PRODUCT scene ${sceneNumber}`);
+    }
 
     // Get audio URL/asset ID for this scene
     const audioFiles = ((project as any).audioFiles as any[]) || [];
@@ -133,18 +207,74 @@ export class VideoGenerationProcessor extends WorkerHost {
       throw new Error(`Audio file not found for scene ${sceneNumber}`);
     }
 
-    // Prefer audio_asset_id over audio_url for HeyGen
+    // Prefer audio_asset_id over audio_url for HeyGen (if audio was uploaded to HeyGen)
     const audioAssetId = sceneAudio.audioAssetId || sceneAudio.heygenAssetId;
-    const audioUrl = sceneAudio.audioUrl || sceneAudio.url;
+
+    // Resolve audio URL - check multiple possible fields from voice-audio-service
+    // Priority: publicUrl > gcsUrl > localUrl (converted to public URL)
+    let audioUrl: string | undefined = sceneAudio.publicUrl || sceneAudio.gcsUrl;
+
+    // If no public URL, try to convert localUrl to public URL
+    if (!audioUrl && sceneAudio.localUrl) {
+      try {
+        // Resolve local file path from localUrl
+        let audioFilePath: string | null = sceneAudio.filePath || null;
+        
+        if (!audioFilePath && sceneAudio.localUrl) {
+          // localUrl is typically /uploads/audio/{userId}/{filename}
+          const relative = sceneAudio.localUrl.replace(/^\/uploads\//, 'uploads/');
+          if (this.uploadsDir) {
+            audioFilePath = path.join(this.uploadsDir, relative.replace(/^uploads\//, ''));
+          } else {
+            audioFilePath = path.join(process.cwd(), relative);
+          }
+        }
+
+        // Also try voice-audio-service directory structure
+        if (!audioFilePath || !fs.existsSync(audioFilePath)) {
+          const voiceServiceDir = this.configService.get<string>('VOICE_AUDIO_SERVICE_DIR') || 
+            path.join(process.cwd(), '..', 'voice-audio-service');
+          const voiceServicePath = path.join(voiceServiceDir, sceneAudio.filePath?.startsWith('/') 
+            ? sceneAudio.filePath.slice(1) 
+            : (sceneAudio.filePath || ''));
+          
+          if (fs.existsSync(voiceServicePath)) {
+            audioFilePath = voiceServicePath;
+          }
+        }
+
+        if (audioFilePath && fs.existsSync(audioFilePath)) {
+          // Convert local file to public URL
+          const publicUrlResult = await this.publicUrlService.uploadFromPath(
+            audioFilePath,
+            `audio/${userId}`,
+            path.basename(audioFilePath),
+            'audio/mpeg'
+          );
+          audioUrl = publicUrlResult.publicUrl;
+          console.log(`[VideoGenerationProcessor] Converted local audio to public URL for scene ${sceneNumber}: ${audioUrl}`);
+        }
+      } catch (error: any) {
+        console.warn(`[VideoGenerationProcessor] Failed to convert local audio to public URL for scene ${sceneNumber}: ${error.message}`);
+      }
+    }
 
     if (!audioAssetId && !audioUrl) {
-      throw new Error(`Audio asset ID or URL not found for scene ${sceneNumber}`);
+      throw new Error(
+        `Audio asset ID or URL not found for scene ${sceneNumber}. ` +
+        `Available fields: publicUrl=${sceneAudio.publicUrl || 'N/A'}, ` +
+        `gcsUrl=${sceneAudio.gcsUrl || 'N/A'}, localUrl=${sceneAudio.localUrl || 'N/A'}, ` +
+        `filePath=${sceneAudio.filePath || 'N/A'}`
+      );
     }
 
     await job.updateProgress(20);
 
     // Generate video using HeyGen Avatar IV
-    console.log(`[VideoGenerationProcessor] Generating Avatar IV video with image_key: ${heygenImageKey}, audio: ${audioAssetId || audioUrl}`);
+    console.log(
+      `[VideoGenerationProcessor] Generating Avatar IV video for AVATAR_PRODUCT scene ${sceneNumber} ` +
+      `with image_key: ${heygenImageKey}, audio: ${audioAssetId || audioUrl}`
+    );
     
     let videoResponse;
     try {

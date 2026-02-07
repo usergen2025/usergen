@@ -155,13 +155,31 @@ function PreviewPageContent() {
           console.log('Project data loaded:', projectData);
           setProject(projectData);
 
-          // Load video URL if available
-          if (projectData.videoUrl) {
-            const videoSrc = projectData.videoUrl.startsWith('http')
-              ? projectData.videoUrl
-              : `${VIDEO_SERVICE_BASE_URL}${projectData.videoUrl}`;
-            setVideoUrl(videoSrc);
-            console.log('Video URL set:', videoSrc);
+          // Load video URL if available - prioritize GCS URLs
+          if (projectData.videoPublicUrl || projectData.videoGcsUrl || projectData.videoUrl) {
+            let videoSrc: string;
+            
+            // Priority 1: Use videoPublicUrl (GCS URL if available)
+            if (projectData.videoPublicUrl && projectData.videoPublicUrl.startsWith('http')) {
+              videoSrc = projectData.videoPublicUrl;
+            }
+            // Priority 2: Direct GCS URL
+            else if (projectData.videoGcsUrl && projectData.videoGcsUrl.startsWith('http')) {
+              videoSrc = projectData.videoGcsUrl;
+            }
+            // Priority 3: Fallback to videoUrl
+            else if (projectData.videoUrl) {
+              videoSrc = projectData.videoUrl.startsWith('http')
+                ? projectData.videoUrl
+                : `${VIDEO_SERVICE_BASE_URL}${projectData.videoUrl}`;
+            } else {
+              videoSrc = '';
+            }
+            
+            if (videoSrc) {
+              setVideoUrl(videoSrc);
+              console.log('Video URL set:', videoSrc);
+            }
           }
 
           // Load caption settings

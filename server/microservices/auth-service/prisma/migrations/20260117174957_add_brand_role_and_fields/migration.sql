@@ -7,3 +7,4 @@ ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandDescription" TEXT;
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandLogo" TEXT;
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "brandWebsite" TEXT;
 
+

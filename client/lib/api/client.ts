@@ -465,13 +465,37 @@ class ApiClient {
   }
 
   // Script generation endpoints
+  async uploadProductImage(file: File): Promise<ApiResponse<{ publicUrl: string; localUrl: string }>> {
+    const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await axios.post<ApiResponse<{ publicUrl: string; localUrl: string }>>(
+      `${aiContentServiceUrl}/scripts/upload-product-image`,
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async generateVideoScript(data: {
     userPrompt: string;
-    videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+    videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
     duration?: string;
     language?: 'english' | 'hindi' | 'hinglish';
     tags?: string[];
     projectId?: string;
+    productImageUrl?: string;
+    hasAvatar?: boolean;
+    avatarId?: string;
   }): Promise<ApiResponse<any>> {
     const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
@@ -629,6 +653,10 @@ class ApiClient {
     sceneNumber: number, 
     prompt?: string,
     modelId?: string,
+    aspectRatio?: string,
+    resolution?: string,
+    productImageUrl?: string,
+    videoStyle?: string,
     force?: boolean
   ): Promise<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
@@ -636,7 +664,7 @@ class ApiClient {
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; image?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-image/${sceneNumber}`,
-      { prompt, modelId, force },
+      { prompt, modelId, aspectRatio, resolution, productImageUrl, videoStyle, force },
       {
         headers: {
           'Content-Type': 'application/json',

@@ -9,6 +9,7 @@ import { ImageGenerationRequest } from '../../../rendering/providers/interfaces/
 import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { PublicUrlService } from '../../storage/public-url.service';
+import { preWarmUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
@@ -60,7 +61,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       videoStyle
     } = job.data;
 
-    console.log(`[ImageGenerationProcessor] Processing job ${job.id} for scene ${sceneNumber}, model: ${modelId || 'default'}, style: ${videoStyle || 'default'}`);
+    // ✅ Enhanced logging for debugging
+    console.log(`[ImageGenerationProcessor] ========== JOB START ==========`);
+    console.log(`[ImageGenerationProcessor] Job ID: ${job.id}`);
+    console.log(`[ImageGenerationProcessor] Scene: ${sceneNumber}`);
+    console.log(`[ImageGenerationProcessor] Job data:`, {
+      videoStyle,
+      modelId,
+      hasProductImageUrl: !!productImageUrl,
+      hasAvatarImageKey: !!avatarImageKey,
+      productImageUrl,
+      avatarImageKey,
+    });
 
     try {
       // Get project to determine video style
@@ -73,9 +85,31 @@ export class ImageGenerationProcessor extends WorkerHost {
       }
 
       const style = videoStyle || project.style;
+      // ✅ Enhanced style normalization to handle multiple format variations
+      let normalizedStyle: string;
+      if (typeof style === 'string') {
+        // Convert to uppercase and normalize separators (handle avatar-product, avatar_product, AVATAR_PRODUCT)
+        normalizedStyle = style.toUpperCase().replace(/[-_]/g, '_');
+      } else {
+        normalizedStyle = style;
+      }
+
+      // ✅ Enhanced logging for style detection
+      console.log(`[ImageGenerationProcessor] ========== STYLE DETECTION ==========`);
+      console.log(`[ImageGenerationProcessor] Style check:`, {
+        videoStyleFromJob: videoStyle,
+        projectStyle: project.style,
+        styleVariable: style,
+        normalizedStyle,
+        willMatchAVATAR_PRODUCT: normalizedStyle === 'AVATAR_PRODUCT',
+        avatarId: (project as any).avatarId,
+        metadataAvatarId: (project as any).metadata?.avatarId,
+        metadataSelectedAvatarId: (project as any).metadata?.selectedAvatarId,
+      });
 
       // Handle AVATAR_PRODUCT style - create composite images
-      if (style === 'AVATAR_PRODUCT') {
+      if (normalizedStyle === 'AVATAR_PRODUCT') {
+        console.log(`[ImageGenerationProcessor] ✅✅✅ AVATAR_PRODUCT DETECTED! Processing composite image generation...`);
         return await this.processAvatarProductStyle(
           job,
           project,
@@ -87,10 +121,12 @@ export class ImageGenerationProcessor extends WorkerHost {
           userId,
           projectId
         );
+      } else {
+        console.log(`[ImageGenerationProcessor] ❌ NOT AVATAR_PRODUCT (${normalizedStyle}), falling through to ${normalizedStyle === 'PRODUCT_ONLY' ? 'PRODUCT_ONLY' : 'default'} processing`);
       }
 
       // Handle PRODUCT_ONLY style - use product image in generation
-      if (style === 'PRODUCT_ONLY') {
+      if (normalizedStyle === 'PRODUCT_ONLY') {
         if (!productImageUrl) {
           throw new Error('Product image URL is required for PRODUCT_ONLY style. Please ensure product image is uploaded in assets.');
         }
@@ -355,6 +391,188 @@ export class ImageGenerationProcessor extends WorkerHost {
   }
 
   /**
+   * Ensure avatar image has a valid public URL (with GCS upload if needed)
+   * This method handles:
+   * 1. Checking cached public URL from metadata
+   * 2. Validating cached URL with pre-warming
+   * 3. If invalid/missing: finding local file, uploading to GCS, caching URL
+   * 
+   * @param avatarId - Avatar ID
+   * @param userId - User ID
+   * @param projectId - Project ID
+   * @param projectMetadata - Project metadata object
+   * @returns Public URL for the avatar image
+   */
+  private async ensureAvatarPublicUrl(
+    avatarId: string,
+    userId: string,
+    projectId: string,
+    projectMetadata: any
+  ): Promise<string> {
+    // 1) Check for cached public URL in metadata
+    const cachedAvatarUrl: string | undefined = projectMetadata?.avatarPublicImageUrl;
+    
+    if (cachedAvatarUrl && (cachedAvatarUrl.startsWith('http://') || cachedAvatarUrl.startsWith('https://'))) {
+      console.log(`[ImageGenerationProcessor] Found cached avatarPublicImageUrl: ${cachedAvatarUrl}`);
+      
+      // 2) Validate cached URL with pre-warming (this validates accessibility)
+      console.log(`[ImageGenerationProcessor] Validating cached avatar URL with pre-warming...`);
+      const isValid = await preWarmUrl(cachedAvatarUrl, 3);
+      
+      if (isValid) {
+        console.log(`[ImageGenerationProcessor] ✅ Cached avatar URL is valid and accessible`);
+        return cachedAvatarUrl;
+      } else {
+        console.warn(`[ImageGenerationProcessor] ⚠️ Cached avatar URL failed validation, will re-upload to GCS`);
+        // Continue to re-upload logic below
+      }
+    }
+
+    // 3) Cached URL doesn't exist or is invalid - fetch from API and upload to GCS
+    console.log(`[ImageGenerationProcessor] Fetching avatar ${avatarId} from ai-content-service...`);
+    
+    const aiContentServiceUrl = this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001';
+    let avatarImagePath: string | null = null;
+    
+    try {
+      const avatarResponse = await axios.get(`${aiContentServiceUrl}/api/avatars/${avatarId}`, {
+        params: { userId },
+        timeout: 10000,
+      });
+      
+      if (!avatarResponse.data?.success || !avatarResponse.data?.data) {
+        throw new Error(`Avatar ${avatarId} not found in ai-content-service database`);
+      }
+      
+      const avatarData = avatarResponse.data.data;
+      const originalImageUrl = avatarData.originalImageUrl;
+      const avatarUserId = avatarData.userId;
+      
+      // 4) If originalImageUrl is already a public URL, validate and use it
+      if (originalImageUrl && (originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://'))) {
+        console.log(`[ImageGenerationProcessor] Avatar has public URL in database: ${originalImageUrl}`);
+        const isValid = await preWarmUrl(originalImageUrl, 3);
+        if (isValid) {
+          // Cache it in metadata for future use
+          await this.cacheAvatarPublicUrl(projectId, projectMetadata, originalImageUrl);
+          return originalImageUrl;
+        }
+        console.warn(`[ImageGenerationProcessor] ⚠️ Avatar public URL from database failed validation, will find local file`);
+      }
+      
+      // 5) Find local file path
+      if (originalImageUrl) {
+        const relativePath = originalImageUrl.replace(/^\/uploads\//, 'uploads/');
+        const possiblePaths = [
+          path.join(process.cwd(), relativePath),
+          path.join(this.uploadsDir, relativePath.replace(/^uploads\//, '')),
+          path.join(process.cwd(), '..', relativePath),
+          path.join(process.cwd(), '..', '..', relativePath),
+          path.join(process.cwd(), '..', 'ai-content-service', relativePath),
+          path.join(process.cwd(), '..', '..', 'ai-content-service', relativePath),
+          path.join(process.cwd(), '..', 'ai-content-service', 'uploads', 'avatars', avatarUserId, avatarId, 'original.jpg'),
+          path.join(process.cwd(), '..', '..', 'ai-content-service', 'uploads', 'avatars', avatarUserId, avatarId, 'original.jpg'),
+          path.join(process.cwd(), '..', 'ai-content-service', 'uploads', 'avatars', userId, avatarId, 'original.jpg'),
+          path.join(process.cwd(), '..', '..', 'ai-content-service', 'uploads', 'avatars', userId, avatarId, 'original.jpg'),
+        ];
+        
+        for (const possiblePath of possiblePaths) {
+          if (fs.existsSync(possiblePath)) {
+            avatarImagePath = possiblePath;
+            break;
+          }
+        }
+      }
+      
+      // Fallback: try standard paths
+      if (!avatarImagePath) {
+        const fallbackPaths = [
+          path.join(process.cwd(), 'uploads', 'avatars', avatarUserId || userId, avatarId, 'original.jpg'),
+          path.join(this.uploadsDir, 'avatars', avatarUserId || userId, avatarId, 'original.jpg'),
+          path.join(process.cwd(), '..', 'ai-content-service', 'uploads', 'avatars', avatarUserId || userId, avatarId, 'original.jpg'),
+          path.join(process.cwd(), '..', '..', 'ai-content-service', 'uploads', 'avatars', avatarUserId || userId, avatarId, 'original.jpg'),
+        ];
+        
+        for (const p of fallbackPaths) {
+          if (fs.existsSync(p)) {
+            avatarImagePath = p;
+            break;
+          }
+        }
+      }
+      
+      if (!avatarImagePath || !fs.existsSync(avatarImagePath)) {
+        throw new Error(
+          `Avatar original image file not found for avatarId: ${avatarId}. ` +
+          `Please ensure the avatar's original image exists on disk or re-upload the avatar.`
+        );
+      }
+      
+      // 6) Upload to GCS and get public URL
+      console.log(`[ImageGenerationProcessor] Uploading avatar image to GCS from: ${avatarImagePath}`);
+      const localUrl = `/uploads/avatars/${avatarUserId || userId}/${avatarId}/original.jpg`;
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        avatarImagePath,
+        `avatars/${avatarUserId || userId}/${avatarId}`,
+        path.basename(avatarImagePath),
+        'image/jpeg'
+      );
+      
+      const publicUrl = storageResult.publicUrl;
+      console.log(`[ImageGenerationProcessor] ✅ Avatar image uploaded, public URL: ${publicUrl}`);
+      
+      // 7) Cache the public URL in metadata for future use
+      await this.cacheAvatarPublicUrl(projectId, projectMetadata, publicUrl);
+      
+      // 8) Optional: Update avatar.originalImageUrl in ai-content-service DB with GCS URL
+      if (storageResult.gcsUploaded && publicUrl !== originalImageUrl) {
+        try {
+          await axios.put(`${aiContentServiceUrl}/api/avatars/${avatarId}`, 
+            { originalImageUrl: publicUrl, userId: avatarUserId },
+            { timeout: 5000 }
+          );
+          console.log(`[ImageGenerationProcessor] ✅ Updated avatar ${avatarId} originalImageUrl to GCS URL in DB`);
+        } catch (updateError: any) {
+          console.warn(`[ImageGenerationProcessor] ⚠️ Failed to update avatar originalImageUrl in DB: ${updateError.message}`);
+        }
+      }
+      
+      return publicUrl;
+      
+    } catch (apiError: any) {
+      console.error(`[ImageGenerationProcessor] ❌ Failed to fetch avatar from ai-content-service:`, {
+        avatarId,
+        userId,
+        error: apiError.message,
+      });
+      throw new Error(`Failed to retrieve avatar image: ${apiError.message}`);
+    }
+  }
+
+  /**
+   * Cache avatar public URL in project metadata
+   */
+  private async cacheAvatarPublicUrl(
+    projectId: string,
+    projectMetadata: any,
+    publicUrl: string
+  ): Promise<void> {
+    try {
+      const updatedMetadata = {
+        ...(projectMetadata || {}),
+        avatarPublicImageUrl: publicUrl,
+      };
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { metadata: updatedMetadata as any } as any,
+      });
+      console.log(`[ImageGenerationProcessor] ✅ Cached avatarPublicImageUrl in project metadata`);
+    } catch (cacheError: any) {
+      console.warn(`[ImageGenerationProcessor] ⚠️ Failed to cache avatarPublicImageUrl: ${cacheError.message}`);
+    }
+  }
+
+  /**
    * Process AVATAR_PRODUCT style - use image-to-image with avatar and product as references
    */
   private async processAvatarProductStyle(
@@ -374,73 +592,66 @@ export class ImageGenerationProcessor extends WorkerHost {
       throw new Error('Product image URL is required for AVATAR_PRODUCT style');
     }
 
-    // Extract avatarId from project metadata
-    const projectMetadata = (project as any).metadata || {};
-    const avatarId = projectMetadata.avatarId || projectMetadata.selectedAvatarId;
+    // Extract avatarId from project (check project.avatarId first, then metadata)
+    const avatarId = (project as any).avatarId || 
+                     (project as any).metadata?.avatarId || 
+                     (project as any).metadata?.selectedAvatarId;
+
+    console.log(`[ImageGenerationProcessor] AVATAR_PRODUCT: Looking for avatarId. Found:`, {
+      projectAvatarId: (project as any).avatarId,
+      metadataAvatarId: (project as any).metadata?.avatarId,
+      metadataSelectedAvatarId: (project as any).metadata?.selectedAvatarId,
+      finalAvatarId: avatarId,
+      avatarImageKey,
+    });
 
     if (!avatarId && !avatarImageKey) {
-      throw new Error('Avatar ID is required for AVATAR_PRODUCT style');
+      console.error(`[ImageGenerationProcessor] AVATAR_PRODUCT: Avatar ID not found. Project data:`, {
+        projectId,
+        projectAvatarId: (project as any).avatarId,
+        metadata: (project as any).metadata,
+        style: project.style,
+      });
+      throw new Error('Avatar ID is required for AVATAR_PRODUCT style. Please ensure an avatar is selected for this project.');
     }
 
-    // Get avatar original image path
-    // Path format: uploads/avatars/{userId}/{avatarId}/original.jpg
-    let avatarImagePath: string | null = null;
-    let avatarImageUrl: string | null = null;
+    // ✅ NEW: Use the helper method to ensure we have a valid public URL
+    const projectMetadata = ((project as any).metadata || {}) as any;
+    const avatarImageUrl = await this.ensureAvatarPublicUrl(avatarId, userId, projectId, projectMetadata);
 
-    if (avatarId) {
-      avatarImagePath = path.join(
-        process.cwd(),
-        'uploads',
-        'avatars',
-        userId,
-        avatarId,
-        'original.jpg'
-      );
-
-      // Try alternative paths
-      if (!fs.existsSync(avatarImagePath)) {
-        const altPaths = [
-          path.join(this.uploadsDir, 'avatars', userId, avatarId, 'original.jpg'),
-          path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', userId, avatarId, 'original.jpg'),
-        ];
-
-        for (const altPath of altPaths) {
-          if (fs.existsSync(altPath)) {
-            avatarImagePath = altPath;
-            break;
-          }
-        }
-      }
-
-      if (!fs.existsSync(avatarImagePath)) {
-        throw new Error(`Avatar original image not found for avatarId: ${avatarId}`);
-      }
-
-      // Get public URL for avatar image
-      const avatarLocalUrl = `/uploads/avatars/${userId}/${avatarId}/original.jpg`;
-      avatarImageUrl = await this.publicUrlService.getPublicUrl(avatarImagePath, avatarLocalUrl);
-    } else {
-      throw new Error('Avatar image path could not be determined');
+    // Validate avatar URL is public
+    if (!avatarImageUrl || (!avatarImageUrl.startsWith('http://') && !avatarImageUrl.startsWith('https://'))) {
+      throw new Error(`Avatar image URL must be a public HTTP/HTTPS URL. Got: ${avatarImageUrl}`);
     }
+
+    console.log(`[ImageGenerationProcessor] ========== AVATAR IMAGE RETRIEVAL ==========`);
+    console.log(`[ImageGenerationProcessor] Avatar image URL: ${avatarImageUrl}`);
+    console.log(`[ImageGenerationProcessor] Avatar image URL valid: true`);
 
     // Ensure product image is publicly accessible (for 3rd party API calls like FAL)
     let publicProductImageUrl = productImageUrl;
     if (productImageUrl) {
+      // ✅ Enhanced logging for product image URL
+      console.log(`[ImageGenerationProcessor] ========== PRODUCT IMAGE URL ==========`);
+      console.log(`[ImageGenerationProcessor] Original product image URL: ${productImageUrl}`);
+      console.log(`[ImageGenerationProcessor] Is public URL: ${productImageUrl.startsWith('http://') || productImageUrl.startsWith('https://')}`);
+      
       if (!productImageUrl.startsWith('http://') && !productImageUrl.startsWith('https://')) {
         // If it's a local file path, convert to public URL using GCS if available
         const localUrl = productImageUrl.startsWith('/') ? productImageUrl : `/${productImageUrl}`;
         try {
           publicProductImageUrl = await this.publicUrlService.getPublicUrl(productImageUrl, localUrl);
-          console.log(`[ImageGenerationProcessor] Converted product image to public URL: ${publicProductImageUrl}`);
+          console.log(`[ImageGenerationProcessor] ✅ Converted product image to public URL: ${publicProductImageUrl}`);
         } catch (error: any) {
-          console.error(`[ImageGenerationProcessor] Failed to get public URL for product image: ${error.message}`);
+          console.error(`[ImageGenerationProcessor] ❌ Failed to get public URL for product image: ${error.message}`);
           throw new Error(`Product image URL must be publicly accessible for 3rd party API calls. Failed to convert: ${error.message}`);
         }
       } else {
         // Already a public URL, verify it's accessible
-        console.log(`[ImageGenerationProcessor] Using provided public product image URL: ${publicProductImageUrl}`);
+        console.log(`[ImageGenerationProcessor] ✅ Using provided public product image URL: ${publicProductImageUrl}`);
       }
     } else {
+      console.error(`[ImageGenerationProcessor] ❌ Product image URL is required for AVATAR_PRODUCT style`);
       throw new Error('Product image URL is required for AVATAR_PRODUCT style');
     }
 
@@ -471,11 +682,42 @@ export class ImageGenerationProcessor extends WorkerHost {
       referenceImages: [avatarImageUrl, publicProductImageUrl], // ✅ Multi-reference image-to-image
     };
 
+    // ✅ Enhanced logging for reference images
+    console.log(`[ImageGenerationProcessor] ========== REFERENCE IMAGES ==========`);
+    console.log(`[ImageGenerationProcessor] Avatar image URL:`, {
+      url: avatarImageUrl,
+      isValid: !!(avatarImageUrl && (avatarImageUrl.startsWith('http://') || avatarImageUrl.startsWith('https://'))),
+      isNull: avatarImageUrl === null,
+      isUndefined: avatarImageUrl === undefined,
+      length: avatarImageUrl?.length || 0,
+    });
+    console.log(`[ImageGenerationProcessor] Product image URL:`, {
+      url: publicProductImageUrl,
+      isValid: !!(publicProductImageUrl && (publicProductImageUrl.startsWith('http://') || publicProductImageUrl.startsWith('https://'))),
+      isNull: publicProductImageUrl === null,
+      isUndefined: publicProductImageUrl === undefined,
+      length: publicProductImageUrl?.length || 0,
+    });
+    console.log(`[ImageGenerationProcessor] Reference images array:`, {
+      count: request.referenceImages?.length || 0,
+      urls: request.referenceImages,
+      allValid: request.referenceImages?.every(url => url && (url.startsWith('http://') || url.startsWith('https://'))) || false,
+    });
+    console.log(`[ImageGenerationProcessor] Request details:`, {
+      modelId: model.id,
+      modelPlatform: model.platform,
+      modelDisplayName: model.displayName,
+      aspectRatio: selectedAspectRatio,
+      resolution: request.resolution,
+    });
+
     // Validate request
     const validation = provider.validateRequest(request);
     if (!validation.valid) {
+      console.error(`[ImageGenerationProcessor] ❌ Request validation failed:`, validation.error);
       throw new Error(validation.error || 'Invalid request');
     }
+    console.log(`[ImageGenerationProcessor] ✅ Request validation passed`);
 
     await job.updateProgress(10);
 
@@ -511,50 +753,9 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     const localUrl = `/uploads/images/${userId}/${imageFilename}`;
 
-    // Upload to HeyGen to get image_key for Avatar IV generation
-    console.log(`[ImageGenerationProcessor] Uploading generated composite to HeyGen for Avatar IV...`);
-    let heygenImageKey: string | undefined = undefined;
-    try {
-      // Read the generated image file
-      const imageBuffer = fs.readFileSync(imagePath);
-      
-      // Upload to HeyGen
-      const heygenApiKey = this.configService.get<string>('HEYGEN_API_KEY') || '';
-      
-      if (heygenApiKey) {
-        const formData = new FormData();
-        formData.append('file', imageBuffer, {
-          filename: imageFilename,
-          contentType: 'image/jpeg',
-        });
-
-        const uploadResponse = await axios.post(
-          'https://upload.heygen.com/v1/asset',
-          formData,
-          {
-            headers: {
-              'X-Api-Key': heygenApiKey,
-              ...formData.getHeaders(),
-            },
-            timeout: 60000,
-          }
-        );
-
-        const uploadData = uploadResponse.data.code !== undefined ? uploadResponse.data.data : (uploadResponse.data as any);
-        
-        if (uploadData?.image_key) {
-          heygenImageKey = uploadData.image_key;
-          console.log(`[ImageGenerationProcessor] ✅ Composite uploaded to HeyGen. Image key: ${heygenImageKey}`);
-        } else {
-          console.warn(`[ImageGenerationProcessor] HeyGen upload succeeded but no image_key returned`);
-        }
-      } else {
-        console.warn(`[ImageGenerationProcessor] HeyGen API key not configured, skipping upload`);
-      }
-    } catch (error: any) {
-      console.error(`[ImageGenerationProcessor] Failed to upload to HeyGen: ${error.message}`);
-      // Continue without HeyGen image_key - video generation will use standard method
-    }
+    // NOTE: We intentionally do NOT upload to HeyGen here anymore.
+    // Avatar IV (image_key) upload is now handled lazily in the video-generation
+    // processor when we actually convert this composite into a video.
 
     await job.updateProgress(90);
 
@@ -596,7 +797,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       localUrl,
       gcsUrl,
       publicUrl,
-      heygenImageKey: heygenImageKey || undefined, // Store for Avatar IV generation
+      // heygenImageKey will be populated later by the video-generation processor
       prompt: enhancedPrompt,
       modelId: selectedModelId,
       model: model.displayName,
@@ -624,7 +825,9 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(100);
 
-    console.log(`[ImageGenerationProcessor] Completed AVATAR_PRODUCT image-to-image for scene ${sceneNumber}${heygenImageKey ? `, image_key: ${heygenImageKey}` : ''}`);
+    console.log(
+      `[ImageGenerationProcessor] Completed AVATAR_PRODUCT image-to-image for scene ${sceneNumber}`,
+    );
     
     // Emit WebSocket event
     await this.jobStatusGateway.notifyJobStatus(userId, {

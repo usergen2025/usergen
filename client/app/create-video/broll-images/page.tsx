@@ -23,6 +23,8 @@ interface BrollImage {
   imageUrl: string;
   localPath?: string;
   localUrl?: string;
+  gcsUrl?: string;      // GCS public URL
+  publicUrl?: string;   // Preferred public URL (GCS if available, fallback to backend)
   prompt: string;
 }
 
@@ -338,7 +340,7 @@ function BrollImagesPageContent() {
     loadProject();
   }, [projectId, isAuthenticated, authLoading, showToast]);
 
-  // Initialize default model for all scenes - ensure Model 1 is selected by default
+  // Initialize default model for all scenes - ensure Model 1 (imagen4) is selected by default
   useEffect(() => {
     if (!scenesNeedingBroll.length || !dbLoaded) return;
 
@@ -350,7 +352,7 @@ function BrollImagesPageContent() {
         const sceneNumber = normalizeSceneNumber(scene, index);
         // Always set default to 'model-1' if not already set
         if (!updated[sceneNumber]) {
-          updated[sceneNumber] = 'model-1'; // Default to Model 1 (FAL imagen4)
+          updated[sceneNumber] = 'model-1'; // Default to Model 1 (imagen4)
           hasChanges = true;
         }
       });
@@ -628,9 +630,18 @@ function BrollImagesPageContent() {
   };
 
   const getImageUrl = (image: BrollImage): string => {
-    // Prefer localUrl (served from our server)
+    // Priority 1: Use publicUrl (GCS URL if available, backend URL otherwise)
+    if (image.publicUrl && image.publicUrl.startsWith('http')) {
+      return image.publicUrl;
+    }
+    
+    // Priority 2: Direct GCS URL
+    if (image.gcsUrl && image.gcsUrl.startsWith('http')) {
+      return image.gcsUrl;
+    }
+    
+    // Priority 3: Fallback to localUrl with backend base
     if (image.localUrl) {
-      // Ensure localUrl starts with /uploads
       const url = image.localUrl.startsWith('/uploads') 
         ? image.localUrl 
         : `/uploads${image.localUrl}`;
@@ -639,8 +650,9 @@ function BrollImagesPageContent() {
       const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
       return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
-    // Fallback to imageUrl (BytePlus URL)
-    return image.imageUrl;
+    
+    // Last resort: original provider URL
+    return image.imageUrl || '';
   };
 
   // Helper function to normalize sceneNumber consistently
