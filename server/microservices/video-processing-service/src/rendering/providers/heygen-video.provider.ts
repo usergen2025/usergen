@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import { preWarmUrl, withRetry } from '@shared/storage';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface HeyGenVideoGenerationRequest {
   avatar_id?: string; // Deprecated - use talking_photo_id instead
@@ -125,6 +128,16 @@ export class HeyGenVideoProvider {
 
       if (!avatarId) {
         throw new Error('Either talking_photo_id or avatar_id must be provided');
+      }
+
+      // Pre-warm audio URL if provided (helps HeyGen download the file faster)
+      if (request.audio_url && !request.audio_asset_id) {
+        console.log(`[HeyGen] Pre-warming audio URL...`);
+        const warmed = await preWarmUrl(request.audio_url, 3);
+        if (!warmed) {
+          console.warn(`[HeyGen] ⚠️ Audio URL pre-warming failed, proceeding anyway...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       const payload = {
@@ -422,6 +435,16 @@ export class HeyGenVideoProvider {
         throw new Error('Either audio_url/audio_asset_id or script+voice_id must be provided');
       }
 
+      // Pre-warm audio URL if provided (helps HeyGen download the file faster)
+      if (request.audio_url && !request.audio_asset_id) {
+        console.log(`[HeyGen] Pre-warming audio URL for Avatar IV...`);
+        const warmed = await preWarmUrl(request.audio_url, 3);
+        if (!warmed) {
+          console.warn(`[HeyGen] ⚠️ Audio URL pre-warming failed, proceeding anyway...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
       const payload: any = {
         image_key: request.image_key,
         video_title: request.video_title,
@@ -478,5 +501,82 @@ export class HeyGenVideoProvider {
       throw new Error(`Failed to generate Avatar IV video: ${error.response?.data?.msg || error.response?.data?.error?.message || error.message}`);
     }
   }
-}
 
+  /**
+   * Upload an image file to HeyGen and return its image_key.
+   * This is used for Avatar IV (image_key-based) flows such as AVATAR_PRODUCT.
+   * The caller is responsible for caching the returned key in project data.
+   */
+  async uploadImageAndGetKey(imagePath: string, filename?: string): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error('HEYGEN_API_KEY is not configured');
+    }
+
+    const resolvedPath = path.isAbsolute(imagePath)
+      ? imagePath
+      : path.join(process.cwd(), imagePath);
+
+    if (!fs.existsSync(resolvedPath)) {
+      throw new Error(`Image file not found at path: ${resolvedPath}`);
+    }
+
+    try {
+      console.log(`[HeyGen] Uploading image to HeyGen asset API from ${resolvedPath}`);
+
+      // Read file into buffer
+      const buffer = fs.readFileSync(resolvedPath);
+
+      // Detect actual image format from magic bytes (not just extension)
+      // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+      // JPEG signature: FF D8 FF
+      let contentType: 'image/jpeg' | 'image/png';
+      if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+        // PNG file
+        contentType = 'image/png';
+        console.log(`[HeyGen] Detected PNG format (magic bytes)`);
+      } else if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+        // JPEG file
+        contentType = 'image/jpeg';
+        console.log(`[HeyGen] Detected JPEG format (magic bytes)`);
+      } else {
+        // Fallback to extension-based detection
+        const ext = path.extname(resolvedPath).toLowerCase();
+        contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
+        console.log(`[HeyGen] Using extension-based detection: ${contentType}`);
+      }
+
+      // Mirror the working avatar upload flow: send raw binary buffer with appropriate Content-Type
+      const uploadAxios = axios.create({
+        baseURL: 'https://upload.heygen.com/v1',
+        headers: {
+          'X-Api-Key': this.apiKey,
+          'Content-Type': contentType,
+        },
+        timeout: 60000,
+      });
+
+      const response = await uploadAxios.post<any>('/asset', buffer);
+
+      // Handle different response formats (code-wrapped or direct)
+      const responseData = response.data;
+      const data = responseData.code !== undefined ? responseData.data : (responseData as any);
+
+      const imageKey = data?.image_key || data?.id;
+
+      if (!imageKey) {
+        console.error('[HeyGen] Image upload response:', JSON.stringify(responseData, null, 2));
+        throw new Error('Failed to get image_key from HeyGen upload response');
+      }
+
+      console.log(`[HeyGen] ✅ Image uploaded to HeyGen. image_key=${imageKey}`);
+      return imageKey;
+    } catch (error: any) {
+      console.error('[HeyGen] Image upload error:', error.response?.data || error.message);
+      throw new Error(
+        `Failed to upload image to HeyGen: ${
+          error.response?.data?.msg || error.response?.data?.message || error.message
+        }`,
+      );
+    }
+  }
+}

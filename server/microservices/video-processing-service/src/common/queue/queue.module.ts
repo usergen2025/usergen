@@ -8,11 +8,13 @@ import { VideoGenerationProcessor } from './processors/video-generation.processo
 import { DatabaseModule } from '../database/database.module';
 import { RenderingModule } from '../../rendering/rendering.module';
 import { WebSocketModule } from '../websocket/websocket.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
     ConfigModule,
     DatabaseModule,
+    StorageModule, // Import StorageModule to access PublicUrlService
     forwardRef(() => RenderingModule),
     WebSocketModule, // Import WebSocket module to access gateway
     // Register queues for different task types

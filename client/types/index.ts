@@ -13,7 +13,7 @@ export interface Avatar {
 
 export type BRollSource = 'skip' | 'ai-generated' | 'upload' | 'stock';
 
-export type VideoStyle = 'half-n-half' | 'alternate' | 'avatar-cutout';
+export type VideoStyle = 'half-n-half' | 'alternate' | 'avatar-cutout' | 'avatar-only' | 'product-only' | 'avatar-product';
 
 export interface CaptionSettings {
   enabled: boolean;

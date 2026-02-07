@@ -165,6 +165,24 @@ export class ModelRegistryService {
   }
 
   /**
+   * Get default model for a specific video style
+   * @param videoStyle - Video style (PRODUCT_ONLY, AVATAR_PRODUCT, etc.)
+   * @returns ModelInfo for the default model
+   */
+  getDefaultModelForStyle(videoStyle?: string): ModelInfo {
+    // For PRODUCT_ONLY and AVATAR_PRODUCT, use nano-banana-pro (model-4)
+    if (videoStyle === 'PRODUCT_ONLY' || videoStyle === 'AVATAR_PRODUCT') {
+      const model = this.models.get('model-4');
+      if (!model) {
+        throw new Error('Default model for PRODUCT_ONLY/AVATAR_PRODUCT (model-4) not found');
+      }
+      return model;
+    }
+    // Default to model-1 (imagen4) for other styles
+    return this.getDefaultModel();
+  }
+
+  /**
    * Get models by platform
    */
   getModelsByPlatform(platform: 'FAL' | 'BYTEPLUS'): ModelInfo[] {

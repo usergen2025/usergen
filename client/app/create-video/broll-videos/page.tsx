@@ -23,6 +23,8 @@ interface BrollVideo {
   videoUrl?: string;
   localPath?: string;
   localUrl?: string;
+  gcsUrl?: string;      // GCS public URL
+  publicUrl?: string;   // Preferred public URL (GCS if available, fallback to backend)
   duration?: number;
   prompt?: string;
 }
@@ -538,9 +540,21 @@ function BrollVideosPageContent() {
   const handleRegenerate = async (sceneNumber: number) => {
     if (!projectId) return;
 
+    // Ensure we're regenerating VIDEO, not image
+    // This is the broll-videos page, so we should always regenerate videos
+    const video = brollVideos.find(vid => {
+      const vidSceneNumber = typeof vid.sceneNumber === 'number' 
+        ? vid.sceneNumber 
+        : parseInt(String(vid.sceneNumber || 0), 10);
+      return vidSceneNumber === sceneNumber;
+    });
+    
     const image = brollImages.find(img => img.sceneNumber === sceneNumber);
+    
+    // If video generation failed previously, we still need the image as source
+    // But we're regenerating VIDEO, not the image
     if (!image || !image.imageUrl) {
-      showToast('Image not found for this scene', 'warning');
+      showToast('Source image not found for this scene. Cannot generate video without source image.', 'warning');
       return;
     }
 
@@ -567,7 +581,9 @@ function BrollVideosPageContent() {
       // Get selected model for this scene
       const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-1'; // Using nullish coalescing
       
+      // IMPORTANT: Always regenerate VIDEO (not image) when on broll-videos page
       // Pass force: true to always regenerate when user manually clicks the button
+      console.log(`[BrollVideos] Regenerating VIDEO (not image) for scene ${sceneNumber} with model ${selectedModelId}`);
       const response = await apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, true);
       
       // Handle existing video response
@@ -646,9 +662,18 @@ function BrollVideosPageContent() {
   };
 
   const getVideoUrl = (video: BrollVideo): string => {
-    // Prefer localUrl (served from our server)
+    // Priority 1: Use publicUrl (GCS URL if available, backend URL otherwise)
+    if (video.publicUrl && video.publicUrl.startsWith('http')) {
+      return video.publicUrl;
+    }
+    
+    // Priority 2: Direct GCS URL
+    if (video.gcsUrl && video.gcsUrl.startsWith('http')) {
+      return video.gcsUrl;
+    }
+    
+    // Priority 3: Fallback to localUrl with backend base
     if (video.localUrl) {
-      // Ensure localUrl starts with /uploads
       const url = video.localUrl.startsWith('/uploads') 
         ? video.localUrl 
         : `/uploads${video.localUrl}`;
@@ -657,7 +682,8 @@ function BrollVideosPageContent() {
       const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
       return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
-    // Fallback to videoUrl (BytePlus URL)
+    
+    // Last resort: original provider URL
     return video.videoUrl || '';
   };
 

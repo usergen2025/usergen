@@ -16,6 +16,7 @@ import {
   VideoProviderCapabilities,
   VideoModelInfo,
 } from './interfaces/video-generation.interface';
+import { preWarmUrl, withRetry } from '@shared/storage';
 
 export interface BytePlusImageGenerationRequest {
   model: string;
@@ -200,7 +201,7 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       size = '1080x1920'; // Default
     }
 
-    return {
+    const bytePlusRequest: BytePlusImageGenerationRequest = {
       model: request.modelId || 'seedream-4-0-250828',
       prompt: request.prompt,
       size,
@@ -208,6 +209,21 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       sequential_image_generation: 'disabled',
       watermark: false,
     };
+
+    // Add reference images for image-to-image generation
+    // BytePlus supports single image or array of images
+    if (request.referenceImages && request.referenceImages.length > 0) {
+      if (request.referenceImages.length === 1) {
+        // Single reference image
+        bytePlusRequest.image = request.referenceImages[0];
+      } else {
+        // Multiple reference images (multi-reference)
+        bytePlusRequest.image = request.referenceImages;
+      }
+      console.log(`[BytePlusProvider] Using image-to-image with ${request.referenceImages.length} reference image(s)`);
+    }
+
+    return bytePlusRequest;
   }
 
   /**
@@ -399,6 +415,16 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
           console.warn('[BytePlus] Base64 images not supported in Seedance content format. Use a publicly accessible URL.');
           // Skip image if it's Base64
         } else {
+          // Pre-warm the image URL before submitting to BytePlus
+          // This ensures GCS/CDN has the file cached and accessible
+          console.log(`[BytePlus] Pre-warming source image URL...`);
+          const warmed = await preWarmUrl(imageUrl, 3);
+          if (!warmed) {
+            console.warn(`[BytePlus] ⚠️ Image URL pre-warming failed, proceeding anyway...`);
+          }
+          // Small delay after pre-warming to ensure propagation
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
           // Use URL directly (should be publicly accessible)
           content.push({
             type: 'image_url',
@@ -429,9 +455,16 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       console.log(`[BytePlus] Content array length: ${payload.content?.length || 0}`);
       console.log(`[BytePlus] Content items:`, payload.content?.map((c: any) => ({ type: c.type, hasText: !!c.text, hasImage: !!c.image_url })));
 
-      const response = await this.axiosInstance.post<BytePlusVideoGenerationResponse>(
-        '/contents/generations/tasks',
-        payload
+      // Submit request with retry logic
+      const response = await withRetry(
+        async () => this.axiosInstance.post<BytePlusVideoGenerationResponse>(
+          '/contents/generations/tasks',
+          payload
+        ),
+        3,
+        (attempt, error) => {
+          console.log(`[BytePlus] Submit retry ${attempt}/3 after error: ${error.message}`);
+        }
       );
 
       console.log(`[BytePlus] Video generation task created. Task ID: ${response.data.id}, Status: ${response.data.status}`);

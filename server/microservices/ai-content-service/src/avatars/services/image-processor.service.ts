@@ -6,6 +6,31 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BytePlusImageProvider } from '../providers/byteplus-image.provider';
 import { HeyGenProvider } from '../providers/heygen.provider';
+import { PublicUrlService } from '../../common/storage/public-url.service';
+
+/**
+ * Extended result type that includes GCS URLs
+ */
+export interface ProcessedImageResult {
+  imageKeyFull: string;              // 9:16 (1080x1920)
+  imageKeyHalfNHalf: string;         // 9:8 (1080x960)
+  imageKeyHalfNHalfWithWhite: string; // 9:8 + white top (1080x1920)
+  localPaths: {
+    full: string;
+    halfNHalf: string;
+    halfNHalfWithWhite: string;
+    fullLarge: string;              // BytePlus-generated large version
+    halfNHalfLarge: string;          // BytePlus-generated large version
+  };
+  gcsUrls?: {
+    full?: string;
+    halfNHalf?: string;
+    halfNHalfWithWhite?: string;
+    fullLarge?: string;
+    halfNHalfLarge?: string;
+    original?: string;
+  };
+}
 
 @Injectable()
 export class ImageProcessorService {
@@ -13,6 +38,7 @@ export class ImageProcessorService {
     private readonly bytePlusProvider: BytePlusImageProvider,
     private readonly heygenProvider: HeyGenProvider,
     private readonly configService: ConfigService,
+    private readonly publicUrlService: PublicUrlService,
   ) {}
 
   /**
@@ -27,35 +53,45 @@ export class ImageProcessorService {
   }
 
   /**
+   * Upload a saved file to GCS (best-effort, non-blocking)
+   */
+  private async uploadToGcsIfAvailable(
+    fullPath: string,
+    subPath: string,
+    filename: string
+  ): Promise<string | undefined> {
+    try {
+      if (this.publicUrlService.isGcsAvailable()) {
+        const result = await this.publicUrlService.uploadFromPath(fullPath, subPath, filename);
+        return result.gcsUrl;
+      }
+    } catch (error: any) {
+      console.warn(`[ImageProcessor] GCS upload failed for ${filename}: ${error.message}`);
+    }
+    return undefined;
+  }
+
+  /**
    * Process uploaded avatar image into multiple variants for Premium avatars
    * @param imageBuffer Original image buffer
    * @param originalImageKey Original HeyGen image key
    * @param userId User ID for directory structure
    * @param avatarId Avatar ID for directory structure
-   * @returns Processed image keys and local file paths
+   * @returns Processed image keys and local file paths (with GCS URLs if available)
    */
   async processAvatarImage(
     imageBuffer: Buffer,
     originalImageKey: string,
     userId: string,
     avatarId: string
-  ): Promise<{
-    imageKeyFull: string;              // 9:16 (1080x1920)
-    imageKeyHalfNHalf: string;         // 9:8 (1080x960)
-    imageKeyHalfNHalfWithWhite: string; // 9:8 + white top (1080x1920)
-    localPaths: {
-      full: string;
-      halfNHalf: string;
-      halfNHalfWithWhite: string;
-      fullLarge: string;              // BytePlus-generated large version
-      halfNHalfLarge: string;          // BytePlus-generated large version
-    };
-  }> {
+  ): Promise<ProcessedImageResult> {
     // Create avatar-specific directory
     const avatarDir = path.join(process.cwd(), 'uploads', 'avatars', userId, avatarId);
     if (!fs.existsSync(avatarDir)) {
       fs.mkdirSync(avatarDir, { recursive: true });
     }
+
+    const subPath = `avatars/${userId}/${avatarId}`;
 
     // Check original image dimensions
     const originalDimensions = await this.getImageDimensions(imageBuffer);
@@ -100,6 +136,13 @@ export class ImageProcessorService {
       const imageKeyHalfNHalfWithWhite = await this.uploadToHeyGen(halfWithWhiteBuffer, 'image/jpeg');
       
       console.log('[ImageProcessor] Skipped BytePlus processing - image already correct size');
+
+      // Upload to GCS (best-effort, parallel)
+      const [gcsFullUrl, gcsHalfUrl, gcsHalfWhiteUrl] = await Promise.all([
+        this.uploadToGcsIfAvailable(fullPath, subPath, 'full_9x16_1080x1920.jpg'),
+        this.uploadToGcsIfAvailable(halfPath, subPath, 'half_n_half_9x8_1080x960.jpg'),
+        this.uploadToGcsIfAvailable(halfWithWhitePath, subPath, 'half_n_half_with_white_9x16_1080x1920.jpg'),
+      ]);
       
       return {
         imageKeyFull,
@@ -111,6 +154,13 @@ export class ImageProcessorService {
           halfNHalfWithWhite: `/uploads/avatars/${userId}/${avatarId}/half_n_half_with_white_9x16_1080x1920.jpg`,
           fullLarge: `/uploads/avatars/${userId}/${avatarId}/full_9x16_1080x1920.jpg`, // Use same file
           halfNHalfLarge: `/uploads/avatars/${userId}/${avatarId}/half_n_half_9x8_1080x960.jpg`, // Use same file
+        },
+        gcsUrls: {
+          full: gcsFullUrl,
+          halfNHalf: gcsHalfUrl,
+          halfNHalfWithWhite: gcsHalfWhiteUrl,
+          fullLarge: gcsFullUrl,
+          halfNHalfLarge: gcsHalfUrl,
         },
       };
     }
@@ -165,6 +215,14 @@ export class ImageProcessorService {
       const imageKeyFull = await this.uploadToHeyGen(fullImageBuffer, 'image/jpeg');
       
       console.log('[ImageProcessor] Skipped BytePlus processing for half-n-half - image already correct size');
+
+      // Upload to GCS (best-effort, parallel)
+      const [gcsFullUrl, gcsHalfUrl, gcsHalfWhiteUrl, gcsFullLargeUrl] = await Promise.all([
+        this.uploadToGcsIfAvailable(fullPath, subPath, 'full_9x16_1080x1920.jpg'),
+        this.uploadToGcsIfAvailable(halfPath, subPath, 'half_n_half_9x8_1080x960.jpg'),
+        this.uploadToGcsIfAvailable(halfWithWhitePath, subPath, 'half_n_half_with_white_9x16_1080x1920.jpg'),
+        this.uploadToGcsIfAvailable(fullLargePath, subPath, 'full_9x16_1440x2560_byteplus.jpg'),
+      ]);
       
       return {
         imageKeyFull,
@@ -176,6 +234,13 @@ export class ImageProcessorService {
           halfNHalfWithWhite: `/uploads/avatars/${userId}/${avatarId}/half_n_half_with_white_9x16_1080x1920.jpg`,
           fullLarge: `/uploads/avatars/${userId}/${avatarId}/full_9x16_1440x2560_byteplus.jpg`,
           halfNHalfLarge: `/uploads/avatars/${userId}/${avatarId}/half_n_half_9x8_1080x960.jpg`, // Use same file
+        },
+        gcsUrls: {
+          full: gcsFullUrl,
+          halfNHalf: gcsHalfUrl,
+          halfNHalfWithWhite: gcsHalfWhiteUrl,
+          fullLarge: gcsFullLargeUrl,
+          halfNHalfLarge: gcsHalfUrl,
         },
       };
     }
@@ -286,6 +351,16 @@ export class ImageProcessorService {
       this.uploadToHeyGen(halfWithWhiteBuffer, 'image/jpeg'),
     ]);
 
+    // Upload to GCS (best-effort, parallel)
+    console.log('[ImageProcessor] Uploading images to GCS...');
+    const [gcsFullUrl, gcsHalfUrl, gcsHalfWhiteUrl, gcsFullLargeUrl, gcsHalfLargeUrl] = await Promise.all([
+      this.uploadToGcsIfAvailable(localPaths.full, subPath, 'full_9x16_1080x1920.jpg'),
+      this.uploadToGcsIfAvailable(localPaths.halfNHalf, subPath, 'half_n_half_9x8_1080x960.jpg'),
+      this.uploadToGcsIfAvailable(localPaths.halfNHalfWithWhite, subPath, 'half_n_half_with_white_9x16_1080x1920.jpg'),
+      this.uploadToGcsIfAvailable(localPaths.fullLarge, subPath, 'full_9x16_1440x2560_byteplus.jpg'),
+      this.uploadToGcsIfAvailable(localPaths.halfNHalfLarge, subPath, 'half_n_half_9x8_2304x2048_byteplus.jpg'),
+    ]);
+
     console.log('[ImageProcessor] Image processing completed successfully');
     
     return {
@@ -298,6 +373,13 @@ export class ImageProcessorService {
         halfNHalfWithWhite: `/uploads/avatars/${userId}/${avatarId}/half_n_half_with_white_9x16_1080x1920.jpg`,
         fullLarge: `/uploads/avatars/${userId}/${avatarId}/full_9x16_1440x2560_byteplus.jpg`,
         halfNHalfLarge: `/uploads/avatars/${userId}/${avatarId}/half_n_half_9x8_2304x2048_byteplus.jpg`,
+      },
+      gcsUrls: {
+        full: gcsFullUrl,
+        halfNHalf: gcsHalfUrl,
+        halfNHalfWithWhite: gcsHalfWhiteUrl,
+        fullLarge: gcsFullLargeUrl,
+        halfNHalfLarge: gcsHalfLargeUrl,
       },
     };
   }
@@ -372,4 +454,3 @@ export class ImageProcessorService {
     return uploadResponse.image_key;
   }
 }
-

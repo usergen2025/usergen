@@ -99,20 +99,31 @@ export default function ProjectsPage() {
     }
   };
 
-  // Helper function to get full video URL
-  const getVideoUrl = (videoUrl: string | undefined): string | undefined => {
-    if (!videoUrl) return undefined;
+  // Helper function to get full video URL - prioritizes GCS URLs
+  const getVideoUrl = (project: { videoPublicUrl?: string; videoGcsUrl?: string; videoUrl?: string }): string | undefined => {
+    // Priority 1: Use videoPublicUrl (GCS URL if available, backend URL otherwise)
+    if (project.videoPublicUrl && project.videoPublicUrl.startsWith('http')) {
+      return project.videoPublicUrl;
+    }
+    
+    // Priority 2: Direct GCS URL
+    if (project.videoGcsUrl && project.videoGcsUrl.startsWith('http')) {
+      return project.videoGcsUrl;
+    }
+    
+    // Priority 3: Fallback to videoUrl
+    if (!project.videoUrl) return undefined;
     
     // If already a full URL (starts with http), return as-is
-    if (videoUrl.startsWith('http')) {
-      return videoUrl;
+    if (project.videoUrl.startsWith('http')) {
+      return project.videoUrl;
     }
     
     // Otherwise, construct full URL using video-processing-service
     // Static files are served at /uploads/* (not /api/uploads/*)
     // Use NEXT_PUBLIC_WS_URL which is already set to the base domain (e.g., https://api.dev.usergen.ai)
     const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
-    return `${VIDEO_SERVICE_BASE_URL}${videoUrl}`;
+    return `${VIDEO_SERVICE_BASE_URL}${project.videoUrl}`;
   };
 
   const getStepText = (step: string) => {
@@ -243,7 +254,7 @@ export default function ProjectsPage() {
                   {project.status === 'COMPLETED' && project.videoUrl ? (
                     <div className="mb-4 w-full h-48 rounded-lg overflow-hidden bg-gray-200 relative group">
                       <video
-                        src={getVideoUrl(project.videoUrl) || ''}
+                        src={getVideoUrl(project) || ''}
                         className="w-full h-full object-cover"
                         controls={false}
                         muted
@@ -258,7 +269,7 @@ export default function ProjectsPage() {
                       <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/20 transition-colors">
                         <button
                           onClick={() => {
-                            const fullVideoUrl = getVideoUrl(project.videoUrl);
+                            const fullVideoUrl = getVideoUrl(project);
                             if (fullVideoUrl) {
                               window.open(fullVideoUrl, '_blank');
                             }
@@ -322,7 +333,7 @@ export default function ProjectsPage() {
                       <Button
                         variant="primary"
                         onClick={() => {
-                          const fullVideoUrl = getVideoUrl(project.videoUrl);
+                          const fullVideoUrl = getVideoUrl(project);
                           if (fullVideoUrl) {
                             window.open(fullVideoUrl, '_blank');
                           }

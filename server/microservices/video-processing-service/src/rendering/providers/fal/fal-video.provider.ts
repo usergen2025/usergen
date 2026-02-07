@@ -10,6 +10,7 @@ import {
   ValidationResult,
 } from '../interfaces/video-generation.interface';
 import { FalProviderError, FalErrorType } from './fal-errors';
+import { preWarmUrl, withRetry } from '@shared/storage';
 
 /**
  * FAL Video API Response Types
@@ -350,18 +351,43 @@ export class FalVideoProvider implements IVideoGenerationProvider {
 
     console.log(`[FalVideoProvider] Generating video with payload:`, JSON.stringify(payload, null, 2));
 
+    // Pre-warm the source image URL before submitting to FAL
+    // This ensures GCS/CDN has the file cached and accessible
+    if (request.imageUrl) {
+      console.log(`[FalVideoProvider] Pre-warming source image URL...`);
+      if (onProgress) onProgress(2);
+      const warmed = await preWarmUrl(request.imageUrl, 3);
+      if (!warmed) {
+        console.warn(`[FalVideoProvider] ⚠️ Image URL pre-warming failed, proceeding anyway...`);
+      }
+      // Small delay after pre-warming to ensure propagation
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
     if (onProgress) onProgress(5);
 
-    // Submit request
-    const submitResponse = await this.submitRequest(payload);
+    // Submit request with retry logic
+    const submitResponse = await withRetry(
+      async () => this.submitRequest(payload),
+      3,
+      (attempt, error) => {
+        console.log(`[FalVideoProvider] Submit retry ${attempt}/3 after error: ${error.message}`);
+      }
+    );
     const requestId = submitResponse.request_id;
 
     console.log(`[FalVideoProvider] Request submitted, request_id: ${requestId}`);
 
     if (onProgress) onProgress(10);
 
-    // Poll until completion
-    const result = await this.pollUntilComplete(requestId, onProgress);
+    // Poll until completion with retry logic
+    const result = await withRetry(
+      async () => this.pollUntilComplete(requestId, onProgress),
+      2, // Fewer retries for polling since it already has internal retry
+      (attempt, error) => {
+        console.log(`[FalVideoProvider] Poll retry ${attempt}/2 after error: ${error.message}`);
+      }
+    );
 
     if (!result.video || !result.video.url) {
       throw new Error('Video generation completed but no video URL');

@@ -2,21 +2,27 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
-import axios, { AxiosInstance } from 'axios';
-import FormData from 'form-data';
+import {
+  UnifiedStorageService,
+  StorageResult,
+  GCSConfig,
+  getContentType,
+} from '@shared/storage';
 
 /**
  * Service to get public URLs for local files
- * - Local environment: Uploads files to FAL storage and returns FAL public URL
- * - Dev/Prod environments: Returns backend URL + localUrl path (files are already publicly accessible)
+ * 
+ * Priority order:
+ * 1. GCS (Google Cloud Storage) - Primary, if enabled
+ * 2. Backend URL - Fallback for dev/prod when files are publicly accessible
+ * 3. Local path - Emergency fallback for internal service use
  */
 @Injectable()
 export class PublicUrlService {
   private readonly nodeEnv: string;
   private readonly backendBaseUrl: string;
-  private readonly falApiKey: string;
-  private readonly falStorageUrl: string;
-  private readonly axiosInstance: AxiosInstance;
+  private readonly unifiedStorage: UnifiedStorageService;
+  private readonly uploadsBaseDir: string;
 
   constructor(private readonly configService: ConfigService) {
     this.nodeEnv = this.configService.get<string>('NODE_ENV') || 'local';
@@ -26,28 +32,46 @@ export class PublicUrlService {
     this.backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
       `http://localhost:${servicePort}`;
     
-    this.falApiKey = this.configService.get<string>('FAL_KEY') || '';
-    
-    // FAL storage endpoint - can be overridden via env variable
-    // Default: https://fal.run/storage/upload (may need adjustment based on actual FAL API)
-    this.falStorageUrl = this.configService.get<string>('FAL_STORAGE_URL') || 
-      'https://fal.run/storage/upload';
-    
-    if (!this.falApiKey && this.nodeEnv === 'local') {
-      console.warn('[PublicUrlService] FAL_KEY not configured. FAL storage uploads will fail in local environment.');
+    // Setup uploads directory
+    this.uploadsBaseDir = this.configService.get<string>('UPLOADS_DIR') || 
+      path.join(process.cwd(), 'uploads');
+
+    // Initialize GCS configuration
+    const gcsConfig: GCSConfig = {
+      enabled: this.configService.get<string>('GCS_ENABLED') === 'true',
+      bucketName: this.configService.get<string>('GCS_BUCKET_NAME') || '',
+      projectId: this.configService.get<string>('GCS_PROJECT_ID'),
+      credentialsPath: this.configService.get<string>('GOOGLE_APPLICATION_CREDENTIALS'),
+      credentialsBase64: this.configService.get<string>('GCS_CREDENTIALS_JSON_BASE64'),
+    };
+
+    // Validate GCS config if enabled
+    if (gcsConfig.enabled && !gcsConfig.bucketName) {
+      console.warn('[PublicUrlService] GCS is enabled but GCS_BUCKET_NAME is not set. GCS will be disabled.');
+      gcsConfig.enabled = false;
     }
 
-    // Create axios instance for FAL storage uploads
-    this.axiosInstance = axios.create({
-      timeout: 120000, // 2 minutes for file uploads
+    // Initialize unified storage service
+    this.unifiedStorage = new UnifiedStorageService({
+      gcs: gcsConfig,
+      backendBaseUrl: this.backendBaseUrl,
+      uploadsBaseDir: this.uploadsBaseDir,
+      service: 'video-processing',
     });
+
+    // Log initialization status
+    if (this.unifiedStorage.isGcsAvailable()) {
+      console.log(`[PublicUrlService] ✅ GCS storage initialized for video-processing-service (bucket: ${gcsConfig.bucketName})`);
+    } else {
+      console.log(`[PublicUrlService] Using local/backend URL fallback (GCS not available)`);
+    }
   }
 
   /**
    * Get public URL for a local file
    * @param localPath - Full path to the local file (e.g., /path/to/uploads/images/user123/file.jpg)
    * @param localUrl - Relative URL path (e.g., /uploads/images/user123/file.jpg)
-   * @returns Public URL that can be used by external services (BytePlus, etc.)
+   * @returns Public URL that can be used by external services (BytePlus, FAL, HeyGen, etc.)
    */
   async getPublicUrl(localPath: string, localUrl: string): Promise<string> {
     // Validate file exists
@@ -55,84 +79,100 @@ export class PublicUrlService {
       throw new Error(`File not found at path: ${localPath}`);
     }
 
-    if (this.nodeEnv === 'local') {
-      // Local environment: Upload to FAL storage for public access
-      console.log(`[PublicUrlService] Local environment detected. Uploading file to FAL storage: ${localPath}`);
-      return await this.uploadToFalStorage(localPath);
-    } else {
-      // Dev/Prod environment: Use backend URL (files are already publicly accessible)
-      const publicUrl = `${this.backendBaseUrl}${localUrl}`;
-      console.log(`[PublicUrlService] Dev/Prod environment. Using backend URL: ${publicUrl}`);
-      return publicUrl;
+    try {
+      const result = await this.unifiedStorage.getPublicUrl({
+        localPath,
+        localUrl,
+      });
+
+      if (result.isGcs) {
+        console.log(`[PublicUrlService] ✅ Using GCS URL: ${result.publicUrl}`);
+      } else {
+        console.log(`[PublicUrlService] Using backend URL fallback: ${result.publicUrl}`);
+      }
+
+      return result.publicUrl;
+    } catch (error: any) {
+      console.error(`[PublicUrlService] Failed to get public URL: ${error.message}`);
+      // Final fallback to backend URL
+      const fallbackUrl = `${this.backendBaseUrl}${localUrl}`;
+      console.log(`[PublicUrlService] Using emergency fallback URL: ${fallbackUrl}`);
+      return fallbackUrl;
     }
   }
 
   /**
-   * Upload file to FAL storage and get public URL
-   * @param filePath - Full path to the file to upload
-   * @returns Public URL from FAL storage
+   * Upload a file from buffer and get storage result with both local and GCS URLs
+   * @param buffer - File content as buffer
+   * @param subPath - Sub-path within service folder (e.g., "images/user123")
+   * @param filename - Filename for the uploaded file
+   * @param contentType - MIME content type (auto-detected if not provided)
+   * @returns StorageResult with local and GCS URLs
    */
-  private async uploadToFalStorage(filePath: string): Promise<string> {
-    if (!this.falApiKey) {
-      throw new Error('FAL_KEY is required for file uploads in local environment. Please set FAL_KEY in .env file.');
+  async uploadFromBuffer(
+    buffer: Buffer,
+    subPath: string,
+    filename: string,
+    contentType?: string
+  ): Promise<StorageResult> {
+    // Determine local directory
+    const localDir = path.join(this.uploadsBaseDir, subPath);
+    
+    // Auto-detect content type if not provided
+    const mimeType = contentType || getContentType(filename);
+
+    const result = await this.unifiedStorage.uploadFromBuffer({
+      buffer,
+      localDir,
+      filename,
+      contentType: mimeType,
+      service: 'video-processing',
+      subPath,
+      makePublic: true,
+    });
+
+    if (result.gcsUploaded) {
+      console.log(`[PublicUrlService] ✅ File uploaded to GCS: ${result.gcsUrl}`);
+    } else {
+      console.log(`[PublicUrlService] File saved locally: ${result.localPath}`);
     }
 
-    try {
-      // Check if file exists
-      if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`);
-      }
+    return result;
+  }
 
-      // Get file stats for logging
-      const stats = fs.statSync(filePath);
-      const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-      console.log(`[PublicUrlService] Uploading file to FAL storage: ${path.basename(filePath)} (${fileSizeMB} MB)`);
+  /**
+   * Upload an existing local file to GCS and get storage result
+   * @param localPath - Full path to the local file
+   * @param subPath - Sub-path within service folder
+   * @param filename - Filename (defaults to basename of localPath)
+   * @param contentType - MIME content type (auto-detected if not provided)
+   * @returns StorageResult with local and GCS URLs
+   */
+  async uploadFromPath(
+    localPath: string,
+    subPath: string,
+    filename?: string,
+    contentType?: string
+  ): Promise<StorageResult> {
+    const finalFilename = filename || path.basename(localPath);
+    const mimeType = contentType || getContentType(finalFilename);
 
-      // Create form data
-      const form = new FormData();
-      form.append('file', fs.createReadStream(filePath));
+    const result = await this.unifiedStorage.uploadFromPath({
+      localPath,
+      filename: finalFilename,
+      contentType: mimeType,
+      service: 'video-processing',
+      subPath,
+      makePublic: true,
+    });
 
-      // Upload to FAL storage
-      const response = await this.axiosInstance.post(this.falStorageUrl, form, {
-        headers: {
-          ...form.getHeaders(),
-          'Authorization': `Key ${this.falApiKey.trim()}`,
-        },
-      });
-
-      // Extract URL from response
-      // FAL storage API returns different formats, handle both
-      let publicUrl: string;
-      if (typeof response.data === 'string') {
-        // If response is a string URL
-        publicUrl = response.data;
-      } else if (response.data?.url) {
-        // If response is an object with url property
-        publicUrl = response.data.url;
-      } else if (response.data?.data?.url) {
-        // If response is nested
-        publicUrl = response.data.data.url;
-      } else {
-        // Fallback: try to extract from response
-        console.warn('[PublicUrlService] Unexpected FAL storage response format:', response.data);
-        throw new Error('Failed to extract URL from FAL storage response');
-      }
-
-      console.log(`[PublicUrlService] ✅ File uploaded successfully. Public URL: ${publicUrl}`);
-      return publicUrl;
-    } catch (error: any) {
-      console.error('[PublicUrlService] Failed to upload file to FAL storage:', error.message);
-      
-      if (error.response) {
-        console.error('[PublicUrlService] FAL API Error Response:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data,
-        });
-      }
-
-      throw new Error(`Failed to upload file to FAL storage: ${error.message}`);
+    if (result.gcsUploaded) {
+      console.log(`[PublicUrlService] ✅ File uploaded to GCS: ${result.gcsUrl}`);
+    } else {
+      console.log(`[PublicUrlService] Using local path: ${result.localPath}`);
     }
+
+    return result;
   }
 
   /**
@@ -142,5 +182,18 @@ export class PublicUrlService {
   isPublicUrl(url: string): boolean {
     return url.startsWith('http://') || url.startsWith('https://');
   }
-}
 
+  /**
+   * Check if GCS storage is available
+   */
+  isGcsAvailable(): boolean {
+    return this.unifiedStorage.isGcsAvailable();
+  }
+
+  /**
+   * Get the unified storage service for advanced operations
+   */
+  getUnifiedStorage(): UnifiedStorageService {
+    return this.unifiedStorage;
+  }
+}

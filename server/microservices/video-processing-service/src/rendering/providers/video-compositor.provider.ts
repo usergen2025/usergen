@@ -68,10 +68,39 @@ export class VideoCompositorProvider {
       finalBottomPath = scaledBottom;
     }
 
+    // CRITICAL: Normalize both videos to same frame rate (24fps) before compositing
+    // This ensures both inputs to vstack have the same frame rate, preventing jerky playback
+    const targetFps = 24;
+    const normalizedTopPath = path.join(outputDir, `normalized_top_${Date.now()}.mp4`);
+    const normalizedBottomPath = path.join(outputDir, `normalized_bottom_${Date.now()}.mp4`);
+    
+    try {
+      const normalizeTopCommand = `
+        ffmpeg -i "${finalTopPath}" \
+        -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
+        -c:a copy \
+        -vsync cfr \
+        -y "${normalizedTopPath}"
+      `.replace(/\s+/g, ' ').trim();
+      execSync(normalizeTopCommand, { stdio: 'inherit' });
+
+      const normalizeBottomCommand = `
+        ffmpeg -i "${finalBottomPath}" \
+        -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
+        -c:a copy \
+        -vsync cfr \
+        -y "${normalizedBottomPath}"
+      `.replace(/\s+/g, ' ').trim();
+      execSync(normalizeBottomCommand, { stdio: 'inherit' });
+    } catch (error: any) {
+      console.error(`[VideoCompositor] Error normalizing videos before compositing:`, error.message);
+      throw new Error(`Failed to normalize videos for compositing: ${error.message}`);
+    }
+
     // FFmpeg command to composite videos vertically
-    // Both videos should now be correct size, just stack them
+    // Both videos are now normalized to same frame rate, so vstack will work correctly
     const ffmpegCommand = `
-      ffmpeg -i "${finalTopPath}" -i "${finalBottomPath}" \
+      ffmpeg -i "${normalizedTopPath}" -i "${normalizedBottomPath}" \
       -filter_complex "[0:v][1:v]vstack=inputs=2[v]" \
       -map "[v]" -c:v libx264 -preset medium -crf 23 \
       -map 1:a -c:a aac -b:a 192k \
@@ -83,7 +112,7 @@ export class VideoCompositorProvider {
       execSync(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Video composited successfully: ${outputPath}`);
       
-      // Cleanup temporary scaled files if they were created
+      // Cleanup temporary files
       if (finalTopPath !== topVideoPath && fs.existsSync(finalTopPath)) {
         try {
           fs.unlinkSync(finalTopPath);
@@ -98,10 +127,31 @@ export class VideoCompositorProvider {
           console.warn(`[VideoCompositor] Failed to cleanup scaled bottom video: ${e}`);
         }
       }
+      if (fs.existsSync(normalizedTopPath)) {
+        try {
+          fs.unlinkSync(normalizedTopPath);
+        } catch (e) {
+          console.warn(`[VideoCompositor] Failed to cleanup normalized top video: ${e}`);
+        }
+      }
+      if (fs.existsSync(normalizedBottomPath)) {
+        try {
+          fs.unlinkSync(normalizedBottomPath);
+        } catch (e) {
+          console.warn(`[VideoCompositor] Failed to cleanup normalized bottom video: ${e}`);
+        }
+      }
       
       return outputPath;
     } catch (error: any) {
       console.error(`[VideoCompositor] FFmpeg error:`, error.message);
+      // Cleanup on error
+      if (fs.existsSync(normalizedTopPath)) {
+        try { fs.unlinkSync(normalizedTopPath); } catch (e) {}
+      }
+      if (fs.existsSync(normalizedBottomPath)) {
+        try { fs.unlinkSync(normalizedBottomPath); } catch (e) {}
+      }
       throw new Error(`Failed to composite videos: ${error.message}`);
     }
   }
@@ -154,31 +204,107 @@ export class VideoCompositorProvider {
       return absolutePath;
     });
 
-    // Create a temporary file list for FFmpeg concat
-    const listPath = path.join(outputDir, `concat_list_${Date.now()}.txt`);
-    // Use absolute paths in the concat list to avoid path duplication issues
-    const listContent = absolutePaths.map(vp => `file '${vp.replace(/'/g, "'\\''")}'`).join('\n');
+    // Normalize all videos to same frame rate and format before concatenation
+    // This prevents duration issues and frame rate mismatches
+    const normalizedPaths: string[] = [];
+    const targetFps = 24; // Standardize to 24fps
+    
+    console.log(`[VideoCompositor] Normalizing ${absolutePaths.length} videos to ${targetFps}fps before concatenation...`);
+    
+    // Ensure outputDir is absolute to avoid path duplication in concat list
+    const absoluteOutputDir = path.isAbsolute(outputDir) ? outputDir : path.resolve(outputDir);
+    
+    for (let i = 0; i < absolutePaths.length; i++) {
+      const normalizedPath = path.resolve(absoluteOutputDir, `normalized_${i}_${Date.now()}.mp4`);
+      
+      try {
+        // Normalize: same frame rate, same codec, same resolution, ensure proper duration
+        const normalizeCommand = `
+          ffmpeg -i "${absolutePaths[i]}" \
+          -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
+          -c:a aac -b:a 192k \
+          -pix_fmt yuv420p \
+          -vsync cfr \
+          -y "${normalizedPath}"
+        `.replace(/\s+/g, ' ').trim();
+        
+        execSync(normalizeCommand, { stdio: 'inherit' });
+        
+        // Verify normalized video exists
+        if (fs.existsSync(normalizedPath)) {
+          normalizedPaths.push(normalizedPath);
+          console.log(`[VideoCompositor] Normalized video ${i + 1}/${absolutePaths.length}: ${normalizedPath}`);
+        } else {
+          throw new Error(`Normalized video not created: ${normalizedPath}`);
+        }
+      } catch (error: any) {
+        // Cleanup any normalized files created so far
+        normalizedPaths.forEach(p => {
+          if (fs.existsSync(p)) {
+            try {
+              fs.unlinkSync(p);
+            } catch (e) {
+              console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
+            }
+          }
+        });
+        throw new Error(`Failed to normalize video ${i + 1} (${absolutePaths[i]}): ${error.message}`);
+      }
+    }
+    
+    // Create a temporary file list for FFmpeg concat using normalized videos
+    const listPath = path.resolve(absoluteOutputDir, `concat_list_${Date.now()}.txt`);
+    // Use absolute paths in the concat list to avoid path duplication
+    // FFmpeg concat interprets paths relative to the concat list file's directory
+    // So we must use absolute paths to prevent duplication
+    const listContent = normalizedPaths.map(vp => {
+      // Ensure path is absolute
+      const absPath = path.isAbsolute(vp) ? vp : path.resolve(vp);
+      // Escape single quotes for shell safety
+      return `file '${absPath.replace(/'/g, "'\\''")}'`;
+    }).join('\n');
     fs.writeFileSync(listPath, listContent);
 
-    console.log(`[VideoCompositor] Concatenating ${absolutePaths.length} videos...`);
+    console.log(`[VideoCompositor] Concatenating ${normalizedPaths.length} normalized videos...`);
 
     try {
+      // Use concat demuxer with stream copy after normalization (faster, maintains quality)
+      // Since videos are already normalized, we can use copy for faster processing
       const ffmpegCommand = `
         ffmpeg -f concat -safe 0 -i "${listPath}" \
-        -c:v libx264 -preset medium -crf 23 \
-        -c:a aac -b:a 192k \
+        -c copy \
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
       execSync(ffmpegCommand, { stdio: 'inherit' });
       
-      // Clean up temporary list file
-      fs.unlinkSync(listPath);
+      // Clean up temporary files
+      normalizedPaths.forEach(p => {
+        if (fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (e) {
+            console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
+          }
+        }
+      });
+      if (fs.existsSync(listPath)) {
+        fs.unlinkSync(listPath);
+      }
       
       console.log(`[VideoCompositor] Videos concatenated successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
-      // Clean up temporary list file
+      // Clean up temporary files on error
+      normalizedPaths.forEach(p => {
+        if (fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (e) {
+            console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
+          }
+        }
+      });
       if (fs.existsSync(listPath)) {
         fs.unlinkSync(listPath);
       }
@@ -256,12 +382,30 @@ export class VideoCompositorProvider {
     
     console.log(`[VideoCompositor] Scaling video from ${currentRes.width}x${currentRes.height} to ${targetWidth}x${targetHeight}`);
     
+    // Get original frame rate to preserve it
+    let targetFps = '24/1'; // Default frame rate
+    try {
+      const fpsCommand = `ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`;
+      const fpsOutput = execSync(fpsCommand, { encoding: 'utf-8' }).trim();
+      if (fpsOutput && fpsOutput !== '0/0' && fpsOutput !== 'N/A') {
+        targetFps = fpsOutput;
+        console.log(`[VideoCompositor] Detected frame rate: ${targetFps}`);
+      } else {
+        console.warn(`[VideoCompositor] Could not detect frame rate, using default 24fps`);
+      }
+    } catch (e) {
+      console.warn(`[VideoCompositor] Could not detect frame rate, using default 24fps: ${e}`);
+    }
+    
     // Scale video to exact dimensions (crop if needed to maintain aspect ratio)
+    // Preserve original frame rate to prevent jerky playback
     const ffmpegCommand = `
       ffmpeg -i "${videoPath}" \
       -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight}" \
+      -r ${targetFps} \
       -c:v libx264 -preset medium -crf 23 \
       -c:a copy \
+      -vsync cfr \
       -y "${outputPath}"
     `.replace(/\s+/g, ' ').trim();
     
@@ -758,6 +902,53 @@ export class VideoCompositorProvider {
     } catch (error: any) {
       console.error(`[VideoCompositor] FFmpeg add audio error:`, error.message);
       throw new Error(`Failed to add audio to video: ${error.message}`);
+    }
+  }
+
+  /**
+   * Apply fade-out to audio file
+   * @param audioPath Path to input audio file
+   * @param outputPath Path for output audio file with fade-out
+   * @param fadeDuration Duration of fade-out in seconds (default: 1.0)
+   * @returns Path to processed audio file
+   */
+  async applyAudioFadeOut(
+    audioPath: string,
+    outputPath: string,
+    fadeDuration: number = 1.0
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get audio duration using getVideoDuration (works for audio too)
+    const audioDuration = await this.getVideoDuration(audioPath);
+    if (audioDuration <= 0) {
+      throw new Error(`Invalid audio duration: ${audioDuration}`);
+    }
+
+    // Calculate fade start time
+    const fadeStart = Math.max(0, audioDuration - fadeDuration);
+    
+    console.log(`[VideoCompositor] Applying fade-out to audio: duration=${audioDuration.toFixed(2)}s, fade starts at ${fadeStart.toFixed(2)}s, fade duration=${fadeDuration}s`);
+
+    try {
+      const ffmpegCommand = `
+        ffmpeg -i "${audioPath}" \
+        -af "afade=t=out:st=${fadeStart}:d=${fadeDuration}" \
+        -c:a libmp3lame -b:a 192k \
+        -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      execSync(ffmpegCommand, { stdio: 'inherit' });
+      console.log(`[VideoCompositor] Audio fade-out applied successfully: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg audio fade-out error:`, error.message);
+      throw new Error(`Failed to apply audio fade-out: ${error.message}`);
     }
   }
 
