@@ -1,4 +1,8 @@
 FROM node:18-alpine AS base
+# Install FFmpeg, FFprobe, util-linux (for nice/ionice), and Python (for background removal script)
+RUN apk add --no-cache ffmpeg ffprobe util-linux python3 py3-pip
+# Install Python dependencies for background removal script
+RUN pip3 install --no-cache-dir rembg opencv-python pillow numpy onnxruntime
 FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app

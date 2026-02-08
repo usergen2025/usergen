@@ -1,10 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { FFmpegResourceManager } from '@shared/utils/ffmpeg-resource-manager';
 
 @Injectable()
 export class VideoCompositorProvider {
+  private readonly ffmpegManager: FFmpegResourceManager;
+
+  constructor(private readonly configService?: ConfigService) {
+    this.ffmpegManager = new FFmpegResourceManager(configService);
+  }
+
   /**
    * Check if FFmpeg is available
    */
@@ -82,7 +90,7 @@ export class VideoCompositorProvider {
         -vsync cfr \
         -y "${normalizedTopPath}"
       `.replace(/\s+/g, ' ').trim();
-      execSync(normalizeTopCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(normalizeTopCommand, { stdio: 'inherit' });
 
       const normalizeBottomCommand = `
         ffmpeg -i "${finalBottomPath}" \
@@ -91,7 +99,7 @@ export class VideoCompositorProvider {
         -vsync cfr \
         -y "${normalizedBottomPath}"
       `.replace(/\s+/g, ' ').trim();
-      execSync(normalizeBottomCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(normalizeBottomCommand, { stdio: 'inherit' });
     } catch (error: any) {
       console.error(`[VideoCompositor] Error normalizing videos before compositing:`, error.message);
       throw new Error(`Failed to normalize videos for compositing: ${error.message}`);
@@ -109,7 +117,7 @@ export class VideoCompositorProvider {
 
     try {
       console.log(`[VideoCompositor] Executing FFmpeg command for HALF_N_HALF compositing...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Video composited successfully: ${outputPath}`);
       
       // Cleanup temporary files
@@ -228,7 +236,7 @@ export class VideoCompositorProvider {
           -y "${normalizedPath}"
         `.replace(/\s+/g, ' ').trim();
         
-        execSync(normalizeCommand, { stdio: 'inherit' });
+        this.ffmpegManager.execSyncString(normalizeCommand, { stdio: 'inherit' });
         
         // Verify normalized video exists
         if (fs.existsSync(normalizedPath)) {
@@ -276,7 +284,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       
       // Clean up temporary files
       normalizedPaths.forEach(p => {
@@ -410,7 +418,7 @@ export class VideoCompositorProvider {
     `.replace(/\s+/g, ' ').trim();
     
     try {
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Video scaled successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -575,7 +583,7 @@ export class VideoCompositorProvider {
       const extractCommand = `ffmpeg -i "${videoPath}" -vf "select=eq(n\\,0)" -vframes 1 -y "${tempFramePath}" 2>&1`;
       
       try {
-        execSync(extractCommand, { stdio: 'pipe' });
+        this.ffmpegManager.execSyncString(extractCommand, { stdio: 'pipe' });
         
         if (!fs.existsSync(tempFramePath)) {
           console.warn(`[VideoCompositor] Could not extract frame for green screen detection`);
@@ -721,7 +729,7 @@ export class VideoCompositorProvider {
     `.replace(/\s+/g, ' ').trim();
 
     try {
-      execSync(scaleCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(scaleCommand, { stdio: 'inherit' });
     } catch (error: any) {
       console.error(`[VideoCompositor] Failed to scale avatar: ${error.message}`);
       throw new Error(`Failed to scale avatar: ${error.message}`);
@@ -756,7 +764,7 @@ export class VideoCompositorProvider {
 
     try {
       console.log(`[VideoCompositor] Executing FFmpeg overlay command...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Video overlaid successfully: ${outputPath}`);
       
       // Cleanup temporary files
@@ -862,7 +870,7 @@ export class VideoCompositorProvider {
       `.replace(/\s+/g, ' ').trim();
 
       console.log(`[VideoCompositor] Executing FFmpeg command for audio concatenation...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       
       console.log(`[VideoCompositor] Audio files concatenated successfully: ${outputPath}`);
       return outputPath;
@@ -896,7 +904,7 @@ export class VideoCompositorProvider {
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Audio added to video successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -943,7 +951,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Audio fade-out applied successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -1004,7 +1012,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      this.ffmpegManager.execSyncString(ffmpegCommand, { stdio: 'inherit' });
       console.log(`[VideoCompositor] Video cropped successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {

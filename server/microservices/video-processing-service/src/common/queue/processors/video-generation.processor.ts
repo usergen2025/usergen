@@ -28,7 +28,7 @@ export interface VideoGenerationJobData {
 }
 
 @Processor('video-generation', {
-  concurrency: 10, // Process 10 video generation jobs concurrently per worker
+  concurrency: 5, // Process 5 video generation jobs concurrently per worker (reduced from 10 to limit FFmpeg processes)
 })
 @Injectable()
 export class VideoGenerationProcessor extends WorkerHost {

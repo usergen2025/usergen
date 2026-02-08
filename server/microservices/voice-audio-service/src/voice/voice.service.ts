@@ -5,6 +5,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { ElevenLabsProvider, ElevenLabsVoice, GenerateSpeechRequest } from './providers/elevenlabs.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
+import { FFmpegResourceManager } from '@shared/utils/ffmpeg-resource-manager';
 import type { Multer } from 'multer';
 
 /**
@@ -22,12 +23,14 @@ export interface AudioFileResult {
 export class VoiceService {
   private readonly uploadsDir: string;
   private readonly ffmpegAvailable: boolean;
+  private readonly ffmpegManager: FFmpegResourceManager;
 
   constructor(
     private readonly elevenLabsProvider: ElevenLabsProvider,
     private readonly configService: ConfigService,
     private readonly publicUrlService: PublicUrlService,
   ) {
+    this.ffmpegManager = new FFmpegResourceManager(configService);
     // Create uploads directory for storing generated audio files
     this.uploadsDir = path.join(process.cwd(), 'uploads', 'audio');
     if (!fs.existsSync(this.uploadsDir)) {
@@ -269,22 +272,17 @@ export class VoiceService {
       // Calculate the total padding needed (difference between target and original)
       const totalPaddingNeeded = targetDuration - currentDuration;
       
-      const ffmpegArgs = ['-i', audioPath];
+      // Build FFmpeg command with resource limits
+      let ffmpegCommand = `ffmpeg -i "${audioPath}"`;
       
       if (totalPaddingNeeded > 0) {
         // Add padding filter to extend audio to target duration
-        ffmpegArgs.push('-af', `apad=pad_dur=${totalPaddingNeeded}`);
+        ffmpegCommand += ` -af "apad=pad_dur=${totalPaddingNeeded}"`;
       }
       
-      ffmpegArgs.push(
-        '-t', targetDuration.toString(),
-        '-c:a', 'libmp3lame',
-        '-b:a', '192k',
-        '-y',
-        outputPath
-      );
+      ffmpegCommand += ` -t ${targetDuration.toString()} -c:a libmp3lame -b:a 192k -y "${outputPath}"`;
       
-      execFileSync('ffmpeg', ffmpegArgs, {
+      this.ffmpegManager.execSyncString(ffmpegCommand, {
         stdio: 'inherit',
         maxBuffer: 10 * 1024 * 1024, // 10MB max buffer
       });
@@ -363,14 +361,9 @@ export class VoiceService {
     console.log(`[VoiceService] Applying fade-out to audio: duration=${audioDuration.toFixed(2)}s, fade starts at ${fadeStart.toFixed(2)}s, fade duration=${fadeDuration}s`);
 
     try {
-      execFileSync('ffmpeg', [
-        '-i', audioPath,
-        '-af', `afade=t=out:st=${fadeStart}:d=${fadeDuration}`,
-        '-c:a', 'libmp3lame',
-        '-b:a', '192k',
-        '-y',
-        outputPath,
-      ], {
+      const ffmpegCommand = `ffmpeg -i "${audioPath}" -af "afade=t=out:st=${fadeStart}:d=${fadeDuration}" -c:a libmp3lame -b:a 192k -y "${outputPath}"`;
+      
+      this.ffmpegManager.execSyncString(ffmpegCommand, {
         stdio: 'inherit',
         maxBuffer: 10 * 1024 * 1024, // 10MB max buffer
       });
@@ -708,15 +701,9 @@ export class VoiceService {
 
       try {
         // Convert audio with specific codec settings for better compatibility
-        execFileSync('ffmpeg', [
-          '-y',
-          '-i', tempInput,
-          '-acodec', 'libmp3lame',
-          '-ar', '44100',
-          '-ac', '2',
-          '-b:a', '128k',
-          finalPath
-        ], { 
+        const ffmpegCommand = `ffmpeg -y -i "${tempInput}" -acodec libmp3lame -ar 44100 -ac 2 -b:a 128k "${finalPath}"`;
+        
+        this.ffmpegManager.execSyncString(ffmpegCommand, { 
           stdio: 'ignore',
           maxBuffer: 10 * 1024 * 1024 // 10MB max buffer
         });

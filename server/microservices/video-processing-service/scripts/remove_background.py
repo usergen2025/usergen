@@ -101,8 +101,11 @@ def remove_background_from_video(input_path, output_path, model_name='u2net_huma
         # Use image2 demuxer with pattern matching - preserves alpha perfectly
         # Explicitly tell FFmpeg to read RGBA from PNG and convert to YUVA420p
         # This ensures alpha channel is properly preserved (fixes black background issue)
+        # Add thread limit to prevent excessive CPU usage
+        max_threads = int(os.environ.get('FFMPEG_MAX_THREADS', '4'))
         ffmpeg_cmd = [
             'ffmpeg',
+            '-threads', str(max_threads),  # Limit CPU threads to prevent crypto-mining detection
             '-y',
             '-framerate', str(fps),  # Input frame rate
             '-i', os.path.join(abs_processed_dir, 'frame_%06d.png'),  # Input pattern
@@ -115,6 +118,16 @@ def remove_background_from_video(input_path, output_path, model_name='u2net_huma
             '-r', str(fps),  # Output frame rate
             output_path
         ]
+        
+        # Wrap with nice/ionice if available (for process priority management)
+        use_nice = os.environ.get('FFMPEG_USE_NICE', 'true').lower() == 'true'
+        use_ionice = os.environ.get('FFMPEG_USE_IONICE', 'true').lower() == 'true'
+        nice_priority = int(os.environ.get('FFMPEG_NICE_PRIORITY', '10'))
+        
+        if use_ionice:
+            ffmpeg_cmd = ['ionice', '-c', '3'] + ffmpeg_cmd
+        if use_nice:
+            ffmpeg_cmd = ['nice', '-n', str(nice_priority)] + ffmpeg_cmd
         
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
         if result.returncode != 0:

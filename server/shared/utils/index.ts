@@ -1,6 +1,10 @@
 // Shared utilities for all microservices
 import { BaseResponse, PaginatedResponse, ApiError, ValidationError } from '../types';
 
+// Export FFmpeg utilities
+export { FFmpegResourceManager } from './ffmpeg-resource-manager';
+export { FFmpegMonitor } from './ffmpeg-monitor';
+
 export class ResponseHelper {
   static success<T>(data: T, message?: string): BaseResponse<T> {
     return {

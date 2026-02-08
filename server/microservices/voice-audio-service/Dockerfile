@@ -1,6 +1,6 @@
 FROM node:18-alpine AS base
-# Install FFmpeg and FFprobe for audio conversion (needed in all stages)
-RUN apk add --no-cache ffmpeg ffprobe libc6-compat
+# Install FFmpeg, FFprobe, and util-linux (for nice/ionice) for audio conversion (needed in all stages)
+RUN apk add --no-cache ffmpeg ffprobe util-linux libc6-compat
 FROM base AS deps
 WORKDIR /app
 COPY package*.json ./
