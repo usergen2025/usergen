@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
 import { ArrowLeft, ChevronLeft, ChevronRight, Edit, Music, Type, ChevronUp, Play, Loader2 } from 'lucide-react';
@@ -1472,7 +1472,9 @@ function WorkspacePageContent() {
 
 export default function WorkspacePage() {
   return (
-    <WorkspacePageContent />
+    <Suspense fallback={<div>Loading...</div>}>
+      <WorkspacePageContent />
+    </Suspense>
   );
 }
 

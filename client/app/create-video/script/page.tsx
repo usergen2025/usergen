@@ -356,7 +356,7 @@ function ScriptPageContent() {
         const response = await apiClient.generateVideoScript({
           userPrompt: userMessage, // Cleaned content (with @tag replaced by tag)
           videoStyle: styleToUse || videoStyle,
-          language: selectedOption === 'generate-ai' ? selectedLanguage : undefined,
+          language: selectedOption === 'generate-ai' ? (selectedLanguage ?? undefined) : undefined,
           tags: extractedTags.length > 0 ? extractedTags : undefined, // Send tags for both options
           projectId: currentProjectId,
         });

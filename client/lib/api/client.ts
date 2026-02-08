@@ -291,7 +291,7 @@ class ApiClient {
   // Video Project endpoints
   async createVideoProject(data: {
     videoType: 'WITH_AVATAR' | 'WITHOUT_AVATAR';
-    style?: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT';
+    style?: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
     [key: string]: any;
   }): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;

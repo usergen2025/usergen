@@ -107,7 +107,11 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
       setUser(null);
     } else if (authUser) {
       // If authUser is available, use it
-      setUser(authUser);
+      // Convert authUser to match User type (credits is required in User but optional in authUser)
+      setUser({
+        ...authUser,
+        credits: authUser.credits ?? 0,
+      } as User);
     }
   }, [isAuthenticated, authUser]);
 

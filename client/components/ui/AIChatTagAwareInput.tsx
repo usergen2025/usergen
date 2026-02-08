@@ -165,11 +165,13 @@ export default function AIChatTagAwareInput({
           }
           
           // If we couldn't find the position, set to end
-          const range = document.createRange();
-          range.selectNodeContents(editableRef.current);
-          range.collapse(false);
-          selection.removeAllRanges();
-          selection.addRange(range);
+          if (editableRef.current) {
+            const range = document.createRange();
+            range.selectNodeContents(editableRef.current);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
         } catch (e) {
           // Fallback: set cursor to end
           const range = document.createRange();

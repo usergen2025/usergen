@@ -16,11 +16,14 @@ import { useToast } from '@/lib/toast/toast';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 // Map frontend style to backend enum
-const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' => {
-  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT'> = {
+const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' => {
+  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT'> = {
     'half-n-half': 'HALF_N_HALF',
     'alternate': 'ALTERNATE',
     'avatar-cutout': 'AVATAR_CUTOUT',
+    'avatar-only': 'AVATAR_ONLY',
+    'product-only': 'PRODUCT_ONLY',
+    'avatar-product': 'AVATAR_PRODUCT',
   };
   return map[style];
 };
@@ -32,6 +35,9 @@ const mapStyleFromBackend = (style?: string): VideoStyle | null => {
     HALF_N_HALF: 'half-n-half',
     ALTERNATE: 'alternate',
     AVATAR_CUTOUT: 'avatar-cutout',
+    AVATAR_ONLY: 'avatar-only',
+    PRODUCT_ONLY: 'product-only',
+    AVATAR_PRODUCT: 'avatar-product',
   };
   return map[style] || null;
 };
@@ -219,7 +225,7 @@ function StylePageContent() {
           // Check if there's a pending script from AI chat page and save it
           if (typeof window !== 'undefined') {
             const pendingScriptData = sessionStorage.getItem('pendingScriptData');
-            if (pendingScriptData) {
+            if (pendingScriptData && currentProjectId) {
               try {
                 await apiClient.updateVideoProject(currentProjectId, {
                   script: pendingScriptData,
@@ -237,6 +243,10 @@ function StylePageContent() {
           }
           
           // Save style to project before navigation
+          if (!currentProjectId) {
+            showToast('Project not found. Please try again.', 'error');
+            return;
+          }
           try {
             await apiClient.updateVideoProject(currentProjectId, {
               style: mapStyleToBackend(selectedStyle),

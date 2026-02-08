@@ -395,14 +395,14 @@ function AIChatPageContent() {
           setIsGeneratingVoice(false);
           setGenerationProgress(prev => Math.min(prev + 50, 100));
           if (audioJobIdRef.current) {
-            unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+            unsubscribeFromJob(audioJobIdRef.current);
             audioJobIdRef.current = null;
           }
         } else if (update.state === 'failed') {
           setIsGeneratingVoice(false);
           showToast('Voice generation failed', 'error');
           if (audioJobIdRef.current) {
-            unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+            unsubscribeFromJob(audioJobIdRef.current);
             audioJobIdRef.current = null;
           }
         } else if (update.progress !== undefined) {
@@ -454,11 +454,11 @@ function AIChatPageContent() {
   useEffect(() => {
     if (!isGeneratingVoice && !isGeneratingBroll) {
       if (audioJobIdRef.current) {
-        unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+        unsubscribeFromJob(audioJobIdRef.current);
         audioJobIdRef.current = null;
       }
       imageJobIdsRef.current.forEach(jobId => {
-        unsubscribeFromJob(jobId, 'image-generation');
+        unsubscribeFromJob(jobId);
       });
       imageJobIdsRef.current.clear();
     }
@@ -1808,11 +1808,11 @@ function AIChatPageContent() {
       setIsGeneratingBroll(false);
       setGenerationProgress(0);
       if (audioJobIdRef.current) {
-        unsubscribeFromJob(audioJobIdRef.current, 'audio-generation');
+        unsubscribeFromJob(audioJobIdRef.current);
         audioJobIdRef.current = null;
       }
       imageJobIdsRef.current.forEach(jobId => {
-        unsubscribeFromJob(jobId, 'image-generation');
+        unsubscribeFromJob(jobId);
       });
       imageJobIdsRef.current.clear();
     } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {

@@ -560,7 +560,17 @@ function BrollImagesPageContent() {
       const selectedModelId = selectedModels[sceneNumber] || 'model-1';
       
       // Pass force: true to always regenerate when user manually clicks the button
-      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId, true);
+      const response = await apiClient.regenerateImage(
+        projectId, 
+        sceneNumber, 
+        prompt, 
+        selectedModelId, 
+        undefined, // aspectRatio
+        undefined, // resolution
+        undefined, // productImageUrl
+        undefined, // videoStyle
+        true // force
+      );
       
       // Handle existing image response
       if (response.success && response.data?.existing && response.data?.image) {
