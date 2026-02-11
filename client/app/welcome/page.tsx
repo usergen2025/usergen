@@ -47,7 +47,7 @@ export default function WelcomePage() {
           variant="primary"
           size="lg"
           fullWidth
-          onClick={() => router.push('/create-video')}
+          onClick={() => router.push('/create-video/ai-chat')}
         >
           LETS CREATE A VIDEO
         </Button>

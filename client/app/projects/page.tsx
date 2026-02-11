@@ -205,7 +205,7 @@ export default function ProjectsPage() {
               </button>
               <h1 className={cn(typography.heading.h1)}>My Projects</h1>
             </div>
-            <Link href="/create-video">
+            <Link href="/create-video/ai-chat">
               <Button variant="primary">
                 <Plus className="w-4 h-4 mr-2" />
                 Create New Project
@@ -239,7 +239,7 @@ export default function ProjectsPage() {
                   ? 'No projects yet. Create your first video project!'
                   : `No ${filter} projects found.`}
               </p>
-              <Link href="/create-video">
+              <Link href="/create-video/ai-chat">
                 <Button variant="primary">
                   <Plus className="w-4 h-4 mr-2" />
                   Create New Project

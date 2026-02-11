@@ -137,7 +137,8 @@ function SignupPageContent() {
               router.push('/create-video/style');
             }
           } else if (fromParam === 'style' || redirectUrl === '/create-video') {
-            router.push('/create-video');
+            // Generic create-video redirect should go to new AI chat flow
+            router.push('/create-video/ai-chat');
           } else {
             router.push(redirectUrl);
           }

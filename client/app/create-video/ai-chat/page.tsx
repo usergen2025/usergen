@@ -71,6 +71,17 @@ function AIChatPageContent() {
   const [selectedAvatar, setSelectedAvatar] = useState<any | null>(null); // Store selected avatar object for preview
   const [avatarConfirmed, setAvatarConfirmed] = useState<boolean>(false); // Track if avatar is confirmed and ready to proceed
   const [avatarSubstep, setAvatarSubstep] = useState<AvatarSubstep>('question'); // Track avatar selection substep
+  // Avatar upload state
+  const [avatarUploadFile, setAvatarUploadFile] = useState<File | null>(null);
+  const [avatarUploadPreview, setAvatarUploadPreview] = useState<string | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState<boolean>(false);
+  const [avatarUploadSuccess, setAvatarUploadSuccess] = useState<boolean>(false);
+  const [avatarImageKey, setAvatarImageKey] = useState<string | null>(null);
+  const [avatarAssetId, setAvatarAssetId] = useState<string | null>(null);
+  const [avatarCreationStarted, setAvatarCreationStarted] = useState<boolean>(false);
+  const [avatarUploadMessageShown, setAvatarUploadMessageShown] = useState<boolean>(false);
+  const [pendingAvatarFile, setPendingAvatarFile] = useState<File | null>(null);
+  const [pendingAvatarPreview, setPendingAvatarPreview] = useState<string | null>(null);
   // Voice selection state
   const [voicePreference, setVoicePreference] = useState<'yes' | 'no' | null>(null);
   const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
@@ -83,9 +94,26 @@ function AIChatPageContent() {
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  // Voice cloning state
+  const [voiceCloneMode, setVoiceCloneMode] = useState<'upload' | 'record' | null>(null);
+  const [voiceCloneFile, setVoiceCloneFile] = useState<File | null>(null);
+  const [voiceCloneAudioUrl, setVoiceCloneAudioUrl] = useState<string | null>(null);
+  const [voiceCloneName, setVoiceCloneName] = useState<string>('');
+  const [voiceRecording, setVoiceRecording] = useState<boolean>(false);
+  const [voiceCloning, setVoiceCloning] = useState<boolean>(false);
+  const [voiceRemoveBackgroundNoise, setVoiceRemoveBackgroundNoise] = useState<boolean>(false);
+  const [voiceUploadSuccess, setVoiceUploadSuccess] = useState<boolean>(false);
+  const [pendingVoiceFile, setPendingVoiceFile] = useState<File | null>(null);
+  const [pendingVoicePreview, setPendingVoicePreview] = useState<string | null>(null);
+  const [pendingVoiceName, setPendingVoiceName] = useState<string>('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
   const productImagesInputRef = useRef<HTMLInputElement>(null);
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
+  const voiceFileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   // Style selection state
   const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
   const [styleSubstep, setStyleSubstep] = useState<StyleSubstep>('selection');
@@ -314,6 +342,20 @@ function AIChatPageContent() {
             // Restore extracted tags
             if (project.metadata?.extractedTags && Array.isArray(project.metadata.extractedTags)) {
               setExtractedTags(project.metadata.extractedTags);
+            }
+            
+            // Restore voice clone name
+            if (project.metadata?.voiceCloneName) {
+              setVoiceCloneName(project.metadata.voiceCloneName);
+            }
+            
+            // Restore avatar upload state
+            if (project.metadata?.avatarUploadStatus) {
+              setAvatarUploadMessageShown(true);
+              if (project.metadata.avatarUploadStatus === 'creating') {
+                setAvatarCreationStarted(true);
+                setAvatarUploadSuccess(true);
+              }
             }
             
             showToast('Project resumed successfully', 'success');
@@ -1205,12 +1247,171 @@ function AIChatPageContent() {
     }
   };
 
+  // Handle avatar file selection (only sets pending file, doesn't process)
+  const handleAvatarFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.match(/image\/(jpeg|jpg|png)/)) {
+      showToast('Please upload a JPEG or PNG image', 'error');
+      return;
+    }
+
+    // Validate file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('Image size must be less than 10MB', 'error');
+      return;
+    }
+
+    // Cleanup previous preview
+    if (pendingAvatarPreview) {
+      URL.revokeObjectURL(pendingAvatarPreview);
+    }
+
+    // Create preview URL and set pending file
+    const previewUrl = URL.createObjectURL(file);
+    setPendingAvatarPreview(previewUrl);
+    setPendingAvatarFile(file);
+    
+    // Reset input
+    if (avatarFileInputRef.current) {
+      avatarFileInputRef.current.value = '';
+    }
+  };
+
+  // Handle sending avatar file (processes the pending file)
+  const handleSendAvatarFile = async () => {
+    if (!pendingAvatarFile) return;
+    if (!projectId) {
+      showToast('Project ID not found. Please try again.', 'error');
+      return;
+    }
+
+    setAvatarUploading(true);
+    setAvatarUploadSuccess(false);
+    setAvatarImageKey(null);
+    setAvatarAssetId(null);
+
+    try {
+      // Upload image to HeyGen
+      const uploadResponse = await apiClient.uploadAvatarImage(pendingAvatarFile);
+      
+      if (uploadResponse.success && uploadResponse.data) {
+        setAvatarImageKey(uploadResponse.data.imageKey);
+        setAvatarAssetId(uploadResponse.data.assetId);
+        setAvatarUploadSuccess(true);
+        
+        // Show upload message
+        setAvatarUploadMessageShown(true);
+        
+        // Start avatar creation
+        await createAvatarFromImageKey(
+          uploadResponse.data.imageKey, 
+          uploadResponse.data.assetId,
+          uploadResponse.data.localUrl
+        );
+        
+        // Clear pending file
+        if (pendingAvatarPreview) {
+          URL.revokeObjectURL(pendingAvatarPreview);
+        }
+        setPendingAvatarFile(null);
+        setPendingAvatarPreview(null);
+
+        // Mark avatar as confirmed and advance substep so the preview + message show
+        setAvatarConfirmed(true);
+        setAvatarSubstep('confirmed');
+
+      } else {
+        throw new Error(uploadResponse.message || 'Failed to upload image');
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to upload image. Please try again.', 'error');
+      setAvatarUploading(false);
+    }
+  };
+
+  // Remove pending avatar file
+  const removePendingAvatarFile = () => {
+    if (pendingAvatarPreview) {
+      URL.revokeObjectURL(pendingAvatarPreview);
+    }
+    setPendingAvatarFile(null);
+    setPendingAvatarPreview(null);
+  };
+
+  // Create avatar from uploaded image key
+  const createAvatarFromImageKey = async (key: string, assetId?: string, localUrl?: string) => {
+    if (!projectId) {
+      showToast('Project ID not found. Please try again.', 'error');
+      return;
+    }
+
+    try {
+      setAvatarCreationStarted(true);
+      const response = await apiClient.createAvatarFromUpload({
+        imageKey: key,
+        assetId: assetId,
+        originalImageUrl: localUrl,
+      });
+
+      if (response.success && response.data) {
+        showToast('Avatar generation started! This will take a few minutes.', 'info');
+        
+        // Show upload message
+        setAvatarUploadMessageShown(true);
+        
+        // Set selected avatar ID
+        if (response.data.avatarId) {
+          setSelectedAvatarId(response.data.avatarId);
+          setSelectedAvatar(response.data.avatarId);
+        }
+        
+        // Update project with avatar ID and mode
+        try {
+          await apiClient.updateVideoProject(projectId, {
+            avatarId: response.data.avatarId,
+            avatarMode: 'PREMIUM', // Uploaded avatars use Premium mode
+            metadata: {
+              avatarUploadStatus: 'creating',
+              avatarImageKey: key,
+              avatarAssetId: assetId,
+            },
+          });
+        } catch (error: any) {
+          console.error('Failed to save avatar to project:', error);
+        }
+        
+        // Reload avatars to show the new one
+        await loadAvatars('upload');
+      } else {
+        throw new Error(response.message || 'Failed to start avatar generation');
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to start avatar generation', 'error');
+      setAvatarCreationStarted(false);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
   // Load avatars when tab changes or when in avatar-selection step and user said yes
   useEffect(() => {
     if (currentStep === 'avatar-selection' && avatarYesMessage) {
       loadAvatars(activeAvatarTab);
     }
   }, [activeAvatarTab, currentStep, avatarYesMessage]);
+
+  // Keep selectedAvatar object in sync with selectedAvatarId and loaded avatars
+  useEffect(() => {
+    if (selectedAvatarId && avatars.length > 0) {
+      const avatar = avatars.find(a => a.id === selectedAvatarId);
+      if (avatar) {
+        setSelectedAvatar(avatar);
+      }
+    }
+  }, [selectedAvatarId, avatars]);
 
   // Load voices based on active tab
   const loadVoices = async (tab: 'library' | 'upload' | 'record') => {
@@ -1239,12 +1440,280 @@ function AIChatPageContent() {
     }
   };
 
+  // Handle voice file upload (only sets pending file, doesn't process)
+  const handleVoiceFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('audio/')) {
+      showToast('Please upload a valid audio file', 'warning');
+      return;
+    }
+
+    const MAX_CLONE_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+    if (file.size > MAX_CLONE_FILE_SIZE) {
+      showToast('Audio file is too large. Maximum size is 15MB.', 'warning');
+      return;
+    }
+
+    // Cleanup previous audio URL
+    if (pendingVoicePreview) {
+      URL.revokeObjectURL(pendingVoicePreview);
+    }
+
+    // Create audio preview URL and set pending file
+    const audioUrl = URL.createObjectURL(file);
+    setPendingVoicePreview(audioUrl);
+    setPendingVoiceFile(file);
+    setVoiceCloneMode('upload');
+    setVoiceUploadSuccess(false); // new upload started
+  };
+
+  // Handle voice recording start
+  const handleStartVoiceRecording = async () => {
+    if (voiceRecording || voiceCloning) return;
+    
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      showToast('Recording is not supported in this browser.', 'error');
+      return;
+    }
+
+    try {
+      // Request audio with optimal settings
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 44100 },
+          channelCount: { ideal: 1 },
+        } 
+      });
+      
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio track available from microphone');
+      }
+      
+      recordingStreamRef.current = stream;
+      
+      // Find best supported codec
+      const codecs = [
+        'audio/webm;codecs=opus',
+        'audio/webm;codecs=pcm',
+        'audio/webm',
+      ];
+      
+      let selectedMimeType = '';
+      for (const codec of codecs) {
+        if (MediaRecorder.isTypeSupported(codec)) {
+          selectedMimeType = codec;
+          break;
+        }
+      }
+      
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onerror = (event: any) => {
+        console.error('[Recording] MediaRecorder error:', event);
+        showToast('Recording error occurred. Please try again.', 'error');
+        stopActiveVoiceRecording();
+        setVoiceRecording(false);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blobType = selectedMimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: blobType });
+        
+        if (blob.size === 0) {
+          showToast('No audio was recorded. Please try again.', 'error');
+          setVoiceRecording(false);
+          return;
+        }
+        
+        const fileExtension = blobType.includes('opus') || blobType.includes('webm') ? 'webm' : 'webm';
+        const file = new File([blob], `recording_${Date.now()}.${fileExtension}`, { type: blobType });
+        
+        // Cleanup previous audio URL
+        if (voiceCloneAudioUrl) {
+          URL.revokeObjectURL(voiceCloneAudioUrl);
+        }
+        
+        const audioUrl = URL.createObjectURL(file);
+        
+        // Cleanup previous audio URL
+        if (pendingVoicePreview) {
+          URL.revokeObjectURL(pendingVoicePreview);
+        }
+        
+        setPendingVoicePreview(audioUrl);
+        setPendingVoiceFile(file);
+        setVoiceCloneMode('record');
+        
+        stopActiveVoiceRecording();
+        setVoiceRecording(false);
+      };
+
+      // Start recording
+      mediaRecorder.start(1000);
+      setVoiceRecording(true);
+    } catch (error: any) {
+      console.error('Failed to access microphone:', error);
+      showToast(error?.message || 'Failed to access microphone', 'error');
+      stopActiveVoiceRecording();
+      setVoiceRecording(false);
+    }
+  };
+
+  // Handle voice recording stop
+  const handleStopVoiceRecording = () => {
+    if (!voiceRecording) return;
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+    } finally {
+      setVoiceRecording(false);
+    }
+  };
+
+  // Stop active recording and cleanup
+  const stopActiveVoiceRecording = () => {
+    if (mediaRecorderRef.current) {
+      try {
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch (err) {
+        // ignore
+      }
+      mediaRecorderRef.current = null;
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+    audioChunksRef.current = [];
+  };
+
+  // Handle sending voice file (processes the pending file)
+  const handleSendVoiceFile = async () => {
+    if (!pendingVoiceFile) {
+      showToast('No audio file found. Please upload or record again.', 'error');
+      return;
+    }
+
+    if (!pendingVoiceName.trim()) {
+      showToast('Please enter a voice name', 'warning');
+      return;
+    }
+
+    if (!projectId) {
+      showToast('Project ID not found. Please try again.', 'error');
+      return;
+    }
+
+    setVoiceCloning(true);
+    try {
+      const cloneResponse = await apiClient.cloneVoice({
+        name: pendingVoiceName.trim(),
+        audioFile: pendingVoiceFile,
+        removeBackgroundNoise: voiceRemoveBackgroundNoise,
+      });
+
+      if (!cloneResponse.success || !cloneResponse.data?.voiceId) {
+        throw new Error(cloneResponse.message || 'Failed to clone voice');
+      }
+
+      const voiceId = cloneResponse.data.voiceId;
+      setSelectedVoiceId(voiceId);
+      setVoiceUploadSuccess(true);
+
+      // Update project with cloned voice
+      await apiClient.updateVideoProject(projectId, {
+        voiceId,
+        clonedVoiceId: voiceId,
+        voiceType: 'CLONED',
+        voiceSettings: {
+          removeBackgroundNoise: voiceRemoveBackgroundNoise,
+          source: 'CLONED',
+        },
+        metadata: {
+          voiceCloneName: pendingVoiceName.trim(),
+          voiceCloneMode: voiceCloneMode,
+        },
+      });
+
+      showToast(
+        cloneResponse.data.requiresVerification
+          ? 'Voice cloned. Verification may be required before use.'
+          : 'Voice cloned successfully!',
+        cloneResponse.data.requiresVerification ? 'warning' : 'success'
+      );
+
+      // Move to confirmed sub-step
+      setVoiceSubstep('confirmed');
+      
+      // Clear pending file
+      if (pendingVoicePreview) {
+        URL.revokeObjectURL(pendingVoicePreview);
+      }
+      setPendingVoiceFile(null);
+      setPendingVoicePreview(null);
+      setPendingVoiceName('');
+      
+      // Reload voices to show the new one
+      await loadVoices('library');
+    } catch (error: any) {
+      console.error('Failed to clone voice:', error);
+      showToast(error.message || 'Failed to clone voice. Please try again.', 'error');
+    } finally {
+      setVoiceCloning(false);
+    }
+  };
+
+  // Remove pending voice file
+  const removePendingVoiceFile = () => {
+    if (pendingVoicePreview) {
+      URL.revokeObjectURL(pendingVoicePreview);
+    }
+    setPendingVoiceFile(null);
+    setPendingVoicePreview(null);
+    setPendingVoiceName('');
+  };
+
   // Load voices when tab changes or when in voice-selection step and user said yes
   useEffect(() => {
     if (currentStep === 'voice-selection' && voiceYesMessage) {
       loadVoices(activeVoiceTab);
     }
   }, [activeVoiceTab, currentStep, voiceYesMessage]);
+
+  // Cleanup voice recording on unmount
+  useEffect(() => {
+    return () => {
+      stopActiveVoiceRecording();
+      if (voiceCloneAudioUrl) {
+        URL.revokeObjectURL(voiceCloneAudioUrl);
+      }
+      if (avatarUploadPreview) {
+        URL.revokeObjectURL(avatarUploadPreview);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-advance to voice selection after confirming avatar selection
   useEffect(() => {
@@ -1774,15 +2243,20 @@ function AIChatPageContent() {
         setVoiceSubstep('selection');
         setVoiceConfirmed(false);
         setSelectedVoiceId(null);
+        setVoiceUploadSuccess(false);
       } else if (voiceSubstep === 'selection') {
         // Go back to question substep
         setVoiceSubstep('question');
         setVoiceYesMessage(false);
         setSelectedVoiceId(null);
+        setVoiceUploadSuccess(false);
       } else {
         // Go back to avatar-selection step
         setCurrentStep('avatar-selection');
         setVoiceSubstep('question'); // Reset substep
+        // Re-enable avatar upload controls when returning from voice
+        setAvatarUploadSuccess(false);
+        setAvatarUploadMessageShown(false);
       }
     } else if (currentStep === 'style-selection') {
       // Navigate back through substeps
@@ -2699,6 +3173,80 @@ function AIChatPageContent() {
                       </div>
                     </div>
 
+                    {/* Avatar Upload Message - Show when avatar is uploaded */}
+                    {avatarUploadMessageShown && avatarUploadSuccess && (
+                      <>
+                        {/* User message - "I've uploaded my avatar image" with avatar preview */}
+                        <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                          <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
+                            {/* Avatar Image Preview */}
+                            <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                              <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                                <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                                  {pendingAvatarPreview ? (
+                                    <img 
+                                      src={pendingAvatarPreview} 
+                                      alt="Uploaded avatar" 
+                                      className="w-full h-full object-cover"
+                                    />
+                                  ) : selectedAvatar && (selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl) ? (
+                                    (() => {
+                                      const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
+                                      const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                                        ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                                        : 'http://localhost:9001';
+                                      const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                                        ? avatarImageUrl 
+                                        : avatarImageUrl 
+                                          ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                                          : null;
+                                      
+                                      return fullImageUrl ? (
+                                        <Image
+                                          src={fullImageUrl}
+                                          alt={selectedAvatar.name || 'Avatar'}
+                                          fill
+                                          className="object-cover"
+                                          unoptimized
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                                          <span className="text-xs text-gray-400">No Image</span>
+                                        </div>
+                                      );
+                                    })()
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                                      <span className="text-xs text-gray-400">No Image</span>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                                  <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
+                                    {selectedAvatar?.name || 'Uploaded Avatar'}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right">
+                                  I've uploaded my avatar image
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* AI message - "Great! Your avatar is being created..." */}
+                        {avatarCreationStarted && (
+                          <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                            <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                              Great! Your avatar is being created. This will take a few minutes.
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+
                     {/* "Choose from the following Avatar options:" text */}
                     <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                       <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
@@ -2707,9 +3255,18 @@ function AIChatPageContent() {
                     </div>
 
                     {/* Avatar Selection Container with Gradient Border - Reduced width to 3/4 */}
-                    <div className={cn("relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]", hasReachedSubstep('avatar-selection', 'confirmed') && "opacity-50 pointer-events-none")} style={{
-                      background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
-                    }}>
+                    <div
+                      className={cn(
+                        "relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]",
+                        hasReachedSubstep('avatar-selection', 'confirmed') && "opacity-50 pointer-events-none"
+                      )}
+                      style={{
+                        background:
+                          'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                          'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                          'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                      }}
+                    >
                       <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
                         {/* Tabs Container with Gradient Border */}
                         <div className="relative rounded-[28px] mb-[clamp(0.5rem,0.98vh,10px)]" style={{
@@ -2809,24 +3366,136 @@ function AIChatPageContent() {
                           </div>
                         </div>
 
-                        {/* Avatar Grid - Constrained height with internal scrolling */}
-                        <div className="max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                        {/* Avatar Grid - Constrained height with internal scrolling (fixed height across tabs) */}
+                        <div className="max-h-[clamp(12.25rem,25.39vh,392px)] min-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
                           {loadingAvatars ? (
                             <div className="flex items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]">
                               <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
                             </div>
-                          ) : activeAvatarTab !== 'library' ? (
-                            // Upload and Hire tabs - show placeholder message
+                          ) : activeAvatarTab === 'upload' ? (
+                            // Upload tab - functional upload UI
                             <div 
-                              key={`placeholder-${activeAvatarTab}`}
+                              key="avatar-upload"
+                              className="flex flex-col items-center justify-center w-full"
+                              style={{
+                                animation: 'fadeIn 0.3s ease-in-out'
+                              }}
+                            >
+                              {/* Upload Area */}
+                              <div className="box-border flex flex-col justify-center items-start p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full h-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
+                                {/* Best Practices Section */}
+                                <div className="flex flex-row items-center gap-[clamp(0.75rem,1.17vh,12px)] w-full">
+                                  <div className="flex flex-col justify-center items-center gap-[clamp(1rem,1.56vh,16px)] flex-1">
+                                    {/* Best Practices Title */}
+                                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(0.6875rem,1.07vh,11px)] text-center text-black w-full">
+                                      Best Practices:
+                                    </span>
+
+                                    {/* Best Practices Content */}
+                                    <div className="flex flex-row justify-center items-center gap-[clamp(1rem,1.56vh,16px)] w-full">
+                                      {/* Left Column - Icons in 2x2 grid */}
+                                      <div className="grid grid-cols-2 gap-[clamp(0.75rem,1.17vh,12px)]">
+                                        {/* 1:1 Ratio */}
+                                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                          <div className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] flex items-center justify-center">
+                                            <Image
+                                              src="/assets/u_ratio-1-1.svg"
+                                              alt="1:1 Ratio"
+                                              width={24}
+                                              height={24}
+                                              className="w-full h-full"
+                                            />
+                                          </div>
+                                          <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(0.75rem,1.17vh,12px)] text-[#212121]">
+                                            1 : 1 Ratio
+                                          </span>
+                                        </div>
+
+                                        {/* Smile */}
+                                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                          <div className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] flex items-center justify-center">
+                                            <Image
+                                              src="/assets/u_smile-icon.svg"
+                                              alt="Smile"
+                                              width={24}
+                                              height={24}
+                                              className="w-full h-full"
+                                            />
+                                          </div>
+                                          <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(0.75rem,1.17vh,12px)] text-[#212121]">
+                                            Smile
+                                          </span>
+                                        </div>
+
+                                        {/* 1 Person */}
+                                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                          <div className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] flex items-center justify-center">
+                                            <Image
+                                              src="/assets/u_person-icon.svg"
+                                              alt="1 Person"
+                                              width={24}
+                                              height={24}
+                                              className="w-full h-full"
+                                            />
+                                          </div>
+                                          <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(0.75rem,1.17vh,12px)] text-[#212121]">
+                                            1 Person
+                                          </span>
+                                        </div>
+
+                                        {/* Brightness */}
+                                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                          <div className="w-[clamp(1.5rem,2.34vh,24px)] h-[clamp(1.5rem,2.34vh,24px)] flex items-center justify-center">
+                                            <Image
+                                              src="/assets/u_brightness-icon.svg"
+                                              alt="Brightness"
+                                              width={24}
+                                              height={24}
+                                              className="w-full h-full"
+                                            />
+                                          </div>
+                                          <span className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(0.75rem,1.17vh,12px)] text-[#212121]">
+                                            Brightness
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      {/* Right Column - Text Guidelines */}
+                                      <div className="flex-1">
+                                        <p className="font-heading text-[clamp(0.875rem,1.37vh,14px)] font-normal leading-[clamp(1.1rem,1.6vh,18px)] text-center text-[#212121] whitespace-pre-line">
+{`Use a clear, front-facing photo.
+Use a clean, simple background.
+Upload a high-quality, non-blurry image.
+Avoid hats, sunglasses, or face coverings.
+No filters or heavy edits.
+Use a recent photo of yourself.`}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* File Input (Hidden) */}
+                                  <input
+                                    type="file"
+                                    ref={avatarFileInputRef}
+                                    onChange={handleAvatarFileSelect}
+                                    accept="image/jpeg,image/jpg,image/png"
+                                    className="hidden"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ) : activeAvatarTab === 'hire' ? (
+                            // Hire tab - show placeholder message
+                            <div 
+                              key="avatar-hire"
                               className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
                               style={{
                                 animation: 'fadeIn 0.3s ease-in-out'
                               }}
                             >
                               <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
-                                {activeAvatarTab === 'upload' ? 'Upload functionality coming soon' : 
-                                 'Hire feature coming soon'}
+                                Hire feature coming soon
                               </p>
                             </div>
                           ) : avatars.length === 0 ? (
@@ -2934,6 +3603,30 @@ function AIChatPageContent() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Upload Avatar Button - Outside container, only show in upload tab before successful upload */}
+                    {activeAvatarTab === 'upload' && !avatarUploadSuccess && (
+                      <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                        <button
+                          onClick={() => avatarFileInputRef.current?.click()}
+                          disabled={avatarUploading}
+                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                            <Image
+                              src="/assets/u_upload.svg"
+                              alt="Upload"
+                              width={24}
+                              height={24}
+                              className="w-full h-full"
+                            />
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                            Upload Avatar
+                          </span>
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
               </>
@@ -2982,8 +3675,8 @@ function AIChatPageContent() {
             </div>
             )}
 
-            {/* Proceed Button for Avatar Selection - Show in selection substep when avatar is selected */}
-            {currentStep === 'avatar-selection' && avatarSubstep === 'selection' && selectedAvatarId && (
+            {/* Proceed Button for Avatar Selection - Show in selection substep when avatar is selected from library */}
+            {currentStep === 'avatar-selection' && avatarSubstep === 'selection' && activeAvatarTab === 'library' && selectedAvatarId && (
             <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               <button
                 onClick={handleProceedWithAvatar}
@@ -3102,9 +3795,15 @@ function AIChatPageContent() {
                   </div>
 
                   {/* Voice Selection Container with Gradient Border */}
-                  <div className="relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[2px] rounded-[8px]" style={{
-                    background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
-                  }}>
+                  <div
+                    className="relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]"
+                    style={{
+                      background:
+                        'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                        'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                        'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                    }}
+                  >
                     <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
                       {/* Tabs Container with Gradient Border */}
                       <div className="relative rounded-[28px] mb-[clamp(0.5rem,0.98vh,10px)]" style={{
@@ -3204,24 +3903,80 @@ function AIChatPageContent() {
                         </div>
                       </div>
 
-                      {/* Voice List - Constrained height with internal scrolling */}
-                      <div className="max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                      {/* Voice List - Constrained height with internal scrolling (fixed height across tabs) */}
+                      <div className="max-h-[clamp(12.25rem,25.39vh,392px)] min-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
                         {loadingVoices ? (
                           <div className="flex items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]">
                             <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
                           </div>
-                        ) : activeVoiceTab !== 'library' ? (
+                        ) : activeVoiceTab === 'upload' ? (
+                          // Upload tab - functional upload UI
                           <div 
-                            key={`placeholder-${activeVoiceTab}`}
-                            className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
+                            key="voice-upload"
+                            className="flex flex-col items-center justify-center w-full"
+                            style={{
+                              animation: 'fadeIn 0.3s ease-in-out'
+                            }}
+                            >
+                              {/* Upload Area */}
+                              <div className="box-border flex flex-col justify-center items-center p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full h-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
+                                {/* Best Practices Title */}
+                                <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(0.6875rem,1.07vh,11px)] text-center text-black w-full">
+                                  Best Practices:
+                                </span>
+
+                                {/* Best Practices Content */}
+                                <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.1rem,1.6vh,18px)] text-center text-[#000000] w-full whitespace-pre-line">
+{`Record in a quiet room.
+Hold your phone steady and close.
+Speak clearly at normal volume.
+Don't move your head while talking.
+Read everything on screen smoothly.`}
+                                </p>
+
+                                {/* File Input (Hidden) */}
+                                <input
+                                  type="file"
+                                  ref={voiceFileInputRef}
+                                  onChange={handleVoiceFileUpload}
+                                  accept="audio/*"
+                                  className="hidden"
+                                />
+                              </div>
+                          </div>
+                        ) : activeVoiceTab === 'record' ? (
+                          // Record tab - functional recording UI
+                          <div 
+                            key="voice-record"
+                            className="flex flex-col items-center justify-center w-full"
                             style={{
                               animation: 'fadeIn 0.3s ease-in-out'
                             }}
                           >
-                            <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
-                              {activeVoiceTab === 'upload' ? 'Upload functionality coming soon' : 
-                               'Record functionality coming soon'}
-                            </p>
+                            {/* Record Card with Gradient Border */}
+                            <div className="relative w-full p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]" style={{
+                              background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
+                            }}>
+                              <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                                {/* Record Area */}
+                                <div className="box-border flex flex-col justify-center items-center p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full h-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
+                                  {/* Best Practices Title */}
+                                  <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(0.6875rem,1.07vh,11px)] text-center text-black w-full">
+                                    Best Practices:
+                                  </span>
+
+                                  {/* Best Practices Content */}
+                                  <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.1rem,1.6vh,18px)] text-center text-[#000000] w-full whitespace-pre-line">
+{`Record in a quiet room.
+Hold your phone steady and close.
+Speak clearly at normal volume.
+Don't move your head while talking.
+Read everything on screen smoothly.`}
+                                  </p>
+
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         ) : voices.length === 0 ? (
                           <div 
@@ -3322,6 +4077,57 @@ function AIChatPageContent() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Upload/Record Voice Buttons - Outside container, only show in upload/record tabs */}
+                  {activeVoiceTab === 'upload' && !voiceUploadSuccess && (
+                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                      <button
+                        onClick={() => voiceFileInputRef.current?.click()}
+                        disabled={voiceCloning}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_upload.svg"
+                            alt="Upload"
+                            width={24}
+                            height={24}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                          Upload Voice
+                        </span>
+                      </button>
+                    </div>
+                  )}
+
+                  {activeVoiceTab === 'record' && (
+                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                      {voiceRecording ? (
+                        <button
+                          onClick={handleStopVoiceRecording}
+                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                        >
+                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] bg-[#F12A4C] rounded-sm" />
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                            Stop Recording
+                          </span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleStartVoiceRecording}
+                          disabled={voiceCloning}
+                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] bg-[#E86412] rounded-full" />
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                            Record Voice
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </>
@@ -3370,8 +4176,8 @@ function AIChatPageContent() {
             </div>
             )}
 
-            {/* Proceed Button for Voice Selection - Show in selection substep when voice is selected */}
-            {currentStep === 'voice-selection' && voiceSubstep === 'selection' && selectedVoiceId && (
+            {/* Proceed Button for Voice Selection - Show in selection substep when voice is selected from library */}
+            {currentStep === 'voice-selection' && voiceSubstep === 'selection' && activeVoiceTab === 'library' && selectedVoiceId && (
             <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               <button
                 onClick={handleProceedWithVoice}
@@ -3663,6 +4469,106 @@ function AIChatPageContent() {
                   height={24}
                   className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
                 />
+              </button>
+            </div>
+          )}
+
+          {/* Avatar Upload Input Bar - Show when upload tab is active and file is selected */}
+          {currentStep === 'avatar-selection' && activeAvatarTab === 'upload' && pendingAvatarFile && (
+            <div className="flex flex-row justify-between items-center gap-[clamp(0.75rem,1.56vh,16px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0">
+              {/* Display pending avatar file as chip - LEFT SIDE */}
+              {pendingAvatarFile && (
+                <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                  <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                    {pendingAvatarPreview ? (
+                      <img src={pendingAvatarPreview} alt={pendingAvatarFile.name} className="w-full h-full object-cover rounded" />
+                    ) : (
+                      <Image src="/assets/u_paperclip.svg" alt="Avatar" width={16} height={16} className="w-full h-full" />
+                    )}
+                  </div>
+                  <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black truncate max-w-[140px]">
+                    {pendingAvatarFile.name}
+                  </span>
+                  <button 
+                    onClick={removePendingAvatarFile} 
+                    className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center flex-shrink-0"
+                  >
+                    <X className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                  </button>
+                </div>
+              )}
+              
+              {/* Send button - RIGHT SIDE */}
+              <button
+                onClick={handleSendAvatarFile}
+                disabled={!pendingAvatarFile || avatarUploading}
+                className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+              >
+                {avatarUploading ? (
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Image
+                    src="/assets/fi_send.svg"
+                    alt="Send"
+                    width={24}
+                    height={24}
+                    className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
+                  />
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Voice Upload/Record Input Bar - Show when upload/record tab is active and file is selected */}
+          {currentStep === 'voice-selection' && (activeVoiceTab === 'upload' || activeVoiceTab === 'record') && pendingVoiceFile && (
+            <div className="flex flex-row justify-between items-center gap-[clamp(0.75rem,1.56vh,16px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0">
+              {/* File chip and name input on LEFT */}
+              <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] flex-1 min-w-0">
+                {/* Display pending voice file as chip */}
+                {pendingVoiceFile && (
+                  <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.375rem,0.59vh,6px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] flex-shrink-0 whitespace-nowrap">
+                    <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] relative flex-shrink-0">
+                      <Image src="/assets/u_paperclip.svg" alt="Voice" width={16} height={16} className="w-full h-full" />
+                    </div>
+                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-black truncate max-w-[140px]">
+                      {pendingVoiceFile.name}
+                    </span>
+                    <button 
+                      onClick={removePendingVoiceFile} 
+                      className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] flex items-center justify-center flex-shrink-0"
+                    >
+                      <X className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                    </button>
+                  </div>
+                )}
+                
+                {/* Name input field */}
+                <input
+                  type="text"
+                  value={pendingVoiceName}
+                  onChange={(e) => setPendingVoiceName(e.target.value)}
+                  placeholder="Enter voice name"
+                  className="flex-1 font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] outline-none px-[clamp(0.5rem,0.98vh,10px)] bg-transparent border-none focus:ring-0 placeholder:text-[#616161] min-w-0"
+                />
+              </div>
+              
+              {/* Send button - RIGHT SIDE */}
+              <button
+                onClick={handleSendVoiceFile}
+                disabled={!pendingVoiceFile || !pendingVoiceName.trim() || voiceCloning}
+                className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+              >
+                {voiceCloning ? (
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Image
+                    src="/assets/fi_send.svg"
+                    alt="Send"
+                    width={24}
+                    height={24}
+                    className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
+                  />
+                )}
               </button>
             </div>
           )}

@@ -386,7 +386,7 @@ function WorkspacePageContent() {
     if (projectId) {
       router.push(`/create-video/ai-chat?projectId=${projectId}`);
     } else {
-      router.push('/create-video');
+      router.push('/create-video/ai-chat');
     }
   };
 
