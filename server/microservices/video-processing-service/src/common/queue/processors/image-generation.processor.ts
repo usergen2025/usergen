@@ -9,6 +9,7 @@ import { ImageGenerationRequest } from '../../../rendering/providers/interfaces/
 import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { PublicUrlService } from '../../storage/public-url.service';
+import { AssetProcessorService, AnalyzedAsset } from '../../services/asset-processor.service';
 import { preWarmUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -42,6 +43,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     private readonly modelRegistry: ModelRegistryService,
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly publicUrlService: PublicUrlService,
+    private readonly assetProcessor: AssetProcessorService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -84,6 +86,9 @@ export class ImageGenerationProcessor extends WorkerHost {
         throw new Error('Project not found');
       }
 
+      // Extract analyzed assets from project metadata
+      const analyzedAssets = this.extractAnalyzedAssets(project);
+
       const style = videoStyle || project.style;
       // ✅ Enhanced style normalization to handle multiple format variations
       let normalizedStyle: string;
@@ -119,13 +124,26 @@ export class ImageGenerationProcessor extends WorkerHost {
           avatarImageKey,
           modelId,
           userId,
-          projectId
+          projectId,
+          analyzedAssets
         );
       } else {
         console.log(`[ImageGenerationProcessor] ❌ NOT AVATAR_PRODUCT (${normalizedStyle}), falling through to ${normalizedStyle === 'PRODUCT_ONLY' ? 'PRODUCT_ONLY' : 'default'} processing`);
       }
 
-      // Handle PRODUCT_ONLY style - use product image in generation
+      // Extract analyzed assets; build reference images in order (product(s) first, logo last) for Seedream
+      const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, normalizedStyle) : [];
+      let referenceImagesOrdered = analyzedAssets ? this.assetProcessor.buildReferenceImagesInOrder(analyzedAssets) : [];
+      // If buildReferenceImagesInOrder returned empty but we have analyzed assets (e.g. stored URLs are /uploads/), resolve to public URLs
+      if (referenceImagesOrdered.length === 0 && analyzedAssets && analyzedAssets.length > 0) {
+        referenceImagesOrdered = await this.resolveReferenceUrlsToPublic(analyzedAssets);
+        if (referenceImagesOrdered.length > 0) {
+          console.log(`[ImageGenerationProcessor] Resolved ${referenceImagesOrdered.length} non-public reference URL(s) for provider`);
+        }
+      }
+      const enhancedPrompt = analyzedAssets ? this.assetProcessor.enhancePromptWithAssets(prompt, sceneAssets) : prompt;
+
+      // Handle PRODUCT_ONLY style - use product image in generation (always model-4)
       if (normalizedStyle === 'PRODUCT_ONLY') {
         if (!productImageUrl) {
           throw new Error('Product image URL is required for PRODUCT_ONLY style. Please ensure product image is uploaded in assets.');
@@ -139,20 +157,23 @@ export class ImageGenerationProcessor extends WorkerHost {
           modelId,
           aspectRatio,
           resolution,
-          userId
+          userId,
+          analyzedAssets
         );
       }
 
-      // Default processing for other styles
+      // Default processing for other styles (use Seedream when we have reference assets)
       return await this.processDefaultStyle(
         job,
         project,
         sceneNumber,
-        prompt,
+        enhancedPrompt,
         modelId,
         aspectRatio,
         resolution,
-        userId
+        userId,
+        analyzedAssets,
+        referenceImagesOrdered
       );
     } catch (error: any) {
       console.error(`[ImageGenerationProcessor] Error processing job ${job.id}:`, error);
@@ -195,7 +216,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     modelId: string | undefined,
     aspectRatio: string | undefined,
     resolution: string | undefined,
-    userId: string
+    userId: string,
+    analyzedAssets?: AnalyzedAsset[]
   ): Promise<any> {
     console.log(`[ImageGenerationProcessor] Processing PRODUCT_ONLY style for scene ${sceneNumber}`);
 
@@ -220,9 +242,19 @@ export class ImageGenerationProcessor extends WorkerHost {
       throw new Error('Product image URL is required for PRODUCT_ONLY style');
     }
 
-    // Enhance prompt with product image context for reference image generation
+    // Enhance prompt with product image context and asset context for reference image generation
     // Add anti-grid instruction to prevent collage/grid layouts
-    const enhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [Using product reference image to create variations: different angles, lighting, contexts, and compositions. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features and benefits. Generate ONE single image, not a collection or grid of images]`;
+    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [Using product reference image to create variations: different angles, lighting, contexts, and compositions. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features and benefits. Generate ONE single image, not a collection or grid of images]`;
+    
+    // Get scene-specific assets and enhance prompt
+    const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'PRODUCT_ONLY') : [];
+    const assetEnhancedPrompt = analyzedAssets ? this.assetProcessor.enhancePromptWithAssets(baseEnhancedPrompt, sceneAssets) : baseEnhancedPrompt;
+    
+    // Prepare reference images (product + assets)
+    const assetReferenceImages = analyzedAssets ? this.assetProcessor.prepareReferenceImages(sceneAssets, sceneNumber) : [];
+    const allReferenceImages = [publicProductImageUrl, ...assetReferenceImages].filter(Boolean);
+    
+    const enhancedPrompt = assetEnhancedPrompt;
 
     // Determine aspect ratio
     const selectedAspectRatio = aspectRatio || '9:16';
@@ -246,7 +278,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     // Get provider
     const provider = this.providerFactory.getProviderForModel(model.id);
 
-    // Build request with product image as reference for image-to-image generation
+    // Build request with product image and asset images as reference for image-to-image generation
     const request: ImageGenerationRequest = {
       prompt: enhancedPrompt,
       modelId: model.id,
@@ -254,7 +286,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       resolution: resolution || model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'jpeg',
-      referenceImages: [publicProductImageUrl], // ✅ Use image-to-image with product as reference
+      referenceImages: allReferenceImages, // ✅ Use image-to-image with product + assets as reference
     };
 
     // Validate request
@@ -584,7 +616,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     avatarImageKey: string | undefined,
     modelId: string | undefined,
     userId: string,
-    projectId: string
+    projectId: string,
+    analyzedAssets?: AnalyzedAsset[]
   ): Promise<any> {
     console.log(`[ImageGenerationProcessor] Processing AVATAR_PRODUCT style for scene ${sceneNumber} using image-to-image`);
 
@@ -655,8 +688,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       throw new Error('Product image URL is required for AVATAR_PRODUCT style');
     }
 
-    // Enhanced prompt for avatar-product generation with reference images
-    const enhancedPrompt = `${prompt} [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]`;
+    // Enhanced prompt for avatar-product generation with reference images and asset context
+    const baseEnhancedPrompt = `${prompt} [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]`;
+    
+    // Get scene-specific assets and enhance prompt
+    const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'AVATAR_PRODUCT') : [];
+    const assetEnhancedPrompt = analyzedAssets ? this.assetProcessor.enhancePromptWithAssets(baseEnhancedPrompt, sceneAssets) : baseEnhancedPrompt;
+    
+    // Prepare reference images (avatar + product + assets)
+    const assetReferenceImages = analyzedAssets ? this.assetProcessor.prepareReferenceImages(sceneAssets, sceneNumber) : [];
+    const allReferenceImages = [avatarImageUrl, publicProductImageUrl, ...assetReferenceImages].filter(Boolean);
+    
+    const enhancedPrompt = assetEnhancedPrompt;
 
     // Determine aspect ratio
     const selectedAspectRatio = '9:16'; // Avatar-product uses full 9:16
@@ -671,7 +714,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     // Get provider
     const provider = this.providerFactory.getProviderForModel(model.id);
 
-    // Build request with both avatar and product as reference images for image-to-image
+    // Build request with avatar, product, and asset images as reference for image-to-image
     const request: ImageGenerationRequest = {
       prompt: enhancedPrompt,
       modelId: model.id,
@@ -679,7 +722,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       resolution: model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'jpeg',
-      referenceImages: [avatarImageUrl, publicProductImageUrl], // ✅ Multi-reference image-to-image
+      referenceImages: allReferenceImages, // ✅ Multi-reference image-to-image with assets
     };
 
     // ✅ Enhanced logging for reference images
@@ -844,6 +887,63 @@ export class ImageGenerationProcessor extends WorkerHost {
   }
 
   /**
+   * Extract analyzed assets from project metadata
+   */
+  private extractAnalyzedAssets(project: any): AnalyzedAsset[] | undefined {
+    try {
+      const metadata = project.metadata as any;
+      const analyzedAssets = metadata?.analyzedAssets;
+      
+      if (analyzedAssets && Array.isArray(analyzedAssets) && analyzedAssets.length > 0) {
+        return analyzedAssets.map((asset: any) => ({
+          id: asset.originalAsset?.id || asset.id,
+          category: asset.category,
+          extractedText: asset.extractedText,
+          productInfo: asset.productInfo,
+          url: asset.originalAsset?.url || asset.url,
+          originalAsset: asset.originalAsset,
+        }));
+      }
+      
+      return undefined;
+    } catch (error: any) {
+      console.warn(`[ImageGenerationProcessor] Failed to extract analyzed assets: ${error.message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolve analyzed asset URLs to public URLs when they are stored as relative or /uploads/ paths,
+   * so providers (BytePlus, FAL, etc.) can access them. Preserves order: product(s) first, then logo.
+   */
+  private async resolveReferenceUrlsToPublic(analyzedAssets: AnalyzedAsset[]): Promise<string[]> {
+    const productAssets = this.assetProcessor.getProductAssets(analyzedAssets);
+    const logoAssets = analyzedAssets.filter(a => a.category === 'logo');
+    const orderedAssets = [...productAssets, ...logoAssets];
+    const resolved: string[] = [];
+    for (const asset of orderedAssets) {
+      const url = asset.url || asset.originalAsset?.url;
+      if (!url) continue;
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        resolved.push(url);
+        continue;
+      }
+      const localUrl = url.startsWith('/') ? url : `/${url}`;
+      const relativePath = localUrl.replace(/^\/uploads\/?/, '');
+      const localPath = path.join(this.uploadsDir, relativePath);
+      try {
+        if (fs.existsSync(localPath)) {
+          const publicUrl = await this.publicUrlService.getPublicUrl(localPath, localUrl);
+          resolved.push(publicUrl);
+        }
+      } catch (err: any) {
+        console.warn(`[ImageGenerationProcessor] Could not resolve reference URL to public: ${localUrl}`, err?.message);
+      }
+    }
+    return resolved;
+  }
+
+  /**
    * Process default style (existing logic)
    */
   private async processDefaultStyle(
@@ -854,7 +954,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     modelId: string | undefined,
     aspectRatio: string | undefined,
     resolution: string | undefined,
-    userId: string
+    userId: string,
+    analyzedAssets?: AnalyzedAsset[],
+    referenceImages?: string[]
   ): Promise<any> {
     // Determine aspect ratio from video style
     let finalAspectRatio: string = '9:16'; // Default
@@ -871,29 +973,51 @@ export class ImageGenerationProcessor extends WorkerHost {
     // Use provided aspect ratio or default from video style
     const selectedAspectRatio = aspectRatio || finalAspectRatio;
 
-    // Get model configuration (from job or project default or system default)
-    // Default to model-1 (imagen4) for non-product styles
-    const selectedModelId = modelId || (project as any).defaultImageModel || 'model-1';
-    const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModel();
+    const hasReferenceAssets = referenceImages && referenceImages.length > 0;
+    // Use BytePlus See Dream (model-5) for default styles; supports both text-to-image and image-to-image
+    let selectedModelId = modelId || (project as any).defaultImageModel || 'model-5';
+    if (hasReferenceAssets) {
+      selectedModelId = 'model-5'; // Seedream supports multiple reference images
+    }
+    const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
 
-    console.log(`[ImageGenerationProcessor] Scene ${sceneNumber}: Style=${project.style}, Model=${model.displayName}, AspectRatio=${selectedAspectRatio}`);
+    console.log(`[ImageGenerationProcessor] Scene ${sceneNumber}: Style=${project.style}, Model=${model.displayName}, AspectRatio=${selectedAspectRatio}, refImages=${referenceImages?.length ?? 0}`);
 
-    // Get provider for this model
     const provider = this.providerFactory.getProviderForModel(model.id);
 
-    // Enhance prompt with anti-grid instruction to prevent collage/grid layouts
-    const enhancedPrompt = prompt.includes('[COMPOSITION:') 
-      ? prompt 
+    let finalPrompt = prompt.includes('[COMPOSITION:')
+      ? prompt
       : `[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen] ${prompt}`;
 
-    // Build unified request
+    if (analyzedAssets && analyzedAssets.length > 0) {
+      const sceneAssets = this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, project.style || 'HALF_N_HALF');
+      finalPrompt = this.assetProcessor.enhancePromptWithAssets(finalPrompt, sceneAssets);
+    }
+
+    // When using reference images (order: product(s) first, logo last), add explicit instructions for Seedream
+    if (hasReferenceAssets) {
+      const hasProduct = analyzedAssets?.some(a => a.category === 'product');
+      const hasLogo = analyzedAssets?.some(a => a.category === 'logo');
+      const refInstructions: string[] = [];
+      if (hasProduct) {
+        refInstructions.push('Same product as in the reference image(s); only change camera angle, lighting, or background; do not alter product design, shape, or colors.');
+      }
+      if (hasLogo) {
+        refInstructions.push('Use the logo from the last reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third) so the product clearly looks like it belongs to the company. Do not redraw or recreate the logo – use the exact logo from the last reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+      }
+      if (refInstructions.length > 0) {
+        finalPrompt = `${finalPrompt}\n\n${refInstructions.join(' ')}`;
+      }
+    }
+
     const request: ImageGenerationRequest = {
-      prompt: enhancedPrompt,
+      prompt: finalPrompt,
       modelId: model.id,
       aspectRatio: selectedAspectRatio,
       resolution: resolution || model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'png',
+      referenceImages: hasReferenceAssets ? referenceImages : undefined,
     };
 
     // Validate request

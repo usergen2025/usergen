@@ -9,6 +9,7 @@ import { DatabaseModule } from '../database/database.module';
 import { RenderingModule } from '../../rendering/rendering.module';
 import { WebSocketModule } from '../websocket/websocket.module';
 import { StorageModule } from '../storage/storage.module';
+import { AssetProcessorService } from '../services/asset-processor.service';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { StorageModule } from '../storage/storage.module';
     AudioGenerationProcessor,
     ImageGenerationProcessor,
     VideoGenerationProcessor,
+    AssetProcessorService,
   ],
   exports: [QueueManagerService],
 })

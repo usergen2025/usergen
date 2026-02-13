@@ -178,12 +178,11 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
     // BytePlus uses "WxH" format like "1080x1920" or "1K", "2K", "4K"
     let size: string | undefined;
     
-    // For HALF_N_HALF (3:4 aspect ratio), always use direct dimensions, ignore resolution
-    // This ensures we get exactly 1080x960 instead of letting resolution override it
+    // For HALF_N_HALF (3:4 aspect ratio), use dimensions that meet BytePlus minimum (3,686,400 pixels)
+    // 1080x960 = 1,036,800 < minimum; use 1662x2216 (~3.68M) to keep 3:4
     if (request.aspectRatio === '3:4') {
-      // Force 1080x960 for HALF_N_HALF regardless of resolution
-      size = '1080x960';
-      console.log(`[BytePlusProvider] HALF_N_HALF detected (3:4), forcing size to 1080x960 (ignoring resolution: ${request.resolution})`);
+      size = '1662x2216';
+      console.log(`[BytePlusProvider] HALF_N_HALF detected (3:4), using size 1662x2216 to meet BytePlus minimum pixels (ignoring resolution: ${request.resolution})`);
     } else if (request.resolution) {
       // If resolution is specified, use it directly
       size = request.resolution;
@@ -194,15 +193,18 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
         '16:9': '1920x1080',
         '1:1': '1080x1080',
         '4:3': '1440x1080',
-        'HALF_N_HALF_TOP': '1080x960', // Explicit for HALF_N_HALF top half
+        'HALF_N_HALF_TOP': '1662x2216', // Same as 3:4 for BytePlus minimum
       };
       size = sizeMap[request.aspectRatio] || '1080x1920';
+      if (request.aspectRatio === '9:16') {
+        console.log(`[BytePlusProvider] 9:16 aspect ratio, size=${size}`);
+      }
     } else {
       size = '1080x1920'; // Default
     }
 
     const bytePlusRequest: BytePlusImageGenerationRequest = {
-      model: request.modelId || 'seedream-4-0-250828',
+      model: request.modelId || 'seedream-4-5-251128',
       prompt: request.prompt,
       size,
       response_format: (request.outputFormat === 'jpeg' ? 'url' : 'url') as 'url', // BytePlus always returns URL
@@ -263,7 +265,7 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       const response = await this.axiosInstance.post<BytePlusImageGenerationResponse>(
         '/images/generations',
         {
-          model: request.model || 'seedream-4-0-250828',
+          model: request.model || 'seedream-4-5-251128',
           prompt: request.prompt,
           ...(request.image && { image: request.image }),
           ...(request.size && { size: request.size }),
@@ -314,6 +316,14 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
 
       if (!imgRequest.modelId) {
         return { valid: false, error: 'Model ID is required' };
+      }
+
+      // Multiple reference images are supported (product(s) first, logo last)
+      if (imgRequest.referenceImages && imgRequest.referenceImages.length > 0) {
+        const invalid = imgRequest.referenceImages.some(url => !url || typeof url !== 'string' || (!url.startsWith('http://') && !url.startsWith('https://')));
+        if (invalid) {
+          return { valid: false, error: 'All reference image URLs must be valid HTTP(S) URLs' };
+        }
       }
 
       return { valid: true };

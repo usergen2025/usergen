@@ -41,6 +41,7 @@ export class VideoController {
 
   /**
    * Extract userId from JWT token
+   * Handles both user tokens and service tokens (with type: 'service')
    */
   private extractUserIdFromToken(req: any): string | null {
     try {
@@ -60,10 +61,29 @@ export class VideoController {
       }
       
       const decoded = jwt.verify(token, jwtSecret) as any;
+      
+      // Log decoded token for debugging (without sensitive data)
+      const tokenType = decoded.type || 'user';
+      console.log(`[VideoController] Token decoded - type: ${tokenType}, has sub: ${!!decoded.sub}, has userId: ${!!decoded.userId}, has id: ${!!decoded.id}`);
+      
+      // Extract userId - support both user tokens and service tokens
+      // Service tokens have type: 'service' but still contain userId in sub/userId/id fields
       const userId = decoded.sub || decoded.userId || decoded.id || null;
       
       if (!userId) {
-        console.warn('[VideoController] Token decoded but no userId found in payload');
+        console.warn('[VideoController] Token decoded but no userId found in payload', {
+          tokenType,
+          decodedKeys: Object.keys(decoded),
+          hasSub: !!decoded.sub,
+          hasUserId: !!decoded.userId,
+          hasId: !!decoded.id,
+        });
+        return null;
+      }
+      
+      // Log successful extraction
+      if (tokenType === 'service') {
+        console.log(`[VideoController] Successfully extracted userId from service token: ${userId}`);
       }
       
       return userId;
@@ -73,7 +93,7 @@ export class VideoController {
       } else if (error.name === 'TokenExpiredError') {
         console.warn('[VideoController] JWT token has expired');
       } else {
-        console.error('[VideoController] Error verifying token:', error.message);
+        console.error('[VideoController] Error verifying token:', error.message, error.stack);
       }
       return null;
     }
@@ -153,7 +173,7 @@ export class VideoController {
             isAsync: model.capabilities.isAsync,
           },
         })),
-        default: 'model-1',
+        default: 'model-5',
       },
     };
   }
@@ -544,12 +564,12 @@ export class VideoController {
     // Get model ID from body or use style-appropriate default
     let modelId = body.modelId;
     if (!modelId) {
-      // Use model-1 (imagen4) as default for non-product styles, model-4 for product styles
+      // Use model-5 (BytePlus See Dream) as default for non-product styles, model-4 for product styles
       const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
       if (normalizedStyle === 'PRODUCT_ONLY' || normalizedStyle === 'AVATAR_PRODUCT') {
         modelId = 'model-4'; // nano-banana-pro for product styles (supports image-to-image)
       } else {
-        modelId = 'model-1'; // imagen4 for non-product styles
+        modelId = 'model-5'; // BytePlus See Dream for non-product styles (supports text-to-image and image-to-image)
       }
     }
 

@@ -3,6 +3,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import * as fs from 'fs';
+import * as jwt from 'jsonwebtoken';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { ScriptsService, ScriptGenerationRequest, VideoScriptGenerationRequest, SceneRegenerationRequest } from './scripts.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
@@ -13,6 +15,7 @@ export class ScriptsController {
   constructor(
     private readonly scriptsService: ScriptsService,
     private readonly publicUrlService: PublicUrlService,
+    private readonly configService: ConfigService,
   ) {}
 
   @Post('generate')
@@ -245,9 +248,32 @@ export class ScriptsController {
       }
     }
   })
-  async generateVideoScript(@Body() request: VideoScriptGenerationRequest) {
+  async generateVideoScript(@Request() req: any, @Body() request: VideoScriptGenerationRequest) {
     try {
-      const result = await this.scriptsService.generateVideoScript(request);
+      // Extract userId from token - try req.user first (normal user tokens)
+      let userId = (req as any).user?.userId || (req as any).user?.sub || (req as any).user?.id;
+      
+      // If not found, try to extract from Authorization header (service tokens or when req.user not populated)
+      if (!userId) {
+        try {
+          const authHeader = req.headers?.authorization;
+          if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.replace('Bearer ', '');
+            const jwtSecret = this.configService.get<string>('JWT_SECRET') || 
+                             'SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.';
+            const decoded = jwt.verify(token, jwtSecret) as any;
+            userId = decoded.sub || decoded.userId || decoded.id;
+          }
+        } catch (error) {
+          // Token extraction failed, will throw error below
+        }
+      }
+      
+      if (!userId) {
+        throw new HttpException('User ID not found in token', HttpStatus.UNAUTHORIZED);
+      }
+      
+      const result = await this.scriptsService.generateVideoScript(request, userId);
       return {
         success: true,
         data: result,

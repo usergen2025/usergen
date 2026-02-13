@@ -6,6 +6,7 @@ import { BullModule } from '@nestjs/bullmq';
 // Core modules
 import { ScriptsModule } from './scripts/scripts.module';
 import { AvatarsModule } from './avatars/avatars.module';
+import { AssetsModule } from './assets/assets.module';
 // import { ContentModule } from './content/content.module'; // TODO: Implement later
 // import { IntegrationsModule } from './integrations/integrations.module'; // TODO: Implement later
 // import { ConfigModule as AppConfigModule } from './config/config.module'; // TODO: Implement later
@@ -48,6 +49,7 @@ import { LoggerModule } from './common/logger/logger.module';
     // Feature modules
     ScriptsModule,
     AvatarsModule,
+    AssetsModule,
     // ContentModule, // TODO: Implement later
     // IntegrationsModule, // TODO: Implement later
   ],

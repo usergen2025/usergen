@@ -1,19 +1,50 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
 import {
   CreateVideoProjectDto,
   UpdateVideoProjectDto,
   UpdateVideoProjectStepDto,
 } from './dto/video-project.dto';
+import axios from 'axios';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class VideoService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  private readonly aiContentServiceUrl: string;
+  private readonly jwtSecret: string;
+
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly configService: ConfigService,
+  ) {
+    this.aiContentServiceUrl = 
+      this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 
+      'http://localhost:9001';
+    this.jwtSecret = this.configService.get<string>('JWT_SECRET') || 
+                     'SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.';
+  }
 
   /**
    * Create a new video project
    */
   async createProject(userId: string, dto: CreateVideoProjectDto) {
+    // Prepare initial metadata with asset analysis status if assets are present
+    let initialMetadata = dto.metadata || {};
+    const assets = initialMetadata?.assets;
+    
+    if (assets && Array.isArray(assets) && assets.length > 0) {
+      initialMetadata = {
+        ...initialMetadata,
+        assetAnalysis: {
+          status: 'pending',
+          totalAssets: assets.length,
+          completedAssets: 0,
+          startedAt: new Date().toISOString(),
+        },
+      };
+    }
+
     const project = await this.databaseService.videoProject.create({
       data: {
         userId,
@@ -38,9 +69,16 @@ export class VideoService {
         captionsEnabled: dto.captionsEnabled || false,
         currentStep: dto.currentStep || 'STYLE_SELECTION',
         status: dto.status || 'DRAFT',
-        metadata: dto.metadata,
+        metadata: initialMetadata,
       },
     });
+
+    // Trigger asset analysis in background (non-blocking)
+    if (assets && Array.isArray(assets) && assets.length > 0) {
+      this.triggerAssetAnalysis(project.id, userId, assets).catch(error => {
+        console.error(`[VideoService] Failed to trigger asset analysis for project ${project.id}:`, error.message);
+      });
+    }
 
     return {
       success: true,
@@ -149,7 +187,13 @@ export class VideoService {
     if (dto.videoUrl !== undefined) updateData.videoUrl = dto.videoUrl;
     if (dto.thumbnailUrl !== undefined) updateData.thumbnailUrl = dto.thumbnailUrl;
     if (dto.duration !== undefined) updateData.duration = dto.duration;
-    if (dto.metadata !== undefined) updateData.metadata = dto.metadata;
+    // Merge metadata so partial updates (e.g. script, step) don't wipe generationFlow, aiChatStep, assetAnalysis
+    if (dto.metadata !== undefined) {
+      const existingMeta = existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+        ? (existing.metadata as Record<string, unknown>)
+        : {};
+      updateData.metadata = { ...existingMeta, ...dto.metadata };
+    }
 
     // Update timestamps
     if (dto.status === 'IN_PROGRESS' && existing.status === 'DRAFT') {
@@ -164,10 +208,75 @@ export class VideoService {
       data: updateData,
     });
 
+    // Trigger asset analysis if metadata with assets was updated
+    if (dto.metadata?.assets && Array.isArray(dto.metadata.assets) && dto.metadata.assets.length > 0) {
+      // Check if analysis hasn't been completed yet
+      const currentMetadata = project.metadata as any;
+      const analysisStatus = currentMetadata?.assetAnalysis?.status;
+      
+      if (!analysisStatus || analysisStatus === 'pending' || analysisStatus === 'failed') {
+        this.triggerAssetAnalysis(projectId, userId, dto.metadata.assets).catch(error => {
+          console.error(`[VideoService] Failed to trigger asset analysis for project ${projectId}:`, error.message);
+        });
+      }
+    }
+
     return {
       success: true,
       data: project,
     };
+  }
+
+  /**
+   * Trigger asset analysis in ai-content-service (non-blocking)
+   */
+  private async triggerAssetAnalysis(
+    projectId: string,
+    userId: string,
+    assets: Array<{ id: string; url: string; type?: string; category?: string }>
+  ): Promise<void> {
+    try {
+      // Generate service token
+      const token = jwt.sign(
+        { sub: userId, userId, id: userId, type: 'service' },
+        this.jwtSecret,
+        { expiresIn: '1h' }
+      );
+
+      // Prepare assets for analysis
+      const assetsForAnalysis = assets.map(asset => ({
+        id: asset.id,
+        url: asset.url || (asset as any).publicUrl || (asset as any).imageUrl,
+        type: asset.type || 'image',
+        userLabel: asset.category || (asset as any).label,
+      })).filter(asset => asset.url); // Only include assets with valid URLs
+
+      if (assetsForAnalysis.length === 0) {
+        console.warn(`[VideoService] No valid asset URLs found for analysis in project ${projectId}`);
+        return;
+      }
+
+      // Call ai-content-service to queue analysis
+      await axios.post(
+        `${this.aiContentServiceUrl}/api/assets/analyze`,
+        {
+          projectId,
+          assets: assetsForAnalysis,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 5000,
+        }
+      );
+
+      console.log(`[VideoService] Successfully queued asset analysis for project ${projectId} with ${assetsForAnalysis.length} assets`);
+    } catch (error: any) {
+      // Log but don't throw - this is a background operation
+      console.error(`[VideoService] Failed to trigger asset analysis:`, error.message);
+    }
   }
 
   /**

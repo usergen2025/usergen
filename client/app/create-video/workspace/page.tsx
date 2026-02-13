@@ -439,7 +439,7 @@ function WorkspacePageContent() {
       if (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
         return 'model-4'; // nano-banana-pro for product-focused styles
       }
-      return 'model-1'; // imagen4 for all other styles
+      return 'model-5'; // BytePlus See Dream for all other styles
     };
 
     try {

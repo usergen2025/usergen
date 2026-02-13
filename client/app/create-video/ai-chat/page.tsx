@@ -20,6 +20,7 @@ interface Asset {
   file?: File;
   preview?: string; // Object URL for image preview
   url?: string; // For URL assets
+  category?: string; // User-provided category (logo, product, etc.)
 }
 
 // Define chat flow steps
@@ -217,6 +218,16 @@ function AIChatPageContent() {
             // Restore user script message
             if (project.metadata?.userScriptMessage) {
               setUserScriptMessage(project.metadata.userScriptMessage);
+            }
+            
+            // If we have assets but no script and no aiChatStep, restore to assets-attached step
+            const hasAssets = project.metadata?.assets && 
+              (Array.isArray(project.metadata.assets) ? project.metadata.assets.length > 0 : true);
+            const hasScript = project.script && 
+              (typeof project.script === 'string' ? JSON.parse(project.script) : project.script);
+            if (hasAssets && !hasScript && !project.metadata?.aiChatStep) {
+              // Set step to assets-attached if we have assets but no script
+              setCurrentStep('assets-attached');
             }
             
             // Restore avatar
@@ -796,7 +807,7 @@ function AIChatPageContent() {
   };
 
   // Handler for send button in typing area - moves assets from typing area to chat
-  const handleSendAssets = () => {
+  const handleSendAssets = async () => {
     if (pendingAssets.length === 0) {
       return;
     }
@@ -820,6 +831,129 @@ function AIChatPageContent() {
     
     // Clear typing area immediately
     setPendingAssets([]);
+    
+    // Create or update project with assets in metadata (triggers background analysis)
+    try {
+      // Prepare assets for backend (ensure all have public URLs)
+      const assetsForBackend = await Promise.all(
+        assetsToDisplay.map(async (asset) => {
+          let assetUrl = asset.url;
+          
+          // If asset has a file, upload it to get a public URL
+          if (asset.file) {
+            try {
+              if (asset.type === 'image') {
+                showToast(`Uploading ${asset.name || 'asset'}...`, 'info');
+                const uploadResponse = await apiClient.uploadProductImage(asset.file);
+                if (uploadResponse.success && uploadResponse.data) {
+                  assetUrl = uploadResponse.data.publicUrl;
+                  // Update the asset with the public URL
+                  asset.url = assetUrl;
+                }
+              }
+            } catch (error) {
+              console.error('Failed to upload asset:', error);
+              // Continue - will try preview URL or skip if invalid
+            }
+          }
+          
+          // If asset has a preview URL (blob URL) but no public URL, upload it
+          if (!assetUrl && asset.preview && asset.preview.startsWith('blob:')) {
+            try {
+              // Fetch the blob and upload it
+              const response = await fetch(asset.preview);
+              if (response.ok) {
+                const blob = await response.blob();
+                const file = new File([blob], asset.name || 'asset.jpg', { type: blob.type || 'image/jpeg' });
+                showToast(`Uploading ${asset.name || 'asset'}...`, 'info');
+                const uploadResponse = await apiClient.uploadProductImage(file);
+                if (uploadResponse.success && uploadResponse.data) {
+                  assetUrl = uploadResponse.data.publicUrl;
+                  // Update the asset with the public URL
+                  asset.url = assetUrl;
+                }
+              }
+            } catch (error) {
+              console.error('Failed to upload asset from preview:', error);
+              // Continue - will skip if invalid
+            }
+          }
+          
+          // Determine category from asset ID or user-provided category
+          let category = asset.category;
+          if (!category) {
+            if (asset.id.startsWith('logo-')) {
+              category = 'logo';
+            } else if (asset.id.startsWith('product-')) {
+              category = 'product';
+            } else {
+              category = 'reference';
+            }
+          }
+          
+          return {
+            id: asset.id,
+            url: assetUrl || '',
+            type: asset.type || 'image',
+            category: category,
+            label: asset.name || category,
+            userLabel: category, // Pass category as userLabel for backend analysis
+          };
+        })
+      );
+      
+      // Filter out assets without valid URLs (preview URLs won't work for analysis)
+      const validAssets = assetsForBackend.filter(asset => {
+        // Accept HTTP(S) URLs or local paths that will be converted
+        return asset.url && (
+          asset.url.startsWith('http://') || 
+          asset.url.startsWith('https://') ||
+          asset.url.startsWith('/uploads')
+        );
+      });
+      
+      if (validAssets.length > 0) {
+        if (projectId) {
+          // Update existing project with assets
+          await apiClient.updateVideoProject(projectId, {
+            metadata: {
+              assets: validAssets,
+              generationFlow: 'AI_CHAT',
+              aiChatStep: 'assets-attached', // Save current step in metadata
+            },
+          });
+          console.log(`[AIChat] Updated project ${projectId} with ${validAssets.length} assets`);
+        } else {
+          // Create new project with assets
+          const createResponse = await apiClient.createVideoProject({
+            videoType: 'WITHOUT_AVATAR', // Will be updated later
+            currentStep: 'SCRIPT',
+            metadata: {
+              assets: validAssets,
+              generationFlow: 'AI_CHAT',
+              aiChatStep: 'assets-attached', // Save current step in metadata
+            },
+          });
+          
+          if (createResponse.success && createResponse.data) {
+            const newProjectId = createResponse.data.id;
+            setProjectId(newProjectId);
+            console.log(`[AIChat] Created project ${newProjectId} with ${validAssets.length} assets`);
+            
+            // Update URL with projectId if needed
+            if (typeof window !== 'undefined' && !window.location.search.includes('projectId')) {
+              router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, { scroll: false });
+            }
+          }
+        }
+      } else {
+        console.warn('[AIChat] No valid asset URLs found, skipping project creation');
+      }
+    } catch (error: any) {
+      console.error('Failed to save assets to project:', error);
+      // Don't block user flow - assets will be saved later or analysis will happen on next step
+      showToast('Assets attached. Analysis will happen in the background.', 'info');
+    }
     
     // Note: We keep the preview URLs in attachedAssets, they will be cleaned up on unmount
     // Don't cleanup previews here as they're still needed for display in chat
@@ -991,8 +1125,48 @@ function AIChatPageContent() {
       
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
-      
-      // Generate script WITH the selected style
+
+      // Two creation points: (1) When user has assets, project is created at assets-attached.
+      // If we have assets but no projectId (e.g. edge case), create project with assets first so script API can wait for analysis.
+      let scriptProjectId = projectId ?? null;
+      if (attachedAssets.length > 0 && !scriptProjectId) {
+        try {
+          const validAssetsForCreate = attachedAssets
+            .filter(a => a.url && (a.url.startsWith('http://') || a.url.startsWith('https://') || a.url.startsWith('/uploads')))
+            .map(asset => ({
+              id: asset.id,
+              url: asset.url || asset.preview || '',
+              type: asset.type || 'image',
+              category: asset.category || (asset.id.startsWith('logo-') ? 'logo' : asset.id.startsWith('product-') ? 'product' : 'reference'),
+              label: asset.name || asset.category,
+            }));
+          const createResponse = await apiClient.createVideoProject({
+            videoType: 'WITHOUT_AVATAR',
+            currentStep: 'SCRIPT',
+            metadata: {
+              assets: validAssetsForCreate,
+              generationFlow: 'AI_CHAT',
+              aiChatStep: 'assets-attached',
+            },
+          });
+          if (createResponse.success && createResponse.data) {
+            const newProjectId = createResponse.data.id;
+            setProjectId(newProjectId);
+            scriptProjectId = newProjectId;
+            if (typeof window !== 'undefined' && !window.location.search.includes('projectId')) {
+              router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, { scroll: false });
+            }
+            console.log(`[AIChat] Created project with assets before script so analysis can run; projectId=${newProjectId}`);
+          }
+        } catch (err: any) {
+          console.error('Failed to create project with assets before script:', err);
+          showToast('Could not create project with assets. Please try again.', 'error');
+          setIsGeneratingScript(false);
+          return;
+        }
+      }
+
+      // Generate script WITH the selected style (backend waits for analysis when projectId is set)
       const response = await apiClient.generateVideoScript({
         userPrompt: cleanedMessage, // Use cleaned message (without @ symbols)
         videoStyle: styleToUse ? (styleMap[styleToUse] as any) : 'AVATAR_CUTOUT', // Use selected style, fallback only
@@ -1002,7 +1176,7 @@ function AIChatPageContent() {
         productImageUrl: productImageUrl || undefined,
         hasAvatar: hasAvatar,
         avatarId: avatarId || undefined,
-        // No projectId - project will be created when user proceeds from script-generated
+        projectId: scriptProjectId || undefined, // Pass projectId so backend waits for analysis and uses it for script
       });
 
       if (response.success && response.data) {
@@ -1012,6 +1186,59 @@ function AIChatPageContent() {
         // Use formatted script from API, or format ourselves if not provided
         const displayScript = formatted || formatScriptForDisplay(scriptData);
         setFormattedScript(displayScript);
+        
+        // Create project only when user had no assets (second creation point). When user had assets we already have scriptProjectId and only update.
+        if (!scriptProjectId) {
+          if (attachedAssets.length === 0) {
+            try {
+              const createResponse = await apiClient.createVideoProject({
+                videoType: hasAvatar ? 'WITH_AVATAR' : 'WITHOUT_AVATAR',
+                script: JSON.stringify(scriptData),
+                scriptGenerated: true,
+                currentStep: 'SCRIPT',
+                style: styleToUse ? (styleMap[styleToUse] as any) : undefined,
+                metadata: {
+                  generationFlow: 'AI_CHAT',
+                  formattedScript: displayScript,
+                  userScriptMessage: userMessage,
+                  selectedOption: selectedOption,
+                },
+              });
+              
+              if (createResponse.success && createResponse.data) {
+                const newProjectId = createResponse.data.id;
+                setProjectId(newProjectId);
+                console.log(`[AIChat] Created project after script (no assets): ${newProjectId}`);
+                router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, { scroll: false });
+              }
+            } catch (error: any) {
+              console.error('Failed to create project after script generation:', error);
+              showToast('Script generated but could not save project. Please try again.', 'error');
+            }
+          } else {
+            console.error('[AIChat] Expected projectId when user had assets; create-with-assets before script may have failed.');
+            showToast('Script generated but project could not be saved. Please try again.', 'error');
+          }
+        } else {
+          // Update existing project with script (user had assets; project was created at assets-attached or just above)
+          try {
+            await apiClient.updateVideoProject(scriptProjectId, {
+              script: JSON.stringify(scriptData),
+              scriptGenerated: true,
+              metadata: {
+                generationFlow: 'AI_CHAT',
+                aiChatStep: 'script-generated',
+                formattedScript: displayScript,
+                userScriptMessage: userMessage,
+                selectedOption: selectedOption,
+              },
+            });
+            console.log(`[AIChat] Updated project ${scriptProjectId} with script`);
+          } catch (error: any) {
+            console.error('Failed to update project with script:', error);
+            showToast('Script generated but could not update project. Please try again.', 'error');
+          }
+        }
         
         // Store script temporarily in sessionStorage - will be saved to project after style selection
         if (typeof window !== 'undefined') {
@@ -1162,7 +1389,7 @@ function AIChatPageContent() {
         productImageUrl: productImageUrl || undefined,
         hasAvatar: hasAvatar,
         avatarId: avatarId || undefined,
-        // No projectId - project will be created when user proceeds from script-generated
+        projectId: projectId || undefined, // Pass projectId if it exists (created when assets were attached)
       });
 
       if (response.success && response.data) {
@@ -1171,6 +1398,24 @@ function AIChatPageContent() {
         setGeneratedScript(scriptData);
         const displayScript = formatted || formatScriptForDisplay(scriptData);
         setFormattedScript(displayScript);
+        
+        // Update project with regenerated script if project exists
+        if (projectId) {
+          try {
+            await apiClient.updateVideoProject(projectId, {
+              script: JSON.stringify(scriptData),
+              scriptGenerated: true,
+              metadata: {
+                formattedScript: displayScript,
+                userScriptMessage: userScriptMessage,
+              },
+            });
+            console.log(`[AIChat] Updated project ${projectId} with regenerated script`);
+          } catch (error: any) {
+            console.error('Failed to update project with regenerated script:', error);
+            // Don't block user flow
+          }
+        }
         
         // Update stored script in sessionStorage
         if (typeof window !== 'undefined') {
@@ -1889,10 +2134,10 @@ function AIChatPageContent() {
                 return;
               }
               
-              // Use model-1 (imagen4) for all styles, except product styles which use model-4
+              // Use model-5 (BytePlus See Dream) for non-product styles, model-4 for product styles
               const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
                 ? 'model-4'  // nano-banana-pro supports reference images
-                : 'model-1'; // imagen4 for all other styles
+                : 'model-5'; // BytePlus See Dream for all other styles
 
               try {
                 const imageResponse = await apiClient.regenerateImage(
@@ -2076,9 +2321,9 @@ function AIChatPageContent() {
     }
   };
 
-  // Auto-save current step and substeps to project metadata
+  // Auto-save current step and substeps to project metadata (including assets-attached and script-input so reload restores correctly)
   useEffect(() => {
-    if (projectId && currentStep !== 'welcome' && currentStep !== 'option-selected' && currentStep !== 'asset-upload' && currentStep !== 'assets-attached' && currentStep !== 'script-input') {
+    if (projectId && currentStep !== 'welcome' && currentStep !== 'option-selected' && currentStep !== 'asset-upload') {
       const metadataUpdate: any = {
         generationFlow: 'AI_CHAT',
         aiChatStep: currentStep,

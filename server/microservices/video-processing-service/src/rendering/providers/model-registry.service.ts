@@ -107,9 +107,9 @@ export class ModelRegistryService {
       },
     });
 
-    // Model 5: BytePlus seedream
+    // Model 5: BytePlus Seedream (multi-reference image-to-image; use for default styles when assets exist)
     this.models.set('model-5', {
-      id: 'seedream-4-0-250828',
+      id: 'seedream-4-5-251128',
       displayName: 'Model 5',
       platform: 'BYTEPLUS',
       capabilities: {
@@ -178,8 +178,12 @@ export class ModelRegistryService {
       }
       return model;
     }
-    // Default to model-1 (imagen4) for other styles
-    return this.getDefaultModel();
+    // Default to model-5 (BytePlus See Dream) for other styles (ALTERNATE, HALF_N_HALF, etc.)
+    const model = this.models.get('model-5');
+    if (!model) {
+      throw new Error('Default model for default styles (model-5) not found');
+    }
+    return model;
   }
 
   /**

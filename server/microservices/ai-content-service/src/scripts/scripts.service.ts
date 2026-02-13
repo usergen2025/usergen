@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { LoggerService } from '../common/logger/logger.service';
 import OpenAI from 'openai';
 import axios from 'axios';
+import * as jwt from 'jsonwebtoken';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -29,6 +30,13 @@ export interface VideoScriptGenerationRequest {
   productImageUrl?: string; // URL of the product image uploaded by user
   hasAvatar?: boolean; // Whether an avatar is being used
   avatarId?: string; // ID of the selected avatar (if any)
+  analyzedAssets?: Array<{ // Analyzed assets from project metadata (optional, will be fetched if projectId provided)
+    id: string;
+    category: string;
+    extractedText?: string;
+    productInfo?: any;
+    url: string;
+  }>;
 }
 
 export interface VideoScriptGenerationResponse {
@@ -59,6 +67,10 @@ export interface SceneRegenerationResponse {
 @Injectable()
 export class ScriptsService {
   private openai: OpenAI;
+  private readonly videoProcessingServiceUrl: string;
+  private readonly jwtSecret: string;
+  /** Max wait in ms for asset analysis before proceeding without analysis; wait until completed/failed or this cap (ASSET_ANALYSIS_TIMEOUT_MS, default 15 min) */
+  private readonly assetAnalysisTimeoutMs: number;
 
   constructor(
     private readonly configService: ConfigService,
@@ -70,6 +82,15 @@ export class ScriptsService {
         apiKey: apiKey,
       });
     }
+    this.videoProcessingServiceUrl = 
+      this.configService.get<string>('VIDEO_PROCESSING_SERVICE_URL') || 
+      this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace('/ws', '') || 
+      'http://localhost:9000';
+    this.jwtSecret = this.configService.get<string>('JWT_SECRET') || 
+                     'SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.';
+    const timeoutEnv = this.configService.get<string>('ASSET_ANALYSIS_TIMEOUT_MS');
+    const fifteenMinutes = 15 * 60 * 1000;
+    this.assetAnalysisTimeoutMs = timeoutEnv ? Math.max(10000, parseInt(timeoutEnv, 10) || fifteenMinutes) : fifteenMinutes;
   }
 
   /**
@@ -201,7 +222,7 @@ export class ScriptsService {
   /**
    * Generate video script based on video style and user prompt
    */
-  async generateVideoScript(request: VideoScriptGenerationRequest): Promise<VideoScriptGenerationResponse> {
+  async generateVideoScript(request: VideoScriptGenerationRequest, userId?: string): Promise<VideoScriptGenerationResponse> {
     const startTime = Date.now();
     
     try {
@@ -213,102 +234,121 @@ export class ScriptsService {
         throw new Error('OpenAI API key is not configured');
       }
 
-      // Get the system prompt based on video style, language, tags, product image, and avatar info
+      // If projectId provided, fetch analyzed assets (wait for analysis if needed)
+      let analyzedAssets = request.analyzedAssets;
+      if (request.projectId && !analyzedAssets) {
+        analyzedAssets = await this.waitForAssetAnalysisAndExtract(request.projectId, userId, this.assetAnalysisTimeoutMs);
+        // Fallback: if analysis timed out or never completed, use raw metadata.assets so images are still referenced
+        if (!analyzedAssets && userId) {
+          analyzedAssets = await this.getRawAssetsFallback(request.projectId, userId);
+          if (analyzedAssets?.length) {
+            this.logger.log(`Using ${analyzedAssets.length} raw project assets as fallback (analysis unavailable) for project ${request.projectId}`, 'ScriptsService');
+          }
+        }
+      }
+
+      // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle, 
         language, 
         tags,
         request.productImageUrl,
-        request.hasAvatar
+        request.hasAvatar,
+        analyzedAssets
       );
       
       const duration = request.duration || '30 seconds';
       
-      // Determine if we need to use vision API (for PRODUCT_ONLY or AVATAR_PRODUCT with product image)
-      const useVisionAPI: boolean = !!(request.videoStyle === 'PRODUCT_ONLY' || request.videoStyle === 'AVATAR_PRODUCT') && !!request.productImageUrl;
+      // Determine if we need to use vision API (only for visual reference with analyzed assets, not for analysis)
+      const hasAnalyzedAssets = analyzedAssets && analyzedAssets.length > 0;
+      // Only use Vision API if we have analyzed assets with image URLs for visual reference
+      // Product images are already analyzed, so we don't need Vision API for analysis
+      const useVisionAPI: boolean = hasAnalyzedAssets && analyzedAssets.some(a => 
+        a.url && (a.url.startsWith('http://') || a.url.startsWith('https://'))
+      );
       
-      // Build messages array - include image if using vision API
+      // Build messages array
       const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
       
       // Add system message
       messages.push({ role: 'system', content: systemPrompt });
 
       if (useVisionAPI) {
-        // Validate productImageUrl exists
-        if (!request.productImageUrl) {
-          throw new Error('Product image URL is required for PRODUCT_ONLY and AVATAR_PRODUCT styles');
-        }
+        // Build content array with text and images (for visual reference only, not for analysis)
+        const content: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }> = [];
         
-        // Use vision API format with image for product analysis
-        const imageUrlPreview = request.productImageUrl.length > 50 
-          ? `${request.productImageUrl.substring(0, 50)}...` 
-          : request.productImageUrl;
-        this.logger.log(`Using GPT-4 Vision API to analyze product image: ${imageUrlPreview}`, 'ScriptsService');
+        // Add text prompt
+        let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}.`;
         
-        // Validate that URL is a public HTTP(S) URL
-        let imageUrl = request.productImageUrl;
-        
-        if (!imageUrl) {
-          throw new Error('Product image URL is required but was not provided');
-        }
-        
-        // Only accept public HTTP(S) URLs - no base64 data URLs
-        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
-          // Try to construct a public URL if it's a local path (for backward compatibility)
-          const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
-                                this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
-                                'http://localhost:9001';
-          if (imageUrl.startsWith('/uploads')) {
-            imageUrl = `${backendBaseUrl}${imageUrl}`;
-            this.logger.log(`Converted local path to public URL: ${imageUrl}`, 'ScriptsService');
-          } else {
-            throw new Error(`Product image URL must be a publicly accessible HTTP(S) URL. Received: ${imageUrl.substring(0, 100)}`);
+        // Add context from analyzed assets (product info, brand info already in system prompt)
+        if (hasAnalyzedAssets) {
+          const logoAssets = analyzedAssets.filter(a => a.category === 'logo');
+          const productAssets = analyzedAssets.filter(a => a.category === 'product');
+          
+          if (logoAssets.length > 0) {
+            // Get brand name from analyzed assets if available
+            const logoAsset = logoAssets[0];
+            const brandName = logoAsset.extractedText || (logoAsset as any).brandName;
+            
+            if (brandName) {
+              textPrompt += `\n\nCRITICAL BRAND INFORMATION:
+- Brand name: "${brandName}"
+- You MUST mention "${brandName}" naturally in the voiceover multiple times throughout the script
+- Use "${brandName}" when referring to the product, service, or company
+- Do NOT use generic terms like "our product" or "the company" - use "${brandName}" instead
+- Emphasize "${brandName}" in key moments and call-to-action scenes
+- Use the logo image(s) provided as visual reference for brand identity and style`;
+            } else {
+              textPrompt += `\n\nBRAND CONTEXT:
+- Use the logo image(s) provided as visual reference for brand identity
+- Extract brand name from the logo and incorporate it naturally into the script
+- Use brand colors and style elements when describing visuals`;
+            }
+          }
+          
+          if (productAssets.length > 0) {
+            textPrompt += `\n\nPRODUCT CONTEXT:
+- Product information has been pre-analyzed and is included in the system prompt
+- Use the product image(s) provided as visual reference to understand product appearance
+- Reference specific product features and characteristics from the pre-analyzed information
+- Ensure visual descriptions match the actual product appearance in the images`;
           }
         }
         
-        // Ensure imageUrl is still valid after processing
-        if (!imageUrl) {
-          throw new Error('Failed to process product image URL');
+        textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
+        
+        content.push({ type: 'text', text: textPrompt });
+        
+        // Add analyzed asset images (logo, product, etc.) for visual reference only
+        // These are NOT for analysis - analysis was already done asynchronously
+        if (hasAnalyzedAssets) {
+          for (const asset of analyzedAssets) {
+            // Only include image assets with public URLs
+            if (asset.url && (asset.url.startsWith('http://') || asset.url.startsWith('https://'))) {
+              // Ensure URL is public
+              let assetUrl = asset.url;
+              if (!assetUrl.startsWith('http://') && !assetUrl.startsWith('https://')) {
+                const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
+                                      this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
+                                      'http://localhost:9001';
+                if (assetUrl.startsWith('/uploads')) {
+                  assetUrl = `${backendBaseUrl}${assetUrl}`;
+                } else {
+                  continue; // Skip if not a valid URL
+                }
+              }
+              
+              content.push({
+                type: 'image_url',
+                image_url: { url: assetUrl }
+              });
+            }
+          }
         }
         
         messages.push({
           role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Analyze this product image carefully and create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}.
-
-CRITICAL PRODUCT ANALYSIS REQUIREMENTS:
-- Look at the image carefully and identify what the product actually is (e.g., notebook, diary, planner, smartphone, watch, clothing, food item, electronics, etc.)
-- Identify the exact product name from the image (if visible) or create a descriptive name based on what you see
-- Identify the product type and category accurately
-- Note key features visible in the image:
-  * For notebooks/diaries: pages, binding, cover material, texture, clasp, nameplate, size, color scheme
-  * For electronics: screen, buttons, ports, design elements, brand markings
-  * For other products: materials, colors, design elements, textures, size, shape
-- Identify the color scheme and design style
-- Determine use cases and contexts where this product would be used
-- Identify the target audience based on product appearance
-
-SCRIPT GENERATION REQUIREMENTS:
-- Use the ACTUAL product name you identify from the image throughout the script
-- Do NOT use placeholders like "[Product Name]" or "[Product]" - use the real product name
-- Reference specific features visible in the image (e.g., if it's a notebook, mention pages, binding, cover, clasp, etc.)
-- Create scenes that showcase the product accurately based on what you see
-- Ensure all voiceover and descriptions match the actual product in the image
-- If the product is a notebook/diary/planner, focus on writing, organization, planning, personalization, note-taking features
-- If the product is an electronic device, focus on technology, connectivity, features, display
-- Match the product category accurately - do not confuse notebooks with gadgets or vice versa
-
-Return the response as a valid JSON object following the specified format.`
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: imageUrl // Use the public HTTP(S) URL
-              }
-            }
-          ]
+          content: content as any,
         });
       } else {
         // Standard text-only prompt
@@ -323,16 +363,23 @@ Return the response as a valid JSON object following the specified format.`
         ? 'gpt-4o' // GPT-4o has better vision capabilities
         : this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
 
-      // Pre-warm the image URL before calling OpenAI (for vision API only)
-      // This helps ensure the image is cached and accessible when OpenAI tries to fetch it
-      if (useVisionAPI && request.productImageUrl) {
-        this.logger.log('Pre-warming image URL before OpenAI call...', 'ScriptsService');
-        const warmed = await this.preWarmUrl(request.productImageUrl);
-        if (!warmed) {
-          this.logger.warn('URL pre-warming failed, proceeding with OpenAI call anyway...', 'ScriptsService');
+      // Pre-warm analyzed asset image URLs before calling OpenAI (for vision API only)
+      // This helps ensure the images are cached and accessible when OpenAI tries to fetch them
+      // Note: Product images are NOT analyzed here - they were already analyzed asynchronously
+      if (useVisionAPI && analyzedAssets) {
+        const urlsToWarm: string[] = [];
+        analyzedAssets.forEach(asset => {
+          if (asset.url && (asset.url.startsWith('http://') || asset.url.startsWith('https://'))) {
+            urlsToWarm.push(asset.url);
+          }
+        });
+        
+        if (urlsToWarm.length > 0) {
+          this.logger.log(`Pre-warming ${urlsToWarm.length} analyzed asset image URL(s) for visual reference before OpenAI call...`, 'ScriptsService');
+          await Promise.all(urlsToWarm.map(url => this.preWarmUrl(url)));
+          // Small delay after pre-warming to ensure propagation
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
-        // Small delay after pre-warming to ensure propagation
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       // Call OpenAI API with retry logic for vision timeouts
@@ -354,8 +401,8 @@ Return the response as a valid JSON object following the specified format.`
         // Log warning but don't fail - AI should fix this, but we log for monitoring
       }
 
-      // Normalize prompts to ensure visual consistency
-      scriptData = this.normalizePrompts(scriptData);
+      // Normalize prompts to ensure visual consistency (region-aware fallback)
+      scriptData = this.normalizePrompts(scriptData, language);
 
       // Validate prompt consistency
       const validation = this.validatePromptConsistency(scriptData);
@@ -805,8 +852,9 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     style: string, 
     language: 'english' | 'hindi' | 'hinglish' = 'hinglish', 
     tags: string[] = [],
-    productImageUrl?: string,
-    hasAvatar?: boolean
+    productImageUrl?: string, // Deprecated - kept for backward compatibility, but not used for analysis
+    hasAvatar?: boolean,
+    analyzedAssets?: Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }>
   ): string {
     // Language-specific descriptions
     const languageDescriptions = {
@@ -834,6 +882,66 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     };
 
     const lang = languageDescriptions[language] || languageDescriptions['hinglish'];
+
+    // Build asset context section
+    let assetContext = '';
+    if (analyzedAssets && analyzedAssets.length > 0) {
+      const logoAsset = analyzedAssets.find(a => a.category === 'logo');
+      const productAssets = analyzedAssets.filter(a => a.category === 'product');
+      const backgroundAssets = analyzedAssets.filter(a => a.category === 'background' || a.category === 'environment');
+      
+      if (logoAsset) {
+        const brandName = logoAsset.extractedText ||
+                         (logoAsset as any).brandName ||
+                         (logoAsset.productInfo as any)?.name ||
+                         undefined;
+
+        if (brandName) {
+          assetContext += `\n\nBRAND INFORMATION:\n- Brand name: ${brandName}\n- You MUST mention "${brandName}" naturally in the voiceover when appropriate\n- Emphasize the brand name in key moments\n- Use the brand name authentically throughout the script\n- When referring to the product or service, use "${brandName}" instead of generic terms\n`;
+        }
+        assetContext += `- When generating broll_image_prompt and broll_video_prompt, assume the logo will be provided as a reference image (last in order). Describe placement (e.g. on product, lower-third) if needed; do not ask the image model to draw the brand name.\n`;
+      }
+      
+      if (productAssets && productAssets.length > 0) {
+        assetContext += `\n\nCRITICAL PRODUCT INFORMATION (from pre-analyzed assets):\n`;
+        productAssets.forEach((asset, index) => {
+          if (asset.productInfo) {
+            const productName = asset.productInfo.name || asset.extractedText || 'Product';
+            assetContext += `- Product ${index + 1}: ${productName}\n`;
+            if (asset.productInfo.type) assetContext += `  Type: ${asset.productInfo.type}\n`;
+            if (asset.productInfo.category) assetContext += `  Category: ${asset.productInfo.category}\n`;
+            if (asset.productInfo.features && asset.productInfo.features.length > 0) {
+              assetContext += `  Features: ${asset.productInfo.features.join(', ')}\n`;
+            }
+            if (asset.productInfo.colors && asset.productInfo.colors.length > 0) {
+              assetContext += `  Colors: ${asset.productInfo.colors.join(', ')}\n`;
+            }
+            if (asset.productInfo.description) {
+              assetContext += `  Description: ${asset.productInfo.description}\n`;
+            }
+            if (asset.productInfo.useCases && asset.productInfo.useCases.length > 0) {
+              assetContext += `  Use Cases: ${asset.productInfo.useCases.join(', ')}\n`;
+            }
+            if (asset.productInfo.targetAudience) {
+              assetContext += `  Target Audience: ${asset.productInfo.targetAudience}\n`;
+            }
+          } else if (asset.extractedText) {
+            // Fallback to extractedText if productInfo is not available
+            assetContext += `- Product ${index + 1}: ${asset.extractedText}\n`;
+          }
+        });
+        assetContext += `\nSCRIPT GENERATION REQUIREMENTS FOR PRODUCT:\n`;
+        assetContext += `- Use the ACTUAL product name(s) from the analyzed information throughout the script\n`;
+        assetContext += `- Do NOT use placeholders like "[Product Name]" or "[Product]" - use the real product name(s)\n`;
+        assetContext += `- Reference specific product features, colors, and characteristics from the analysis\n`;
+        assetContext += `- Create scenes that showcase the product accurately based on the analyzed information\n`;
+        assetContext += `- Ensure all voiceover and descriptions match the actual product details\n`;
+      }
+      
+      if (backgroundAssets && backgroundAssets.length > 0) {
+        assetContext += `\nBACKGROUND/ENVIRONMENT CONTEXT:\n- ${backgroundAssets.length} background/environment asset(s) available for reference\n- Use these to inform scene settings and visual descriptions\n`;
+      }
+    }
 
   const prompts = {
       'HALF_N_HALF': `You are a professional video director and AI content composer who creates structured video scripts for "half-and-half" style videos, where the top half of the frame shows b-roll (visual footage related to the narration) and the bottom half shows an Indian-looking avatar delivering ${lang.dialogue}.
@@ -1188,16 +1296,11 @@ Guidelines:
 CRITICAL REQUIREMENTS:
 - NO avatar, NO human, NO person in any scene
 - Focus entirely on the product
-${productImageUrl ? `- A product image has been provided - ANALYZE IT CAREFULLY to identify:
-  * The exact product name (use this throughout the script, NOT placeholders)
-  * Product type and category
-  * Key features, colors, and design elements visible in the image
-  * Use cases and contexts appropriate for this product
-  * Target audience based on product appearance
-- Use the ACTUAL product details from the image in your script` : '- Product image will be provided by the user'}
+- Product information has been pre-analyzed and will be provided in the asset context section
+- Use the ACTUAL product details from the pre-analyzed information in your script
 - All b-roll should showcase the product from different angles, contexts, and uses
 - Visual style must be consistent across all scenes
-- IMPORTANT: If a product image is provided, use the actual product name and features you identify from the image. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+- IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1269,13 +1372,7 @@ Guidelines:
 
 The video will feature:
 - A presenter (${hasAvatar ? 'user-selected avatar' : 'auto-generated person'}) interacting with the product
-${productImageUrl ? `- A product image has been provided - ANALYZE IT CAREFULLY to identify:
-  * The exact product name (use this throughout the script, NOT placeholders)
-  * Product type and category
-  * Key features, colors, and design elements visible in the image
-  * Use cases and contexts appropriate for this product
-  * Target audience based on product appearance
-- Use the ACTUAL product details from the image in your script` : '- Product image uploaded by the user'}
+- Product information has been pre-analyzed and will be provided in the asset context section
 - Engaging product demonstration and advertisement
 
 CRITICAL REQUIREMENTS:
@@ -1283,7 +1380,7 @@ CRITICAL REQUIREMENTS:
 - Presenter (avatar or person) should interact with the product naturally
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
-- IMPORTANT: If a product image is provided, use the actual product name and features you identify from the image. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+- IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1354,8 +1451,173 @@ Guidelines:
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
   };
 
-  return prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
+  const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
+  const regionContext = this.getRegionContext(language);
+
+  // Append asset context and region context (Indian default for hindi/hinglish, US/Europe for english)
+  return basePrompt + assetContext + regionContext;
 }
+
+  /**
+   * Get region/locale context for script generation.
+   * Indian default for hindi/hinglish; US/Europe for english.
+   */
+  private getRegionContext(language: 'english' | 'hindi' | 'hinglish'): string {
+    if (language === 'english') {
+      return `
+
+REGION CONTEXT (CRITICAL - English):
+- Default region is US/Europe. All B-roll and avatar descriptions must use US/European settings.
+- Show Western-looking people, US/European locations (cities, offices, cafes, suburbs, parks).
+- Every visual_style_guide and broll_image_prompt / broll_video_prompt should reflect US/European context (e.g. American city, European office, Western lifestyle) unless the user specifies otherwise.`;
+    }
+    // hindi and hinglish: Indian default
+    return `
+
+REGION CONTEXT (CRITICAL - Indian):
+- Default region is India. All B-roll and avatar descriptions must use Indian settings.
+- Show Indian people, Indian locations (markets, offices, streets, villages, cafes, metro, festivals), Indian aesthetic (lighting, colors, tone).
+- Every visual_style_guide and broll_image_prompt / broll_video_prompt must explicitly mention Indian context (e.g. Indian street, Indian office, Indian family) unless the user asks otherwise.`;
+  }
+
+  /**
+   * Wait for asset analysis completion and extract analyzed assets from project metadata
+   */
+  private async waitForAssetAnalysisAndExtract(
+    projectId: string,
+    userId?: string,
+    timeoutMs?: number
+  ): Promise<Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }> | undefined> {
+    const effectiveTimeout = timeoutMs ?? this.assetAnalysisTimeoutMs;
+    const startTime = Date.now();
+    const checkInterval = 1000; // Check every second
+    const logIntervalMs = 5000; // Log status every 5 seconds to avoid spam
+    let lastLogTime = 0;
+
+    this.logger.log(`Waiting for asset analysis for project ${projectId} (max wait: ${Math.round(effectiveTimeout / 1000)}s, will proceed when completed/failed or at cap)`, 'ScriptsService');
+
+    while (Date.now() - startTime < effectiveTimeout) {
+      try {
+        const project = await this.getProject(projectId, userId);
+        if (!project) {
+          this.logger.warn(`Project ${projectId} not found`, 'ScriptsService');
+          return undefined;
+        }
+
+        const metadata = project.metadata as any;
+        const analysisStatus = metadata?.assetAnalysis;
+        const status = analysisStatus?.status ?? 'pending';
+
+        if (Date.now() - lastLogTime >= logIntervalMs) {
+          this.logger.log(`Asset analysis status for project ${projectId}: ${status} (elapsed: ${Math.round((Date.now() - startTime) / 1000)}s)`, 'ScriptsService');
+          lastLogTime = Date.now();
+        }
+
+        if (analysisStatus?.status === 'completed') {
+          const analyzedAssets = metadata?.analyzedAssets;
+          if (analyzedAssets && Array.isArray(analyzedAssets) && analyzedAssets.length > 0) {
+            this.logger.log(`Found ${analyzedAssets.length} analyzed assets for project ${projectId}`, 'ScriptsService');
+            return analyzedAssets.map((asset: any) => ({
+              id: asset.originalAsset?.id || asset.id,
+              category: asset.category,
+              extractedText: asset.extractedText,
+              productInfo: asset.productInfo,
+              url: asset.originalAsset?.url || asset.url,
+            }));
+          }
+          return undefined;
+        }
+
+        if (analysisStatus?.status === 'failed') {
+          this.logger.warn(`Asset analysis failed for project ${projectId}`, 'ScriptsService');
+          return undefined;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      } catch (error: any) {
+        this.logger.warn(`Error checking asset analysis status: ${error.message}`, 'ScriptsService');
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
+    }
+
+    this.logger.warn(`Asset analysis max wait reached for project ${projectId} after ${effectiveTimeout}ms, proceeding without analysis`, 'ScriptsService');
+    return undefined;
+  }
+
+  /**
+   * When asset analysis is unavailable (timeout/failed), fetch raw metadata.assets from project
+   * so script generation can still attach images for vision and reference.
+   */
+  private async getRawAssetsFallback(
+    projectId: string,
+    userId: string
+  ): Promise<Array<{ id: string; category: string; url: string }> | undefined> {
+    try {
+      const project = await this.getProject(projectId, userId);
+      if (!project?.metadata) return undefined;
+
+      const metadata = project.metadata as any;
+      let assets = metadata?.assets;
+      if (typeof assets === 'string') {
+        try {
+          assets = JSON.parse(assets);
+        } catch {
+          return undefined;
+        }
+      }
+      if (!Array.isArray(assets) || assets.length === 0) return undefined;
+
+      return assets
+        .filter((a: any) => a?.url || (a as any).publicUrl || (a as any).imageUrl)
+        .map((a: any) => ({
+          id: a.id || `raw-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          category: (a.category || (a as any).userLabel || 'reference').toLowerCase(),
+          url: a.url || (a as any).publicUrl || (a as any).imageUrl,
+        }));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Get project from video-processing-service
+   */
+  private async getProject(projectId: string, userId?: string): Promise<any> {
+    try {
+      let token: string;
+      
+      if (userId) {
+        // Use actual userId if provided
+        token = jwt.sign(
+          { sub: userId, userId, id: userId, type: 'service' },
+          this.jwtSecret,
+          { expiresIn: '1h' }
+        );
+      } else {
+        // Fallback to service token (may not work for projects that require userId filtering)
+        token = jwt.sign(
+          { sub: 'service', type: 'service' },
+          this.jwtSecret,
+          { expiresIn: '1h' }
+        );
+      }
+      
+      const response = await axios.get(
+        `${this.videoProcessingServiceUrl}/api/video-projects/${projectId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+          timeout: 5000,
+        }
+      );
+      
+      return response.data?.data;
+    } catch (error: any) {
+      this.logger.warn(`Failed to fetch project ${projectId}: ${error.message}`, 'ScriptsService');
+      return null;
+    }
+  }
 
 
   /**
@@ -1443,10 +1705,15 @@ Guidelines:
   }
 
   /**
-   * Normalize prompts to ensure they all have consistent style parameters
+   * Normalize prompts to ensure they all have consistent style parameters.
+   * Region-aware fallback: Indian context for hindi/hinglish, US/European for english.
    */
-  private normalizePrompts(scriptData: any): any {
+  private normalizePrompts(scriptData: any, language: 'english' | 'hindi' | 'hinglish' = 'hinglish'): any {
     if (!scriptData) return scriptData;
+
+    const isIndian = language === 'hindi' || language === 'hinglish';
+    const sceneFallback = isIndian ? 'Indian context scene' : 'US/European context scene';
+    const sceneFallbackMotion = isIndian ? 'Indian context scene with motion' : 'US/European context scene with motion';
 
     // Extract visual style guide
     const visualStyleGuide = scriptData.visual_style_guide;
@@ -1464,35 +1731,29 @@ Guidelines:
     // Normalize each scene's prompts
     scenes.forEach((scene: any) => {
       // For ALTERNATE style, ALL scenes (both avatar and b-roll type) need b-roll images
-      // So we process ALL scenes, not just b-roll type scenes
       const videoType = (scriptData.video_type || '').toLowerCase();
-      
-      // For ALTERNATE style, if a scene doesn't have broll_image_prompt, generate one from broll_visual_description
+
       if (videoType === 'alternating' && !scene.broll_image_prompt && scene.broll_visual_description) {
-        const sceneSpecific = scene.broll_visual_description || 'Indian context scene';
+        const sceneSpecific = scene.broll_visual_description || sceneFallback;
         scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
       }
 
-      // Normalize image prompt
       if (scene.broll_image_prompt) {
         if (!this.hasStyleParameters(scene.broll_image_prompt)) {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || 'Indian context scene';
+          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
           scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
         } else {
-          // Ensure style parameters match the guide
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || 'Indian context scene';
+          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
           scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
         }
       }
 
-      // Normalize video prompt
       if (scene.broll_video_prompt) {
         if (!this.hasStyleParameters(scene.broll_video_prompt)) {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || 'Indian context scene with motion';
+          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
           scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
         } else {
-          // Ensure style parameters match the guide
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || 'Indian context scene with motion';
+          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
           scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
         }
       }
