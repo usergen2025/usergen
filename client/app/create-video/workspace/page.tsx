@@ -434,12 +434,12 @@ function WorkspacePageContent() {
       return;
     }
 
-    // Determine default model based on video style
+    // Determine default model based on video style (processor uses model-4 when project has reference assets)
     const getDefaultModel = (style?: string) => {
       if (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
         return 'model-4'; // nano-banana-pro for product-focused styles
       }
-      return 'model-5'; // BytePlus See Dream for all other styles
+      return 'model-1'; // FAL imagen4 for other styles; backend overrides to model-4 when refs present
     };
 
     try {

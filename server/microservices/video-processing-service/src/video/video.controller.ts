@@ -173,7 +173,7 @@ export class VideoController {
             isAsync: model.capabilities.isAsync,
           },
         })),
-        default: 'model-5',
+        default: 'model-1',
       },
     };
   }
@@ -564,12 +564,12 @@ export class VideoController {
     // Get model ID from body or use style-appropriate default
     let modelId = body.modelId;
     if (!modelId) {
-      // Use model-5 (BytePlus See Dream) as default for non-product styles, model-4 for product styles
+      // Use model-4 for product styles; model-1 for non-product (processor overrides to model-4 when project has reference assets)
       const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
       if (normalizedStyle === 'PRODUCT_ONLY' || normalizedStyle === 'AVATAR_PRODUCT') {
         modelId = 'model-4'; // nano-banana-pro for product styles (supports image-to-image)
       } else {
-        modelId = 'model-5'; // BytePlus See Dream for non-product styles (supports text-to-image and image-to-image)
+        modelId = 'model-1'; // FAL imagen4 for non-product; processor uses model-4 when refs present
       }
     }
 

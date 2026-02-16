@@ -340,7 +340,7 @@ function BrollImagesPageContent() {
     loadProject();
   }, [projectId, isAuthenticated, authLoading, showToast]);
 
-  // Initialize default model for all scenes - ensure Model 5 (BytePlus See Dream) is selected by default
+  // Initialize default model for all scenes - default to Model 1 (FAL imagen4); backend uses model-4 when refs present
   useEffect(() => {
     if (!scenesNeedingBroll.length || !dbLoaded) return;
 
@@ -350,9 +350,9 @@ function BrollImagesPageContent() {
       
       scenesNeedingBroll.forEach((scene, index) => {
         const sceneNumber = normalizeSceneNumber(scene, index);
-        // Always set default to 'model-5' if not already set
+        // Default to model-1 when not set; backend uses model-4 when project has reference assets
         if (!updated[sceneNumber]) {
-          updated[sceneNumber] = 'model-5'; // Default to Model 5 (BytePlus See Dream)
+          updated[sceneNumber] = 'model-1'; // Default to Model 1 (FAL imagen4)
           hasChanges = true;
         }
       });
@@ -449,8 +449,8 @@ function BrollImagesPageContent() {
         setGeneratingImages(prev => new Set(prev).add(sceneNumber));
         setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
         
-        // Get selected model for this scene (default to model-5)
-        const selectedModelId = selectedModels[sceneNumber] || 'model-5';
+        // Get selected model for this scene (default to model-1)
+        const selectedModelId = selectedModels[sceneNumber] || 'model-1';
 
         // Fire API call without awaiting (non-blocking)
         return apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId)
@@ -556,8 +556,8 @@ function BrollImagesPageContent() {
       setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
       setGeneratingImages(prev => new Set(prev).add(sceneNumber));
       
-      // Get selected model for this scene (default to model-5)
-      const selectedModelId = selectedModels[sceneNumber] || 'model-5';
+      // Get selected model for this scene (default to model-1)
+      const selectedModelId = selectedModels[sceneNumber] || 'model-1';
       
       // Pass force: true to always regenerate when user manually clicks the button
       const response = await apiClient.regenerateImage(
@@ -844,7 +844,7 @@ function BrollImagesPageContent() {
                         
                         {/* Model selector - integrated as part of button */}
                         <ModelSelector
-                          selectedModelId={selectedModels[sceneNumber] ?? 'model-5'}
+                          selectedModelId={selectedModels[sceneNumber] ?? 'model-1'}
                           onModelSelect={(modelId) => {
                             setSelectedModels(prev => ({
                               ...prev,

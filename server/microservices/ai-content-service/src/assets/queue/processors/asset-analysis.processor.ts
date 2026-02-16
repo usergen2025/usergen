@@ -60,7 +60,10 @@ export class AssetAnalysisProcessor extends WorkerHost {
             .then(result => {
               const progress = 10 + ((index + 1) / assets.length) * 80;
               job.updateProgress(progress);
-              return { assetId: asset.id, ...result };
+              return {
+                ...result,
+                originalAsset: { ...result.originalAsset, id: asset.id },
+              };
             })
         )
       );
@@ -85,12 +88,18 @@ export class AssetAnalysisProcessor extends WorkerHost {
             'AssetAnalysisProcessor'
           );
           
-          // Create fallback analyzed asset with user label
+          // Create fallback analyzed asset with user label; store public URL so downstream can use it
+          const inputUrl = asset.url;
+          const fallbackPublicUrl =
+            inputUrl.startsWith('http://') || inputUrl.startsWith('https://')
+              ? inputUrl
+              : `${this.configService.get<string>('BACKEND_BASE_URL') || 'http://localhost:9001'}${inputUrl.startsWith('/') ? inputUrl : '/' + inputUrl}`;
           analyzedAssets.push({
             id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             originalAsset: {
               id: asset.id,
-              url: asset.url,
+              url: fallbackPublicUrl,
+              originalUrl: inputUrl,
               type: asset.type,
               userLabel: asset.userLabel,
             },

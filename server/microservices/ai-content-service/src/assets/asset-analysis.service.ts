@@ -10,7 +10,10 @@ export interface AnalyzedAsset {
   id: string;
   originalAsset: {
     id: string;
+    /** Public URL used for Vision/APIs; stored so downstream (script, b-roll refs) can use it without re-resolving */
     url: string;
+    /** Original input URL (e.g. /uploads/...) for display/audit */
+    originalUrl?: string;
     type: 'image' | 'url';
     userLabel?: string;
   };
@@ -112,7 +115,8 @@ export class AssetAnalysisService {
         id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         originalAsset: {
           id: '',
-          url: assetUrl,
+          url: publicUrl,
+          originalUrl: assetUrl,
           type: 'image',
           userLabel,
         },
@@ -159,12 +163,21 @@ export class AssetAnalysisService {
         analyzedAssets.push(result.value);
       } else {
         this.logger.warn(`Failed to analyze asset ${assets[index].id}: ${result.reason}`, 'AssetAnalysisService');
-        // Create a fallback analyzed asset with user label
+        // Create a fallback analyzed asset with user label; resolve public URL so downstream can use it
+        const inputUrl = assets[index].url;
+        let fallbackPublicUrl = inputUrl;
+        if (!inputUrl.startsWith('http://') && !inputUrl.startsWith('https://')) {
+          const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') ||
+            this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace('/ws', '') ||
+            'http://localhost:9001';
+          fallbackPublicUrl = inputUrl.startsWith('/') ? `${backendBaseUrl}${inputUrl}` : `${backendBaseUrl}/${inputUrl}`;
+        }
         analyzedAssets.push({
           id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           originalAsset: {
             id: assets[index].id,
-            url: assets[index].url,
+            url: fallbackPublicUrl,
+            originalUrl: inputUrl,
             type: assets[index].type,
             userLabel: assets[index].userLabel,
           },

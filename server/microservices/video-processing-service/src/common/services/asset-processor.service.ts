@@ -16,6 +16,9 @@ export interface AnalyzedAsset {
   originalAsset?: {
     id: string;
     url: string;
+    /** Public URL (preferred for refs when present); when stored by ai-content, url is already public */
+    publicUrl?: string;
+    originalUrl?: string;
     type: string;
     userLabel?: string;
   };
@@ -63,37 +66,43 @@ export class AssetProcessorService {
       return [];
     }
 
-    // Filter to only image assets with valid URLs
+    // Prefer public URL (stored by ai-content) so refs work without re-resolving
+    const toUrl = (asset: AnalyzedAsset): string | null => {
+      const u = asset.originalAsset?.publicUrl ?? asset.url ?? asset.originalAsset?.url;
+      return u && (u.startsWith('http://') || u.startsWith('https://')) ? u : null;
+    };
     return assets
-      .filter(asset => {
-        const url = asset.url || asset.originalAsset?.url;
-        return url && (url.startsWith('http://') || url.startsWith('https://'));
-      })
-      .map(asset => asset.url || asset.originalAsset?.url)
+      .map(toUrl)
       .filter((url): url is string => !!url);
   }
 
   /**
-   * Build reference image URLs in fixed order for Seedream/multi-reference APIs:
-   * product(s) first, then logo last. Prompt should refer to "image 1", "image 2", ..., "last image" (logo).
+   * Build reference image URLs from all analyzed assets (no category filter).
+   * Order: product(s) first, then logo, then all others. Capped at 6 for API limits.
+   * Prompt should refer by role (e.g. "use the logo from the logo reference image") so the model finds the right image.
    */
-  buildReferenceImagesInOrder(assets: AnalyzedAsset[]): string[] {
+  buildReferenceImagesInOrder(assets: AnalyzedAsset[], maxRefs: number = 6): string[] {
     if (!assets || assets.length === 0) {
       return [];
     }
 
     const toUrl = (asset: AnalyzedAsset): string | null => {
-      const url = asset.url || asset.originalAsset?.url;
-      return url && (url.startsWith('http://') || url.startsWith('https://')) ? url : null;
+      const u = asset.originalAsset?.publicUrl ?? asset.url ?? asset.originalAsset?.url;
+      return u && (u.startsWith('http://') || u.startsWith('https://')) ? u : null;
     };
 
-    const productUrls = this.getProductAssets(assets)
-      .map(toUrl)
-      .filter((u): u is string => !!u);
+    const productAssets = this.getProductAssets(assets);
     const logoAssets = assets.filter(a => a.category === 'logo');
-    const logoUrls = logoAssets.map(toUrl).filter((u): u is string => !!u);
+    const restAssets = assets.filter(
+      a => a.category !== 'product' && a.category !== 'logo'
+    );
 
-    return [...productUrls, ...logoUrls];
+    const productUrls = productAssets.map(toUrl).filter((u): u is string => !!u);
+    const logoUrls = logoAssets.map(toUrl).filter((u): u is string => !!u);
+    const restUrls = restAssets.map(toUrl).filter((u): u is string => !!u);
+
+    const all = [...productUrls, ...logoUrls, ...restUrls];
+    return all.slice(0, maxRefs);
   }
 
   /**
@@ -129,7 +138,7 @@ export class AssetProcessorService {
     }
 
     if (logoAsset) {
-      enhancements.push('Use the logo from the last reference image; place it naturally in the scene; do not generate or redraw brand text – use the exact logo from the reference. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+      enhancements.push('Use the logo from the logo reference image; place it naturally in the scene; do not generate or redraw brand text – use the exact logo from the reference. Spell the brand name exactly as in the reference logo; do not add or change letters.');
     }
 
     const backgroundAssets = this.getBackgroundAssets(assets);

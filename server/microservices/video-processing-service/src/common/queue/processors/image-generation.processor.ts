@@ -134,12 +134,20 @@ export class ImageGenerationProcessor extends WorkerHost {
       // Extract analyzed assets; build reference images in order (product(s) first, logo last) for Seedream
       const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, normalizedStyle) : [];
       let referenceImagesOrdered = analyzedAssets ? this.assetProcessor.buildReferenceImagesInOrder(analyzedAssets) : [];
-      // If buildReferenceImagesInOrder returned empty but we have analyzed assets (e.g. stored URLs are /uploads/), resolve to public URLs
+      // If buildReferenceImagesInOrder returned empty but we have analyzed assets (e.g. legacy stored URLs), resolve to public URLs
       if (referenceImagesOrdered.length === 0 && analyzedAssets && analyzedAssets.length > 0) {
         referenceImagesOrdered = await this.resolveReferenceUrlsToPublic(analyzedAssets);
         if (referenceImagesOrdered.length > 0) {
-          console.log(`[ImageGenerationProcessor] Resolved ${referenceImagesOrdered.length} non-public reference URL(s) for provider`);
+          console.log(`[ImageGenerationProcessor] Resolved ${referenceImagesOrdered.length} reference URL(s) for provider (legacy fallback)`);
         }
+      }
+      // When no refs from analyzed assets but job has productImageUrl (e.g. ALTERNATE), use it so we get model-4 + refs
+      if (referenceImagesOrdered.length === 0 && productImageUrl && (productImageUrl.startsWith('http://') || productImageUrl.startsWith('https://'))) {
+        referenceImagesOrdered = [productImageUrl];
+        console.log(`[ImageGenerationProcessor] Using productImageUrl as single reference (model-4 with refs)`);
+      }
+      if (analyzedAssets?.length && referenceImagesOrdered.length > 0) {
+        console.log(`[ImageGenerationProcessor] Using ${referenceImagesOrdered.length} reference image(s) from analyzed assets (model-4 with refs)`);
       }
       const enhancedPrompt = analyzedAssets ? this.assetProcessor.enhancePromptWithAssets(prompt, sceneAssets) : prompt;
 
@@ -900,7 +908,7 @@ export class ImageGenerationProcessor extends WorkerHost {
           category: asset.category,
           extractedText: asset.extractedText,
           productInfo: asset.productInfo,
-          url: asset.originalAsset?.url || asset.url,
+          url: asset.originalAsset?.publicUrl || asset.originalAsset?.url || asset.url,
           originalAsset: asset.originalAsset,
         }));
       }
@@ -914,15 +922,16 @@ export class ImageGenerationProcessor extends WorkerHost {
 
   /**
    * Resolve analyzed asset URLs to public URLs when they are stored as relative or /uploads/ paths,
-   * so providers (BytePlus, FAL, etc.) can access them. Preserves order: product(s) first, then logo.
+   * so providers (BytePlus, FAL, etc.) can access them. Order: product(s) first, then logo, then rest (same as buildReferenceImagesInOrder).
    */
-  private async resolveReferenceUrlsToPublic(analyzedAssets: AnalyzedAsset[]): Promise<string[]> {
+  private async resolveReferenceUrlsToPublic(analyzedAssets: AnalyzedAsset[], maxRefs: number = 6): Promise<string[]> {
     const productAssets = this.assetProcessor.getProductAssets(analyzedAssets);
     const logoAssets = analyzedAssets.filter(a => a.category === 'logo');
-    const orderedAssets = [...productAssets, ...logoAssets];
+    const restAssets = analyzedAssets.filter(a => a.category !== 'product' && a.category !== 'logo');
+    const orderedAssets = [...productAssets, ...logoAssets, ...restAssets].slice(0, maxRefs);
     const resolved: string[] = [];
     for (const asset of orderedAssets) {
-      const url = asset.url || asset.originalAsset?.url;
+      const url = asset.originalAsset?.publicUrl ?? asset.url ?? asset.originalAsset?.url;
       if (!url) continue;
       if (url.startsWith('http://') || url.startsWith('https://')) {
         resolved.push(url);
@@ -974,10 +983,12 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = aspectRatio || finalAspectRatio;
 
     const hasReferenceAssets = referenceImages && referenceImages.length > 0;
-    // Use BytePlus See Dream (model-5) for default styles; supports both text-to-image and image-to-image
-    let selectedModelId = modelId || (project as any).defaultImageModel || 'model-5';
+    // Use model-4 (nano-banana-pro) when we have asset references – same as AVATAR_PRODUCT/PRODUCT_ONLY; use model-1 (imagen4) when no assets (text-to-image).
+    let selectedModelId: string;
     if (hasReferenceAssets) {
-      selectedModelId = 'model-5'; // Seedream supports multiple reference images
+      selectedModelId = 'model-4'; // FAL nano-banana-pro: multi-reference image-to-image for all styles
+    } else {
+      selectedModelId = modelId || (project as any).defaultImageModel || 'model-1'; // No assets: text-to-image with model-1 (imagen4)
     }
     const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
 
@@ -994,16 +1005,19 @@ export class ImageGenerationProcessor extends WorkerHost {
       finalPrompt = this.assetProcessor.enhancePromptWithAssets(finalPrompt, sceneAssets);
     }
 
-    // When using reference images (order: product(s) first, logo last), add explicit instructions for Seedream
+    // When using reference images, add semantic instructions (by role: product/logo reference image) so the model finds the right ref
     if (hasReferenceAssets) {
       const hasProduct = analyzedAssets?.some(a => a.category === 'product');
       const hasLogo = analyzedAssets?.some(a => a.category === 'logo');
       const refInstructions: string[] = [];
       if (hasProduct) {
-        refInstructions.push('Same product as in the reference image(s); only change camera angle, lighting, or background; do not alter product design, shape, or colors.');
+        refInstructions.push('Use the product from the product reference image; only change camera angle, lighting, or background; do not alter product design, shape, or colors.');
       }
       if (hasLogo) {
-        refInstructions.push('Use the logo from the last reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third) so the product clearly looks like it belongs to the company. Do not redraw or recreate the logo – use the exact logo from the last reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+        refInstructions.push('Use the logo from the logo reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third). Do not redraw or recreate the logo – use the exact logo from the logo reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+      }
+      if (refInstructions.length === 0) {
+        refInstructions.push('Match the product and style from the reference image(s); only change angle, lighting, or background as needed.');
       }
       if (refInstructions.length > 0) {
         finalPrompt = `${finalPrompt}\n\n${refInstructions.join(' ')}`;

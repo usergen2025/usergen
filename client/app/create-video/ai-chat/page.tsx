@@ -2134,10 +2134,10 @@ function AIChatPageContent() {
                 return;
               }
               
-              // Use model-5 (BytePlus See Dream) for non-product styles, model-4 for product styles
+              // Use model-4 for product/avatar-product; model-1 for other styles (backend uses model-4 when refs present)
               const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
                 ? 'model-4'  // nano-banana-pro supports reference images
-                : 'model-5'; // BytePlus See Dream for all other styles
+                : 'model-1'; // FAL imagen4 for non-product; processor overrides to model-4 when assets exist
 
               try {
                 const imageResponse = await apiClient.regenerateImage(

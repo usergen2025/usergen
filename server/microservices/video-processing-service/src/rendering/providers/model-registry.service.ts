@@ -178,10 +178,10 @@ export class ModelRegistryService {
       }
       return model;
     }
-    // Default to model-5 (BytePlus See Dream) for other styles (ALTERNATE, HALF_N_HALF, etc.)
-    const model = this.models.get('model-5');
+    // Default to model-1 (FAL imagen4) for other styles (ALTERNATE, HALF_N_HALF, etc.) when no asset references; processor overrides to model-4 when refs present.
+    const model = this.models.get('model-1');
     if (!model) {
-      throw new Error('Default model for default styles (model-5) not found');
+      throw new Error('Default model for default styles (model-1) not found');
     }
     return model;
   }
