@@ -249,7 +249,36 @@ export class VideoService {
         url: asset.url || (asset as any).publicUrl || (asset as any).imageUrl,
         type: asset.type || 'image',
         userLabel: asset.category || (asset as any).label,
-      })).filter(asset => asset.url); // Only include assets with valid URLs
+      })).filter(asset => {
+        // Filter out invalid URLs (empty, placeholder, or non-HTTP(S))
+        if (!asset.url) {
+          console.warn(`[VideoService] Skipping asset ${asset.id}: no URL provided`);
+          return false;
+        }
+        
+        // Filter out placeholder URLs (example.com, placeholder, etc.)
+        if (asset.url.includes('example.com') || 
+            asset.url.includes('placeholder') || 
+            asset.url === 'x.png' ||
+            asset.url.endsWith('/x.png')) {
+          console.warn(`[VideoService] Skipping asset ${asset.id}: invalid placeholder URL detected: ${asset.url}`);
+          return false;
+        }
+        
+        // Allow HTTP(S) URLs
+        if (asset.url.startsWith('http://') || asset.url.startsWith('https://')) {
+          return true;
+        }
+        
+        // Allow /uploads paths as they'll be converted to public URLs
+        if (asset.url.startsWith('/uploads')) {
+          return true;
+        }
+        
+        // Reject other invalid formats
+        console.warn(`[VideoService] Skipping asset ${asset.id}: invalid URL format: ${asset.url}`);
+        return false;
+      }); // Only include assets with valid URLs
 
       if (assetsForAnalysis.length === 0) {
         console.warn(`[VideoService] No valid asset URLs found for analysis in project ${projectId}`);

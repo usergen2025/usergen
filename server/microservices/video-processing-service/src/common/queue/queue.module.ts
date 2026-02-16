@@ -5,6 +5,8 @@ import { QueueManagerService } from './queue-manager.service';
 import { AudioGenerationProcessor } from './processors/audio-generation.processor';
 import { ImageGenerationProcessor } from './processors/image-generation.processor';
 import { VideoGenerationProcessor } from './processors/video-generation.processor';
+import { AvatarVideoGenerationProcessor } from './processors/avatar-video-generation.processor';
+import { SceneCompositeProcessor } from './processors/scene-composite.processor';
 import { DatabaseModule } from '../database/database.module';
 import { RenderingModule } from '../../rendering/rendering.module';
 import { WebSocketModule } from '../websocket/websocket.module';
@@ -23,6 +25,8 @@ import { AssetProcessorService } from '../services/asset-processor.service';
       { name: 'audio-generation' },
       { name: 'image-generation' },
       { name: 'video-generation' },
+      { name: 'avatar-video-generation' },
+      { name: 'scene-composite' },
     ),
   ],
   providers: [
@@ -30,6 +34,8 @@ import { AssetProcessorService } from '../services/asset-processor.service';
     AudioGenerationProcessor,
     ImageGenerationProcessor,
     VideoGenerationProcessor,
+    AvatarVideoGenerationProcessor,
+    SceneCompositeProcessor,
     AssetProcessorService,
   ],
   exports: [QueueManagerService],

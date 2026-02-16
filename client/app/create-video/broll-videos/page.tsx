@@ -51,6 +51,7 @@ function BrollVideosPageContent() {
   const [loading, setLoading] = useState(true);
   const [dbLoaded, setDbLoaded] = useState(false); // Track DB load completion
   const [regenerating, setRegenerating] = useState<Record<number, boolean>>({});
+  const [retryingAvatar, setRetryingAvatar] = useState<Record<number, boolean>>({});
   const [playingVideo, setPlayingVideo] = useState<number | null>(null);
   const [videoElements, setVideoElements] = useState<Record<number, HTMLVideoElement>>({});
   const [updateKey, setUpdateKey] = useState(0); // Force re-render on WebSocket updates
@@ -67,10 +68,10 @@ function BrollVideosPageContent() {
       jobId: update.jobId,
       queueType: update.queueType,
       state: update.state,
-      sceneNumber: update.queueType === 'video-generation' ? update.result?.video?.sceneNumber : undefined,
+      sceneNumber: update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
     });
     
-    if (update.queueType === 'video-generation') {
+    if (update.queueType === 'video-generation' || update.queueType === 'scene-composite') {
       if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
@@ -189,6 +190,13 @@ function BrollVideosPageContent() {
         
         // Show toast only once per job
         showToast(`Video generated for scene ${sceneNumber}`, 'success');
+
+        // For scene-composite completion, refetch project to update failedAvatarScenes
+        if (update.queueType === 'scene-composite' && projectId) {
+          apiClient.getVideoProject(projectId).then((r) => {
+            if (r.success && r.data) setProject(r.data);
+          }).catch(() => {});
+        }
         
         // Don't reload from DB - trust WebSocket data which includes localPath and localUrl
       } else if (update.state === 'failed') {
@@ -227,7 +235,7 @@ function BrollVideosPageContent() {
         jobToSceneRef.current.delete(update.jobId);
       }
     }
-  }, [showToast]); // Only depend on showToast
+  }, [showToast, projectId]);
 
   // WebSocket hook for real-time job status updates
   const { subscribeToJob } = useWebSocket({
@@ -496,17 +504,16 @@ function BrollVideosPageContent() {
             
             // Handle new job creation
             if (response.success && response.data?.jobId) {
-              // Subscribe to job updates via WebSocket instead of polling
               const jobId = response.data.jobId;
-              
-              // Track job per scene
+              const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+
               if (!activeJobsBySceneRef.current.has(sceneNumber)) {
                 activeJobsBySceneRef.current.set(sceneNumber, new Set());
               }
               activeJobsBySceneRef.current.get(sceneNumber)!.add(jobId);
               jobToSceneRef.current.set(jobId, sceneNumber);
-              subscribeToJob(jobId, 'video-generation');
-              console.log(`[BrollVideos] Subscribed to job ${jobId} for scene ${sceneNumber}`);
+              subscribeToJob(jobId, queueType);
+              console.log(`[BrollVideos] Subscribed to ${queueType} job ${jobId} for scene ${sceneNumber}`);
             }
           })
           .catch((error: any) => {
@@ -536,6 +543,39 @@ function BrollVideosPageContent() {
     generateMissingVideos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, loading, dbLoaded, scenesNeedingVideos.length, brollImages.length, project, brollVideos.length]);
+
+  const failedAvatarScenes = useMemo((): number[] => {
+    const meta = (project as any)?.metadata;
+    return Array.isArray(meta?.failedAvatarScenes) ? meta.failedAvatarScenes : [];
+  }, [project]);
+
+  const handleRetryAvatar = async (sceneNumber: number) => {
+    if (!projectId) return;
+    const style = (project as any)?.style;
+    if (style !== 'ALTERNATE' || sceneNumber % 2 !== 0) return;
+
+    setRetryingAvatar(prev => ({ ...prev, [sceneNumber]: true }));
+    try {
+      const response = await apiClient.retryAvatar(projectId, sceneNumber);
+      if (response.success && response.data?.jobId) {
+        const jobId = response.data.jobId;
+        const queueType = (response.data as any)?.type === 'scene' ? 'scene-composite' : 'video-generation';
+        if (!activeJobsBySceneRef.current.has(sceneNumber)) {
+          activeJobsBySceneRef.current.set(sceneNumber, new Set());
+        }
+        activeJobsBySceneRef.current.get(sceneNumber)!.add(jobId);
+        jobToSceneRef.current.set(jobId, sceneNumber);
+        subscribeToJob(jobId, queueType);
+        setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
+        showToast('Avatar retry started', 'info');
+      }
+    } catch (error: any) {
+      console.error('Failed to retry avatar:', error);
+      showToast(error?.message || 'Failed to retry avatar', 'error');
+    } finally {
+      setRetryingAvatar(prev => ({ ...prev, [sceneNumber]: false }));
+    }
+  };
 
   const handleRegenerate = async (sceneNumber: number) => {
     if (!projectId) return;
@@ -611,14 +651,13 @@ function BrollVideosPageContent() {
       // Handle new job creation
       if (response.success && response.data?.jobId) {
         const jobId = response.data.jobId;
-        // Track job ID to scene mapping
+        const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
         if (!activeJobsBySceneRef.current.has(sceneNumber)) {
           activeJobsBySceneRef.current.set(sceneNumber, new Set());
         }
         activeJobsBySceneRef.current.get(sceneNumber)!.add(jobId);
         jobToSceneRef.current.set(jobId, sceneNumber);
-        // Subscribe to job updates via WebSocket
-        subscribeToJob(jobId, 'video-generation');
+        subscribeToJob(jobId, queueType);
         showToast('Video regeneration started', 'info');
       }
     } catch (error: any) {
@@ -850,6 +889,30 @@ function BrollVideosPageContent() {
                         </div>
                       )}
                       
+                      {(project as any)?.style === 'ALTERNATE' &&
+                       sceneNumber % 2 === 0 &&
+                       failedAvatarScenes.includes(sceneNumber) &&
+                       video && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRetryAvatar(sceneNumber)}
+                          disabled={retryingAvatar[sceneNumber] || isRegenerating}
+                          className="w-full mb-3"
+                        >
+                          {retryingAvatar[sceneNumber] ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Retrying avatar...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Retry avatar
+                            </>
+                          )}
+                        </Button>
+                      )}
                       <div className="flex items-stretch border border-border rounded-md overflow-hidden">
                         <Button
                           variant="outline"

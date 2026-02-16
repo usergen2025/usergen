@@ -746,12 +746,54 @@ class ApiClient {
     return response.data;
   }
 
+  async convertToVideos(
+    projectId: string,
+    options?: { forceRegenerate?: boolean }
+  ): Promise<ApiResponse<{ jobs: { sceneNumber: number; jobId: string; type: 'broll' | 'scene' }[] }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${videoServiceUrl}/video-projects/${projectId}/convert-to-videos`,
+      options || {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async retryAvatar(
+    projectId: string,
+    sceneNumber: number
+  ): Promise<ApiResponse<{ jobId: string; type?: 'scene' }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${videoServiceUrl}/video-projects/${projectId}/retry-avatar/${sceneNumber}`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async regenerateVideo(
     projectId: string, 
     sceneNumber: number, 
     modelId?: string,
     force: boolean = false
-  ): Promise<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>> {
+  ): Promise<ApiResponse<{ jobId: string; type?: 'scene'; existing?: boolean; video?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
@@ -769,7 +811,7 @@ class ApiClient {
     return response.data;
   }
 
-  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation'): Promise<ApiResponse<any>> {
+  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite'): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

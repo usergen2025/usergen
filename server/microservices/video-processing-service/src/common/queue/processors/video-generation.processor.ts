@@ -3,6 +3,7 @@ import { Job } from 'bullmq';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
+import { QueueManagerService } from '../queue-manager.service';
 import { BytePlusProvider } from '../../../rendering/providers/byteplus.provider';
 import { VideoProviderFactory } from '../../../rendering/providers/video-provider-factory.service';
 import { ModelRegistryService } from '../../../rendering/providers/model-registry.service';
@@ -25,6 +26,7 @@ export interface VideoGenerationJobData {
   modelId?: string; // Video model selection
   heygenImageKey?: string; // HeyGen image_key for Avatar IV (AVATAR_PRODUCT style)
   videoStyle?: string; // Video style to determine generation method
+  sceneJobId?: string; // For ALTERNATE even: client subscribes to this; scene-composite emits with it
 }
 
 @Processor('video-generation', {
@@ -37,6 +39,7 @@ export class VideoGenerationProcessor extends WorkerHost {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
+    private readonly queueManager: QueueManagerService,
     private readonly bytePlusProvider: BytePlusProvider,
     private readonly videoProviderFactory: VideoProviderFactory,
     private readonly modelRegistry: ModelRegistryService,
@@ -676,27 +679,50 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(100);
 
+    const isAlternateEven = project.style === 'ALTERNATE' && sceneNumber % 2 === 0;
+    const sceneJobId = (job.data as any).sceneJobId;
+
+    if (isAlternateEven) {
+      // ALTERNATE even scene: emit progress only; scene-composite will emit completion
+      const emitJobId = sceneJobId || job.id!;
+      await this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: emitJobId,
+        queueType: 'scene-composite',
+        state: 'progress',
+        metadata: { stage: 'broll_complete', sceneNumber },
+        progress: 33,
+      }).catch(() => {});
+
+      const avatarVideos = ((latestProject as any).avatarVideos as any[]) || [];
+      const metadata = ((latestProject as any).metadata as any) || {};
+      const avatarVideoCache = metadata.avatarVideoCache || {};
+      const hasAvatar = avatarVideos.some((v: any) => v.sceneNumber === sceneNumber) ||
+        (avatarVideoCache[sceneNumber]?.localPath && fs.existsSync(avatarVideoCache[sceneNumber].localPath));
+
+      if (hasAvatar) {
+        await this.queueManager.addSceneCompositeJob({
+          projectId,
+          userId,
+          sceneNumber,
+          sceneJobId: emitJobId,
+        });
+      }
+
+      return { success: true, video: videoData };
+    }
+
     console.log(`[VideoGenerationProcessor] Completed job ${job.id} for scene ${sceneNumber}`);
-    console.log(`[VideoGenerationProcessor] 📤 Sending WebSocket update - Scene: ${sceneNumber}, JobId: ${job.id}, LocalUrl: ${localUrl}, LocalPath: ${videoPath}`);
-    
-    // Emit WebSocket event for job completion (non-blocking)
     this.jobStatusGateway.notifyJobStatus(userId, {
       jobId: job.id!,
       queueType: 'video-generation',
       state: 'completed',
-      result: {
-        success: true,
-        video: videoData,
-      },
+      result: { success: true, video: videoData },
       progress: 100,
     }).catch(err => {
       console.error(`[VideoGenerationProcessor] Failed to emit WebSocket event for job ${job.id}:`, err);
     });
-    
-    return {
-      success: true,
-      video: videoData,
-    };
+
+    return { success: true, video: videoData };
     } catch (error: any) {
       console.error(`[VideoGenerationProcessor] Error processing job ${job.id}:`, error);
       

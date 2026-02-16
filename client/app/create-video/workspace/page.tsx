@@ -107,6 +107,7 @@ function WorkspacePageContent() {
   const videoJobIdsRef = useRef<Map<number, Set<string>>>(new Map());
   const jobToSceneRef = useRef<Map<string, number>>(new Map());
   const processedJobIdsRef = useRef<Set<string>>(new Set());
+  const unsubscribeFromJobRef = useRef<((jobId: string) => void) | null>(null);
 
   // Calculate dynamic scene count based on available data
   const sceneCount = useMemo(() => {
@@ -459,11 +460,10 @@ function WorkspacePageContent() {
     }
   };
 
-  // Handle convert to videos
+  // Handle convert to videos (uses batch API)
   const handleConvertToVideos = async () => {
     if (!projectId) return;
 
-    // Validate that all scenes have images
     const scenesNeedingVideos = scenes.filter((scene, index) => {
       const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
       const hasImage = brollImages.some(img => img.sceneNumber === sceneNumber);
@@ -478,68 +478,61 @@ function WorkspacePageContent() {
     }
 
     try {
-      // Switch to converting mode
       setWorkspaceMode('converting');
-      setFailedGenerations(new Set()); // Reset failed generations
+      setFailedGenerations(new Set());
       showToast('Video generation started for all scenes', 'info');
 
-      // Generate videos for all scenes
-      const promises = scenesNeedingVideos.map(async (scene, index) => {
-        const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
-        
-        try {
-          const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', false);
-          
-          if (response.success) {
-            // Handle existing video
-            if (response.data?.existing && response.data?.video) {
-              const existingVideo = response.data.video;
+      const response = await apiClient.convertToVideos(projectId, { forceRegenerate: false });
+
+      if (!response.success || !response.data?.jobs?.length) {
+        const sceneNumbers = scenesNeedingVideos.map((s, i) => s.scene_number ?? s.sceneNumber ?? i + 1);
+        const fallbackPromises = sceneNumbers.map(async (sceneNumber) => {
+          try {
+            const r = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', false);
+            if (r.success && r.data?.existing && r.data?.video) {
               setBrollVideos(prev => {
                 const exists = prev.some(v => v.sceneNumber === sceneNumber);
-                if (exists) {
-                  return prev.map(v => v.sceneNumber === sceneNumber ? existingVideo : v);
-                }
-                return [...prev, existingVideo];
+                if (exists) return prev.map(v => v.sceneNumber === sceneNumber ? r.data!.video : v);
+                return [...prev, r.data!.video];
               });
               return;
             }
-            
-            // Handle new job creation
-            if (response.data?.jobId) {
-              const jobId = response.data.jobId;
-              
-              // Track job per scene
+            if (r.success && r.data?.jobId) {
+              const jobId = r.data.jobId;
+              const queueType = r.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
               if (!videoJobIdsRef.current.has(sceneNumber)) {
                 videoJobIdsRef.current.set(sceneNumber, new Set());
               }
               videoJobIdsRef.current.get(sceneNumber)!.add(jobId);
               jobToSceneRef.current.set(jobId, sceneNumber);
-              
-              // Add to generating set
               setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
-              
-              // Subscribe to WebSocket updates
-              subscribeToJob(jobId, 'video-generation');
-              console.log(`[Workspace] Subscribed to job ${jobId} for scene ${sceneNumber}`);
+              subscribeToJob(jobId, queueType);
             }
+          } catch (err: any) {
+            showToast(`Failed for scene ${sceneNumber}`, 'error');
+            setFailedGenerations(prev => new Set(prev).add(sceneNumber));
           }
-        } catch (error: any) {
-          console.error(`Failed to generate video for scene ${sceneNumber}:`, error);
-          showToast(`Failed to generate video for scene ${sceneNumber}`, 'error');
-          setGeneratingVideos(prev => {
-            const next = new Set(prev);
-            next.delete(sceneNumber);
-            return next;
-          });
-          setFailedGenerations(prev => new Set(prev).add(sceneNumber));
-        }
-      });
+        });
+        await Promise.all(fallbackPromises);
+        return;
+      }
 
-      await Promise.all(promises);
+      for (const j of response.data.jobs) {
+        const { sceneNumber, jobId, type } = j;
+        if (!videoJobIdsRef.current.has(sceneNumber)) {
+          videoJobIdsRef.current.set(sceneNumber, new Set());
+        }
+        videoJobIdsRef.current.get(sceneNumber)!.add(jobId);
+        jobToSceneRef.current.set(jobId, sceneNumber);
+        setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
+        const queueType = type === 'scene' ? 'scene-composite' : 'video-generation';
+        subscribeToJob(jobId, queueType);
+        console.log(`[Workspace] Subscribed to ${queueType} job ${jobId} for scene ${sceneNumber}`);
+      }
     } catch (error: any) {
       console.error('Failed to start video generation:', error);
       showToast('Failed to start video generation', 'error');
-      setWorkspaceMode('images'); // Fallback to images mode on error
+      setWorkspaceMode('images');
     }
   };
 
@@ -685,17 +678,21 @@ function WorkspacePageContent() {
     };
   }, []);
 
-  // WebSocket handler for video generation updates
+  // WebSocket handler for video generation and scene-composite updates
   const handleJobStatusUpdate = useCallback((update: JobStatusUpdate) => {
-    console.log('[Workspace] 🔔 WebSocket update received:', {
-      jobId: update.jobId,
-      queueType: update.queueType,
-      state: update.state,
-      sceneNumber: update.queueType === 'video-generation' ? update.result?.video?.sceneNumber : undefined,
-    });
-    
-    if (update.queueType === 'video-generation') {
-      if (update.state === 'completed' && update.result?.success && update.result?.video) {
+    const isVideo = update.queueType === 'video-generation';
+    const isComposite = update.queueType === 'scene-composite';
+    const sceneNum = update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber;
+
+    if (update.state === 'progress' && isComposite && sceneNum) {
+      // Progress events for ALTERNATE even scenes (broll_complete, avatar_complete, compositing)
+      // Optionally update per-scene progress UI; for now we just log
+      console.log('[Workspace] Scene progress:', sceneNum, update.metadata?.stage);
+      return;
+    }
+
+    if (isVideo || isComposite) {
+      if ((update.state === 'completed') && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
         const sceneNumber = video.sceneNumber;
@@ -741,7 +738,7 @@ function WorkspacePageContent() {
         });
         
         // Unsubscribe from job
-        unsubscribeFromJob(jobId);
+        unsubscribeFromJobRef.current?.(jobId);
         
         // Clean up job tracking
         const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
@@ -781,7 +778,7 @@ function WorkspacePageContent() {
           showToast(`Video generation failed for Scene ${sceneNumber}`, 'error');
         }
         
-        unsubscribeFromJob(jobId);
+        unsubscribeFromJobRef.current?.(jobId);
       }
     }
   }, [showToast]);
@@ -790,6 +787,7 @@ function WorkspacePageContent() {
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
     onJobStatusUpdate: handleJobStatusUpdate,
   });
+  unsubscribeFromJobRef.current = unsubscribeFromJob;
 
   // Video playback handlers
   const handlePlayVideo = (sceneNumber: number, videoUrl: string) => {

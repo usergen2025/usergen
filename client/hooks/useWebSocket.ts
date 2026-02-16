@@ -47,7 +47,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       queueType: update.queueType,
       state: update.state,
       hasResult: !!update.result,
-      sceneNumber: update.queueType === 'image-generation' ? update.result?.image?.sceneNumber : update.queueType === 'video-generation' ? update.result?.video?.sceneNumber : undefined,
+      sceneNumber: update.result?.image?.sceneNumber ?? update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
     });
 
     // Allow updates for completed jobs - we want to accept the latest data

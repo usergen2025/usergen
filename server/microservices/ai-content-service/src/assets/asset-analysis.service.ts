@@ -274,9 +274,21 @@ Return your analysis as a JSON object with the following structure:
   /**
    * Call OpenAI Vision API to analyze image
    */
-  private async callOpenAIVisionAPI(imageUrl: string, prompt: string): Promise<any> {
+  private async callOpenAIVisionAPI(imageUrl: string, prompt: string, retryCount: number = 0): Promise<any> {
+    const MAX_RETRIES = 2; // Maximum 2 retries (3 total attempts)
+    
     if (!this.openai) {
       throw new Error('OpenAI API key is not configured');
+    }
+
+    // Validate URL before attempting
+    if (!imageUrl || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://'))) {
+      throw new Error(`Invalid image URL: ${imageUrl}. URL must be a valid HTTP(S) URL.`);
+    }
+
+    // Check for placeholder/invalid URLs
+    if (imageUrl.includes('example.com') || imageUrl.includes('placeholder') || imageUrl === 'x.png') {
+      throw new Error(`Invalid placeholder URL detected: ${imageUrl}. Please provide a valid image URL.`);
     }
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -313,13 +325,19 @@ Return your analysis as a JSON object with the following structure:
 
       return JSON.parse(responseContent);
     } catch (error: any) {
-      // Handle image timeout errors
-      if (error.code === 'invalid_image_url' || (error.message && error.message.includes('Timeout'))) {
-        this.logger.warn(`Image fetch timeout for ${imageUrl}, retrying...`, 'AssetAnalysisService');
-        // Retry once after delay
+      // Handle image timeout/invalid URL errors with retry limit
+      if ((error.code === 'invalid_image_url' || (error.message && error.message.includes('Timeout'))) && retryCount < MAX_RETRIES) {
+        this.logger.warn(`Image fetch timeout for ${imageUrl}, retrying (attempt ${retryCount + 1}/${MAX_RETRIES})...`, 'AssetAnalysisService');
         await new Promise(resolve => setTimeout(resolve, 2000));
-        return this.callOpenAIVisionAPI(imageUrl, prompt);
+        return this.callOpenAIVisionAPI(imageUrl, prompt, retryCount + 1);
       }
+      
+      // If max retries reached or other error, throw with descriptive message
+      if (retryCount >= MAX_RETRIES) {
+        this.logger.error(`Image fetch failed after ${MAX_RETRIES + 1} attempts for ${imageUrl}`, 'AssetAnalysisService');
+        throw new Error(`Failed to fetch image after ${MAX_RETRIES + 1} attempts: ${imageUrl}. The URL may be invalid or inaccessible.`);
+      }
+      
       throw error;
     }
   }

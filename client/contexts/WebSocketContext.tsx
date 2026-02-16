@@ -8,11 +8,18 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
 
 export interface JobStatusUpdate {
   jobId: string;
-  queueType: 'audio-generation' | 'image-generation' | 'video-generation';
-  state: 'completed' | 'failed' | 'processing';
+  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite';
+  state: 'completed' | 'failed' | 'processing' | 'progress';
   result?: any;
   progress?: number;
   error?: string;
+  metadata?: {
+    stage?: string;
+    sceneNumber?: number;
+    retryable?: boolean;
+    errorType?: string;
+    [key: string]: any;
+  };
 }
 
 interface WebSocketContextType {
@@ -196,7 +203,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         queueType: update.queueType,
         state: update.state,
         hasResult: !!update.result,
-        sceneNumber: update.queueType === 'image-generation' ? update.result?.image?.sceneNumber : update.queueType === 'video-generation' ? update.result?.video?.sceneNumber : undefined,
+        sceneNumber: update.result?.image?.sceneNumber ?? update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
       });
 
       // Call all handlers subscribed to this job

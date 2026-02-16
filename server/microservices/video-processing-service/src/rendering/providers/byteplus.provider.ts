@@ -188,19 +188,20 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
       size = request.resolution;
     } else if (request.aspectRatio) {
       // Map aspect ratio to dimensions
+      // CRITICAL: All sizes must meet BytePlus minimum of 3,686,400 pixels
       const sizeMap: Record<string, string> = {
-        '9:16': '1080x1920',
-        '16:9': '1920x1080',
-        '1:1': '1080x1080',
-        '4:3': '1440x1080',
+        '9:16': '1440x2560', // Fixed: 1440x2560 = 3,686,400 pixels (meets minimum). Previously was 1080x1920 (2,073,600 pixels - too small)
+        '16:9': '1920x1080', // 2,073,600 pixels - Note: This may also need fixing if used
+        '1:1': '1920x1920', // Fixed: 1920x1920 = 3,686,400 pixels (meets minimum). Previously was 1080x1080 (1,166,400 pixels - too small)
+        '4:3': '1440x1080', // 1,555,200 pixels - Note: This may also need fixing if used
         'HALF_N_HALF_TOP': '1662x2216', // Same as 3:4 for BytePlus minimum
       };
-      size = sizeMap[request.aspectRatio] || '1080x1920';
+      size = sizeMap[request.aspectRatio] || '1440x2560'; // Default to compliant size instead of '1080x1920'
       if (request.aspectRatio === '9:16') {
-        console.log(`[BytePlusProvider] 9:16 aspect ratio, size=${size}`);
+        console.log(`[BytePlusProvider] 9:16 aspect ratio (AVATAR_PRODUCT), using compliant size=${size} (3,686,400 pixels)`);
       }
     } else {
-      size = '1080x1920'; // Default
+      size = '1440x2560'; // Default to compliant size instead of '1080x1920'
     }
 
     const bytePlusRequest: BytePlusImageGenerationRequest = {

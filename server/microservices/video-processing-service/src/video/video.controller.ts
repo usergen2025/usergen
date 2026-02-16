@@ -735,22 +735,233 @@ export class VideoController {
 
     console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
 
+    const authToken = req.headers?.authorization;
+
+    const isAlternateEven = style === 'ALTERNATE' && sceneNum % 2 === 0;
+
+    if (isAlternateEven) {
+      const sceneJobId = `scene-${projectId}-${sceneNum}-${Date.now()}`;
+
+      await this.queueManager.addVideoGenerationJob({
+        projectId,
+        userId,
+        sceneNumber: sceneNum,
+        imageUrl: publicImageUrl,
+        prompt: image.prompt,
+        duration: videoDuration,
+        modelId: body.modelId || 'video-model-1',
+        heygenImageKey: heygenImageKey || undefined,
+        videoStyle: style,
+        sceneJobId,
+      });
+
+      await this.queueManager.addAvatarVideoGenerationJob({
+        projectId,
+        userId,
+        sceneNumber: sceneNum,
+        authToken,
+        sceneJobId,
+      });
+
+      const proj = await this.videoService.getProject(projectId, userId);
+      const meta = ((proj.data as any)?.metadata as any) || {};
+      const sceneJobIds = meta.sceneJobIds || {};
+      sceneJobIds[sceneNum] = sceneJobId;
+      await this.videoService.updateProject(projectId, userId, { metadata: { ...meta, sceneJobIds } });
+
+      return {
+        success: true,
+        data: { jobId: sceneJobId, type: 'scene' },
+        message: 'Video and avatar generation queued for ALTERNATE even scene',
+      };
+    }
+
     const jobId = await this.queueManager.addVideoGenerationJob({
       projectId,
       userId,
-      sceneNumber: parseInt(sceneNumber, 10),
-      imageUrl: publicImageUrl, // Use public URL from local file or provider
+      sceneNumber: sceneNum,
+      imageUrl: publicImageUrl,
       prompt: image.prompt,
-      duration: videoDuration, // Use exact duration matching audio file
-      modelId: body.modelId || 'video-model-1', // Use selected model or default
-      heygenImageKey: heygenImageKey || undefined, // Pass HeyGen image_key for AVATAR_PRODUCT
-      videoStyle: style, // Pass video style
+      duration: videoDuration,
+      modelId: body.modelId || 'video-model-1',
+      heygenImageKey: heygenImageKey || undefined,
+      videoStyle: style,
     });
 
     return {
       success: true,
       data: { jobId },
       message: 'Video generation queued successfully',
+    };
+  }
+
+  @Post(':projectId/convert-to-videos')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({ summary: 'Batch convert images to videos', description: 'Queue all video generation jobs for the project in one call' })
+  @ApiResponse({ status: 200, description: 'Jobs queued successfully' })
+  async convertToVideos(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body: { forceRegenerate?: boolean } = {},
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data as any;
+    const script = typeof projectData.script === 'string' ? JSON.parse(projectData.script) : projectData.script;
+    const scenes = script?.scenes || script?.scene_plan || [];
+    const bRollImages = (projectData.bRollImages as any[]) || [];
+    const bRollVideoTasks = (projectData.bRollVideoTasks as any[]) || [];
+    const style = projectData.style;
+    const authToken = req.headers?.authorization;
+
+    const jobs: { sceneNumber: number; jobId: string; type: 'broll' | 'scene' }[] = [];
+    const force = !!body.forceRegenerate;
+    const sceneJobIdsToPersist: Record<number, string> = {};
+
+    for (let i = 0; i < scenes.length; i++) {
+      const sceneNumber = scenes[i].scene_number ?? scenes[i].sceneNumber ?? i + 1;
+      const hasImage = bRollImages.some((img: any) => img.sceneNumber === sceneNumber);
+      const videoEntry = bRollVideoTasks.find((vid: any) => vid.sceneNumber === sceneNumber && (vid.localUrl || vid.localPath || vid.videoUrl));
+      const hasVideo = !!videoEntry;
+      const isAlternateEven = style === 'ALTERNATE' && sceneNumber % 2 === 0;
+      const hasCompleteVideo = hasVideo && (!isAlternateEven || (videoEntry as any)?.isComposite === true);
+      if (!hasImage || (hasCompleteVideo && !force)) continue;
+
+      const image = bRollImages.find((img: any) => img.sceneNumber === sceneNumber);
+      const audioFile = (projectData.audioFiles as any[])?.find((af: any) => af.sceneNumber === sceneNumber);
+      if (!image || !audioFile?.duration) continue;
+
+      let publicImageUrl: string;
+      try {
+        if (image.localPath && image.localUrl) {
+          publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
+        } else if (image.imageUrl) {
+          publicImageUrl = image.imageUrl;
+        } else {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      const videoDuration = Math.ceil(audioFile.duration);
+      const hasBrollOnly = isAlternateEven && hasVideo && !(videoEntry as any)?.isComposite;
+
+      if (isAlternateEven) {
+        const sceneJobId = `scene-${projectId}-${sceneNumber}-${Date.now()}`;
+        if (!hasBrollOnly) {
+          await this.queueManager.addVideoGenerationJob({
+            projectId,
+            userId,
+            sceneNumber,
+            imageUrl: publicImageUrl,
+            prompt: image.prompt,
+            duration: videoDuration,
+            modelId: 'video-model-1',
+            videoStyle: style,
+            sceneJobId,
+          });
+        }
+        await this.queueManager.addAvatarVideoGenerationJob({
+          projectId,
+          userId,
+          sceneNumber,
+          authToken,
+          sceneJobId,
+        });
+        jobs.push({ sceneNumber, jobId: sceneJobId, type: 'scene' });
+        sceneJobIdsToPersist[sceneNumber] = sceneJobId;
+      } else {
+        const jobId = await this.queueManager.addVideoGenerationJob({
+          projectId,
+          userId,
+          sceneNumber,
+          imageUrl: publicImageUrl,
+          prompt: image.prompt,
+          duration: videoDuration,
+          modelId: 'video-model-1',
+          videoStyle: style,
+        });
+        jobs.push({ sceneNumber, jobId, type: 'broll' });
+      }
+    }
+
+    if (Object.keys(sceneJobIdsToPersist).length > 0) {
+      const meta = (projectData.metadata as any) || {};
+      const sceneJobIds = { ...meta.sceneJobIds, ...sceneJobIdsToPersist };
+      await this.videoService.updateProject(projectId, userId, {
+        metadata: { ...meta, sceneJobIds } as any,
+      } as any);
+    }
+
+    return {
+      success: true,
+      data: { jobs },
+      message: 'Video generation jobs queued',
+    };
+  }
+
+  @Post(':projectId/retry-avatar/:sceneNumber')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiParam({ name: 'sceneNumber', description: 'Scene number' })
+  @ApiOperation({ summary: 'Retry avatar generation only', description: 'Retry avatar for an ALTERNATE even scene when avatar failed but b-roll succeeded' })
+  @ApiResponse({ status: 200, description: 'Avatar retry queued' })
+  async retryAvatar(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('sceneNumber') sceneNumber: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const sceneNum = parseInt(sceneNumber, 10);
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success) throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+
+    const projectData = project.data as any;
+    if (projectData.style !== 'ALTERNATE' || sceneNum % 2 !== 0) {
+      throw new HttpException('Retry avatar is only for ALTERNATE even scenes', HttpStatus.BAD_REQUEST);
+    }
+
+    const bRollVideoTasks = (projectData.bRollVideoTasks as any[]) || [];
+    const hasBroll = bRollVideoTasks.some((v: any) => v.sceneNumber === sceneNum && (v.localPath || v.localUrl));
+    if (!hasBroll) {
+      throw new HttpException('B-roll must exist to retry avatar. Use full regenerate instead.', HttpStatus.BAD_REQUEST);
+    }
+
+    const metadata = (projectData.metadata as any) || {};
+    const failedScenes = metadata.failedAvatarScenes || [];
+    if (!failedScenes.includes(sceneNum)) {
+      throw new HttpException('Scene was not marked as avatar-failed', HttpStatus.BAD_REQUEST);
+    }
+
+    const sceneJobId = metadata.sceneJobIds?.[sceneNum] || `scene-${projectId}-${sceneNum}-${Date.now()}`;
+    const authToken = req.headers?.authorization;
+
+    await this.queueManager.addAvatarVideoGenerationJob({
+      projectId,
+      userId,
+      sceneNumber: sceneNum,
+      authToken,
+      sceneJobId,
+    });
+
+    return {
+      success: true,
+      data: { jobId: sceneJobId, type: 'scene' },
+      message: 'Avatar retry queued',
     };
   }
 
@@ -762,7 +973,7 @@ export class VideoController {
   async getQueueJobStatus(
     @Request() req: any,
     @Param('jobId') jobId: string,
-    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation',
+    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite',
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { RenderingService } from './rendering.service';
+import { AlternateAvatarService } from './alternate-avatar.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
 import { FalProvider } from './providers/fal/fal.provider';
 import { FalVideoProvider } from './providers/fal/fal-video.provider';
@@ -16,6 +17,7 @@ import { StorageModule } from '../common/storage/storage.module';
   imports: [ConfigModule, DatabaseModule, StorageModule],
   providers: [
     RenderingService,
+    AlternateAvatarService,
     BytePlusProvider,
     FalProvider,
     FalVideoProvider,
@@ -27,6 +29,7 @@ import { StorageModule } from '../common/storage/storage.module';
   ],
   exports: [
     RenderingService,
+    AlternateAvatarService,
     BytePlusProvider,
     FalProvider,
     FalVideoProvider,
