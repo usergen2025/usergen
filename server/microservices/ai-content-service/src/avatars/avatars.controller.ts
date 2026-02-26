@@ -313,6 +313,7 @@ export class AvatarsController {
         userId: { type: 'string' },
         script: { type: 'object', properties: { avatar_image_prompt: { type: 'string' }, visual_style_guide: { type: 'object' } } },
         style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'] },
+        avatarVisualStylePreset: { type: 'string', description: 'original, random, or preset id' },
       },
       required: ['projectId', 'avatarId', 'script'],
     },
@@ -320,7 +321,7 @@ export class AvatarsController {
   @ApiResponse({ status: 200, description: 'Avatar image generated', schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { imageKey: { type: 'string' } } } } } })
   @ApiResponse({ status: 400, description: 'Missing avatar_image_prompt or invalid request' })
   async generateForProject(
-    @Body() body: { projectId: string; avatarId: string; userId?: string; script: any; style?: string },
+    @Body() body: { projectId: string; avatarId: string; userId?: string; script: any; style?: string; avatarVisualStylePreset?: string },
     @Request() req: any,
   ) {
     const userId = body.userId ?? this.extractUserIdFromToken(req);
@@ -336,6 +337,7 @@ export class AvatarsController {
       userId,
       script: body.script,
       style: body.style,
+      avatarVisualStylePreset: body.avatarVisualStylePreset,
     });
     return { success: true, data: result };
   }

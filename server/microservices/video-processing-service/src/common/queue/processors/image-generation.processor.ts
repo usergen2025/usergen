@@ -996,9 +996,15 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     const provider = this.providerFactory.getProviderForModel(model.id);
 
-    let finalPrompt = prompt.includes('[COMPOSITION:')
-      ? prompt
-      : `[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen] ${prompt}`;
+    let finalPrompt = prompt;
+    // Prepend photorealism for b-roll images if not already present (safety net for script prompts that lack it)
+    const PHOTOREALISM_PREFIX = 'Photorealistic, documentary photograph, real-world, ';
+    if (!finalPrompt.toLowerCase().includes('photorealistic') && !finalPrompt.toLowerCase().includes('documentary')) {
+      finalPrompt = PHOTOREALISM_PREFIX + finalPrompt;
+    }
+    finalPrompt = finalPrompt.includes('[COMPOSITION:')
+      ? finalPrompt
+      : `[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen] ${finalPrompt}`;
 
     if (analyzedAssets && analyzedAssets.length > 0) {
       const sceneAssets = this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, project.style || 'HALF_N_HALF');

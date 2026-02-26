@@ -340,7 +340,11 @@ export class VideoService {
       });
       if (!project || !project.avatarId || !project.script) return;
       const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
-      if (!script?.avatar_image_prompt) return;
+      const preset = (project.metadata as Record<string, unknown>)?.avatarVisualStylePreset as string | undefined;
+      // Original preset needs no script; Random needs avatar_image_prompt; named presets use visual_style_guide (with fallback)
+      if (!preset || preset === 'random') {
+        if (!script?.avatar_image_prompt) return;
+      }
       const scriptHash = crypto.createHash('sha256').update(JSON.stringify(project.script)).digest('hex');
       const meta = (project.metadata as Record<string, unknown>) || {};
       if (meta.generatedAvatarImageKey && meta.avatarImageScriptHash === scriptHash) return;
@@ -358,6 +362,7 @@ export class VideoService {
           userId,
           script,
           style: project.style ?? undefined,
+          avatarVisualStylePreset: preset,
         },
         {
           headers: {

@@ -11,6 +11,7 @@ import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
 import AIChatTagAwareInput from '@/components/ui/AIChatTagAwareInput';
+import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
 
 // Define asset types
 interface Asset {
@@ -27,7 +28,7 @@ interface Asset {
 type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
-type AvatarSubstep = 'question' | 'selection' | 'confirmed';
+type AvatarSubstep = 'question' | 'selection' | 'visual-style';
 type VoiceSubstep = 'question' | 'selection' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
 type ScriptSubstep = 'language' | 'input';
@@ -72,6 +73,7 @@ function AIChatPageContent() {
   const [selectedAvatar, setSelectedAvatar] = useState<any | null>(null); // Store selected avatar object for preview
   const [avatarConfirmed, setAvatarConfirmed] = useState<boolean>(false); // Track if avatar is confirmed and ready to proceed
   const [avatarSubstep, setAvatarSubstep] = useState<AvatarSubstep>('question'); // Track avatar selection substep
+  const [selectedAvatarVisualStyle, setSelectedAvatarVisualStyle] = useState<AvatarVisualStylePresetId | null>(null);
   // Avatar upload state
   const [avatarUploadFile, setAvatarUploadFile] = useState<File | null>(null);
   const [avatarUploadPreview, setAvatarUploadPreview] = useState<string | null>(null);
@@ -331,6 +333,9 @@ function AIChatPageContent() {
             if (project.metadata?.aiChatAvatarSubstep) {
               setAvatarSubstep(project.metadata.aiChatAvatarSubstep as AvatarSubstep);
             }
+            if (project.metadata?.avatarVisualStylePreset) {
+              setSelectedAvatarVisualStyle(project.metadata.avatarVisualStylePreset as AvatarVisualStylePresetId);
+            }
             if (project.metadata?.aiChatVoiceSubstep) {
               setVoiceSubstep(project.metadata.aiChatVoiceSubstep as VoiceSubstep);
             }
@@ -426,7 +431,7 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep]);
 
   // WebSocket effect for tracking generation progress
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
@@ -1564,9 +1569,9 @@ function AIChatPageContent() {
         setPendingAvatarFile(null);
         setPendingAvatarPreview(null);
 
-        // Mark avatar as confirmed and advance substep so the preview + message show
+        // Mark avatar as confirmed and advance to visual style substep
         setAvatarConfirmed(true);
-        setAvatarSubstep('confirmed');
+        setAvatarSubstep('visual-style');
 
       } else {
         throw new Error(uploadResponse.message || 'Failed to upload image');
@@ -1960,15 +1965,6 @@ function AIChatPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-advance to voice selection after confirming avatar selection
-  useEffect(() => {
-    if (avatarSubstep === 'confirmed' && currentStep === 'avatar-selection' && selectedAvatar) {
-      const timer = setTimeout(() => {
-        setCurrentStep('voice-selection');
-      }, 1500); // Show preview for 1.5 seconds before moving to voice selection
-      return () => clearTimeout(timer);
-    }
-  }, [avatarSubstep, currentStep, selectedAvatar]);
 
   // Handle voice selection
   const handleVoiceSelection = (preference: 'yes' | 'no') => {
@@ -2331,6 +2327,9 @@ function AIChatPageContent() {
       
       if (currentStep === 'avatar-selection') {
         metadataUpdate.aiChatAvatarSubstep = avatarSubstep;
+        if (selectedAvatarVisualStyle) {
+          metadataUpdate.avatarVisualStylePreset = selectedAvatarVisualStyle;
+        }
       }
       if (currentStep === 'voice-selection') {
         metadataUpdate.aiChatVoiceSubstep = voiceSubstep;
@@ -2343,7 +2342,7 @@ function AIChatPageContent() {
         metadata: metadataUpdate,
       }).catch(err => console.error('Failed to save step progress:', err));
     }
-  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep]);
+  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep, selectedAvatarVisualStyle]);
 
   // Auto-save language and tags selection to project metadata
   useEffect(() => {
@@ -2423,7 +2422,7 @@ function AIChatPageContent() {
     setShowAvatarPreview(true);
   };
 
-  // Handle proceed with selected avatar
+  // Handle proceed with selected avatar - advance to visual style substep
   const handleProceedWithAvatar = () => {
     if (selectedAvatarId) {
       // Find the selected avatar object
@@ -2431,16 +2430,40 @@ function AIChatPageContent() {
       if (avatar) {
         setSelectedAvatar(avatar);
       }
-      // Mark as confirmed and move to confirmed substep
       setAvatarConfirmed(true);
-      setAvatarSubstep('confirmed');
-      // Store in sessionStorage
+      setAvatarSubstep('visual-style');
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('selectedAvatarId', selectedAvatarId);
       }
-      // Stay in avatar-selection step - preview will be shown and then auto-advance to voice-selection
     } else {
       showToast('Please select an avatar first', 'warning');
+    }
+  };
+
+  // Handle proceed with visual style - PATCH project and advance to voice-selection
+  const handleProceedWithVisualStyle = async () => {
+    if (!selectedAvatarVisualStyle) {
+      showToast('Please select a visual style first', 'warning');
+      return;
+    }
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+    try {
+      await apiClient.updateVideoProject(projectId, {
+        metadata: {
+          avatarVisualStylePreset: selectedAvatarVisualStyle,
+          aiChatAvatarSubstep: 'visual-style',
+        },
+      });
+      setCurrentStep('voice-selection');
+      setVoiceSubstep('question');
+      setVoiceYesMessage(false);
+      setSelectedVoiceId(null);
+      setVoiceUploadSuccess(false);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to save visual style', 'error');
     }
   };
 
@@ -2463,12 +2486,12 @@ function AIChatPageContent() {
       setPendingAssets([]);
     } else if (currentStep === 'avatar-selection') {
       // Navigate back through substeps
-      if (avatarSubstep === 'confirmed') {
-        // Go back to selection substep
+      if (avatarSubstep === 'visual-style') {
         setAvatarSubstep('selection');
+        setSelectedAvatarVisualStyle(null);
+      } else if (avatarSubstep === 'selection') {
         setAvatarConfirmed(false);
         setSelectedAvatar(null);
-      } else if (avatarSubstep === 'selection') {
         // Go back to question substep
         setAvatarSubstep('question');
         setAvatarYesMessage(false);
@@ -2609,7 +2632,7 @@ function AIChatPageContent() {
     
     switch (step) {
       case 'avatar-selection': {
-        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'confirmed'];
+        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'visual-style'];
         const targetIndex = substepOrder.indexOf(substep as AvatarSubstep);
         const currentIndex = substepOrder.indexOf(avatarSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
@@ -3503,7 +3526,7 @@ function AIChatPageContent() {
                     <div
                       className={cn(
                         "relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]",
-                        hasReachedSubstep('avatar-selection', 'confirmed') && "opacity-50 pointer-events-none"
+                        hasReachedSubstep('avatar-selection', 'visual-style') && "opacity-50 pointer-events-none"
                       )}
                       style={{
                         background:
@@ -3943,63 +3966,110 @@ Use a recent photo of yourself.`}
             </div>
             )}
 
-            {/* Avatar Preview - Show in confirmed substep */}
-            {hasReachedSubstep('avatar-selection', 'confirmed') && selectedAvatar && (
+            {/* Visual Style Substep - Show after avatar selection */}
+            {hasReachedSubstep('avatar-selection', 'visual-style') && (selectedAvatar || avatarUploadSuccess) && (
             <>
-              {/* Selected Avatar Preview */}
-              <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
-                  {/* Selected Avatar Image */}
-                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
-                    <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
-                      <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
-                        {(() => {
-                          const avatarImageUrl = selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl;
-                          const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
-                            ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
-                            : 'http://localhost:9001';
-                          const fullImageUrl = avatarImageUrl?.startsWith('http') 
-                            ? avatarImageUrl 
-                            : avatarImageUrl 
-                              ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
-                              : null;
-                          
-                          return fullImageUrl ? (
-                            <Image
-                              src={fullImageUrl}
-                              alt={selectedAvatar.name || 'Avatar'}
-                              fill
-                              className="object-cover"
-                              unoptimized
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                              <span className="text-xs text-gray-400">No Image</span>
-                            </div>
-                          );
-                        })()}
+              {/* Selected Avatar Preview (for library selection) */}
+              {selectedAvatar && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
+                    <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                      <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                        <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                          {(() => {
+                            const avatarImageUrl = selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl;
+                            const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                              ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                              : 'http://localhost:9001';
+                            const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                              ? avatarImageUrl 
+                              : avatarImageUrl 
+                                ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                                : null;
+                            return fullImageUrl ? (
+                              <Image
+                                src={fullImageUrl}
+                                alt={selectedAvatar.name || 'Avatar'}
+                                fill
+                                className="object-cover"
+                                unoptimized
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                                <span className="text-xs text-gray-400">No Image</span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                          <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
+                            {selectedAvatar.name || 'Avatar'}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
-                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
-                          {selectedAvatar.name || 'Avatar'}
+                      <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
+                          Selected Avatar
                         </span>
                       </div>
                     </div>
-                    <div className="px-[clamp(0.5rem,0.78vh,8px)]">
-                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
-                        Selected Avatar
-                      </span>
-                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* AI Message - "Great! Your avatar is ready..." */}
+              {/* AI Message - "Great! Your avatar is ready. How would you like it to appear?" */}
               <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                 <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                  Great! Your avatar is ready.
+                  Great! Your avatar is ready. How would you like it to appear in the video? Choose a visual style:
                 </p>
               </div>
+
+              {/* Visual Style Preset Cards */}
+              <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                {AVATAR_VISUAL_STYLE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    onClick={() => setSelectedAvatarVisualStyle(preset.id)}
+                    className={cn(
+                      "flex flex-col items-start gap-[clamp(0.375rem,0.59vh,6px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] min-w-[clamp(120px,20vw,140px)] flex-1 hover:opacity-90 transition-opacity text-left",
+                      selectedAvatarVisualStyle === preset.id && "ring-2 ring-[#E86412]"
+                    )}
+                  >
+                    <div className="w-full aspect-square max-h-[80px] bg-gray-100 rounded-[8px] flex items-center justify-center overflow-hidden">
+                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-400">Preview</span>
+                    </div>
+                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-tight text-[#212121]">
+                      {preset.label}
+                    </span>
+                    <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal leading-tight text-gray-600 line-clamp-2">
+                      {preset.description}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Proceed Button for Visual Style */}
+              {currentStep === 'avatar-selection' && avatarSubstep === 'visual-style' && selectedAvatarVisualStyle && (
+                <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                  <button
+                    onClick={handleProceedWithVisualStyle}
+                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                  >
+                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                      <Image
+                        src="/assets/u_arrow-right.svg"
+                        alt="Proceed"
+                        width={12}
+                        height={12}
+                        className="w-fit"
+                      />
+                    </div>
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                      Proceed
+                    </span>
+                  </button>
+                </div>
+              )}
             </>
             )}
 

@@ -28,6 +28,15 @@ export interface CreateAvatarFromUploadDto {
   originalImageUrl?: string; // Local URL for the uploaded image
 }
 
+/** Preset pose/framing prompts only (no lighting/background). Theme comes from script visual_style_guide. */
+const PRESET_POSE_PROMPTS: Record<string, string> = {
+  'front-facing': 'Front-facing waist-up portrait, person looking directly at camera, professional video look, simple talking-to-camera style',
+  'wide-angle-front': 'Wide-angle front shot, natural creator look, person facing camera, casual professional aesthetic',
+  'standing-with-mic': 'Person standing with microphone, presenter stage vibe, front-facing',
+  'side-camera-angle': 'Person at slight angle to camera, cinematic conversational feel',
+  'podcast-setup': 'Person seated at desk with microphone and headphones, studio look',
+};
+
 @Injectable()
 export class AvatarsService {
   constructor(
@@ -315,8 +324,25 @@ export class AvatarsService {
   }
 
   /**
-   * Generate avatar image for a project from the avatar's original image and script's avatar_image_prompt.
-   * Used when user moves to b-roll images step. For HALF_N_HALF generates 9:8 then adds white top to get 9:16.
+   * Extract theme (lighting, mood) from visual_style_guide for hybrid preset prompts.
+   */
+  private formatThemeFromStyleGuide(visualStyleGuide: any): string {
+    if (!visualStyleGuide || typeof visualStyleGuide !== 'object') {
+      return 'soft even lighting, neutral background';
+    }
+    const lighting = visualStyleGuide.lighting || visualStyleGuide.Lighting || '';
+    const mood = visualStyleGuide.mood || visualStyleGuide.Mood || '';
+    const parts: string[] = [];
+    if (lighting) parts.push(lighting);
+    else parts.push('soft even lighting');
+    if (mood) parts.push(`${mood} atmosphere`);
+    parts.push('theme-consistent background');
+    return parts.join(', ');
+  }
+
+  /**
+   * Generate avatar image for a project from the avatar's original image.
+   * Preset types: original (Sharp only), random (script prompt), named preset (hybrid: preset pose + script theme).
    */
   async generateAvatarImageForProject(params: {
     projectId: string;
@@ -324,22 +350,19 @@ export class AvatarsService {
     userId: string;
     script: { avatar_image_prompt?: string; visual_style_guide?: any };
     style?: string;
+    avatarVisualStylePreset?: string | null;
   }): Promise<{ imageKey: string }> {
-    const { projectId, avatarId, userId, script, style } = params;
-    this.logger.log(`Generating avatar image for project ${projectId}, avatar ${avatarId}`, 'AvatarsService');
+    const { projectId, avatarId, userId, script, style, avatarVisualStylePreset } = params;
+    this.logger.log(
+      `Generating avatar image for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}`,
+      'AvatarsService',
+    );
 
     const avatar = await this.databaseService.avatar.findFirst({
       where: { id: avatarId, userId },
     });
     if (!avatar) {
       throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
-    }
-
-    const avatarImagePrompt = script?.avatar_image_prompt;
-    if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
-      throw new BadRequestException(
-        'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected.',
-      );
     }
 
     const originalImageUrl = avatar.originalImageUrl;
@@ -366,57 +389,110 @@ export class AvatarsService {
     }
 
     const imageBuffer = fs.readFileSync(imagePath);
-    const imageBase64 = imageBuffer.toString('base64');
-    const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
-
     const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
-    const frontFacingSuffix = useBottomHalfFraming
-      ? ' Person faces the camera directly, front-facing, looking straight ahead.'
-      : '';
-    const effectivePrompt = avatarImagePrompt + frontFacingSuffix;
+
     let resultImageBuffer: Buffer;
 
-    if (useBottomHalfFraming) {
-      const bytePlusSize = '2304x2048';
-      const result = await this.bytePlusImageProvider.generateImageVariant(
-        base64DataUri,
-        effectivePrompt,
-        bytePlusSize,
-      );
-      const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
-      let halfBuffer = Buffer.from(downloaded.data);
-      halfBuffer = await sharp(halfBuffer)
-        .resize(1080, 960, { fit: 'fill', position: 'center' })
-        .jpeg({ quality: 95 })
-        .toBuffer();
-      const whiteHeight = 960;
-      const whiteTop = await sharp({
-        create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
-      })
-        .jpeg()
-        .toBuffer();
-      resultImageBuffer = await sharp({
-        create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
-      })
-        .composite([
-          { input: whiteTop, top: 0, left: 0 },
-          { input: halfBuffer, top: whiteHeight, left: 0 },
-        ])
-        .jpeg()
-        .toBuffer();
+    if (avatarVisualStylePreset === 'original') {
+      // Original: Sharp resize/crop only, no BytePlus
+      if (useBottomHalfFraming) {
+        const halfBuffer = await sharp(imageBuffer)
+          .resize(1080, 960, { fit: 'cover', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+        const whiteHeight = 960;
+        const whiteTop = await sharp({
+          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .jpeg()
+          .toBuffer();
+        resultImageBuffer = await sharp({
+          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .composite([
+            { input: whiteTop, top: 0, left: 0 },
+            { input: halfBuffer, top: whiteHeight, left: 0 },
+          ])
+          .jpeg()
+          .toBuffer();
+      } else {
+        resultImageBuffer = await sharp(imageBuffer)
+          .resize(1080, 1920, { fit: 'cover', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
     } else {
-      const bytePlusSize = '1440x2560';
-      const result = await this.bytePlusImageProvider.generateImageVariant(
-        base64DataUri,
-        effectivePrompt,
-        bytePlusSize,
-      );
-      const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
-      const largeBuffer = Buffer.from(downloaded.data);
-      resultImageBuffer = await sharp(largeBuffer)
-        .resize(1080, 1920, { fit: 'fill', position: 'center' })
-        .jpeg({ quality: 95 })
-        .toBuffer();
+      // Random or named preset: need effective prompt and BytePlus
+      let effectivePrompt: string;
+      const avatarImagePrompt = script?.avatar_image_prompt;
+
+      if (
+        avatarVisualStylePreset === 'random' ||
+        !avatarVisualStylePreset ||
+        !PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+      ) {
+        // Random or null/legacy: use script avatar_image_prompt
+        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+          throw new BadRequestException(
+            'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected, or choose a visual style preset.',
+          );
+        }
+        const frontFacingSuffix = useBottomHalfFraming
+          ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+          : '';
+        effectivePrompt = avatarImagePrompt + frontFacingSuffix;
+      } else {
+        // Named preset: hybrid (preset pose + script theme)
+        const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
+        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
+        effectivePrompt = `${presetPose}, ${theme}`;
+      }
+
+      const imageBase64 = imageBuffer.toString('base64');
+      const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
+
+      if (useBottomHalfFraming) {
+        const bytePlusSize = '2304x2048';
+        const result = await this.bytePlusImageProvider.generateImageVariant(
+          base64DataUri,
+          effectivePrompt,
+          bytePlusSize,
+        );
+        const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+        let halfBuffer = Buffer.from(downloaded.data);
+        halfBuffer = await sharp(halfBuffer)
+          .resize(1080, 960, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+        const whiteHeight = 960;
+        const whiteTop = await sharp({
+          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .jpeg()
+          .toBuffer();
+        resultImageBuffer = await sharp({
+          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .composite([
+            { input: whiteTop, top: 0, left: 0 },
+            { input: halfBuffer, top: whiteHeight, left: 0 },
+          ])
+          .jpeg()
+          .toBuffer();
+      } else {
+        const bytePlusSize = '1440x2560';
+        const result = await this.bytePlusImageProvider.generateImageVariant(
+          base64DataUri,
+          effectivePrompt,
+          bytePlusSize,
+        );
+        const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+        const largeBuffer = Buffer.from(downloaded.data);
+        resultImageBuffer = await sharp(largeBuffer)
+          .resize(1080, 1920, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
     }
 
     const uploadResponse = await this.heygenProvider.uploadImage(

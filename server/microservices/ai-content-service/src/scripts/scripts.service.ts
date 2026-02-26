@@ -476,7 +476,7 @@ export class ScriptsService {
         // Extract visual style guide from existing script to maintain consistency
         const visualStyleGuide = request.existingScript?.visual_style_guide;
         const styleGuidance = visualStyleGuide 
-          ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]".`
+          ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
         userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
@@ -485,7 +485,7 @@ export class ScriptsService {
         // Extract visual style guide from existing script to maintain consistency
         const visualStyleGuide = request.existingScript?.visual_style_guide;
         const styleGuidance = visualStyleGuide 
-          ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]".`
+          ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
         userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${styleGuidance} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
@@ -677,11 +677,11 @@ export class ScriptsService {
       },
       // Mood tags
       'professional': {
-        colorPalette: 'Corporate blues, neutral grays, sophisticated tones',
-        lighting: 'Polished, professional, well-lit',
-        mood: 'Serious, trustworthy, business-focused',
-        visualTone: 'Corporate, polished, executive style',
-        cameraStyle: 'Professional, steady, corporate',
+        colorPalette: 'Corporate blues, neutral grays, documentary tones',
+        lighting: 'Natural, professional, well-lit',
+        mood: 'Documentary, trustworthy, business-focused',
+        visualTone: 'Documentary, factual, authentic',
+        cameraStyle: 'Documentary style, natural perspective',
       },
       'casual': {
         colorPalette: 'Relaxed earth tones, soft pastels',
@@ -691,18 +691,18 @@ export class ScriptsService {
         cameraStyle: 'Natural, relaxed, casual',
       },
       'energetic': {
-        colorPalette: 'Vibrant colors, bold contrasts',
-        lighting: 'Dynamic, bright, high-energy',
-        mood: 'Exciting, fast-paced, enthusiastic',
-        visualTone: 'Dynamic, vibrant, high-energy',
-        cameraStyle: 'Dynamic, fast-paced, energetic',
+        colorPalette: 'Natural colors, authentic contrasts',
+        lighting: 'Natural, bright, documentary style',
+        mood: 'Lively, authentic, candid',
+        visualTone: 'Lively, authentic, candid',
+        cameraStyle: 'Documentary style, natural perspective',
       },
       'calm': {
-        colorPalette: 'Soft, soothing colors, muted tones',
-        lighting: 'Soft, gentle, calming',
+        colorPalette: 'Soft, natural colors, muted tones',
+        lighting: 'Natural, soft, gentle',
         mood: 'Peaceful, relaxing, serene',
-        visualTone: 'Calm, peaceful, serene',
-        cameraStyle: 'Slow, gentle, peaceful',
+        visualTone: 'Natural, calm, documentary',
+        cameraStyle: 'Documentary style, gentle, peaceful',
       },
       'playful': {
         colorPalette: 'Bright, fun colors, playful tones',
@@ -712,18 +712,18 @@ export class ScriptsService {
         cameraStyle: 'Dynamic, fun, playful',
       },
       'serious': {
-        colorPalette: 'Muted, serious tones, professional colors',
-        lighting: 'Serious, focused, professional',
-        mood: 'Serious, focused, professional',
-        visualTone: 'Serious, professional, focused',
-        cameraStyle: 'Steady, serious, focused',
+        colorPalette: 'Muted, natural tones, documentary colors',
+        lighting: 'Natural, documentary style',
+        mood: 'Documentary, factual, authentic',
+        visualTone: 'Documentary, factual, authentic',
+        cameraStyle: 'Documentary style, natural perspective',
       },
       'inspiring': {
-        colorPalette: 'Uplifting colors, inspiring tones',
-        lighting: 'Bright, uplifting, inspiring',
-        mood: 'Inspiring, uplifting, motivational',
-        visualTone: 'Inspiring, uplifting, motivational',
-        cameraStyle: 'Elevated, inspiring, motivational',
+        colorPalette: 'Natural, uplifting tones',
+        lighting: 'Natural, bright, documentary style',
+        mood: 'Authentic, uplifting, real-world',
+        visualTone: 'Authentic, uplifting, real-world',
+        cameraStyle: 'Documentary style, natural perspective',
       },
       // Style tags
       'modern': {
@@ -974,6 +974,16 @@ Your JSON output MUST include at the top level: "avatar_image_prompt": "<full pr
 `;
     }
 
+  const PHOTOREALISM_RULE = `
+CRITICAL B-ROLL PHOTOREALISM RULE (NON-NEGOTIABLE):
+- B-roll images MUST look like REAL-WORLD PHOTOGRAPHS, not AI art or illustrations
+- Use factual, documentary-style descriptions: natural lighting, real textures, authentic scenes
+- AVOID: "dramatic", "cinematic", "stark", "stylized", "artistic", "vibrant" (unless describing actual vibrant objects)
+- AVOID: Symbolic color descriptions (e.g. "stark blues to represent contrast")
+- PREFER: "natural daylight", "overcast", "golden hour", "neutral tones", "documentary photograph"
+- visual_style_guide must describe how a REAL LOCATION would look, not an artistic interpretation
+`;
+
   const prompts = {
       'HALF_N_HALF': `You are a professional video director and AI content composer who creates structured video scripts for "half-and-half" style videos, where the top half of the frame shows b-roll (visual footage related to the narration) and the bottom half shows an Indian-looking avatar delivering ${lang.dialogue}.
 
@@ -984,6 +994,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL scenes
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
+${PHOTOREALISM_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1014,13 +1025,13 @@ Structure Your Output in This JSON Format:
   "video_type": "Half-and-Half",
   "duration": "30 seconds",
   "visual_style_guide": {
-    "color_palette": "Describe the consistent color scheme (e.g., 'Warm oranges and yellows with vibrant Indian colors, golden hour tones')",
-    "lighting": "Describe consistent lighting (e.g., 'Soft natural daylight, warm golden hour lighting')",
-    "mood": "Describe the consistent mood/atmosphere (e.g., 'Energetic, vibrant, optimistic, Indian street life energy')",
-    "camera_style": "Describe consistent camera approach (e.g., 'Cinematic, slightly elevated angles, smooth movements')",
+    "color_palette": "Describe natural, realistic colors as in a documentary photo (e.g., 'Natural earth tones, realistic sky, authentic Indian environment')",
+    "lighting": "Describe natural lighting (e.g., 'Natural daylight, soft overcast, or golden hour - documentary style')",
+    "mood": "Describe authentic atmosphere (e.g., 'Documentary, factual, authentic Indian street life')",
+    "camera_style": "Describe documentary framing (e.g., 'Documentary style, natural perspective, real-world framing')",
     "time_of_day": "Specify consistent time (e.g., 'Golden hour evening' or 'Bright midday' or 'Morning light')",
-    "visual_tone": "Describe overall visual tone (e.g., 'Modern Indian urban, vibrant street scenes, authentic local life')",
-    "recurring_elements": "List any visual elements that should appear consistently (e.g., 'Indian street vendors, colorful markets, modern urban infrastructure')"
+    "visual_tone": "Describe documentary tone (e.g., 'Documentary photograph, authentic local life, unretouched')",
+    "recurring_elements": "List any visual elements that should appear consistently (e.g., 'Indian street vendors, markets, urban infrastructure')"
   },
   "avatar_image_prompt": "Only include this key when the video uses an avatar. Full prompt string for the avatar image, e.g. 'Waist-up portrait, neutral gray background, soft lighting matching the video theme, person centered for lower half of frame'.",
   "scenes": [
@@ -1029,8 +1040,8 @@ Structure Your Output in This JSON Format:
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors and colorful stalls]",
-      "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: bustling Indian street market with vendors, people walking, colorful stalls, dynamic movement]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors and stalls]",
+      "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors, people walking, stalls, dynamic movement]",
       "avatar_action": "Explain how the Indian-looking avatar speaks and reacts.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'smile', 'gesture'"
     },
@@ -1039,8 +1050,8 @@ Structure Your Output in This JSON Format:
       "time_range": "5-10s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Describe next Indian-context visuals",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: cinematic, slightly elevated angles] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description]",
-      "broll_video_prompt": "[Color palette: warm oranges and yellows with vibrant Indian colors] [Lighting: soft natural daylight, warm golden hour] [Mood: energetic, vibrant, optimistic] [Camera: smooth panning, cinematic, slightly elevated] [Time: golden hour evening] [Tone: modern Indian urban, vibrant street scenes] [Scene-specific: different scene description with motion]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description]",
+      "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description with motion]",
       "avatar_action": "Explain avatar's reaction",
       "avatar_motion": "smile"
     }
@@ -1054,11 +1065,12 @@ CRITICAL PROMPT GENERATION RULES:
 2. The visual_style_guide MUST be consistent across ALL scenes
 3. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 4. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-5. EVERY broll_video_prompt MUST follow the same format but include motion/action words
-6. The scene-specific part should vary, but ALL style parameters (color, lighting, mood, camera, time, tone) MUST remain IDENTICAL across all scenes
-7. Use the EXACT same wording for style parameters in every prompt to ensure AI image/video models generate consistent visuals
-8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
-9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+5. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+6. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+7. The scene-specific part should vary, but ALL style parameters (color, lighting, mood, camera, time, tone) MUST remain IDENTICAL across all scenes
+8. Use the EXACT same wording for style parameters in every prompt to ensure AI image/video models generate consistent visuals
+9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
 - All visuals should reflect Indian context unless user explicitly asks otherwise.
@@ -1083,6 +1095,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL b-roll images
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
+${PHOTOREALISM_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1112,12 +1125,12 @@ Output Format:
   "video_type": "Alternating",
   "duration": "1 minute",
   "visual_style_guide": {
-    "color_palette": "Describe the consistent color scheme for all b-roll scenes",
-    "lighting": "Describe consistent lighting for all b-roll scenes",
-    "mood": "Describe the consistent mood/atmosphere for all b-roll scenes",
-    "camera_style": "Describe consistent camera approach for all b-roll scenes",
+    "color_palette": "Describe natural, realistic colors as in a documentary photo (e.g., 'Natural earth tones, realistic sky')",
+    "lighting": "Describe natural lighting (e.g., 'Natural daylight, documentary style')",
+    "mood": "Describe authentic atmosphere (e.g., 'Documentary, factual, authentic')",
+    "camera_style": "Describe documentary framing (e.g., 'Documentary style, natural perspective')",
     "time_of_day": "Specify consistent time for all b-roll scenes",
-    "visual_tone": "Describe overall visual tone for all b-roll scenes",
+    "visual_tone": "Describe documentary tone (e.g., 'Documentary photograph, authentic')",
     "recurring_elements": "List any visual elements that should appear consistently"
   },
   "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. close-up, person at streaming desk, neutral background, soft lighting).",
@@ -1158,11 +1171,12 @@ CRITICAL PROMPT GENERATION RULES:
 3. EVERY scene (regardless of type) MUST have a broll_image_prompt - this is REQUIRED for rendering
 4. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 5. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-6. Use the EXACT same wording for style parameters in every scene prompt (both avatar and b-roll scenes)
-7. Only the scene-specific part should vary between scenes
-8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
-9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
-10. For avatar-type scenes, generate broll_image_prompt based on the voiceover context and visual style guide
+6. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+7. Use the EXACT same wording for style parameters in every scene prompt (both avatar and b-roll scenes)
+8. Only the scene-specific part should vary between scenes
+9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+11. For avatar-type scenes, generate broll_image_prompt based on the voiceover context and visual style guide
 
 Guidelines:
 - Use ${lang.dialogue} voiceover across all scenes.
@@ -1183,6 +1197,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL scenes
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
+${PHOTOREALISM_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1211,12 +1226,12 @@ Output Format:
   "video_type": "Cutout Overlay",
   "duration": "30 seconds",
   "visual_style_guide": {
-    "color_palette": "Describe the consistent color scheme for all b-roll backgrounds",
-    "lighting": "Describe consistent lighting for all b-roll backgrounds",
-    "mood": "Describe the consistent mood/atmosphere for all b-roll backgrounds",
-    "camera_style": "Describe consistent camera approach for all b-roll backgrounds",
+    "color_palette": "Describe natural, realistic colors as in a documentary photo for b-roll backgrounds",
+    "lighting": "Describe natural lighting for b-roll backgrounds (e.g., 'Natural daylight, documentary style')",
+    "mood": "Describe authentic atmosphere for b-roll backgrounds (e.g., 'Documentary, factual, authentic')",
+    "camera_style": "Describe documentary framing (e.g., 'Documentary style, natural perspective')",
     "time_of_day": "Specify consistent time for all b-roll backgrounds",
-    "visual_tone": "Describe overall visual tone for all b-roll backgrounds",
+    "visual_tone": "Describe documentary tone for b-roll (e.g., 'Documentary photograph, authentic')",
     "recurring_elements": "List any visual elements that should appear consistently in backgrounds"
   },
   "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. waist-up portrait, neutral background, soft lighting for cutout overlay).",
@@ -1247,7 +1262,7 @@ Output Format:
   "IMPORTANT NOTE": "You must generate MULTIPLE scenes (5-7 for 30 seconds, 10-12 for 1 minute, etc.) to cover the entire video duration. The scenes array above shows only the structure - you must create enough scenes to fill the requested duration.",
   "notes": {
     "overlay_style": "Soft edges, light blending, realistic shadows; match Indian lighting.",
-    "color_tone": "Warm, cinematic, vibrant Indian aesthetic.",
+    "color_tone": "Natural, documentary, authentic Indian aesthetic.",
     "visual_consistency": "Reference the visual_style_guide to ensure all b-roll backgrounds maintain the same visual style"
   }
 }
@@ -1257,10 +1272,11 @@ CRITICAL PROMPT GENERATION RULES:
 2. The visual_style_guide MUST be consistent across ALL scenes
 3. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 4. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-5. Use the EXACT same wording for style parameters in every prompt
-6. Only the scene-specific part should vary between scenes
-7. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
-8. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+5. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+6. Use the EXACT same wording for style parameters in every prompt
+7. Only the scene-specific part should vary between scenes
+8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
+9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
 - ${lang.instruction} - this is CRITICAL.
@@ -1336,6 +1352,7 @@ CRITICAL REQUIREMENTS:
 - All b-roll should showcase the product from different angles, contexts, and uses
 - Visual style must be consistent across all scenes
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+${PHOTOREALISM_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1365,12 +1382,12 @@ Structure Your Output in This JSON Format:
   "duration": "30 seconds",
   "product_focus": true,
   "visual_style_guide": {
-    "color_palette": "Describe the consistent color scheme (product-focused)",
-    "lighting": "Product-focused lighting (studio, natural, etc.)",
-    "mood": "Product showcase mood (engaging, professional, etc.)",
-    "camera_style": "Product cinematography (close-ups, 360 views, etc.)",
+    "color_palette": "Describe natural, realistic colors (e.g., 'Natural product photography, realistic background')",
+    "lighting": "Natural product lighting (e.g., 'Natural daylight or soft studio, documentary product shot')",
+    "mood": "Documentary product mood (e.g., 'Authentic, factual product showcase')",
+    "camera_style": "Documentary product framing (e.g., 'Documentary style, natural perspective, real product')",
     "time_of_day": "Specify consistent time",
-    "visual_tone": "Professional product presentation"
+    "visual_tone": "Documentary product presentation, photorealistic"
   },
   "scenes": [
     {
@@ -1389,13 +1406,14 @@ CRITICAL PROMPT GENERATION RULES:
 1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
 2. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 3. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]"
-4. Focus on product angles, features, uses, and contexts - ONE product shot per scene
-5. Create engaging product-focused visuals - NEVER grids, collages, or multiple product views in one image
-6. Maintain visual consistency across all scenes
-7. FIRST, determine the visual_style_guide based on the user's topic/idea
-8. The visual_style_guide MUST be consistent across ALL scenes
-9. EVERY broll_video_prompt MUST follow the same format but include motion/action words
-10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
+4. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+5. Focus on product angles, features, uses, and contexts - ONE product shot per scene
+6. Create engaging product-focused visuals - NEVER grids, collages, or multiple product views in one image
+7. Maintain visual consistency across all scenes
+8. FIRST, determine the visual_style_guide based on the user's topic/idea
+9. The visual_style_guide MUST be consistent across ALL scenes
+10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
 
 Guidelines:
 - All visuals should focus on the product - ONE focused shot per scene
@@ -1416,6 +1434,7 @@ CRITICAL REQUIREMENTS:
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+${PHOTOREALISM_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1445,10 +1464,10 @@ Structure Your Output in This JSON Format:
   "duration": "30 seconds",
   "product_focus": true,
   "visual_style_guide": {
-    "color_palette": "Describe the consistent color scheme",
-    "lighting": "Product + presenter lighting",
-    "mood": "Engaging product advertisement mood",
-    "camera_style": "Product demonstration cinematography",
+    "color_palette": "Describe natural, realistic colors (e.g., 'Natural product photography, realistic background')",
+    "lighting": "Natural product + presenter lighting (e.g., 'Natural daylight or soft studio')",
+    "mood": "Documentary product advertisement mood (e.g., 'Authentic, factual product demo')",
+    "camera_style": "Documentary product demonstration framing (e.g., 'Documentary style, natural perspective')",
     "time_of_day": "Specify consistent time",
     "visual_tone": "Professional product advertisement"
   },
@@ -1477,8 +1496,9 @@ CRITICAL PROMPT GENERATION RULES:
 6. The visual_style_guide MUST be consistent across ALL scenes
 7. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 8. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]"
-9. EVERY broll_video_prompt MUST follow the same format but include motion/action words
-10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+9. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
+11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 
 Guidelines:
 - All visuals should feature product + presenter interaction - ONE focused shot per scene
@@ -1496,24 +1516,17 @@ Guidelines:
 
   /**
    * Get region/locale context for script generation.
-   * Indian default for hindi/hinglish; US/Europe for english.
+   * Indian default for ALL languages (english, hindi, hinglish).
    */
-  private getRegionContext(language: 'english' | 'hindi' | 'hinglish'): string {
-    if (language === 'english') {
-      return `
-
-REGION CONTEXT (CRITICAL - English):
-- Default region is US/Europe. All B-roll and avatar descriptions must use US/European settings.
-- Show Western-looking people, US/European locations (cities, offices, cafes, suburbs, parks).
-- Every visual_style_guide and broll_image_prompt / broll_video_prompt should reflect US/European context (e.g. American city, European office, Western lifestyle) unless the user specifies otherwise.`;
-    }
-    // hindi and hinglish: Indian default
+  private getRegionContext(_language: 'english' | 'hindi' | 'hinglish'): string {
     return `
 
-REGION CONTEXT (CRITICAL - Indian):
-- Default region is India. All B-roll and avatar descriptions must use Indian settings.
-- Show Indian people, Indian locations (markets, offices, streets, villages, cafes, metro, festivals), Indian aesthetic (lighting, colors, tone).
-- Every visual_style_guide and broll_image_prompt / broll_video_prompt must explicitly mention Indian context (e.g. Indian street, Indian office, Indian family) unless the user asks otherwise.`;
+REGION CONTEXT (CRITICAL - Indian Default):
+- All content must use Indian context. B-roll and avatar descriptions must use Indian settings.
+- Show Indian people, Indian locations (markets, offices, streets, villages, cafes, metro, festivals), Indian aesthetic.
+- Every visual_style_guide, broll_image_prompt, broll_video_prompt, and avatar_image_prompt must explicitly mention Indian context (e.g. "Indian street", "Indian auto driver", "Indian office", "Indian family") unless the user specifies another region.
+- People, accessories, objects, scenes, and locations must be explicitly Indian (e.g. "Indian auto driver driving on Indian road", "Indian market with Indian vendors").
+- For product-focused videos: use Indian context (e.g. "Indian product showcase", "Indian retail setting") where relevant.`;
   }
 
   /**
@@ -1693,7 +1706,8 @@ REGION CONTEXT (CRITICAL - Indian):
     visualTone: string;
   }): string {
     const parts: string[] = [];
-    
+    // Add photorealism anchor first - ensures image model prioritizes realism
+    parts.push('[Style: Photorealistic, documentary photograph, real-world, natural textures]');
     if (styleParams.colorPalette) {
       parts.push(`[Color palette: ${styleParams.colorPalette}]`);
     }
@@ -1742,14 +1756,13 @@ REGION CONTEXT (CRITICAL - Indian):
 
   /**
    * Normalize prompts to ensure they all have consistent style parameters.
-   * Region-aware fallback: Indian context for hindi/hinglish, US/European for english.
+   * Indian context fallback for all languages.
    */
-  private normalizePrompts(scriptData: any, language: 'english' | 'hindi' | 'hinglish' = 'hinglish'): any {
+  private normalizePrompts(scriptData: any, _language: 'english' | 'hindi' | 'hinglish' = 'hinglish'): any {
     if (!scriptData) return scriptData;
 
-    const isIndian = language === 'hindi' || language === 'hinglish';
-    const sceneFallback = isIndian ? 'Indian context scene' : 'US/European context scene';
-    const sceneFallbackMotion = isIndian ? 'Indian context scene with motion' : 'US/European context scene with motion';
+    const sceneFallback = 'Indian context scene';
+    const sceneFallbackMotion = 'Indian context scene with motion';
 
     // Extract visual style guide
     const visualStyleGuide = scriptData.visual_style_guide;
