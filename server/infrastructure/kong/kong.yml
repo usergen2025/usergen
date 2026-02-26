@@ -123,6 +123,7 @@ services:
           - /api/scripts
           - /api/avatars
           - /api/content
+          - /api/assets
         methods:
           - GET
           - POST
