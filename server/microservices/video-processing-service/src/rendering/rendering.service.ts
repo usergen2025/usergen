@@ -1,6 +1,7 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
+import { VideoService } from '../video/video.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
@@ -18,6 +19,7 @@ export class RenderingService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
+    private readonly videoService: VideoService,
     private readonly bytePlusProvider: BytePlusProvider,
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly videoCompositor: VideoCompositorProvider,
@@ -435,6 +437,18 @@ export class RenderingService {
       throw new Error('Project not found');
     }
 
+    // Ensure avatar image exists for avatar styles before proceeding (fixes race when using newly uploaded avatar)
+    const AVATAR_STYLES = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'];
+    if (project.avatarId && AVATAR_STYLES.includes(project.style as string)) {
+      await this.videoService.ensureProjectAvatarImage(projectId, userId, authToken);
+      const refreshed = await this.databaseService.videoProject.findFirst({
+        where: { id: projectId },
+      });
+      if (refreshed) {
+        Object.assign(project, refreshed);
+      }
+    }
+
     // Get audio files (should already be generated)
     const audioFiles = (project.audioFiles as any[]) || [];
     if (audioFiles.length === 0) {
@@ -693,57 +707,24 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
-    // Fetch avatar details to get talking_photo_id and imageKey
-      // For HALF_N_HALF Premium, fetch the processed image key with white top
-      const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, false, true);
-    const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
-    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV)
-      imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite; // For HALF_N_HALF Premium
-
-    console.log(`[RenderingService] HALF_N_HALF: Using avatar mode: ${avatarMode}`);
-
-    let videoResponse: { video_id: string };
-
-    if (avatarMode === 'PREMIUM') {
-      // Use Avatar IV API for Premium mode
-        // Use processed image key with white top for HALF_N_HALF
-        const imageKeyToUse = imageKeyHalfNHalfWithWhite || imageKey;
-        
-        if (!imageKeyToUse) {
-        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-      }
-      
-        if (imageKeyHalfNHalfWithWhite) {
-          console.log(`[RenderingService] Using Avatar IV (Premium) with processed HALF_N_HALF image_key: ${imageKeyHalfNHalfWithWhite}`);
-        } else {
-          console.log(`[RenderingService] Using Avatar IV (Premium) with default image_key: ${imageKey} (processed key not available)`);
-        }
-        
-      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-          image_key: imageKeyToUse,
-        video_title: `Avatar Video ${projectId}`,
-        audio_asset_id: audioAssetId,
-        video_orientation: 'portrait', // 9:16 is portrait
-        fit: 'cover', // Cover the screen
-      });
-    } else {
-      // Use standard Avatar API for Basic mode
-      if (!talkingPhotoId) {
-        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-      }
-      
-      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
-      // Generate avatar video with greyish background (1080x960 for bottom half - direct dimension, no scaling needed)
-      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId, // Use motion avatar ID
-        audio_asset_id: audioAssetId,
-        dimension: {
-          width: 1080,
-          height: 960, // Direct bottom half dimension (no scaling needed)
-        },
-        caption: false,
-      });
+    // Avatar IV only: use project-scoped generated avatar image key (set when user was on b-roll images step)
+    const projectMeta = (project.metadata as Record<string, unknown>) || {};
+    const imageKeyToUse = projectMeta.generatedAvatarImageKey as string | undefined;
+    if (!imageKeyToUse) {
+      throw new Error(
+        'Avatar image for this project has not been generated yet. Please complete the b-roll images step (generate at least one b-roll image), then try rendering again. If you just changed the script, go back to the b-roll images step and trigger image generation to regenerate the avatar image.',
+      );
     }
+    imageKeyHalfNHalfWithWhite = imageKeyToUse; // used later for Premium crop
+    console.log(`[RenderingService] HALF_N_HALF: Using Avatar IV with project image_key`);
+
+    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+      image_key: imageKeyToUse,
+      video_title: `Avatar Video ${projectId}`,
+      audio_asset_id: audioAssetId,
+      video_orientation: 'portrait',
+      fit: 'cover',
+    });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
@@ -803,12 +784,12 @@ export class RenderingService {
     }
 
     // For HALF_N_HALF Premium mode, crop the white top portion (remove top 960px, keep bottom 960px)
-    // Fetch avatar details again if we reused existing video (imageKeyHalfNHalfWithWhite not set)
+    // When reusing existing video, use project-scoped key for crop decision
     if (avatarMode === 'PREMIUM' && originalAvatarVideoPath && !imageKeyHalfNHalfWithWhite) {
-      const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, false, true);
-      imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite;
+      const meta = (project.metadata as Record<string, unknown>) || {};
+      imageKeyHalfNHalfWithWhite = meta.generatedAvatarImageKey as string | undefined;
     }
-    
+
     if (avatarMode === 'PREMIUM' && imageKeyHalfNHalfWithWhite && originalAvatarVideoPath) {
       console.log(`[RenderingService] HALF_N_HALF Premium: Cropping white top portion from avatar video...`);
       
@@ -1147,47 +1128,23 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
-    // Fetch avatar details to get talking_photo_id and imageKey
-    // For CUTOUT mode, use transparent imageKey if available (creates on-demand if needed)
-    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken, true); // useTransparent=true for CUTOUT
-    const talkingPhotoId = avatarDetails.providerAvatarId; // This is the motion avatar ID
-    const imageKey = avatarDetails.imageKey; // For Premium mode (Avatar IV) - will be transparentImageKey for CUTOUT
-
-    console.log(`[RenderingService] CUTOUT: Using avatar mode: ${avatarMode}, imageKey: ${imageKey ? 'available' : 'not available'}`);
-
-    let videoResponse: { video_id: string };
-
-    if (avatarMode === 'PREMIUM') {
-      // Use Avatar IV API for Premium mode
-      if (!imageKey) {
-        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-      }
-      
-      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
-      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-        image_key: imageKey,
-        video_title: `Avatar Video ${projectId}`,
-        audio_asset_id: audioAssetId,
-        video_orientation: 'portrait', // 9:16 is portrait
-        fit: 'cover', // Cover the screen
-      });
-    } else {
-      // Use standard Avatar API for Basic mode
-      if (!talkingPhotoId) {
-        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-      }
-      
-      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
-      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId, // Use motion avatar ID
-        audio_asset_id: audioAssetId,
-        dimension: {
-          width: 1080,
-          height: 1920, // 9:16
-        },
-        caption: false,
-      });
+    // Avatar IV only: use project-scoped generated avatar image key
+    const projectMetaCutout = (project.metadata as Record<string, unknown>) || {};
+    const imageKeyCutout = projectMetaCutout.generatedAvatarImageKey as string | undefined;
+    if (!imageKeyCutout) {
+      throw new Error(
+        'Avatar image for this project has not been generated yet. Please complete the b-roll images step, then try rendering again.',
+      );
     }
+    console.log(`[RenderingService] CUTOUT: Using Avatar IV with project image_key`);
+
+    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+      image_key: imageKeyCutout,
+      video_title: `Avatar Video ${projectId}`,
+      audio_asset_id: audioAssetId,
+      video_orientation: 'portrait',
+      fit: 'cover',
+    });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
@@ -1499,7 +1456,7 @@ export class RenderingService {
 
   /**
    * Generate a per-scene avatar video for ALTERNATE style (even scenes)
-   * Uses the same avatar image logic as HALF_N_HALF for consistency
+   * Avatar IV only: uses project.metadata.generatedAvatarImageKey
    */
   private async generateAlternateSceneAvatarVideo(
     projectId: string,
@@ -1507,57 +1464,30 @@ export class RenderingService {
     sceneNumber: number,
     audioFilePath: string,
     avatarMode: string,
-    talkingPhotoId: string,
-    imageKey: string | undefined,
-    imageKeyHalfNHalfWithWhite: string | undefined,
+    _talkingPhotoId: string,
+    _imageKey: string | undefined,
+    _imageKeyHalfNHalfWithWhite: string | undefined,
     avatarDir: string,
     project: any
   ): Promise<string> {
+    const projectMeta = (project.metadata as Record<string, unknown>) || {};
+    const imageKeyToUse = projectMeta.generatedAvatarImageKey as string | undefined;
+    if (!imageKeyToUse) {
+      throw new Error(
+        'Avatar image for this project has not been generated yet. Please complete the b-roll images step, then try again.',
+      );
+    }
+
     const audioBuffer = fs.readFileSync(audioFilePath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
 
-    let videoResponse: { video_id: string };
-
-    if (avatarMode === 'PREMIUM') {
-      // Use Avatar IV API for Premium mode
-      // Use processed image key with white top for HALF_N_HALF-style consistency (same as HALF_N_HALF)
-      const imageKeyToUse = imageKeyHalfNHalfWithWhite || imageKey;
-      
-      if (!imageKeyToUse) {
-        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-      }
-      
-      if (imageKeyHalfNHalfWithWhite) {
-        console.log(`[RenderingService] ALTERNATE: Using Avatar IV (Premium) for scene ${sceneNumber} with processed HALF_N_HALF image_key: ${imageKeyHalfNHalfWithWhite}`);
-      } else {
-        console.log(`[RenderingService] ALTERNATE: Using Avatar IV (Premium) for scene ${sceneNumber} with default image_key: ${imageKey} (processed key not available)`);
-      }
-      
-      // For Premium mode, we generate 9:16 and crop to bottom 960px (same as HALF_N_HALF)
-      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-        image_key: imageKeyToUse,
-        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
-        audio_asset_id: audioAssetId,
-        video_orientation: 'portrait', // 9:16 is portrait
-        fit: 'cover', // Cover the screen
-      });
-    } else {
-      // Use standard Avatar API for Basic mode (generate 1080x960 directly)
-      if (!talkingPhotoId) {
-        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-      }
-      
-      console.log(`[RenderingService] ALTERNATE: Using standard Avatar API (Basic) for scene ${sceneNumber} with talking_photo_id: ${talkingPhotoId}`);
-      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId, // Use motion avatar ID
-        audio_asset_id: audioAssetId,
-        dimension: {
-          width: 1080,
-          height: 960, // Bottom half dimension (1080x960)
-        },
-        caption: false,
-      });
-    }
+    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+      image_key: imageKeyToUse,
+      video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+      audio_asset_id: audioAssetId,
+      video_orientation: 'portrait',
+      fit: 'cover',
+    });
 
     console.log(`[RenderingService] ALTERNATE: Created avatar video task ${videoResponse.video_id} for scene ${sceneNumber}`);
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
@@ -1569,71 +1499,30 @@ export class RenderingService {
     const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
-    // For Premium mode, if video is 9:16, crop to bottom 960px (same as HALF_N_HALF)
-    // CRITICAL: Always scale to 1080x1920 first (if needed), then crop to bottom 960px
-    // This ensures the white top portion is properly removed, not compressed
-    if (avatarMode === 'PREMIUM') {
-      const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
-      if (!videoRes) {
-        throw new Error('Failed to get video resolution for avatar video');
+    // Avatar IV produces 9:16; crop to bottom 960px (same as HALF_N_HALF)
+    const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
+    if (!videoRes) {
+      throw new Error('Failed to get video resolution for avatar video');
+    }
+    console.log(`[RenderingService] ALTERNATE: Avatar video dimensions for scene ${sceneNumber}: ${videoRes.width}x${videoRes.height}`);
+
+    if (videoRes.width !== 1080 || videoRes.height !== 1920) {
+      const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
+      await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
+      if (!fs.existsSync(scaledPath)) throw new Error('Video scaling failed');
+      const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
+      await this.videoCompositor.cropVideo(scaledPath, croppedPath, 0, 960, 1080, 960);
+      try { fs.unlinkSync(scaledPath); } catch (e) { /* ignore */ }
+      if (fs.existsSync(croppedPath)) {
+        fs.unlinkSync(avatarVideoPath);
+        fs.renameSync(croppedPath, avatarVideoPath);
       }
-      
-      console.log(`[RenderingService] ALTERNATE: Premium avatar video dimensions for scene ${sceneNumber}: ${videoRes.width}x${videoRes.height}`);
-      
-      // If video is not 1080x1920, scale it first (same as HALF_N_HALF)
-      if (videoRes.width !== 1080 || videoRes.height !== 1920) {
-        console.log(`[RenderingService] ALTERNATE: Scaling Premium avatar video for scene ${sceneNumber} from ${videoRes.width}x${videoRes.height} to 1080x1920 before cropping`);
-        const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
-        await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
-        
-        if (fs.existsSync(scaledPath)) {
-          // Use scaled version for cropping
-          const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
-          await this.videoCompositor.cropVideo(
-            scaledPath,
-            croppedPath,
-            0,      // x offset
-            960,    // y offset (start from 960px down - skip white top)
-            1080,   // width
-            960     // height (crop to 1080x960)
-          );
-          
-          // Cleanup scaled version after cropping
-          try {
-            fs.unlinkSync(scaledPath);
-          } catch (e) {
-            console.warn(`[RenderingService] Failed to cleanup scaled video: ${e}`);
-          }
-          
-          // Replace original with cropped version
-          if (fs.existsSync(croppedPath)) {
-            fs.unlinkSync(avatarVideoPath);
-            fs.renameSync(croppedPath, avatarVideoPath);
-            console.log(`[RenderingService] ALTERNATE: Cropped Premium avatar video for scene ${sceneNumber} to 1080x960`);
-          } else {
-            throw new Error('Video cropping failed');
-          }
-        } else {
-          throw new Error('Video scaling failed');
-        }
-      } else {
-        // Video is already correct size, just crop it
-        const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
-        await this.videoCompositor.cropVideo(
-          avatarVideoPath,
-          croppedPath,
-          0,      // x offset
-          960,    // y offset (start from 960px down - skip white top)
-          1080,   // width
-          960     // height (crop to 1080x960)
-        );
-        
-        // Replace original with cropped version
-        if (fs.existsSync(croppedPath)) {
-          fs.unlinkSync(avatarVideoPath);
-          fs.renameSync(croppedPath, avatarVideoPath);
-          console.log(`[RenderingService] ALTERNATE: Cropped Premium avatar video for scene ${sceneNumber} to 1080x960`);
-        }
+    } else {
+      const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
+      await this.videoCompositor.cropVideo(avatarVideoPath, croppedPath, 0, 960, 1080, 960);
+      if (fs.existsSync(croppedPath)) {
+        fs.unlinkSync(avatarVideoPath);
+        fs.renameSync(croppedPath, avatarVideoPath);
       }
     }
 
@@ -1904,44 +1793,22 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(stitchedAudioPath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
 
-    const avatarDetails = await this.fetchAvatarDetails(project.avatarId, userId, authToken);
-    const talkingPhotoId = avatarDetails.providerAvatarId;
-    const imageKey = avatarDetails.imageKey;
+    const projectMetaAvatarOnly = (project.metadata as Record<string, unknown>) || {};
+    const imageKeyAvatarOnly = projectMetaAvatarOnly.generatedAvatarImageKey as string | undefined;
+    if (!imageKeyAvatarOnly) {
+      throw new Error(
+        'Avatar image for this project has not been generated yet. Please complete the b-roll images step, then try rendering again.',
+      );
+    }
+    console.log(`[RenderingService] AVATAR_ONLY: Using Avatar IV with project image_key`);
 
-    const avatarMode = (project.avatarMode as string) || 'BASIC';
-    console.log(`[RenderingService] AVATAR_ONLY: Using avatar mode: ${avatarMode}`);
-
-      let videoResponse: { video_id: string };
-
-      if (avatarMode === 'PREMIUM') {
-        if (!imageKey) {
-          throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-        }
-        
-      console.log(`[RenderingService] Using Avatar IV (Premium) with image_key: ${imageKey}`);
-        videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-          image_key: imageKey,
-        video_title: `Avatar Video ${projectId}`,
-          audio_asset_id: audioAssetId,
-        video_orientation: 'portrait',
-        fit: 'cover',
-        });
-      } else {
-        if (!talkingPhotoId) {
-          throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-        }
-        
-      console.log(`[RenderingService] Using standard Avatar API (Basic) with talking_photo_id: ${talkingPhotoId}`);
-        videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId,
-          audio_asset_id: audioAssetId,
-          dimension: {
-            width: 1080,
-          height: 1920,
-          },
-          caption: false,
-        });
-      }
+    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+      image_key: imageKeyAvatarOnly,
+      video_title: `Avatar Video ${projectId}`,
+      audio_asset_id: audioAssetId,
+      video_orientation: 'portrait',
+      fit: 'cover',
+    });
 
     console.log(`[RenderingService] AVATAR_ONLY: Created avatar video task ${videoResponse.video_id}`);
     await this.updateRenderingStatus(projectId, 'avatar_generating', 60);

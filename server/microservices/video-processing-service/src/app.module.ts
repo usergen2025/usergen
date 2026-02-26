@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { VideoController } from './video/video.controller';
-import { VideoService } from './video/video.service';
+import { VideoModule } from './video/video.module';
 import { DatabaseModule } from './common/database/database.module';
 import { RenderingModule } from './rendering/rendering.module';
 import { QueueModule } from './common/queue/queue.module';
@@ -25,13 +25,13 @@ import { StorageModule } from './common/storage/storage.module';
       connection: QueueManagerService.getRedisConnection(),
     }),
     DatabaseModule,
+    VideoModule,
     RenderingModule,
     QueueModule,
     WebSocketModule,
     StorageModule,
   ],
   controllers: [VideoController],
-  providers: [VideoService],
 })
 export class AppModule {}
 

@@ -136,6 +136,17 @@ services:
               hour: 500
               policy: local
 
+  - name: ai-content-uploads
+    url: http://ai-content-service:9001
+    routes:
+      - name: ai-content-uploads-routes
+        paths:
+          - /uploads
+        methods:
+          - GET
+        plugins:
+          - name: cors
+
   - name: voice-audio-service
     url: http://voice-audio-service:9002
     routes:

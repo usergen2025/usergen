@@ -3434,9 +3434,9 @@ function AIChatPageContent() {
                                       alt="Uploaded avatar" 
                                       className="w-full h-full object-cover"
                                     />
-                                  ) : selectedAvatar && (selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl) ? (
+                                  ) : selectedAvatar && (selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl) ? (
                                     (() => {
-                                      const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
+                                      const avatarImageUrl = selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl;
                                       const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
                                         ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
                                         : 'http://localhost:9001';
@@ -3764,7 +3764,7 @@ Use a recent photo of yourself.`}
                               }}
                             >
                               {avatars.map((avatar: any) => {
-                                const avatarImageUrl = avatar.avatarUrl || avatar.thumbnailUrl || avatar.originalImageUrl;
+                                const avatarImageUrl = avatar.thumbnailUrl || avatar.avatarUrl || avatar.originalImageUrl;
                                 const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
                                   ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
                                   : 'http://localhost:9001';
@@ -3954,7 +3954,7 @@ Use a recent photo of yourself.`}
                     <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
                       <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
                         {(() => {
-                          const avatarImageUrl = selectedAvatar.avatarUrl || selectedAvatar.thumbnailUrl || selectedAvatar.originalImageUrl;
+                          const avatarImageUrl = selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl;
                           const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
                             ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
                             : 'http://localhost:9001';
@@ -5178,7 +5178,7 @@ Read everything on screen smoothly.`}
               {/* Avatar Image - Wrapper to center image without cropping */}
               <div className="relative w-full rounded-[12px] overflow-hidden flex items-center justify-center bg-gray-50" style={{ minHeight: 'clamp(21.875rem,43.65vh,447px)' }}>
                 {(() => {
-                  const avatarImageUrl = previewAvatar.avatarUrl || previewAvatar.thumbnailUrl || previewAvatar.originalImageUrl;
+                  const avatarImageUrl = previewAvatar.thumbnailUrl || previewAvatar.avatarUrl || previewAvatar.originalImageUrl;
                   const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
                     ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
                     : 'http://localhost:9001';

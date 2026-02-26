@@ -45,18 +45,15 @@ export class AlternateAvatarService {
     }
 
     const metadata = (project.metadata as any) || {};
+    const imageKeyToUse = metadata.generatedAvatarImageKey as string | undefined;
+    if (!imageKeyToUse) {
+      throw new Error(
+        'Avatar image for this project has not been generated yet. Please complete the b-roll images step, then try again.',
+      );
+    }
+
     const isAIChatFlow = metadata.generationFlow === 'AI_CHAT';
     const avatarMode = (project.avatarMode as string) || (isAIChatFlow ? 'PREMIUM' : 'BASIC');
-
-    const avatarDetails = await this.renderingService.getAvatarDetailsForAlternate(
-      project.avatarId,
-      userId,
-      authToken
-    );
-    const talkingPhotoId = avatarDetails.providerAvatarId;
-    const imageKey = avatarDetails.imageKey;
-    const imageKeyHalfNHalfWithWhite = avatarDetails.imageKeyHalfNHalfWithWhite;
-
     const avatarType = avatarMode.toLowerCase();
     const styleType = this.getStyleDirectoryName(project.style);
     const avatarDir = path.join(this.uploadsDir, 'videos', userId, 'avatars', projectId, styleType, avatarType);
@@ -67,31 +64,13 @@ export class AlternateAvatarService {
     const audioBuffer = fs.readFileSync(audioFilePath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
 
-    let videoResponse: { video_id: string };
-
-    if (avatarMode === 'PREMIUM') {
-      const imageKeyToUse = imageKeyHalfNHalfWithWhite || imageKey;
-      if (!imageKeyToUse) {
-        throw new Error('Image key not found. Avatar IV (Premium) requires image_key from the original upload.');
-      }
-      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-        image_key: imageKeyToUse,
-        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
-        audio_asset_id: audioAssetId,
-        video_orientation: 'portrait',
-        fit: 'cover',
-      });
-    } else {
-      if (!talkingPhotoId) {
-        throw new Error('Avatar motion ID (talking_photo_id) not found. Avatar may not be ready yet.');
-      }
-      videoResponse = await this.heygenVideoProvider.generateAvatarVideo({
-        talking_photo_id: talkingPhotoId,
-        audio_asset_id: audioAssetId,
-        dimension: { width: 1080, height: 960 },
-        caption: false,
-      });
-    }
+    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
+      image_key: imageKeyToUse,
+      video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+      audio_asset_id: audioAssetId,
+      video_orientation: 'portrait',
+      fit: 'cover',
+    });
 
     const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
     if (!completedVideo.data.video_url) {

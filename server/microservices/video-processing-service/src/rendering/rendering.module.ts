@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { VideoModule } from '../video/video.module';
 import { RenderingService } from './rendering.service';
 import { AlternateAvatarService } from './alternate-avatar.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
@@ -14,7 +15,7 @@ import { DatabaseModule } from '../common/database/database.module';
 import { StorageModule } from '../common/storage/storage.module';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule, StorageModule],
+  imports: [ConfigModule, DatabaseModule, StorageModule, VideoModule],
   providers: [
     RenderingService,
     AlternateAvatarService,

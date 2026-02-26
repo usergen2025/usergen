@@ -2,13 +2,16 @@ import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef 
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
 import { LoggerService } from '../common/logger/logger.service';
+import { PublicUrlService } from '../common/storage/public-url.service';
 import { HeyGenProvider } from './providers/heygen.provider';
+import { BytePlusImageProvider } from './providers/byteplus-image.provider';
 import { AvatarQueueService } from './queue/avatar-queue.service';
 import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import axios from 'axios';
+import sharp from 'sharp';
 
 export interface UploadImageDto {
   imageBuffer: Buffer;
@@ -30,7 +33,9 @@ export class AvatarsService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
+    private readonly publicUrlService: PublicUrlService,
     private readonly heygenProvider: HeyGenProvider,
+    private readonly bytePlusImageProvider: BytePlusImageProvider,
     private readonly configService: ConfigService,
     @Inject(forwardRef(() => AvatarQueueService))
     private readonly avatarQueueService: AvatarQueueService,
@@ -199,6 +204,29 @@ export class AvatarsService {
               originalImageUrl: newImageUrl,
             },
           });
+
+          // Minimal post-processing: upload to GCS if available, get public URL, store in avatarUrl/thumbnailUrl
+          try {
+            const subPath = `avatars/${dto.userId}/${avatar.id}`;
+            const result = await this.publicUrlService.uploadFromPath(newImagePath, subPath, 'original.jpg');
+            await this.databaseService.avatar.update({
+              where: { id: avatar.id },
+              data: {
+                avatarUrl: result.publicUrl,
+                thumbnailUrl: result.publicUrl,
+              },
+            });
+            this.logger.log(`Post-upload: avatarUrl set to ${result.publicUrl}`, 'AvatarsService');
+          } catch (uploadErr: any) {
+            this.logger.warn(`Post-upload processing failed, using relative URL: ${uploadErr.message}`, 'AvatarsService');
+            await this.databaseService.avatar.update({
+              where: { id: avatar.id },
+              data: {
+                avatarUrl: newImageUrl,
+                thumbnailUrl: newImageUrl,
+              },
+            });
+          }
           
           // Update imageBuffer to use new path for processing
           imageBuffer = fs.readFileSync(newImagePath);
@@ -207,6 +235,21 @@ export class AvatarsService {
         } catch (moveError: any) {
           this.logger.error(`Failed to move original image: ${moveError.message}`, moveError.stack, 'AvatarsService');
           // Continue even if move fails - image processing can still use original path
+        }
+      }
+
+      // When file move skipped (originalImagePath null): use dto.originalImageUrl as avatarUrl fallback
+      if (!originalImagePath && dto.originalImageUrl) {
+        try {
+          await this.databaseService.avatar.update({
+            where: { id: avatar.id },
+            data: {
+              avatarUrl: dto.originalImageUrl,
+              thumbnailUrl: dto.originalImageUrl,
+            },
+          });
+        } catch {
+          // Ignore - avatar already has originalImageUrl
         }
       }
 
@@ -225,51 +268,167 @@ export class AvatarsService {
         },
       });
 
-      // Add image processing job to queue (avatarId is now available)
-      if (imageBuffer) {
-        try {
-          await this.avatarQueueService.addImageProcessingJob({
-            avatarId: avatar.id, // ✅ avatarId is available here
-            userId: dto.userId,
-            imageBuffer: imageBuffer,
-            originalImageKey: dto.imageKey,
-          });
-          this.logger.log(`Added image processing job to queue for avatar ${avatar.id}`, 'AvatarsService');
-        } catch (error: any) {
-          this.logger.error(`Failed to add image processing job: ${error.message}`, error.stack, 'AvatarsService');
-          // Don't fail avatar creation if image processing fails
-        }
-      }
+      // [SIMPLIFIED FLOW] Commented out: style variants, HeyGen group creation, and motion ID.
+      // Avatar image is now generated per-project when user moves to b-roll images step (see generate-for-project).
+      // if (imageBuffer) {
+      //   try {
+      //     await this.avatarQueueService.addImageProcessingJob({
+      //       avatarId: avatar.id,
+      //       userId: dto.userId,
+      //       imageBuffer: imageBuffer,
+      //       originalImageKey: dto.imageKey,
+      //     });
+      //     this.logger.log(`Added image processing job to queue for avatar ${avatar.id}`, 'AvatarsService');
+      //   } catch (error: any) {
+      //     this.logger.error(`Failed to add image processing job: ${error.message}`, error.stack, 'AvatarsService');
+      //   }
+      // }
+      // const createGroupJob = await this.databaseService.avatarGenerationJob.create({
+      //   data: {
+      //     userId: dto.userId,
+      //     avatarId: avatar.id,
+      //     provider: 'heygen',
+      //     jobType: 'CREATE_GROUP',
+      //     status: 'PENDING',
+      //     imageKey: dto.imageKey,
+      //     metadata: { step: 'create_group', assetId: dto.assetId },
+      //   },
+      // });
+      // this.processAvatarGeneration(avatar.id, createGroupJob.id).catch((error) => {
+      //   this.logger.error(`Background avatar generation failed: ${error.message}`, error.stack, 'AvatarsService');
+      // });
 
-      // Start background process: Create group -> Train -> Generate looks -> Add motion
-      const createGroupJob = await this.databaseService.avatarGenerationJob.create({
-        data: {
-          userId: dto.userId,
-          avatarId: avatar.id,
-          provider: 'heygen',
-          jobType: 'CREATE_GROUP',
-          status: 'PENDING',
-          imageKey: dto.imageKey,
-          metadata: {
-            step: 'create_group',
-            assetId: dto.assetId, // Store assetId for use in createPhotoAvatarGroup
-          },
-        },
-      });
-
-      // Process in background (async, don't wait)
-      this.processAvatarGeneration(avatar.id, createGroupJob.id).catch((error) => {
-        this.logger.error(`Background avatar generation failed: ${error.message}`, error.stack, 'AvatarsService');
+      // Mark avatar as ready (no group/motion needed for Avatar IV flow)
+      await this.databaseService.avatar.update({
+        where: { id: avatar.id },
+        data: { generationStatus: 'COMPLETED' },
       });
 
       return {
         avatarId: avatar.id,
-        jobId: createGroupJob.id,
+        jobId: uploadJob.id,
       };
     } catch (error: any) {
       this.logger.error(`Failed to create avatar from upload: ${error.message}`, error.stack, 'AvatarsService');
       throw error;
     }
+  }
+
+  /**
+   * Generate avatar image for a project from the avatar's original image and script's avatar_image_prompt.
+   * Used when user moves to b-roll images step. For HALF_N_HALF generates 9:8 then adds white top to get 9:16.
+   */
+  async generateAvatarImageForProject(params: {
+    projectId: string;
+    avatarId: string;
+    userId: string;
+    script: { avatar_image_prompt?: string; visual_style_guide?: any };
+    style?: string;
+  }): Promise<{ imageKey: string }> {
+    const { projectId, avatarId, userId, script, style } = params;
+    this.logger.log(`Generating avatar image for project ${projectId}, avatar ${avatarId}`, 'AvatarsService');
+
+    const avatar = await this.databaseService.avatar.findFirst({
+      where: { id: avatarId, userId },
+    });
+    if (!avatar) {
+      throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
+    }
+
+    const avatarImagePrompt = script?.avatar_image_prompt;
+    if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+      throw new BadRequestException(
+        'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected.',
+      );
+    }
+
+    const originalImageUrl = avatar.originalImageUrl;
+    if (!originalImageUrl) {
+      throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
+    }
+
+    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
+    const possiblePaths = urlMatch
+      ? [
+          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+          path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+        ]
+      : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
+    let imagePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        imagePath = p;
+        break;
+      }
+    }
+    if (!imagePath) {
+      throw new BadRequestException(`Avatar original image not found at: ${originalImageUrl}`);
+    }
+
+    const imageBuffer = fs.readFileSync(imagePath);
+    const imageBase64 = imageBuffer.toString('base64');
+    const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
+
+    const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
+    const frontFacingSuffix = useBottomHalfFraming
+      ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+      : '';
+    const effectivePrompt = avatarImagePrompt + frontFacingSuffix;
+    let resultImageBuffer: Buffer;
+
+    if (useBottomHalfFraming) {
+      const bytePlusSize = '2304x2048';
+      const result = await this.bytePlusImageProvider.generateImageVariant(
+        base64DataUri,
+        effectivePrompt,
+        bytePlusSize,
+      );
+      const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+      let halfBuffer = Buffer.from(downloaded.data);
+      halfBuffer = await sharp(halfBuffer)
+        .resize(1080, 960, { fit: 'fill', position: 'center' })
+        .jpeg({ quality: 95 })
+        .toBuffer();
+      const whiteHeight = 960;
+      const whiteTop = await sharp({
+        create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .jpeg()
+        .toBuffer();
+      resultImageBuffer = await sharp({
+        create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .composite([
+          { input: whiteTop, top: 0, left: 0 },
+          { input: halfBuffer, top: whiteHeight, left: 0 },
+        ])
+        .jpeg()
+        .toBuffer();
+    } else {
+      const bytePlusSize = '1440x2560';
+      const result = await this.bytePlusImageProvider.generateImageVariant(
+        base64DataUri,
+        effectivePrompt,
+        bytePlusSize,
+      );
+      const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+      const largeBuffer = Buffer.from(downloaded.data);
+      resultImageBuffer = await sharp(largeBuffer)
+        .resize(1080, 1920, { fit: 'fill', position: 'center' })
+        .jpeg({ quality: 95 })
+        .toBuffer();
+    }
+
+    const uploadResponse = await this.heygenProvider.uploadImage(
+      resultImageBuffer,
+      'image/jpeg',
+      `project_${projectId}_avatar.jpg`,
+    );
+    if (!uploadResponse.image_key) {
+      throw new Error('HeyGen upload did not return image_key');
+    }
+    this.logger.log(`Avatar image for project ${projectId} generated, image_key: ${uploadResponse.image_key}`, 'AvatarsService');
+    return { imageKey: uploadResponse.image_key };
   }
 
   /**

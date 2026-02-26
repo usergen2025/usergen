@@ -40,6 +40,16 @@ export class VideoController {
   ) {}
 
   /**
+   * Returns true if the URL is reachable by external services (e.g. BytePlus).
+   * Must be a full URL and must not be localhost.
+   */
+  private isPubliclyReachableUrl(url: string | undefined): boolean {
+    if (!url || typeof url !== 'string') return false;
+    const u = url.trim();
+    return (u.startsWith('http://') || u.startsWith('https://')) && !u.includes('localhost');
+  }
+
+  /**
    * Extract userId from JWT token
    * Handles both user tokens and service tokens (with type: 'service')
    */
@@ -598,6 +608,10 @@ export class VideoController {
       normalizedStyle,
     });
 
+    // When on b-roll images step: ensure project has generated avatar image (for Avatar IV) in background
+    const authToken = req.headers?.authorization;
+    this.videoService.ensureProjectAvatarImage(projectId, userId, authToken).catch(() => {});
+
     const jobId = await this.queueManager.addImageGenerationJob({
       projectId,
       userId,
@@ -684,17 +698,22 @@ export class VideoController {
       heygenImageKey = image.heygenImageKey || image.compositeImageKey;
     }
 
-    // Get public URL for the image - prefer local file over provider URL (which may expire)
+    // Get public URL for the image. Prefer stored GCS/public URL from image generation
+    // so BytePlus (and other external services) can fetch it; avoid passing localhost.
     let publicImageUrl: string;
-    if (image.localPath && image.localUrl) {
+    if (image.publicUrl && this.isPubliclyReachableUrl(image.publicUrl)) {
+      publicImageUrl = image.publicUrl;
+      console.log(`[VideoController] Using stored public URL for scene ${sceneNum}: ${publicImageUrl}`);
+    } else if (image.gcsUrl && this.isPubliclyReachableUrl(image.gcsUrl)) {
+      publicImageUrl = image.gcsUrl;
+      console.log(`[VideoController] Using stored GCS URL for scene ${sceneNum}: ${publicImageUrl}`);
+    } else if (image.localPath && image.localUrl) {
       try {
-        // Use local file and get public URL (uploads to FAL in local, uses backend URL in dev/prod)
         console.log(`[VideoController] Using local file for scene ${sceneNum}: ${image.localPath}`);
         publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
         console.log(`[VideoController] ✅ Got public URL for local file: ${publicImageUrl}`);
       } catch (error: any) {
         console.warn(`[VideoController] Failed to get public URL from local file, falling back to provider URL: ${error.message}`);
-        // Fallback to provider URL if local file upload fails
         if (!image.imageUrl) {
           throw new HttpException(
             `Failed to get public URL for image: ${error.message}`,
@@ -704,7 +723,6 @@ export class VideoController {
         publicImageUrl = image.imageUrl;
       }
     } else if (image.imageUrl) {
-      // Fallback to provider URL if local file doesn't exist (backward compatibility)
       console.log(`[VideoController] Using provider URL for scene ${sceneNum} (no local file found)`);
       publicImageUrl = image.imageUrl;
     } else {
@@ -823,6 +841,13 @@ export class VideoController {
     const style = projectData.style;
     const authToken = req.headers?.authorization;
 
+    // Trigger avatar image generation early for avatar projects so avatar-video jobs can use it
+    if (projectData.avatarId) {
+      this.videoService.ensureProjectAvatarImage(projectId, userId, authToken).catch((err) => {
+        console.warn(`[VideoController] ensureProjectAvatarImage at convertToVideos start: ${err?.message}`);
+      });
+    }
+
     const jobs: { sceneNumber: number; jobId: string; type: 'broll' | 'scene' }[] = [];
     const force = !!body.forceRegenerate;
     const sceneJobIdsToPersist: Record<number, string> = {};
@@ -842,7 +867,11 @@ export class VideoController {
 
       let publicImageUrl: string;
       try {
-        if (image.localPath && image.localUrl) {
+        if (image.publicUrl && this.isPubliclyReachableUrl(image.publicUrl)) {
+          publicImageUrl = image.publicUrl;
+        } else if (image.gcsUrl && this.isPubliclyReachableUrl(image.gcsUrl)) {
+          publicImageUrl = image.gcsUrl;
+        } else if (image.localPath && image.localUrl) {
           publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
         } else if (image.imageUrl) {
           publicImageUrl = image.imageUrl;

@@ -344,7 +344,7 @@ function AvatarPageContent() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   {/* Avatar options */}
                   {filteredAvatars.map((avatar: any) => {
-                    const avatarImageUrl = avatar.avatarUrl || avatar.thumbnailUrl || avatar.originalImageUrl;
+                    const avatarImageUrl = avatar.thumbnailUrl || avatar.avatarUrl || avatar.originalImageUrl;
                     const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
                       ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
                       : 'http://localhost:9001';

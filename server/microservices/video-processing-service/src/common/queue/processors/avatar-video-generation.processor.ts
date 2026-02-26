@@ -9,6 +9,7 @@ import { DatabaseService } from '../../database/database.service';
 import { AlternateAvatarService } from '../../../rendering/alternate-avatar.service';
 import { QueueManagerService } from '../queue-manager.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import { VideoService } from '../../../video/video.service';
 
 export interface AvatarVideoGenerationJobData {
   projectId: string;
@@ -31,6 +32,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     private readonly alternateAvatarService: AlternateAvatarService,
     private readonly queueManager: QueueManagerService,
     private readonly jobStatusGateway: JobStatusGateway,
+    private readonly videoService: VideoService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -81,10 +83,23 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         throw new Error(`Audio file not found for scene ${sceneNumber}`);
       }
 
+      let metadata = ((project as any).metadata as any) || {};
+      if (!metadata.generatedAvatarImageKey) {
+        await this.videoService.ensureProjectAvatarImage(projectId, userId, authToken);
+        const refreshed = await this.databaseService.videoProject.findFirst({
+          where: { id: projectId },
+        });
+        metadata = ((refreshed as any)?.metadata as any) || {};
+        if (!metadata.generatedAvatarImageKey) {
+          throw new Error(
+            'Avatar image for this project has not been generated yet. The script may be missing avatar_image_prompt — regenerate the script with an avatar style, or avatar image generation failed. Complete the b-roll images step and try again.',
+          );
+        }
+      }
+
       // Avatar cache check (Phase 9): skip generation if valid cache exists
       const audioBuffer = fs.readFileSync(audioPath);
       const audioHash = crypto.createHash('sha256').update(audioBuffer).digest('hex');
-      const metadata = ((project as any).metadata as any) || {};
       const cacheEntry = metadata.avatarVideoCache?.[sceneNumber];
       let avatarVideoPath: string;
       if (cacheEntry?.audioHash === audioHash && cacheEntry?.localPath && fs.existsSync(cacheEntry.localPath)) {

@@ -64,6 +64,9 @@ export interface SceneRegenerationResponse {
   model: string;
 }
 
+/** Video styles that use an avatar and require avatar_image_prompt in the script. */
+const AVATAR_VIDEO_STYLES: readonly string[] = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'];
+
 @Injectable()
 export class ScriptsService {
   private openai: OpenAI;
@@ -247,13 +250,15 @@ export class ScriptsService {
         }
       }
 
+      // Request avatar_image_prompt for avatar styles even when client does not send hasAvatar
+      const effectiveHasAvatar = request.hasAvatar === true || AVATAR_VIDEO_STYLES.includes(request.videoStyle);
       // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle, 
         language, 
         tags,
         request.productImageUrl,
-        request.hasAvatar,
+        effectiveHasAvatar,
         analyzedAssets
       );
       
@@ -447,8 +452,10 @@ export class ScriptsService {
         throw new Error('OpenAI API key is not configured');
       }
 
+      // Request avatar_image_prompt for avatar styles so regenerated script retains it
+      const effectiveHasAvatar = AVATAR_VIDEO_STYLES.includes(request.videoStyle);
       // Get system prompt (same as script generation to maintain consistency)
-      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language, [], undefined, undefined);
+      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language, [], undefined, effectiveHasAvatar);
       
       // Build conversation history for context
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -943,6 +950,30 @@ The visual_style_guide you create should be a synthesis of these tag preferences
       }
     }
 
+    // Avatar image prompt: when hasAvatar is true, script must output a single avatar_image_prompt string (no hardcoding; LLM decides framing, background, lighting per style)
+    let avatarContext = '';
+    if (hasAvatar) {
+      const styleSpecificGuidance = {
+        'HALF_N_HALF': 'The avatar appears only in the BOTTOM HALF of the frame. CRITICAL: Person must be FRONT-FACING, looking directly at the camera. Describe waist-up composition, neutral background, lighting matching the visual_style_guide.',
+        'ALTERNATE': 'Alternating full-screen avatar scenes. CRITICAL: Person must be FRONT-FACING, looking directly at the camera. No side angles. Close-up or waist-up, neutral background, lighting consistent with visual_style_guide.',
+        'AVATAR_CUTOUT': 'Avatar will be composited over b-roll. Use appropriate framing and neutral, theme-consistent background and lighting so the avatar fits the video as a single unit.',
+        'AVATAR_ONLY': 'Full-screen avatar. Use appropriate framing and neutral, theme-consistent background and lighting matching the visual_style_guide.',
+        'AVATAR_PRODUCT': 'Avatar with product context. Use appropriate framing and neutral, theme-consistent background and lighting.',
+      };
+      const styleGuide = styleSpecificGuidance[style as keyof typeof styleSpecificGuidance] || 'Use appropriate framing and neutral, theme-consistent background and lighting matching the visual_style_guide.';
+      avatarContext = `
+
+AVATAR IMAGE PROMPT (REQUIRED - when avatar is used):
+Your JSON output MUST include at the top level: "avatar_image_prompt": "<full prompt string>".
+- CRITICAL - FRONT-FACING RESTRICTION: The avatar MUST face the camera directly. No side angles, profile views, or sideways poses. The person must look straight at the camera. This is mandatory for all avatar styles.
+- This is a single string: a complete, ready-to-use prompt for the image model (no structured fields or enums).
+- Generate it entirely from the video topic, style, and visual_style_guide. Do not use placeholders.
+- Style-specific for this video: ${styleGuide}
+- Rules: No scenic or decorative backgrounds (no mountains, traffic, etc.). Neutral, theme-consistent background. Lighting must align with visual_style_guide so avatar and b-roll feel like one video.
+- Example format: "avatar_image_prompt": "Front-facing waist-up portrait, person looking directly at camera, neutral gray background, soft even lighting, professional video look" (for HALF_N_HALF) or "Front-facing close-up, person at streaming desk looking straight at camera, neutral dark gray background, soft lighting" (for ALTERNATE).
+`;
+    }
+
   const prompts = {
       'HALF_N_HALF': `You are a professional video director and AI content composer who creates structured video scripts for "half-and-half" style videos, where the top half of the frame shows b-roll (visual footage related to the narration) and the bottom half shows an Indian-looking avatar delivering ${lang.dialogue}.
 
@@ -991,6 +1022,7 @@ Structure Your Output in This JSON Format:
     "visual_tone": "Describe overall visual tone (e.g., 'Modern Indian urban, vibrant street scenes, authentic local life')",
     "recurring_elements": "List any visual elements that should appear consistently (e.g., 'Indian street vendors, colorful markets, modern urban infrastructure')"
   },
+  "avatar_image_prompt": "Only include this key when the video uses an avatar. Full prompt string for the avatar image, e.g. 'Waist-up portrait, neutral gray background, soft lighting matching the video theme, person centered for lower half of frame'.",
   "scenes": [
     {
       "scene_number": 1,
@@ -1088,6 +1120,7 @@ Output Format:
     "visual_tone": "Describe overall visual tone for all b-roll scenes",
     "recurring_elements": "List any visual elements that should appear consistently"
   },
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. close-up, person at streaming desk, neutral background, soft lighting).",
   "scene_plan": [
     {
       "scene_number": 1,
@@ -1186,6 +1219,7 @@ Output Format:
     "visual_tone": "Describe overall visual tone for all b-roll backgrounds",
     "recurring_elements": "List any visual elements that should appear consistently in backgrounds"
   },
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. waist-up portrait, neutral background, soft lighting for cutout overlay).",
   "scenes": [
     {
       "scene_number": 1,
@@ -1274,6 +1308,7 @@ Structure Your Output in This JSON Format:
     "time_of_day": "Specify consistent time",
     "visual_tone": "Professional avatar presentation"
   },
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. full-screen avatar, neutral background, soft lighting).",
   "scenes": [
     {
       "scene_number": 1,
@@ -1417,6 +1452,7 @@ Structure Your Output in This JSON Format:
     "time_of_day": "Specify consistent time",
     "visual_tone": "Professional product advertisement"
   },
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. presenter with product, neutral background, soft lighting).",
   "scenes": [
     {
       "scene_number": 1,
@@ -1454,8 +1490,8 @@ Guidelines:
   const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
   const regionContext = this.getRegionContext(language);
 
-  // Append asset context and region context (Indian default for hindi/hinglish, US/Europe for english)
-  return basePrompt + assetContext + regionContext;
+  // Append asset context, optional avatar context, and region context
+  return basePrompt + assetContext + avatarContext + regionContext;
 }
 
   /**

@@ -8,6 +8,7 @@ import {
 } from './dto/video-project.dto';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class VideoService {
@@ -194,6 +195,26 @@ export class VideoService {
         : {};
       updateData.metadata = { ...existingMeta, ...dto.metadata };
     }
+    // When script or style changes, clear generated avatar image cache so it is regenerated at b-roll step
+    if (dto.script !== undefined || dto.style !== undefined) {
+      const base = (updateData.metadata ?? existing.metadata) as Record<string, unknown> | null | undefined;
+      const meta = base && typeof base === 'object' ? { ...base } : {};
+      delete meta.generatedAvatarImageKey;
+      delete meta.avatarImageScriptHash;
+      // Mirror script.avatar_image_prompt to metadata for use anywhere without parsing script
+      if (dto.script !== undefined) {
+        try {
+          const scriptObj = typeof dto.script === 'string' ? JSON.parse(dto.script) : dto.script;
+          const prompt = scriptObj?.avatar_image_prompt;
+          if (typeof prompt === 'string' && prompt.trim()) {
+            meta.avatarImagePrompt = prompt.trim();
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+      updateData.metadata = meta;
+    }
 
     // Update timestamps
     if (dto.status === 'IN_PROGRESS' && existing.status === 'DRAFT') {
@@ -305,6 +326,62 @@ export class VideoService {
     } catch (error: any) {
       // Log but don't throw - this is a background operation
       console.error(`[VideoService] Failed to trigger asset analysis:`, error.message);
+    }
+  }
+
+  /**
+   * Ensure project has a generated avatar image (for Avatar IV). Called when user is on b-roll images step.
+   * If script has avatar_image_prompt and cache is missing or script changed, calls ai-content-service to generate and stores in metadata.
+   */
+  async ensureProjectAvatarImage(projectId: string, userId: string, authToken?: string): Promise<void> {
+    try {
+      const project = await this.databaseService.videoProject.findFirst({
+        where: { id: projectId, userId },
+      });
+      if (!project || !project.avatarId || !project.script) return;
+      const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+      if (!script?.avatar_image_prompt) return;
+      const scriptHash = crypto.createHash('sha256').update(JSON.stringify(project.script)).digest('hex');
+      const meta = (project.metadata as Record<string, unknown>) || {};
+      if (meta.generatedAvatarImageKey && meta.avatarImageScriptHash === scriptHash) return;
+
+      const token = authToken?.replace(/^Bearer\s+/i, '') ?? jwt.sign(
+        { sub: userId, userId, id: userId, type: 'service' },
+        this.jwtSecret,
+        { expiresIn: '1h' },
+      );
+      const res = await axios.post<{ success: boolean; data: { imageKey: string } }>(
+        `${this.aiContentServiceUrl}/api/avatars/generate-for-project`,
+        {
+          projectId,
+          avatarId: project.avatarId,
+          userId,
+          script,
+          style: project.style ?? undefined,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 120000,
+        },
+      );
+      if (!res.data?.success || !res.data?.data?.imageKey) return;
+      const existingMeta = (project.metadata as Record<string, unknown>) || {};
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: {
+            ...existingMeta,
+            generatedAvatarImageKey: res.data.data.imageKey,
+            avatarImageScriptHash: scriptHash,
+          },
+        },
+      });
+      console.log(`[VideoService] Stored generated avatar image key for project ${projectId}`);
+    } catch (error: any) {
+      console.warn(`[VideoService] ensureProjectAvatarImage failed for project ${projectId}:`, error.message);
     }
   }
 

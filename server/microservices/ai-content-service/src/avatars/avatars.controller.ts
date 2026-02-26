@@ -297,6 +297,49 @@ export class AvatarsController {
     };
   }
 
+  @Post('generate-for-project')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Generate avatar image for project',
+    description: 'Generates a single avatar image from the avatar original + script avatar_image_prompt. Used when user moves to b-roll images step. Returns HeyGen image_key for Avatar IV.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        avatarId: { type: 'string' },
+        userId: { type: 'string' },
+        script: { type: 'object', properties: { avatar_image_prompt: { type: 'string' }, visual_style_guide: { type: 'object' } } },
+        style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'] },
+      },
+      required: ['projectId', 'avatarId', 'script'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Avatar image generated', schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { imageKey: { type: 'string' } } } } } })
+  @ApiResponse({ status: 400, description: 'Missing avatar_image_prompt or invalid request' })
+  async generateForProject(
+    @Body() body: { projectId: string; avatarId: string; userId?: string; script: any; style?: string },
+    @Request() req: any,
+  ) {
+    const userId = body.userId ?? this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, error: 'User ID required', code: 'MISSING_USER_ID' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const result = await this.avatarsService.generateAvatarImageForProject({
+      projectId: body.projectId,
+      avatarId: body.avatarId,
+      userId,
+      script: body.script,
+      style: body.style,
+    });
+    return { success: true, data: result };
+  }
+
   @Get(':id')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get avatar details', description: 'Get specific avatar by ID' })
