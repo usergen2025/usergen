@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X } from 'lucide-react';
+import { ArrowLeft, X, Image as ImageIcon, Sparkles } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
@@ -4024,26 +4024,48 @@ Use a recent photo of yourself.`}
                 </p>
               </div>
 
-              {/* Visual Style Preset Cards */}
-              <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+              {/* Visual Style Preset Cards - Figma: left-to-right layout; image preview auto width, 4 per row */}
+              <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)]">
                 {AVATAR_VISUAL_STYLE_PRESETS.map((preset) => (
                   <button
                     key={preset.id}
                     onClick={() => setSelectedAvatarVisualStyle(preset.id)}
                     className={cn(
-                      "flex flex-col items-start gap-[clamp(0.375rem,0.59vh,6px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] min-w-[clamp(120px,20vw,140px)] flex-1 hover:opacity-90 transition-opacity text-left",
+                      "flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left",
                       selectedAvatarVisualStyle === preset.id && "ring-2 ring-[#E86412]"
                     )}
                   >
-                    <div className="w-full aspect-square max-h-[80px] bg-gray-100 rounded-[8px] flex items-center justify-center overflow-hidden">
-                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-400">Preview</span>
+                    {/* Left: preview - auto width when image, fixed when icon */}
+                    {'previewImage' in preset && preset.previewImage ? (
+                      <div className="h-[72px] w-auto flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                        <Image
+                          src={preset.previewImage}
+                          alt={preset.label}
+                          width={72}
+                          height={128}
+                          className="h-full w-auto object-contain"
+                        />
+                      </div>
+                    ) : (
+                      <div className="h-[72px] w-[40px] flex-shrink-0 rounded-[8px] bg-gray-100 flex items-center justify-center overflow-hidden">
+                        {'icon' in preset && preset.icon === 'original' ? (
+                          <ImageIcon className="w-5 h-5 text-gray-500" />
+                        ) : 'icon' in preset && preset.icon === 'random' ? (
+                          <Sparkles className="w-5 h-5 text-gray-500" />
+                        ) : (
+                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-400">Preview</span>
+                        )}
+                      </div>
+                    )}
+                    {/* Right: title + description (full text wrap, no ellipsis) */}
+                    <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                      <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-tight text-[#212121]">
+                        {preset.label}
+                      </span>
+                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal leading-tight text-gray-600">
+                        {preset.description}
+                      </span>
                     </div>
-                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-tight text-[#212121]">
-                      {preset.label}
-                    </span>
-                    <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal leading-tight text-gray-600 line-clamp-2">
-                      {preset.description}
-                    </span>
                   </button>
                 ))}
               </div>
