@@ -2805,13 +2805,10 @@ function AIChatPageContent() {
                     {/* Half-n-Half Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('half-n-half')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'half-n-half' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'half-n-half' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'half-n-half'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -2845,13 +2842,10 @@ function AIChatPageContent() {
                     {/* Avatar Only Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-only')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'avatar-only' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'avatar-only' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'avatar-only'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -2885,13 +2879,10 @@ function AIChatPageContent() {
                     {/* Avatar Cut-out Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-cutout')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'avatar-cutout' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'avatar-cutout' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'avatar-cutout'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -2925,13 +2916,10 @@ function AIChatPageContent() {
                     {/* Alternate Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('alternate')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'alternate' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'alternate' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'alternate'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -2965,13 +2953,10 @@ function AIChatPageContent() {
                     {/* Product Only Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('product-only')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'product-only' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'product-only' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'product-only'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -3005,13 +2990,10 @@ function AIChatPageContent() {
                     {/* Avatar with Product Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-product')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'avatar-product' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'avatar-product' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'avatar-product'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
@@ -3045,13 +3027,10 @@ function AIChatPageContent() {
                     {/* Animated Avatar Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('animated-avatar')}
-                      className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
-                        selectedVideoStyle === 'animated-avatar' ? "p-[2px]" : "p-0"
-                      )}
-                      style={selectedVideoStyle === 'animated-avatar' ? {
-                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
-                      } : {}}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'animated-avatar'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration - reuse avatar-only for now; replace with style-animated-avatar.svg when available */}
@@ -4397,10 +4376,7 @@ Read everything on screen smoothly.`}
                               return (
                                 <div
                                   key={voice.voice_id}
-                                  className={cn(
-                                    "rounded-[8px] cursor-pointer transition-all",
-                                    isSelected ? "p-[2px]" : "p-0"
-                                  )}
+                                  className="rounded-[8px] cursor-pointer transition-all p-[2px]"
                                   style={isSelected ? {
                                     background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
                                   } : {}}
@@ -4411,10 +4387,7 @@ Read everything on screen smoothly.`}
                                     }
                                   }}
                                 >
-                                  <div className={cn(
-                                    "flex flex-row justify-between items-center rounded-[6px] transition-all",
-                                    isSelected ? "p-[clamp(0.375rem,0.59vh,6px)] bg-white" : "p-[clamp(0.5rem,0.78vh,8px)]"
-                                  )}>
+                                  <div className="flex flex-row justify-between items-center rounded-[6px] transition-all bg-white p-[clamp(0.5rem,0.78vh,8px)]">
                                   <div className="flex flex-col justify-center items-start gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
                                     <div className="flex flex-row items-center gap-[clamp(0.625rem,0.98vh,10px)]">
                                       <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
