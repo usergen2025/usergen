@@ -274,6 +274,9 @@ function BrollImagesPageContent() {
         const sceneType = scene.type?.toLowerCase();
         return sceneType === 'b-roll' || sceneType === 'broll';
       });
+    } else if (style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR' || style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
+      // No per-scene B-roll images for these styles
+      return [];
     }
     
     return scenes;

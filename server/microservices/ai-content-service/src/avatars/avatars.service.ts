@@ -393,7 +393,7 @@ export class AvatarsService {
 
     let resultImageBuffer: Buffer;
 
-    if (avatarVisualStylePreset === 'original') {
+    if (avatarVisualStylePreset === 'original' && style !== 'ANIMATED_AVATAR') {
       // Original: Sharp resize/crop only, no BytePlus
       if (useBottomHalfFraming) {
         const halfBuffer = await sharp(imageBuffer)
@@ -426,7 +426,20 @@ export class AvatarsService {
       let effectivePrompt: string;
       const avatarImagePrompt = script?.avatar_image_prompt;
 
-      if (
+      if (style === 'ANIMATED_AVATAR') {
+        // One-step 3D animated: combine script (3D animated descriptor) + preset pose + theme
+        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+          throw new BadRequestException(
+            'Script must include avatar_image_prompt (string) for Animated Avatar style. Regenerate the script.',
+          );
+        }
+        const presetForPose = avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+          ? avatarVisualStylePreset
+          : 'front-facing';
+        const presetPose = PRESET_POSE_PROMPTS[presetForPose];
+        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
+        effectivePrompt = `${avatarImagePrompt}, ${presetPose}, ${theme}`;
+      } else if (
         avatarVisualStylePreset === 'random' ||
         !avatarVisualStylePreset ||
         !PRESET_POSE_PROMPTS[avatarVisualStylePreset]

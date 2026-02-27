@@ -312,7 +312,7 @@ export class AvatarsController {
         avatarId: { type: 'string' },
         userId: { type: 'string' },
         script: { type: 'object', properties: { avatar_image_prompt: { type: 'string' }, visual_style_guide: { type: 'object' } } },
-        style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'] },
+        style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'] },
         avatarVisualStylePreset: { type: 'string', description: 'original, random, or preset id' },
       },
       required: ['projectId', 'avatarId', 'script'],

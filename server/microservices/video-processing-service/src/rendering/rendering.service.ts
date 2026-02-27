@@ -438,7 +438,7 @@ export class RenderingService {
     }
 
     // Ensure avatar image exists for avatar styles before proceeding (fixes race when using newly uploaded avatar)
-    const AVATAR_STYLES = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'];
+    const AVATAR_STYLES = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'];
     if (project.avatarId && AVATAR_STYLES.includes(project.style as string)) {
       await this.videoService.ensureProjectAvatarImage(projectId, userId, authToken);
       const refreshed = await this.databaseService.videoProject.findFirst({
@@ -468,6 +468,8 @@ export class RenderingService {
       } else if (project.style === 'ALTERNATE') {
         await this.processAlternate(projectId, userId, audioFiles, bRollVideos, project, authToken);
       } else if (project.style === 'AVATAR_ONLY') {
+        await this.processAvatarOnly(projectId, userId, audioFiles, project, authToken);
+      } else if (project.style === 'ANIMATED_AVATAR') {
         await this.processAvatarOnly(projectId, userId, audioFiles, project, authToken);
       } else if (project.style === 'PRODUCT_ONLY') {
         await this.processProductOnly(projectId, userId, audioFiles, bRollVideos, project);

@@ -45,6 +45,8 @@ export class AssetProcessorService {
         return this.getAssetsForCutout(assets, sceneNumber);
       case 'AVATAR_ONLY':
         return this.getAssetsForAvatarOnly(assets, sceneNumber);
+      case 'ANIMATED_AVATAR':
+        return this.getAssetsForAvatarOnly(assets, sceneNumber);
       case 'ALTERNATE':
         return this.getAssetsForAlternate(assets, sceneNumber);
       case 'PRODUCT_ONLY':

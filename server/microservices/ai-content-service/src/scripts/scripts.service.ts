@@ -22,7 +22,7 @@ export interface ScriptGenerationResponse {
 
 export interface VideoScriptGenerationRequest {
   userPrompt: string;
-  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
+  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR';
   duration?: string; // e.g., "30 seconds", "1 minute"
   language?: 'english' | 'hindi' | 'hinglish';
   tags?: string[]; // Optional tags for visual style guidance
@@ -49,7 +49,7 @@ export interface VideoScriptGenerationResponse {
 
 export interface SceneRegenerationRequest {
   sceneNumber: number;
-  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT';
+  videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR';
   existingScript: any; // Full script for context
   originalUserPrompt: string; // Original prompt for context
   operation: 'regenerate' | 'edit';
@@ -65,7 +65,7 @@ export interface SceneRegenerationResponse {
 }
 
 /** Video styles that use an avatar and require avatar_image_prompt in the script. */
-const AVATAR_VIDEO_STYLES: readonly string[] = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT'];
+const AVATAR_VIDEO_STYLES: readonly string[] = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'];
 
 @Injectable()
 export class ScriptsService {
@@ -959,6 +959,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
         'AVATAR_CUTOUT': 'Avatar will be composited over b-roll. Use appropriate framing and neutral, theme-consistent background and lighting so the avatar fits the video as a single unit.',
         'AVATAR_ONLY': 'Full-screen avatar. Use appropriate framing and neutral, theme-consistent background and lighting matching the visual_style_guide.',
         'AVATAR_PRODUCT': 'Avatar with product context. Use appropriate framing and neutral, theme-consistent background and lighting.',
+        'ANIMATED_AVATAR': 'CRITICAL: The avatar_image_prompt must describe ONLY the 3D animated style (e.g. "3D animated character", "stylized 3D animated look", "animated 3D presenter style"). Do NOT include position, pose, desk, microphone, or setup—those are chosen by the user separately. Keep it to 1-2 short phrases describing the animated aesthetic.',
       };
       const styleGuide = styleSpecificGuidance[style as keyof typeof styleSpecificGuidance] || 'Use appropriate framing and neutral, theme-consistent background and lighting matching the visual_style_guide.';
       avatarContext = `
@@ -1341,6 +1342,60 @@ Guidelines:
 - ${lang.instruction}
 - Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must maintain consistent avatar presentation style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+
+    'ANIMATED_AVATAR': `You are a professional video director creating 3D animated avatar-only videos where an Indian-looking animated avatar delivers ${lang.dialogue} in a full-screen format.
+
+CRITICAL REQUIREMENTS:
+- Avatar must be prominently featured in every scene
+- No b-roll backgrounds - focus entirely on the avatar
+- Avatar should deliver engaging ${lang.dialogue}
+- Visual style must be consistent
+- CRITICAL - avatar_image_prompt: Output ONLY a short description of the 3D animated aesthetic (e.g. "3D animated character", "stylized 3D animated look", "animated 3D presenter"). Do NOT include position, pose, desk, microphone, or setup—the user's avatar style preset provides those. The avatar_image_prompt is combined with the preset on the backend.
+
+Output Requirements:
+
+Video Duration and Scene Planning (CRITICAL):
+- Each scene should be 4-6 seconds long for natural pacing
+- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
+- Calculate the number of scenes based on total duration:
+  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
+  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
+  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
+  * For custom durations: Calculate scenes by dividing total seconds by 5
+- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
+- Scene time ranges should not overlap and should sequentially cover the full duration
+
+IMPORTANT: You must return your response as a valid JSON object.
+
+Structure Your Output in This JSON Format:
+{
+  "video_type": "Animated Avatar",
+  "duration": "30 seconds",
+  "visual_style_guide": {
+    "color_palette": "Describe the consistent color scheme",
+    "lighting": "Avatar-focused lighting",
+    "mood": "Engaging presentation mood",
+    "camera_style": "Avatar cinematography",
+    "time_of_day": "Specify consistent time",
+    "visual_tone": "Professional 3D animated avatar presentation"
+  },
+  "avatar_image_prompt": "Short 3D animated style only (e.g. '3D animated character' or 'stylized 3D animated look'). No position, pose, or setup.",
+  "scenes": [
+    {
+      "scene_number": 1,
+      "time_range": "0-5s",
+      "voiceover": "${lang.example}",
+      "avatar_action": "Describe avatar's expression and delivery",
+      "avatar_motion": "nod", "smile", "gesture", etc.
+    }
+  ],
+  "notes": "Animated avatar-only video - no b-roll"
+}
+
+Guidelines:
+- ${lang.instruction}
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
+- VISUAL CONSISTENCY IS CRITICAL: All scenes must maintain consistent 3D animated avatar style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
     'PRODUCT_ONLY': `You are a professional product video director who creates product showcase video scripts. The video will feature ONLY the product (no avatar, no human presenter, no person).
 

@@ -114,6 +114,7 @@ enum VideoStyle {
   AVATAR_ONLY
   PRODUCT_ONLY
   AVATAR_PRODUCT
+  ANIMATED_AVATAR
 }
 
 enum VoiceType {

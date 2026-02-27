@@ -255,6 +255,7 @@ function AIChatPageContent() {
                 'AVATAR_ONLY': 'avatar-only',
                 'PRODUCT_ONLY': 'product-only',
                 'AVATAR_PRODUCT': 'avatar-product',
+                'ANIMATED_AVATAR': 'animated-avatar',
               };
               const frontendStyle = styleMap[project.style];
               if (frontendStyle) {
@@ -281,6 +282,7 @@ function AIChatPageContent() {
                     'AVATAR_ONLY': 'avatar-only',
                     'PRODUCT_ONLY': 'product-only',
                     'AVATAR_PRODUCT': 'avatar-product',
+                    'ANIMATED_AVATAR': 'animated-avatar',
                   };
                   return styleMap[project.style];
                 })() : null);
@@ -1051,6 +1053,7 @@ function AIChatPageContent() {
         'avatar-only': 'AVATAR_ONLY',
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
+        'animated-avatar': 'ANIMATED_AVATAR',
       };
       
       // Extract product image URL from attached assets (if any)
@@ -1304,6 +1307,7 @@ function AIChatPageContent() {
         'avatar-only': 'AVATAR_ONLY',
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
+        'animated-avatar': 'ANIMATED_AVATAR',
       };
       
       // Extract product image URL from attached assets (if any)
@@ -2216,6 +2220,7 @@ function AIChatPageContent() {
         'avatar-only': 'AVATAR_ONLY',
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
+        'animated-avatar': 'ANIMATED_AVATAR',
       };
       
       // Determine next step based on style
@@ -2385,6 +2390,9 @@ function AIChatPageContent() {
         'alternate': 'ALTERNATE',
         'avatar-cutout': 'AVATAR_CUTOUT',
         'avatar-only': 'AVATAR_ONLY',
+        'product-only': 'PRODUCT_ONLY',
+        'avatar-product': 'AVATAR_PRODUCT',
+        'animated-avatar': 'ANIMATED_AVATAR',
       };
       
       apiClient.updateVideoProject(projectId, {
@@ -2791,14 +2799,14 @@ function AIChatPageContent() {
                 {/* Style Selection Cards */}
                 {hasReachedSubstep('style-selection', 'selection') && (
                   <div className={cn(
-                    "flex flex-row items-center gap-[clamp(0.75rem,1.56vh,16px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full flex-wrap sm:flex-nowrap pl-[clamp(0.5rem,1vw,16px)]",
+                    "flex flex-row flex-wrap items-center gap-[clamp(0.75rem,1.56vh,16px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full pl-[clamp(0.5rem,1vw,16px)]",
                     hasReachedSubstep('style-selection', 'confirmed') && "opacity-50 pointer-events-none"
                   )}>
                     {/* Half-n-Half Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('half-n-half')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'half-n-half' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'half-n-half' ? {
@@ -2838,7 +2846,7 @@ function AIChatPageContent() {
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-only')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'avatar-only' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'avatar-only' ? {
@@ -2878,7 +2886,7 @@ function AIChatPageContent() {
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-cutout')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'avatar-cutout' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'avatar-cutout' ? {
@@ -2918,7 +2926,7 @@ function AIChatPageContent() {
                     <button
                       onClick={() => setSelectedVideoStyle('alternate')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'alternate' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'alternate' ? {
@@ -2958,7 +2966,7 @@ function AIChatPageContent() {
                     <button
                       onClick={() => setSelectedVideoStyle('product-only')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'product-only' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'product-only' ? {
@@ -2998,7 +3006,7 @@ function AIChatPageContent() {
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-product')}
                       className={cn(
-                        "relative flex flex-col items-center rounded-[12px] flex-1 min-w-0 max-w-[clamp(140px,11vw,152px)] transition-all",
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
                         selectedVideoStyle === 'avatar-product' ? "p-[2px]" : "p-0"
                       )}
                       style={selectedVideoStyle === 'avatar-product' ? {
@@ -3029,6 +3037,46 @@ function AIChatPageContent() {
                           </div>
                           <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
                             Avatar with Product
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* Animated Avatar Card */}
+                    <button
+                      onClick={() => setSelectedVideoStyle('animated-avatar')}
+                      className={cn(
+                        "relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] transition-all",
+                        selectedVideoStyle === 'animated-avatar' ? "p-[2px]" : "p-0"
+                      )}
+                      style={selectedVideoStyle === 'animated-avatar' ? {
+                        background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
+                      } : {}}
+                    >
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        {/* Illustration - reuse avatar-only for now; replace with style-animated-avatar.svg when available */}
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                          <Image
+                            src="/assets/style-avatar-only.svg"
+                            alt="Animated Avatar"
+                            width={120}
+                            height={160}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                        {/* Label */}
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                          <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                            <Image
+                              src="/assets/u_user-square.svg"
+                              alt="Animated Avatar"
+                              width={24}
+                              height={24}
+                              className="w-full h-full"
+                            />
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                            Animated Avatar
                           </span>
                         </div>
                       </div>
@@ -3071,6 +3119,7 @@ function AIChatPageContent() {
                                   selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
                                   selectedVideoStyle === 'product-only' ? 'Product Only' :
                                   selectedVideoStyle === 'avatar-product' ? 'Avatar with Product' :
+                                  selectedVideoStyle === 'animated-avatar' ? 'Animated Avatar' :
                                   'Alternate'} visual style
                         </span>
                         
@@ -3084,7 +3133,7 @@ function AIChatPageContent() {
                                           selectedVideoStyle === 'avatar-cutout' ? 'avatar-cutout' : 
                                           selectedVideoStyle === 'product-only' ? 'product-only' :
                                           selectedVideoStyle === 'avatar-product' ? 'avatar-product' :
-                                          'alternate'}.svg`}
+                                          selectedVideoStyle === 'animated-avatar' ? 'avatar-only' : 'alternate'}.svg`}
                               alt={selectedVideoStyle}
                               width={120}
                               height={160}
@@ -3098,6 +3147,7 @@ function AIChatPageContent() {
                                 src={`/assets/${selectedVideoStyle === 'avatar-cutout' ? 'fi_scissors' : 
                                         selectedVideoStyle === 'alternate' ? 'u_sync' : 
                                         selectedVideoStyle === 'product-only' ? 'u_product' :
+                                        selectedVideoStyle === 'animated-avatar' ? 'u_user-square' :
                                         'u_user-square'}.svg`}
                                 alt={selectedVideoStyle}
                                 width={24}
@@ -3111,6 +3161,7 @@ function AIChatPageContent() {
                                selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
                                selectedVideoStyle === 'product-only' ? 'Product Only' :
                                selectedVideoStyle === 'avatar-product' ? 'Avatar with Product' :
+                               selectedVideoStyle === 'animated-avatar' ? 'Animated Avatar' :
                                'Alternate'}
                             </span>
                           </div>

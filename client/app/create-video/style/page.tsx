@@ -16,14 +16,15 @@ import { useToast } from '@/lib/toast/toast';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 // Map frontend style to backend enum
-const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' => {
-  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT'> = {
+const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' => {
+  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR'> = {
     'half-n-half': 'HALF_N_HALF',
     'alternate': 'ALTERNATE',
     'avatar-cutout': 'AVATAR_CUTOUT',
     'avatar-only': 'AVATAR_ONLY',
     'product-only': 'PRODUCT_ONLY',
     'avatar-product': 'AVATAR_PRODUCT',
+    'animated-avatar': 'ANIMATED_AVATAR',
   };
   return map[style];
 };
@@ -38,6 +39,7 @@ const mapStyleFromBackend = (style?: string): VideoStyle | null => {
     AVATAR_ONLY: 'avatar-only',
     PRODUCT_ONLY: 'product-only',
     AVATAR_PRODUCT: 'avatar-product',
+    ANIMATED_AVATAR: 'animated-avatar',
   };
   return map[style] || null;
 };
@@ -153,6 +155,10 @@ function StylePageContent() {
     { id: 'half-n-half', name: 'Half-n-Half', description: 'Avatar above, content below' },
     { id: 'alternate', name: 'Alternate', description: 'Alternating layout' },
     { id: 'avatar-cutout', name: 'Avatar Cut-out', description: 'Avatar overlay style' },
+    { id: 'avatar-only', name: 'Avatar Only', description: 'Full-screen avatar' },
+    { id: 'product-only', name: 'Product Only', description: 'Product showcase only' },
+    { id: 'avatar-product', name: 'Avatar with Product', description: 'Avatar with product' },
+    { id: 'animated-avatar', name: 'Animated Avatar', description: '3D animated avatar style' },
   ];
 
   // Save to backend when style changes

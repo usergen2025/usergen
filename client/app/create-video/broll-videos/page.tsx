@@ -270,6 +270,10 @@ function BrollVideosPageContent() {
     
     const style = project.style;
     
+    if (style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR') {
+      // No B-roll videos for these styles
+      return [];
+    }
     if (style === 'HALF_N_HALF' || style === 'AVATAR_CUTOUT') {
       // All scenes with images need videos
       return brollImages.map(img => img.sceneNumber);

@@ -13,6 +13,7 @@ export enum VideoStyleDto {
   AVATAR_ONLY = 'AVATAR_ONLY',
   PRODUCT_ONLY = 'PRODUCT_ONLY',
   AVATAR_PRODUCT = 'AVATAR_PRODUCT',
+  ANIMATED_AVATAR = 'ANIMATED_AVATAR',
 }
 
 export enum VoiceTypeDto {
