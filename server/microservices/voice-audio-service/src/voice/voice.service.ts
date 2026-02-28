@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { execFileSync } from 'child_process';
+import axios from 'axios';
 import { ElevenLabsProvider, ElevenLabsVoice, GenerateSpeechRequest } from './providers/elevenlabs.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import type { Multer } from 'multer';
@@ -598,6 +600,123 @@ export class VoiceService {
   }
 
   /**
+   * Process last scene manual audio: download from URL, apply padding and fade-out, re-upload.
+   * Same processing as AI-generated last scene.
+   */
+  async processLastSceneAudio(
+    audioUrl: string,
+    userId: string,
+    projectId: string,
+    sceneNumber: number,
+    options?: { paddingSeconds?: number; fadeOutDuration?: number }
+  ): Promise<{ publicUrl: string; gcsUrl?: string; duration: number }> {
+    const paddingSeconds = options?.paddingSeconds ?? 1.0;
+    const fadeOutDuration = options?.fadeOutDuration ?? 1.0;
+
+    const tempDir = path.join(os.tmpdir(), `manual-audio-${projectId}-${Date.now()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    let inputPath: string | null = null;
+    let paddedPath: string | null = null;
+    let fadedPath: string | null = null;
+
+    let convertedPath: string | null = null;
+
+    try {
+      const ext = audioUrl.includes('.webm') ? '.webm' : audioUrl.includes('.mp3') ? '.mp3' : '.webm';
+      inputPath = path.join(tempDir, `input_${sceneNumber}${ext}`);
+
+      const response = await axios.get(audioUrl, { responseType: 'arraybuffer' });
+      fs.writeFileSync(inputPath, Buffer.from(response.data));
+
+      // If WebM, convert to MP3 first for reliable duration extraction
+      // WebM files from browser MediaRecorder often have missing/incomplete duration metadata
+      let audioForProcessing = inputPath;
+      if (ext === '.webm') {
+        console.log(`[VoiceService] Converting WebM to MP3 for reliable processing...`);
+        convertedPath = path.join(tempDir, `converted_${sceneNumber}.mp3`);
+        try {
+          execFileSync('ffmpeg', [
+            '-i', inputPath,
+            '-vn',
+            '-acodec', 'libmp3lame',
+            '-b:a', '192k',
+            '-y',
+            convertedPath
+          ], { stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 });
+          audioForProcessing = convertedPath;
+          console.log(`[VoiceService] WebM to MP3 conversion successful`);
+        } catch (convErr: any) {
+          console.error(`[VoiceService] WebM to MP3 conversion failed: ${convErr?.message}`);
+          throw new Error(`Failed to convert WebM to MP3: ${convErr?.message}`);
+        }
+      }
+
+      paddedPath = path.join(tempDir, `padded_${sceneNumber}.mp3`);
+      const finalDuration = await this.processAudioWithPadding(
+        audioForProcessing,
+        paddedPath,
+        paddingSeconds,
+        true,
+        0.7
+      );
+
+      fadedPath = path.join(tempDir, `faded_${sceneNumber}.mp3`);
+      await this.applyAudioFadeOut(paddedPath, fadedPath, fadeOutDuration);
+
+      const outFilename = `manual_scene_${sceneNumber}_${projectId}_processed_${Date.now()}.mp3`;
+      const userDir = path.join(this.uploadsDir, userId);
+      this.ensureDirectory(userDir);
+      const localOutPath = path.join(userDir, outFilename);
+
+      fs.copyFileSync(fadedPath, localOutPath);
+
+      let gcsUrl: string | undefined;
+      let publicUrl: string;
+      try {
+        const storageResult = await this.publicUrlService.uploadFromPath(
+          localOutPath,
+          `audio/${userId}`,
+          outFilename,
+          'audio/mpeg'
+        );
+        gcsUrl = storageResult.gcsUrl;
+        publicUrl = storageResult.publicUrl;
+      } catch (e: any) {
+        console.warn(`[VoiceService] GCS upload failed for processed manual audio: ${e?.message}`);
+        publicUrl = `/uploads/audio/${userId}/${outFilename}`;
+      }
+
+      if (fs.existsSync(localOutPath)) {
+        try {
+          fs.unlinkSync(localOutPath);
+        } catch (e) {
+          console.warn(`[VoiceService] Failed to cleanup local file: ${e}`);
+        }
+      }
+
+      return { publicUrl, gcsUrl, duration: finalDuration };
+    } finally {
+      for (const p of [inputPath, convertedPath, paddedPath, fadedPath]) {
+        if (p && fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (e) {
+            console.warn(`[VoiceService] Failed to cleanup temp file ${p}: ${e}`);
+          }
+        }
+      }
+      try {
+        if (fs.existsSync(tempDir)) {
+          fs.rmdirSync(tempDir);
+        }
+      } catch (e) {
+        console.warn(`[VoiceService] Failed to remove temp dir: ${e}`);
+      }
+    }
+  }
+
+  /**
    * Clone a voice from audio files
    */
   async cloneVoice(
@@ -626,6 +745,69 @@ export class VoiceService {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+  }
+
+  /**
+   * Get audio duration with multiple fallback strategies for WebM and other formats.
+   * Tries format.duration, then stream.duration, then decodes and measures.
+   * @param audioPath Path to the audio file
+   * @returns Duration in seconds
+   */
+  private getAudioDurationRobust(audioPath: string): number {
+    const { execSync } = require('child_process');
+
+    // Strategy 1: Try format.duration (works for most formats)
+    try {
+      const output = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+        { encoding: 'utf-8' }
+      ).trim();
+      const duration = parseFloat(output);
+      if (!isNaN(duration) && duration > 0) {
+        console.log(`[VoiceService] Duration from format: ${duration.toFixed(2)}s`);
+        return duration;
+      }
+    } catch (e) {
+      console.warn(`[VoiceService] format.duration extraction failed`);
+    }
+
+    // Strategy 2: Try stream duration (more reliable for WebM)
+    try {
+      const output = execSync(
+        `ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+        { encoding: 'utf-8' }
+      ).trim();
+      const duration = parseFloat(output);
+      if (!isNaN(duration) && duration > 0) {
+        console.log(`[VoiceService] Duration from stream: ${duration.toFixed(2)}s`);
+        return duration;
+      }
+    } catch (e) {
+      console.warn(`[VoiceService] stream.duration extraction failed`);
+    }
+
+    // Strategy 3: Decode and measure (last resort, always works)
+    try {
+      console.log(`[VoiceService] Decoding audio to measure duration...`);
+      const output = execSync(
+        `ffmpeg -i "${audioPath}" -f null - 2>&1`,
+        { encoding: 'utf-8', shell: true, maxBuffer: 50 * 1024 * 1024 }
+      );
+      const matches = output.match(/time=(\d+):(\d+):(\d+\.\d+)/g);
+      if (matches && matches.length > 0) {
+        const last = matches[matches.length - 1];
+        const parts = last.replace('time=', '').split(':');
+        const duration = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+        if (!isNaN(duration) && duration > 0) {
+          console.log(`[VoiceService] Duration from decode: ${duration.toFixed(2)}s`);
+          return duration;
+        }
+      }
+    } catch (e) {
+      console.warn(`[VoiceService] decode-and-measure failed`);
+    }
+
+    throw new Error('Could not determine audio duration using any strategy');
   }
 
   private getExtensionFromMime(mimetype: string | undefined, fallback = '.mp3') {

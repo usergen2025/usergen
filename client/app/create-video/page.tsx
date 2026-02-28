@@ -25,23 +25,37 @@ function CreateVideoPageContent() {
         return;
       }
 
-      // If projectId is provided, check currentStep and redirect accordingly
+      // If projectId is provided, check project metadata and currentStep and redirect accordingly
       if (projectId) {
         try {
           const response = await apiClient.getVideoProject(projectId);
-          if (response.success && response.data?.currentStep) {
-            const currentStep = response.data.currentStep;
-            
-            // Use step configuration for mapping
-            const stepToPageMap = getStepToRouteMap();
+          if (response.success && response.data) {
+            const project = response.data;
+            const currentStep = project.currentStep as string | undefined;
+            const generationFlow = project.metadata?.generationFlow as string | undefined;
+            const aiChatStep = project.metadata?.aiChatStep as string | undefined;
 
-            const targetPage = stepToPageMap[currentStep];
-            if (targetPage) {
-              // Include step in URL query params for navigation hook reliability
-              router.replace(`${targetPage}?projectId=${projectId}&step=${currentStep}`);
+            // If this is an AI Chat project, always route back into the AI Chat experience
+            if (generationFlow === 'AI_CHAT') {
+              // Prefer workspace when the AI chat step indicates workspace or beyond
+              if (aiChatStep === 'workspace') {
+                router.replace(`/create-video/workspace?projectId=${projectId}`);
+              } else {
+                router.replace(`/create-video/ai-chat?projectId=${projectId}`);
+              }
               return;
             }
-          }
+
+            // Classic projects: fall back to step-based routing
+            if (currentStep) {
+              const stepToPageMap = getStepToRouteMap();
+              const targetPage = stepToPageMap[currentStep];
+              if (targetPage) {
+                router.replace(`${targetPage}?projectId=${projectId}&step=${currentStep}`);
+                return;
+              }
+            }
+          } 
         } catch (error) {
           console.error('Failed to load project:', error);
           // If project load fails, just go to style page

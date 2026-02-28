@@ -282,8 +282,10 @@ function WorkspacePageContent() {
 
           // Verify it's an AI chat flow project
           if (projectData.metadata?.generationFlow !== 'AI_CHAT') {
-            showToast('This project uses the classic flow. Redirecting...', 'info');
-            router.push(`/create-video?projectId=${projectId}`);
+            // Show a local message instead of redirecting into the classic flow
+            showToast('This project was created with the classic flow and is not available in the AI workspace.', 'info');
+            setProject(null);
+            setLoading(false);
             return;
           }
 

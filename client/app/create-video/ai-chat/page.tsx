@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
@@ -24,12 +24,21 @@ interface Asset {
   category?: string; // User-provided category (logo, product, etc.)
 }
 
+interface ManualSceneAudioState {
+  status: 'pending' | 'uploading' | 'uploaded' | 'error';
+  duration?: number;
+  localUrl?: string;
+  errorMessage?: string;
+}
+
+type VoiceMode = 'AI' | 'MANUAL' | null;
+
 // Define chat flow steps
 type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
 type AvatarSubstep = 'question' | 'selection' | 'visual-style';
-type VoiceSubstep = 'question' | 'selection' | 'confirmed';
+type VoiceSubstep = 'question' | 'selection' | 'manual' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
 type ScriptSubstep = 'language' | 'input';
 
@@ -90,6 +99,7 @@ function AIChatPageContent() {
   const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
   const [voiceConfirmed, setVoiceConfirmed] = useState<boolean>(false); // Track if voice is confirmed and ready to proceed
   const [voiceSubstep, setVoiceSubstep] = useState<VoiceSubstep>('question'); // Track voice selection substep
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>(null);
   const [activeVoiceTab, setActiveVoiceTab] = useState<'library' | 'upload' | 'record'>('library');
   const [voices, setVoices] = useState<any[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
@@ -117,6 +127,29 @@ function AIChatPageContent() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  // Manual per-scene recording state
+  const [manualAudioByScene, setManualAudioByScene] = useState<Record<number, ManualSceneAudioState>>({});
+  const [manualRecordingScene, setManualRecordingScene] = useState<number | null>(null);
+  const [manualRecording, setManualRecording] = useState<boolean>(false);
+  const [manualRecordingError, setManualRecordingError] = useState<string | null>(null);
+  const manualMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const manualRecordingStreamRef = useRef<MediaStream | null>(null);
+  const manualAudioChunksRef = useRef<Blob[]>([]);
+  const [manualPlayingScene, setManualPlayingScene] = useState<number | null>(null);
+  const manualPlaybackAudioRef = useRef<HTMLAudioElement | null>(null);
+  const manualAudioContextRef = useRef<AudioContext | null>(null);
+  const manualAnalyserRef = useRef<AnalyserNode | null>(null);
+  const manualVisualizerRafRef = useRef<number | null>(null);
+  const manualVisualizerLastUpdateRef = useRef<number>(0);
+  const [manualVisualizerLevels, setManualVisualizerLevels] = useState<number[]>([]);
+  const [manualPlaybackProgress, setManualPlaybackProgress] = useState<Record<number, number>>({});
+  const manualVisualizerContainerRef = useRef<HTMLDivElement | null>(null);
+  const [manualVisualizerLaneCount, setManualVisualizerLaneCount] =
+    useState<number>(64);
+  const manualUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const manualUploadSceneRef = useRef<number | null>(null);
+  const manualSaveOnStopRef = useRef<boolean>(false);
+  const manualPausedPositionBySceneRef = useRef<Record<number, number>>({});
   // Style selection state
   const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
   const [styleSubstep, setStyleSubstep] = useState<StyleSubstep>('selection');
@@ -127,11 +160,14 @@ function AIChatPageContent() {
   // Generation tracking state
   const [isGeneratingVoice, setIsGeneratingVoice] = useState(false);
   const [isGeneratingBroll, setIsGeneratingBroll] = useState(false);
+  const [isProcessingManualAudio, setIsProcessingManualAudio] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const audioJobIdRef = useRef<string | null>(null); // Use ref instead of state to avoid closure issues
   const imageJobIdsRef = useRef<Set<string>>(new Set());
 
   // Fetch user profile when authenticated
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   useEffect(() => {
     if (isAuthenticated) {
       apiClient.getProfile()
@@ -172,6 +208,30 @@ function AIChatPageContent() {
       router.replace('/login?redirect=/create-video/ai-chat');
     }
   }, [isAuthenticated, isLoading, router]);
+
+  // Warn user before reloading or closing tab when manual audio work exists
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const hasAnyManualScenes = Object.keys(manualAudioByScene).length > 0;
+
+    const shouldWarnOnUnload =
+      currentStep === 'voice-selection' &&
+      voiceMode === 'MANUAL' &&
+      (manualRecording || hasAnyManualScenes);
+
+    const handler = (event: BeforeUnloadEvent) => {
+      if (!shouldWarnOnUnload) return;
+      event.preventDefault();
+      // Chrome requires returnValue to be set
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+    };
+  }, [manualAudioByScene, manualRecording, currentStep, voiceMode]);
 
   // Load project if projectId exists in URL (resume functionality)
   useEffect(() => {
@@ -244,6 +304,33 @@ function AIChatPageContent() {
               setSelectedVoiceId(project.voiceId);
               setVoicePreference('yes');
               setVoiceYesMessage(true);
+            }
+
+            // Restore voice mode (AI vs MANUAL) if present
+            const metaVoiceMode = project.metadata?.voiceMode as VoiceMode | undefined;
+            if (metaVoiceMode === 'AI' || metaVoiceMode === 'MANUAL') {
+              setVoiceMode(metaVoiceMode);
+            } else if (project.voiceId) {
+              setVoiceMode('AI');
+            } else if (project.audioFiles && Array.isArray(project.audioFiles) && project.audioFiles.length > 0) {
+              setVoiceMode('MANUAL');
+            }
+
+            // Restore manual recordings from project.audioFiles when voiceMode is MANUAL
+            if ((metaVoiceMode === 'MANUAL' || (project.audioFiles && Array.isArray(project.audioFiles) && project.audioFiles.length > 0 && !project.voiceId)) &&
+                project.audioFiles && Array.isArray(project.audioFiles) && project.audioFiles.length > 0) {
+              const manualMap: Record<number, { status: 'uploaded'; duration?: number; localUrl?: string }> = {};
+              for (const entry of project.audioFiles as any[]) {
+                const sn = entry.sceneNumber;
+                if (sn != null) {
+                  manualMap[sn] = {
+                    status: 'uploaded',
+                    duration: entry.duration,
+                    localUrl: entry.publicUrl || entry.gcsUrl || entry.localUrl,
+                  };
+                }
+              }
+              setManualAudioByScene(manualMap);
             }
             
             // Restore style
@@ -378,9 +465,8 @@ function AIChatPageContent() {
             
             showToast('Project resumed successfully', 'success');
           } else {
-            // Not an AI chat project, redirect to old flow
-            showToast('This project uses the classic flow. Redirecting...', 'info');
-            router.push(`/create-video?projectId=${project.id}`);
+            // Not an AI chat project – show local error instead of redirecting to classic flow
+            setLoadError('This project was created with the classic flow and cannot be edited in AI Chat.');
           }
         }
       } catch (error: any) {
@@ -1843,6 +1929,438 @@ function AIChatPageContent() {
     }
   };
 
+  // ---- Manual per-scene recording helpers ----
+
+  const stopActiveManualRecording = () => {
+    try {
+      if (manualMediaRecorderRef.current && manualMediaRecorderRef.current.state !== 'inactive') {
+        manualMediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop manual recording:', error);
+    }
+    if (manualRecordingStreamRef.current) {
+      manualRecordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      manualRecordingStreamRef.current = null;
+    }
+    manualMediaRecorderRef.current = null;
+    manualAudioChunksRef.current = [];
+    if (manualVisualizerRafRef.current !== null) {
+      cancelAnimationFrame(manualVisualizerRafRef.current);
+      manualVisualizerRafRef.current = null;
+    }
+    if (manualAudioContextRef.current) {
+      // Close audio context to release microphone/analyser resources
+      manualAudioContextRef.current.close().catch(() => {
+        // ignore close errors
+      });
+      manualAudioContextRef.current = null;
+    }
+    manualAnalyserRef.current = null;
+    manualSaveOnStopRef.current = false;
+    manualVisualizerLastUpdateRef.current = 0;
+    setManualVisualizerLevels([]);
+  };
+
+  const uploadManualSceneAudio = async (sceneNumber: number, file: File, duration?: number) => {
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      setManualAudioByScene((prev) => ({
+        ...prev,
+        [sceneNumber]: { ...(prev[sceneNumber] || {}), status: 'error', errorMessage: 'Project not found' },
+      }));
+      return;
+    }
+
+    // Extract voiceover text for this scene from the generated script
+    let voiceover = '';
+    if (generatedScript) {
+      const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
+      const scene = scenes.find((s: any, index: number) => {
+        const num = s.scene_number || s.sceneNumber || index + 1;
+        return num === sceneNumber;
+      });
+      if (scene) {
+        voiceover = scene.voiceover || scene.text || '';
+      }
+    }
+
+    try {
+      setManualAudioByScene((prev) => ({
+        ...prev,
+        [sceneNumber]: { ...(prev[sceneNumber] || {}), status: 'uploading', duration },
+      }));
+
+      const response = await apiClient.uploadManualSceneAudio({
+        projectId,
+        sceneNumber,
+        file,
+        duration,
+        voiceover,
+      });
+
+      if (response.success && response.data) {
+        const backendDuration = response.data.duration;
+        const finalDuration = (duration != null && isFinite(duration) ? duration : undefined) ?? (backendDuration != null && isFinite(backendDuration) ? backendDuration : undefined);
+        setManualAudioByScene((prev) => ({
+          ...prev,
+          [sceneNumber]: {
+            status: 'uploaded',
+            duration: finalDuration,
+            localUrl: response.data.publicUrl || response.data.localUrl || undefined,
+          },
+        }));
+        showToast(`Audio saved for scene ${sceneNumber}`, 'success');
+      } else {
+        throw new Error(response.message || 'Failed to upload audio');
+      }
+    } catch (error: any) {
+      console.error('Failed to upload manual scene audio:', error);
+      setManualAudioByScene((prev) => ({
+        ...prev,
+        [sceneNumber]: {
+          ...(prev[sceneNumber] || {}),
+          status: 'error',
+          errorMessage: error?.message || 'Upload failed',
+        },
+      }));
+      showToast(`Failed to upload audio for scene ${sceneNumber}`, 'error');
+    }
+  };
+
+  const handleStartManualRecording = async (sceneNumber: number) => {
+    if (manualRecording) {
+      showToast('Please stop the current recording before starting a new one.', 'warning');
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      showToast('Recording is not supported in this browser.', 'error');
+      return;
+    }
+
+    setManualRecordingError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 44100 },
+          channelCount: { ideal: 1 },
+        },
+      });
+
+      const tracks = stream.getAudioTracks();
+      if (tracks.length === 0) {
+        throw new Error('No audio track available from microphone');
+      }
+
+      manualRecordingStreamRef.current = stream;
+
+      // Reset save-on-stop flag; user must confirm before we upload
+      manualSaveOnStopRef.current = false;
+
+      // Set up audio analyser for recording visualizer
+      try {
+        const AudioContextClass =
+          (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const audioContext: AudioContext = new AudioContextClass();
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 64;
+
+          const source = audioContext.createMediaStreamSource(stream);
+          source.connect(analyser);
+
+          manualAudioContextRef.current = audioContext;
+          manualAnalyserRef.current = analyser;
+
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+
+          const updateVisualizer = () => {
+            if (!manualAnalyserRef.current) {
+              return;
+            }
+
+            // Throttle visualizer updates to ~10–12 samples/second
+            const now = performance.now();
+            const last = manualVisualizerLastUpdateRef.current || 0;
+            if (now - last < 80) {
+              manualVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+              return;
+            }
+            manualVisualizerLastUpdateRef.current = now;
+
+            manualAnalyserRef.current.getByteTimeDomainData(dataArray);
+
+            // Compute a single amplitude value from the buffer
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i += 1) {
+              const value = dataArray[i] ?? 128;
+              sum += Math.abs(value - 128);
+            }
+            const avg = sum / bufferLength;
+            const amplitude = Math.min(1, avg / 50);
+
+            // Append to history so dots stream left-to-right
+            setManualVisualizerLevels((prev) => {
+              const next = [...prev, amplitude];
+              if (next.length > MANUAL_VISUALIZER_HISTORY_LENGTH) {
+                next.splice(0, next.length - MANUAL_VISUALIZER_HISTORY_LENGTH);
+              }
+              return next;
+            });
+
+            manualVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+          };
+
+          if (manualVisualizerRafRef.current !== null) {
+            cancelAnimationFrame(manualVisualizerRafRef.current);
+          }
+          // Start with an empty history; dots will appear over time from left to right
+          setManualVisualizerLevels([]);
+          updateVisualizer();
+        }
+      } catch (visualizerError) {
+        console.error('[ManualRecording] Failed to initialize visualizer', visualizerError);
+      }
+
+      const codecs = ['audio/webm;codecs=opus', 'audio/webm;codecs=pcm', 'audio/webm'];
+      let selectedMimeType = '';
+      for (const codec of codecs) {
+        if ((window as any).MediaRecorder && MediaRecorder.isTypeSupported(codec)) {
+          selectedMimeType = codec;
+          break;
+        }
+      }
+
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      manualMediaRecorderRef.current = recorder;
+      manualAudioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          manualAudioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = (event: any) => {
+        console.error('[ManualRecording] MediaRecorder error:', event);
+        setManualRecordingError(event.error?.message || 'Recording error occurred');
+        showToast('Recording error occurred. Please try again.', 'error');
+        stopActiveManualRecording();
+        setManualRecording(false);
+      };
+
+      recorder.onstop = () => {
+        const shouldSave = manualSaveOnStopRef.current;
+        manualSaveOnStopRef.current = false;
+
+        const blobType = selectedMimeType || 'audio/webm';
+        const blob = new Blob(manualAudioChunksRef.current, { type: blobType });
+
+        if (!shouldSave) {
+          // User cancelled recording; just clean up.
+          setManualRecording(false);
+          setManualRecordingScene(null);
+          stopActiveManualRecording();
+          return;
+        }
+
+        if (blob.size === 0) {
+          setManualRecordingError('No audio was recorded. Please try again.');
+          showToast('No audio was recorded. Please try again.', 'error');
+          setManualRecording(false);
+          stopActiveManualRecording();
+          return;
+        }
+
+        const fileExtension = blobType.includes('opus') || blobType.includes('webm') ? 'webm' : 'webm';
+        const file = new File([blob], `manual_scene_${sceneNumber}_${Date.now()}.${fileExtension}`, { type: blobType });
+
+        // Measure duration using browser audio metadata before uploading
+        // WebM from MediaRecorder may not have valid duration in loadedmetadata; use durationchange + timeout fallback
+        const objectUrl = URL.createObjectURL(file);
+        const audio = new Audio();
+        let resolved = false;
+        const resolveAndUpload = (duration: number | undefined) => {
+          if (resolved) return;
+          resolved = true;
+          URL.revokeObjectURL(objectUrl);
+          uploadManualSceneAudio(sceneNumber, file, duration);
+        };
+        const tryGetDuration = () => {
+          const d = audio.duration;
+          if (d != null && isFinite(d) && d > 0) {
+            resolveAndUpload(d);
+          }
+        };
+        audio.addEventListener('loadedmetadata', tryGetDuration);
+        audio.addEventListener('durationchange', tryGetDuration);
+        audio.addEventListener('canplay', tryGetDuration);
+        audio.addEventListener('loadeddata', tryGetDuration);
+        audio.addEventListener('error', () => {
+          resolveAndUpload(undefined);
+        });
+        audio.src = objectUrl;
+        // Fallback: if no valid duration after 400ms, upload anyway (backend will extract via ffprobe)
+        setTimeout(() => {
+          tryGetDuration();
+          if (!resolved) resolveAndUpload(undefined);
+        }, 400);
+
+        setManualRecording(false);
+        setManualRecordingScene(null);
+        stopActiveManualRecording();
+      };
+
+      recorder.start(1000);
+      setManualRecording(true);
+      setManualRecordingScene(sceneNumber);
+    } catch (error: any) {
+      console.error('Failed to start manual recording:', error);
+      setManualRecordingError(error?.message || 'Failed to access microphone');
+      showToast(error?.message || 'Failed to access microphone', 'error');
+      stopActiveManualRecording();
+      setManualRecording(false);
+    }
+  };
+
+  const handleStopManualRecording = () => {
+    if (!manualRecording) return;
+    try {
+      // Mark that we should persist the next onstop payload
+      manualSaveOnStopRef.current = true;
+      if (manualMediaRecorderRef.current && manualMediaRecorderRef.current.state !== 'inactive') {
+        manualMediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop manual recording:', error);
+      stopActiveManualRecording();
+      setManualRecording(false);
+    }
+  };
+
+  const handlePlayManualScene = (sceneNumber: number) => {
+    const state = manualAudioByScene[sceneNumber];
+    if (!state?.localUrl) {
+      showToast('No audio found for this scene yet. Please record first.', 'warning');
+      return;
+    }
+
+    // If already playing this scene, toggle pause
+    if (manualPlayingScene === sceneNumber && manualPlaybackAudioRef.current) {
+      if (!manualPlaybackAudioRef.current.paused) {
+        const audio = manualPlaybackAudioRef.current;
+        const pos = audio.currentTime;
+        manualPausedPositionBySceneRef.current = {
+          ...manualPausedPositionBySceneRef.current,
+          [sceneNumber]: pos,
+        };
+        const dur = state?.duration && isFinite(state.duration) ? state.duration : audio.duration;
+        const progressRatio = dur && isFinite(dur) && dur > 0 ? pos / dur : 0;
+        setManualPlaybackProgress((prev) => ({ ...prev, [sceneNumber]: progressRatio }));
+        audio.pause();
+        setManualPlayingScene(null);
+        manualPlaybackAudioRef.current = null;
+        return;
+      }
+    }
+
+    // Stop any existing playback for a different scene
+    if (manualPlaybackAudioRef.current) {
+      manualPlaybackAudioRef.current.pause();
+      manualPlaybackAudioRef.current = null;
+    }
+
+    const startPosition = manualPausedPositionBySceneRef.current[sceneNumber] ?? 0;
+
+    const audio = new Audio(state.localUrl);
+    manualPlaybackAudioRef.current = audio;
+    setManualPlayingScene(sceneNumber);
+
+    const handleTimeUpdate = () => {
+      const sceneDuration =
+        state?.duration && isFinite(state.duration) ? state.duration : audio.duration;
+      if (!sceneDuration || !isFinite(sceneDuration)) return;
+      const progress = Math.min(1, Math.max(0, audio.currentTime / sceneDuration));
+      setManualPlaybackProgress((prev) => ({ ...prev, [sceneNumber]: progress }));
+    };
+
+    const handleDurationAvailable = () => {
+      const d = audio.duration;
+      if (d == null || !isFinite(d) || d <= 0) return;
+      setManualAudioByScene((prev) => {
+        const current = prev[sceneNumber];
+        if (!current || (current.duration != null && isFinite(current.duration))) return prev;
+        return { ...prev, [sceneNumber]: { ...current, duration: d } };
+      });
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleDurationAvailable);
+    audio.addEventListener('durationchange', handleDurationAvailable);
+    audio.addEventListener('ended', () => {
+      setManualPlayingScene((current) => (current === sceneNumber ? null : current));
+      setManualPlaybackProgress((prev) => ({ ...prev, [sceneNumber]: 0 }));
+      const next = { ...manualPausedPositionBySceneRef.current };
+      delete next[sceneNumber];
+      manualPausedPositionBySceneRef.current = next;
+      manualPlaybackAudioRef.current = null;
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleDurationAvailable);
+      audio.removeEventListener('durationchange', handleDurationAvailable);
+    });
+    audio.addEventListener('error', () => {
+      showToast('Failed to play audio for this scene.', 'error');
+      setManualPlayingScene((current) => (current === sceneNumber ? null : current));
+      manualPlaybackAudioRef.current = null;
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleDurationAvailable);
+      audio.removeEventListener('durationchange', handleDurationAvailable);
+    });
+
+    let playbackStarted = false;
+    const startPlayback = () => {
+      if (playbackStarted) return;
+      playbackStarted = true;
+      handleDurationAvailable();
+      if (startPosition > 0) {
+        audio.currentTime = startPosition;
+        const dur = state?.duration && isFinite(state.duration) ? state.duration : audio.duration;
+        if (dur && isFinite(dur) && dur > 0) {
+          setManualPlaybackProgress((prev) => ({ ...prev, [sceneNumber]: startPosition / dur }));
+        }
+      } else {
+        setManualPlaybackProgress((prev) => ({ ...prev, [sceneNumber]: 0 }));
+      }
+      audio.play().catch((error) => {
+        console.error('Failed to play manual scene audio:', error);
+        showToast('Failed to play audio for this scene.', 'error');
+        setManualPlayingScene((current) => (current === sceneNumber ? null : current));
+        manualPlaybackAudioRef.current = null;
+        audio.removeEventListener('timeupdate', handleTimeUpdate);
+        audio.removeEventListener('loadedmetadata', handleDurationAvailable);
+        audio.removeEventListener('durationchange', handleDurationAvailable);
+      });
+    };
+
+    if (audio.readyState >= 1) {
+      startPlayback();
+    } else {
+      audio.addEventListener('loadedmetadata', () => startPlayback(), { once: true });
+      audio.addEventListener('canplay', () => {
+        if (audio.paused && manualPlaybackAudioRef.current === audio) {
+          startPlayback();
+        }
+      }, { once: true });
+    }
+  };
+
   // Stop active recording and cleanup
   const stopActiveVoiceRecording = () => {
     if (mediaRecorderRef.current) {
@@ -1978,13 +2496,19 @@ function AIChatPageContent() {
     }
     
     if (preference === 'yes') {
+      setVoiceMode('AI');
       setVoiceYesMessage(true);
       setVoiceSubstep('selection'); // Move to selection substep
       loadVoices(activeVoiceTab);
     } else {
-      // Navigate to style selection
-      setVoiceSubstep('question'); // Reset substep
-      router.push('/create-video/style');
+      // Enter manual recording mode instead of redirecting to classic flow
+      setVoiceMode('MANUAL');
+      setVoiceYesMessage(false);
+      setVoiceSubstep('manual');
+      setSelectedVoiceId(null);
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('selectedVoiceId');
+      }
     }
   };
 
@@ -2197,6 +2721,118 @@ function AIChatPageContent() {
     }
   };
 
+  // Handle proceed with manual recordings (all scenes recorded, process and continue)
+  const handleProceedWithManualRecordings = async () => {
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+    if (!generatedScript || !(generatedScript.scenes || generatedScript.scene_plan)?.length) {
+      showToast('No script available.', 'error');
+      return;
+    }
+    const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
+    const totalScenes = scenes.length;
+    const recordedCount = scenes.filter(
+      (s: any, i: number) =>
+        manualAudioByScene[s.scene_number ?? s.sceneNumber ?? i + 1]?.status === 'uploaded'
+    ).length;
+    if (recordedCount !== totalScenes) {
+      showToast('Please record all scenes before proceeding.', 'warning');
+      return;
+    }
+
+    try {
+      setIsProcessingManualAudio(true);
+      // Process manual audio (padding + fade on last scene)
+      const processResponse = await apiClient.processManualAudio(projectId);
+      if (!processResponse.success) {
+        throw new Error(processResponse.message || 'Failed to process manual audio');
+      }
+
+      setVoiceSubstep('confirmed');
+      setCurrentStep('audio-image-generation');
+      setGenerationProgress(0);
+
+      // generateAudio returns existing for MANUAL mode
+      let audioDone = false;
+      setIsGeneratingVoice(true);
+      try {
+        const audioResponse = await apiClient.generateAudio(projectId);
+        if (audioResponse.success && audioResponse.data?.existing) {
+          setIsGeneratingVoice(false);
+          setGenerationProgress(50);
+          audioDone = true;
+        } else if (audioResponse.success && audioResponse.data?.jobId) {
+          audioJobIdRef.current = audioResponse.data.jobId;
+          subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+        } else {
+          throw new Error('Failed to start voice generation');
+        }
+      } catch (error: any) {
+        console.error('Failed to generate audio:', error);
+        setIsGeneratingVoice(false);
+        showToast('Failed to prepare audio', 'error');
+      }
+
+      // Start broll image generation (same as AI path)
+      try {
+        setIsGeneratingBroll(true);
+        const productImageUrl = attachedAssets.find(asset =>
+          asset.type === 'image' && asset.id.startsWith('product-')
+        )?.url || null;
+        const styleToUse = selectedVideoStyle ||
+          (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+
+        const promises = scenes.map(async (scene: any, index: number) => {
+          const sceneNumber = scene.scene_number ?? (index + 1);
+          let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
+            if (sceneNumber % 2 === 1) {
+              prompt = scene.broll_visual_description ||
+                (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
+            } else {
+              prompt = scene.broll_visual_description ||
+                (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
+            }
+          }
+          if (!prompt) return;
+          const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') ? 'model-4' : 'model-1';
+          try {
+            const imageResponse = await apiClient.regenerateImage(
+              projectId, sceneNumber, prompt, modelId,
+              undefined, undefined, productImageUrl || undefined, styleToUse || undefined
+            );
+            if (imageResponse.success && imageResponse.data?.jobId) {
+              imageJobIdsRef.current.add(imageResponse.data.jobId);
+              subscribeToJob(imageResponse.data.jobId, 'image-generation');
+            }
+          } catch (err: any) {
+            console.error(`Failed to generate image for scene ${sceneNumber}:`, err);
+          }
+        });
+        await Promise.all(promises);
+
+        if (imageJobIdsRef.current.size === 0 && audioDone) {
+          setIsGeneratingBroll(false);
+          setGenerationProgress(100);
+          setTimeout(() => router.push(`/create-video/workspace?projectId=${projectId}`), 1000);
+        }
+      } catch (error: any) {
+        console.error('Failed to start image generation:', error);
+        setIsGeneratingBroll(false);
+        showToast('Failed to start image generation', 'error');
+      }
+    } catch (error: any) {
+      console.error('Failed to process manual audio:', error);
+      showToast(error?.message || 'Failed to process manual audio', 'error');
+    } finally {
+      setIsProcessingManualAudio(false);
+    }
+  };
+
   // Handle proceed to avatar selection (create project after script generation)
   const handleProceedToAvatarSelection = async () => {
     if (!generatedScript) {
@@ -2338,6 +2974,9 @@ function AIChatPageContent() {
       }
       if (currentStep === 'voice-selection') {
         metadataUpdate.aiChatVoiceSubstep = voiceSubstep;
+        if (voiceMode) {
+          metadataUpdate.voiceMode = voiceMode;
+        }
       }
       if (currentStep === 'style-selection') {
         metadataUpdate.aiChatStyleSubstep = styleSubstep;
@@ -2406,6 +3045,34 @@ function AIChatPageContent() {
       }).catch(err => console.error('Failed to save style:', err));
     }
   }, [projectId, selectedVideoStyle, currentStep, styleSubstep]);
+
+  // Recalculate manual visualizer lane count responsively based on container width
+  // Must be before any conditional return to satisfy Rules of Hooks
+  const MANUAL_VISUALIZER_HISTORY_LENGTH = 64;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const updateLaneCount = () => {
+      const el = manualVisualizerContainerRef.current;
+      if (!el) return;
+      const width = el.getBoundingClientRect().width;
+      if (!width || !Number.isFinite(width)) return;
+
+      const approxLanePixelWidth = 6; // dot width + minimal spacing
+      const maxLanes = MANUAL_VISUALIZER_HISTORY_LENGTH;
+      const lanes = Math.max(
+        8,
+        Math.min(maxLanes, Math.floor(width / approxLanePixelWidth)),
+      );
+      setManualVisualizerLaneCount(lanes);
+    };
+
+    updateLaneCount();
+    window.addEventListener('resize', updateLaneCount);
+    return () => {
+      window.removeEventListener('resize', updateLaneCount);
+    };
+  }, []);
 
   // Format duration helper
   const formatDuration = (seconds: number): string => {
@@ -2646,7 +3313,12 @@ function AIChatPageContent() {
         return targetIndex !== -1 && currentIndex >= targetIndex;
       }
       case 'voice-selection': {
-        const substepOrder: VoiceSubstep[] = ['question', 'selection', 'confirmed'];
+        // Voice substeps depend on mode:
+        // - AI mode: question -> selection -> confirmed
+        // - MANUAL mode: question -> manual -> confirmed
+        const aiOrder: VoiceSubstep[] = ['question', 'selection', 'confirmed'];
+        const manualOrder: VoiceSubstep[] = ['question', 'manual', 'confirmed'];
+        const substepOrder: VoiceSubstep[] = voiceMode === 'MANUAL' ? manualOrder : aiOrder;
         const targetIndex = substepOrder.indexOf(substep as VoiceSubstep);
         const currentIndex = substepOrder.indexOf(voiceSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
@@ -2680,8 +3352,49 @@ function AIChatPageContent() {
   // Compute if modal has any assets selected (for attach button state)
   const hasModalAssets = modalLogoAsset !== null || modalProductImages.length > 0 || (modalCompanyUrl && modalCompanyUrl.trim().length > 0);
 
+  const formatTime = (seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
+    const rounded = Math.floor(seconds);
+    const mins = Math.floor(rounded / 60)
+      .toString()
+      .padStart(2, '0');
+    const secs = (rounded % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
+
   return (
     <div className="relative h-full bg-[#FFFCF8] overflow-hidden flex flex-col">
+      {/* Hidden input for per-scene manual audio upload */}
+      <input
+        ref={manualUploadInputRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          const sceneNumber = manualUploadSceneRef.current;
+          const file = event.target.files?.[0] || null;
+          // Reset input so selecting the same file again still triggers change
+          event.target.value = '';
+          if (!sceneNumber || !file) {
+            return;
+          }
+
+          // Measure duration before upload, similar to recording flow
+          const objectUrl = URL.createObjectURL(file);
+          const audio = new Audio();
+          audio.src = objectUrl;
+          audio.addEventListener('loadedmetadata', () => {
+            const duration = isFinite(audio.duration) ? audio.duration : undefined;
+            URL.revokeObjectURL(objectUrl);
+            uploadManualSceneAudio(sceneNumber, file, duration);
+          });
+          audio.addEventListener('error', () => {
+            URL.revokeObjectURL(objectUrl);
+            uploadManualSceneAudio(sceneNumber, file, undefined);
+          });
+        }}
+      />
+
       {/* Gradient Ellipses Background - Exact Figma positions */}
       <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
       <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
@@ -4143,7 +4856,7 @@ Use a recent photo of yourself.`}
               )}
 
               {/* SUB-PART 2: Selection Substep - User "Yes" Message and Voice Selection UI */}
-              {hasReachedSubstep('voice-selection', 'selection') && (
+              {voiceMode !== 'MANUAL' && hasReachedSubstep('voice-selection', 'selection') && (
                 <>
                   {/* User "Yes" Message */}
                   <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -4491,6 +5204,306 @@ Read everything on screen smoothly.`}
                   )}
                 </>
               )}
+
+              {/* SUB-PART 3: Manual recording UI - user keeps their own voice */}
+              {voiceMode === 'MANUAL' && hasReachedSubstep('voice-selection', 'manual') && (
+                <>
+                  {/* User \"No\" Message */}
+                  <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(320px,55vw,380px)]">
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                        No, I&apos;ll speak in my own voice. Let me record it.
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Manual recording container with gradient border */}
+                  <div
+                    className="relative w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,1vw,16px)]"
+                  >
+                    <div
+                      className="relative w-full p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px]"
+                      style={{
+                        background:
+                          'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                          'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                          'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                      }}
+                    >
+                      <div className="bg-white rounded-[8px] p-[clamp(0.75rem,1.17vh,12px)] w-full">
+                        {/* Manual recording instructions + scene counter */}
+                        <div className="flex flex-row items-center justify-between gap-[clamp(0.5rem,0.78vh,8px)] w-full">
+                          <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] flex-1 min-w-0">
+                            Record your voice for each scene below. We&apos;ll use these recordings instead of AI-generated audio.
+                          </p>
+                          {(generatedScript?.scenes || generatedScript?.scene_plan || []).length > 0 && (
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#616161] flex-shrink-0">
+                              {(() => {
+                                const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
+                                const totalScenes = scenes.length;
+                                const recordedCount = scenes.filter(
+                                  (s: any, i: number) =>
+                                    manualAudioByScene[s.scene_number ?? s.sceneNumber ?? i + 1]?.status === 'uploaded'
+                                ).length;
+                                return `${recordedCount}/${totalScenes}`;
+                              })()}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Manual recording per scene */}
+                        <div className="mt-[clamp(0.5rem,0.98vh,10px)]">
+                          {(!generatedScript || (!generatedScript.scenes && !generatedScript.scene_plan)) ? (
+                            <div className="p-4 bg-[#FFF5E9] border border-[#FFE0B2] rounded-[12px]">
+                              <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#BF360C]">
+                                Script is not available yet. Please generate the script before recording your voice.
+                              </p>
+                            </div>
+                          ) : (
+                            <div
+                              className="relative w-full rounded-[12px] p-[2px]"
+                              style={{ background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }}
+                            >
+                              <div className="bg-white rounded-[10px] py-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.5rem,0.78vh,8px)] max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
+                                <div className="flex flex-col gap-[clamp(0.5rem,0.78vh,8px)] pr-1">
+                              {(generatedScript.scenes || generatedScript.scene_plan || []).map((scene: any, index: number) => {
+                                const sceneNumber = scene.scene_number || scene.sceneNumber || index + 1;
+                                const state = manualAudioByScene[sceneNumber];
+                                const isRecordingThisScene = manualRecording && manualRecordingScene === sceneNumber;
+                                const hasRecording = state?.status === 'uploaded' && !!state.localUrl;
+                                const statusLabel =
+                                  state?.status === 'uploaded'
+                                    ? 'Recorded'
+                                    : state?.status === 'uploading'
+                                    ? 'Uploading...'
+                                    : state?.status === 'error'
+                                    ? 'Error'
+                                    : 'Not recorded';
+
+                                return (
+                                  <div
+                                    key={sceneNumber}
+                                    className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] p-[clamp(0.5rem,0.78vh,8px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.12)]"
+                                  >
+                                    <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                                      <div className="flex flex-row items-center justify-between gap-2">
+                                        <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121]">
+                                          Scene {sceneNumber}
+                                        </span>
+                                        <span
+                                          className={cn(
+                                            'inline-flex items-center rounded-full px-2 py-[2px] text-[clamp(0.6875rem,1.05vh,11px)] font-heading',
+                                            statusLabel === 'Recorded'
+                                              ? 'bg-[#E8F5E9] text-[#2E7D32]'
+                                              : statusLabel === 'Uploading...'
+                                              ? 'bg-[#FFF3E0] text-[#E65100]'
+                                              : statusLabel === 'Error'
+                                              ? 'bg-[#FFEBEE] text-[#C62828]'
+                                              : 'bg-[#F5F5F5] text-[#616161]',
+                                          )}
+                                        >
+                                          {statusLabel}
+                                        </span>
+                                      </div>
+                                      <span className="font-heading text-[clamp(0.8125rem,1.37vh,14px)] font-normal leading-[clamp(1.1rem,1.8vh,20px)] text-[#616161] whitespace-pre-wrap break-words">
+                                        {scene.voiceover || scene.text || 'No dialogue text available.'}
+                                      </span>
+                                      {/* Controls row: upload / record / play + visualizer */}
+                                      <div className="mt-[clamp(0.25rem,0.39vh,4px)] flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                        <div className="flex flex-row items-center gap-[clamp(0.25rem,0.39vh,4px)]">
+                                          {/* Upload / Discard button */}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (isRecordingThisScene) {
+                                                // Cancel current recording
+                                                manualSaveOnStopRef.current = false;
+                                                setManualRecording(false);
+                                                setManualRecordingScene(null);
+                                                stopActiveManualRecording();
+                                              } else if (hasRecording || state?.status === 'uploading') {
+                                                // Discard existing or uploading audio
+                                                if (manualPlayingScene === sceneNumber && manualPlaybackAudioRef.current) {
+                                                  manualPlaybackAudioRef.current.pause();
+                                                  manualPlaybackAudioRef.current = null;
+                                                }
+                                                setManualAudioByScene((prev) => {
+                                                  const next = { ...prev };
+                                                  delete next[sceneNumber];
+                                                  return next;
+                                                });
+                                                setManualPlaybackProgress((prev) => {
+                                                  const { [sceneNumber]: _discard, ...rest } = prev;
+                                                  return rest;
+                                                });
+                                                const nextPaused = { ...manualPausedPositionBySceneRef.current };
+                                                delete nextPaused[sceneNumber];
+                                                manualPausedPositionBySceneRef.current = nextPaused;
+                                              } else {
+                                                // Trigger upload file picker
+                                                manualUploadSceneRef.current = sceneNumber;
+                                                manualUploadInputRef.current?.click();
+                                              }
+                                            }}
+                                            disabled={state?.status === 'uploading'}
+                                            className={cn(
+                                              'flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full border border-[#E0E0E0] bg-white text-[#212121] hover:bg-[#FFF5E9] transition-colors',
+                                              state?.status === 'uploading' && 'opacity-50 cursor-not-allowed',
+                                            )}
+                                            aria-label={
+                                              isRecordingThisScene
+                                                ? 'Cancel recording'
+                                                : hasRecording || state?.status === 'uploading'
+                                                ? 'Discard audio for this scene'
+                                                : 'Upload audio file for this scene'
+                                            }
+                                          >
+                                            {isRecordingThisScene || hasRecording || state?.status === 'uploading' ? (
+                                              <X className="w-[14px] h-[14px]" />
+                                            ) : (
+                                              <Upload className="w-[14px] h-[14px]" />
+                                            )}
+                                          </button>
+
+                                          {/* Record / Confirm / Play-Pause button */}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (isRecordingThisScene) {
+                                                // Confirm and stop recording (will upload on stop)
+                                                handleStopManualRecording();
+                                              } else if (hasRecording) {
+                                                handlePlayManualScene(sceneNumber);
+                                              } else if (state?.status !== 'uploading') {
+                                                handleStartManualRecording(sceneNumber);
+                                              }
+                                            }}
+                                            disabled={state?.status === 'uploading'}
+                                            className={cn(
+                                              'flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full bg-[#E86412] text-white hover:opacity-90 transition-opacity',
+                                              state?.status === 'uploading' && 'opacity-50 cursor-not-allowed',
+                                            )}
+                                            aria-label={
+                                              isRecordingThisScene
+                                                ? 'Stop and save recording'
+                                                : hasRecording
+                                                ? manualPlayingScene === sceneNumber
+                                                  ? 'Pause playback'
+                                                  : 'Play recording'
+                                                : 'Start recording'
+                                            }
+                                          >
+                                            {isRecordingThisScene ? (
+                                              <Check className="w-[16px] h-[16px]" />
+                                            ) : hasRecording ? (
+                                              manualPlayingScene === sceneNumber ? (
+                                                <Pause className="w-[16px] h-[16px]" />
+                                              ) : (
+                                                <Play className="w-[16px] h-[16px]" />
+                                              )
+                                            ) : (
+                                              <Mic className="w-[16px] h-[16px]" />
+                                            )}
+                                          </button>
+                                        </div>
+
+                                        {/* Recording visualizer OR playback progress bar - always show progress when we have audio */}
+                                        {(isRecordingThisScene || hasRecording) && (
+                                          <div
+                                            ref={manualVisualizerContainerRef}
+                                            className="flex-1 flex flex-row items-center h-[clamp(2.25rem,3.51vh,34px)] min-w-0"
+                                          >
+                                            {isRecordingThisScene ? (
+                                              (() => {
+                                                const history = manualVisualizerLevels;
+                                                const laneCount = manualVisualizerLaneCount;
+                                                const paddedHistory = Array.from(
+                                                  { length: laneCount },
+                                                  (_, laneIndex) => {
+                                                    const srcIndex = history.length - 1 - laneIndex;
+                                                    return srcIndex >= 0 && srcIndex < history.length
+                                                      ? history[srcIndex]
+                                                      : null;
+                                                  },
+                                                );
+
+                                                return (
+                                                  <div className="flex flex-row items-center justify-between w-full">
+                                                    {paddedHistory.map((level, index) => (
+                                                      // eslint-disable-next-line react/no-array-index-key
+                                                      <div
+                                                        key={index}
+                                                        className="flex items-center justify-center"
+                                                        style={{ width: 4 }}
+                                                      >
+                                                        {level !== null && (
+                                                          <div
+                                                            className="w-[4px] rounded-full bg-[#E86412] transition-[height] duration-75"
+                                                            style={{
+                                                              height: `${(() => {
+                                                                const baseHeightPx = 4;
+                                                                const maxHeightPx = 28;
+                                                                const clampedLevel = Math.max(0, Math.min(1, level));
+                                                                return baseHeightPx + clampedLevel * (maxHeightPx - baseHeightPx);
+                                                              })()}px`,
+                                                            }}
+                                                          />
+                                                        )}
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                );
+                                              })()
+                                            ) : (
+                                              <div className="w-full h-[4px] rounded-full bg-[#FFE0CC] overflow-hidden flex-shrink-0">
+                                                <div
+                                                  className="h-full bg-[#E86412] transition-[width] duration-100"
+                                                  style={{
+                                                    width: `${Math.min(100, Math.max(0, (manualPlaybackProgress[sceneNumber] ?? 0) * 100))}%`,
+                                                  }}
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+
+                                        {/* Playback timestamps - show whenever we have audio and duration */}
+                                        {hasRecording && state?.duration !== undefined && state.duration > 0 && (
+                                          <div className="flex flex-row items-center justify-between mt-[2px] flex-shrink-0">
+                                            <span className="font-heading text-[clamp(0.6875rem,1.05vh,11px)] text-[#9E9E9E]">
+                                              {formatTime(
+                                                (manualPlaybackProgress[sceneNumber] ?? 0) * state.duration,
+                                              )}{' '}
+                                              / {formatTime(state.duration)}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {state?.status === 'error' && state.errorMessage && (
+                                      <p className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-red-600 mt-1">
+                                        {state.errorMessage}
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                                </div>
+                              {manualRecordingError && (
+                                <p className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-red-600 mt-1">
+                                  {manualRecordingError}
+                                </p>
+                              )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
             </>
             )}
 
@@ -4559,6 +5572,39 @@ Read everything on screen smoothly.`}
               </button>
             </div>
             )}
+
+            {/* Proceed Button for Manual Recordings - Show in chat window when all scenes recorded */}
+            {currentStep === 'voice-selection' && voiceSubstep === 'manual' && voiceMode === 'MANUAL' && generatedScript && (generatedScript.scenes || generatedScript.scene_plan || []).length > 0 && (() => {
+              const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
+              const totalScenes = scenes.length;
+              const recordedCount = scenes.filter(
+                (s: any, i: number) =>
+                  manualAudioByScene[s.scene_number ?? s.sceneNumber ?? i + 1]?.status === 'uploaded'
+              ).length;
+              const allRecorded = recordedCount === totalScenes;
+              return allRecorded ? (
+                <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                  <button
+                    onClick={handleProceedWithManualRecordings}
+                    disabled={isProcessingManualAudio}
+                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                      <Image
+                        src="/assets/u_arrow-right.svg"
+                        alt="Proceed"
+                        width={12}
+                        height={12}
+                        className="w-fit"
+                      />
+                    </div>
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                      {isProcessingManualAudio ? 'Processing...' : 'Proceed'}
+                    </span>
+                  </button>
+                </div>
+              ) : null;
+            })()}
 
             {/* Voice Preview - Show in confirmed substep */}
             {hasReachedSubstep('voice-selection', 'confirmed') && selectedVoiceId && (() => {

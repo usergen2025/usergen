@@ -629,6 +629,58 @@ class ApiClient {
     return response.data;
   }
 
+  async processManualAudio(projectId: string): Promise<ApiResponse<{ audioFiles: any[] }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ audioFiles: any[] }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/process-manual-audio`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async uploadManualSceneAudio(data: {
+    projectId: string;
+    sceneNumber: number;
+    file: File;
+    duration?: number;
+    voiceover?: string;
+  }): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const formData = new FormData();
+    formData.append('file', data.file);
+    formData.append('sceneNumber', String(data.sceneNumber));
+    if (data.duration !== undefined) {
+      formData.append('duration', String(data.duration));
+    }
+    if (data.voiceover) {
+      formData.append('voiceover', data.voiceover);
+    }
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${data.projectId}/manual-audio/${data.sceneNumber}`,
+      formData,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          // Let the browser set multipart boundary
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Queue operations
   async generateAudio(projectId: string): Promise<ApiResponse<{ jobId?: string; existing?: boolean; audioFiles?: any[] }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;

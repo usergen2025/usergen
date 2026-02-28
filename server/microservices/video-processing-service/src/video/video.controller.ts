@@ -11,6 +11,9 @@ import {
   HttpCode,
   HttpStatus,
   HttpException,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } from '@nestjs/swagger';
 import { VideoService } from './video.service';
@@ -26,6 +29,12 @@ import {
 import * as jwt from 'jsonwebtoken';
 import { ConfigService } from '@nestjs/config';
 import { buildAudioGenerationConfig, shouldRegenerateAudio } from '../common/utils/audio-config.util';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as fs from 'fs';
+import { join } from 'path';
+import { execSync } from 'child_process';
+import type { Multer } from 'multer';
+import axios from 'axios';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -371,6 +380,21 @@ export class VideoController {
     const existingAudioFiles = (projectData.audioFiles as any[]) || null;
     const storedConfig = (projectData.audioGenerationConfig as any) || null;
 
+    // If project is explicitly in MANUAL voice mode and already has audioFiles, avoid regenerating
+    const voiceMode = (projectData.metadata as any)?.voiceMode;
+    if (voiceMode === 'MANUAL' && existingAudioFiles && existingAudioFiles.length > 0) {
+      console.log(`[VideoController] Manual voice mode detected for project ${projectId}, using existing manual audio files`);
+      return {
+        success: true,
+        data: {
+          existing: true,
+          audioFiles: existingAudioFiles,
+          message: 'Manual audio already uploaded for this project',
+        },
+        message: 'Using existing manual audio files',
+      };
+    }
+
     // Build current config from project data
     const currentConfig = buildAudioGenerationConfig(
       projectData.voiceId,
@@ -410,6 +434,276 @@ export class VideoController {
       success: true,
       data: { jobId },
       message: 'Audio generation queued successfully',
+    };
+  }
+
+  @Post(':projectId/manual-audio/:sceneNumber')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiParam({ name: 'sceneNumber', description: 'Scene number' })
+  @ApiOperation({
+    summary: 'Upload manual audio for a single scene',
+    description: 'Stores a user-recorded audio file for a specific scene and updates project audioFiles.',
+  })
+  @ApiBody({
+    description: 'Manual scene audio upload',
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        duration: { type: 'string', example: '3.5' },
+        voiceover: { type: 'string', example: 'Scene dialogue text' },
+      },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadManualSceneAudio(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('sceneNumber') sceneNumber: string,
+    @UploadedFile() file: Multer.File,
+    @Body() body: { duration?: string; voiceover?: string } = {},
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    if (!file) {
+      throw new BadRequestException('Audio file is required');
+    }
+
+    const sceneNum = parseInt(sceneNumber, 10);
+    if (Number.isNaN(sceneNum) || sceneNum <= 0) {
+      throw new BadRequestException('Invalid sceneNumber');
+    }
+
+    // Resolve uploads directory (same base used for static assets)
+    const uploadsDir = this.configService.get<string>('UPLOADS_DIR') || join(process.cwd(), 'uploads');
+    const audioDir = join(uploadsDir, 'audio', userId);
+    if (!fs.existsSync(audioDir)) {
+      fs.mkdirSync(audioDir, { recursive: true });
+    }
+
+    const originalExt = file.originalname && file.originalname.includes('.') ? file.originalname.substring(file.originalname.lastIndexOf('.')) : '.webm';
+    const filename = `manual_scene_${sceneNum}_${projectId}_${Date.now()}${originalExt}`;
+    const filePath = join(audioDir, filename);
+
+    fs.writeFileSync(filePath, file.buffer);
+
+    const localUrl = `/uploads/audio/${userId}/${filename}`;
+    let duration = body.duration ? parseFloat(body.duration) : undefined;
+    if (duration == null || !Number.isFinite(duration) || duration <= 0) {
+      // Robust duration extraction for WebM and other formats
+      // WebM files from browser MediaRecorder often have missing/incomplete duration metadata
+      let parsed: number | undefined;
+
+      // Strategy 1: Try format.duration (works for most formats)
+      try {
+        const output = execSync(
+          `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+          { encoding: 'utf-8' },
+        ).trim();
+        parsed = parseFloat(output);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          console.log(`[VideoController] Duration from format.duration: ${parsed.toFixed(2)}s`);
+          duration = parsed;
+        }
+      } catch (e: any) {
+        console.warn(`[VideoController] format.duration extraction failed: ${e?.message}`);
+      }
+
+      // Strategy 2: If format.duration failed, try stream duration (more reliable for WebM)
+      if (duration == null || !Number.isFinite(duration) || duration <= 0) {
+        try {
+          const output = execSync(
+            `ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+            { encoding: 'utf-8' },
+          ).trim();
+          parsed = parseFloat(output);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            console.log(`[VideoController] Duration from stream.duration: ${parsed.toFixed(2)}s`);
+            duration = parsed;
+          }
+        } catch (e: any) {
+          console.warn(`[VideoController] stream.duration extraction failed: ${e?.message}`);
+        }
+      }
+
+      // Strategy 3: Decode and measure (last resort, always works but slower)
+      if (duration == null || !Number.isFinite(duration) || duration <= 0) {
+        try {
+          console.log(`[VideoController] Decoding audio to measure duration for ${filename}...`);
+          const output = execSync(
+            `sh -c "ffmpeg -i '${filePath}' -f null - 2>&1"`,
+            { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 },
+          );
+          const matches = output.match(/time=(\d+):(\d+):(\d+\.\d+)/g);
+          if (matches && matches.length > 0) {
+            const last = matches[matches.length - 1];
+            const parts = last.replace('time=', '').split(':');
+            parsed = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+            if (Number.isFinite(parsed) && parsed > 0) {
+              console.log(`[VideoController] Duration from decode: ${parsed.toFixed(2)}s`);
+              duration = parsed;
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[VideoController] decode-and-measure failed: ${e?.message}`);
+        }
+      }
+
+      if (duration == null || !Number.isFinite(duration) || duration <= 0) {
+        console.warn(`[VideoController] Could not determine duration for ${filename}, leaving undefined`);
+      }
+    }
+    const voiceover = body.voiceover || '';
+
+    // Attempt to upload to GCS / public storage
+    let gcsUrl: string | undefined;
+    let publicUrl: string | undefined;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        filePath,
+        `audio/${userId}`,
+        filename,
+        'audio/mpeg',
+      );
+      gcsUrl = storageResult.gcsUrl;
+      publicUrl = storageResult.publicUrl;
+    } catch (error: any) {
+      console.warn(
+        `[VideoController] GCS upload failed for manual audio ${filename}: ${error?.message || error}`,
+      );
+      publicUrl = localUrl;
+    }
+
+    // Fetch existing project and audioFiles
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const existingData = project.data as any;
+    const existingAudioFiles = (existingData.audioFiles as any[]) || [];
+
+    const newEntry = {
+      sceneNumber: sceneNum,
+      filePath,
+      localUrl,
+      voiceover,
+      duration,
+      gcsUrl,
+      publicUrl,
+    };
+
+    const updatedAudioFiles = [
+      ...existingAudioFiles.filter((af: any) => af.sceneNumber !== sceneNum),
+      newEntry,
+    ].sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+    await this.videoService.updateProject(projectId, userId, {
+      audioFiles: updatedAudioFiles,
+      metadata: {
+        // Mark that manual audio is being used for this project
+        voiceMode: 'MANUAL',
+      } as any,
+    });
+
+    return {
+      success: true,
+      data: newEntry,
+      message: 'Manual audio uploaded successfully',
+    };
+  }
+
+  @Post(':projectId/process-manual-audio')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Process manual audio for last scene',
+    description: 'Apply padding and fade-out to the last scene manual audio (same as AI path), then update project.',
+  })
+  @ApiResponse({ status: 200, description: 'Manual audio processed successfully' })
+  async processManualAudio(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data as any;
+    const voiceMode = (projectData.metadata as any)?.voiceMode;
+    const audioFiles = (projectData.audioFiles as any[]) || [];
+
+    if (voiceMode !== 'MANUAL' || !audioFiles.length) {
+      throw new HttpException(
+        'Project must be in MANUAL voice mode with existing audio files',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const lastEntry = audioFiles.reduce((a: any, b: any) =>
+      (a.sceneNumber ?? 0) >= (b.sceneNumber ?? 0) ? a : b,
+    );
+    const audioUrl = lastEntry.publicUrl || lastEntry.gcsUrl;
+    if (!audioUrl) {
+      throw new HttpException(
+        'Last scene audio has no public URL',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const voiceServiceUrl =
+      this.configService.get<string>('VOICE_AUDIO_SERVICE_URL') || 'http://localhost:9002/api';
+    const token = req.headers?.authorization || null;
+
+    const response = await axios.post<{
+      success: boolean;
+      data?: { publicUrl: string; gcsUrl?: string; duration: number };
+      message?: string;
+    }>(
+      `${voiceServiceUrl}/voice/process-last-scene-audio`,
+      {
+        audioUrl,
+        userId,
+        projectId,
+        sceneNumber: lastEntry.sceneNumber,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: token } : {}),
+        },
+      },
+    );
+
+    if (!response.data?.success || !response.data?.data) {
+      const errMsg = (response.data as { message?: string })?.message || 'Failed to process manual audio';
+      throw new HttpException(errMsg, HttpStatus.BAD_GATEWAY);
+    }
+
+    const { publicUrl, gcsUrl, duration } = response.data.data;
+
+    const updatedAudioFiles = audioFiles.map((af: any) =>
+      af.sceneNumber === lastEntry.sceneNumber
+        ? { ...af, publicUrl, gcsUrl: gcsUrl ?? af.gcsUrl, duration }
+        : af,
+    );
+
+    await this.videoService.updateProject(projectId, userId, {
+      audioFiles: updatedAudioFiles,
+    });
+
+    return {
+      success: true,
+      data: { audioFiles: updatedAudioFiles },
+      message: 'Manual audio processed successfully',
     };
   }
 

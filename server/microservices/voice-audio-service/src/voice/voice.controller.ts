@@ -478,5 +478,74 @@ export class VoiceController {
       timestamp: new Date().toISOString(),
     };
   }
+
+  @Post('process-last-scene-audio')
+  @ApiOperation({
+    summary: 'Process last scene manual audio',
+    description: 'Download manual audio from URL, apply padding and fade-out (same as AI path), re-upload and return URLs.',
+  })
+  @ApiBearerAuth('JWT-auth')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        audioUrl: { type: 'string', description: 'Public URL of the audio file' },
+        userId: { type: 'string', description: 'User ID' },
+        projectId: { type: 'string', description: 'Project ID' },
+        sceneNumber: { type: 'number', description: 'Scene number' },
+      },
+      required: ['audioUrl', 'userId', 'projectId', 'sceneNumber'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Audio processed successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            publicUrl: { type: 'string' },
+            gcsUrl: { type: 'string' },
+            duration: { type: 'number' },
+          },
+        },
+      },
+    },
+  })
+  async processLastSceneAudio(
+    @Body() body: { audioUrl: string; userId: string; projectId: string; sceneNumber: number },
+    @Request() req: any,
+  ) {
+    const userId = body.userId || this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, message: 'User ID is required', error: 'Authentication failed' },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    if (!body.audioUrl || !body.projectId || body.sceneNumber == null) {
+      throw new HttpException(
+        { success: false, message: 'audioUrl, projectId and sceneNumber are required', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const result = await this.voiceService.processLastSceneAudio(
+      body.audioUrl,
+      userId,
+      body.projectId,
+      body.sceneNumber,
+    );
+
+    return {
+      success: true,
+      data: result,
+      message: 'Last scene audio processed successfully',
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
 
