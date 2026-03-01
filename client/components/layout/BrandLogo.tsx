@@ -2,6 +2,7 @@
 
 import { cn } from '@/lib/utils/cn';
 
+
 interface BrandLogoProps {
   className?: string;
   showBrandLabel?: boolean;

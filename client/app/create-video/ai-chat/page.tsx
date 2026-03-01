@@ -38,7 +38,7 @@ type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-uploa
 
 // Define substeps for multi-stage steps
 type AvatarSubstep = 'question' | 'selection' | 'visual-style';
-type VoiceSubstep = 'question' | 'selection' | 'manual' | 'confirmed';
+type VoiceSubstep = 'question' | 'selection' | 'manual' | 'voice-transform' | 'scene-review' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
 type ScriptSubstep = 'language' | 'input';
 
@@ -150,6 +150,77 @@ function AIChatPageContent() {
   const manualUploadSceneRef = useRef<number | null>(null);
   const manualSaveOnStopRef = useRef<boolean>(false);
   const manualPausedPositionBySceneRef = useRef<Record<number, number>>({});
+  
+  // Input recording state (Speech-to-Text for script input)
+  const [isInputRecording, setIsInputRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const inputMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const inputRecordingStreamRef = useRef<MediaStream | null>(null);
+  const inputAudioChunksRef = useRef<Blob[]>([]);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const inputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const inputVisualizerRafRef = useRef<number | null>(null);
+  const inputVisualizerLastUpdateRef = useRef<number>(0);
+  const [inputVisualizerLevels, setInputVisualizerLevels] = useState<number[]>([]);
+  const inputVisualizerContainerRef = useRef<HTMLDivElement | null>(null);
+  const [inputVisualizerLaneCount, setInputVisualizerLaneCount] = useState<number>(64);
+  
+  // Voice transformation state (Speech-to-Speech)
+  // Note: showVoiceTransformQuestion is now derived from voiceSubstep === 'voice-transform' || voiceSubstep === 'scene-review'
+  // Note: showSceneTransformView is now derived from voiceSubstep === 'scene-review'
+  const [isTransformingVoice, setIsTransformingVoice] = useState(false);
+  const [voiceTransformSettings, setVoiceTransformSettings] = useState<{
+    voiceId: string;
+    stability: number;
+    similarityBoost: number;
+    style: number;
+    useSpeakerBoost: boolean;
+    removeBackgroundNoise: boolean;
+  } | null>(null);
+  const [transformedAudioByScene, setTransformedAudioByScene] = useState<Record<number, {
+    status: 'pending' | 'processing' | 'completed' | 'error';
+    originalUrl?: string;
+    transformedUrl?: string;
+    duration?: number;
+    settings?: {
+      voiceId: string;
+      stability: number;
+      similarityBoost: number;
+      style: number;
+      useSpeakerBoost: boolean;
+      removeBackgroundNoise: boolean;
+    };
+    error?: string;
+  }>>({});
+  const [stsVoices, setStsVoices] = useState<any[]>([]);
+  const [selectedStsVoiceId, setSelectedStsVoiceId] = useState<string | null>(null);
+  const [stsVoicesLoading, setStsVoicesLoading] = useState(false);
+  const [isVoiceDropdownOpen, setIsVoiceDropdownOpen] = useState(false);
+  const voiceDropdownRef = useRef<HTMLDivElement>(null);
+  const [transformActionMessage, setTransformActionMessage] = useState<'skip' | 'transform' | null>(null);
+  const [perSceneTransformModal, setPerSceneTransformModal] = useState<{
+    isOpen: boolean;
+    sceneNumber: number | null;
+    voiceoverText: string;
+  }>({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+  const [perSceneSettings, setPerSceneSettings] = useState<{
+    voiceId: string;
+    stability: number;
+    similarityBoost: number;
+    style: number;
+    useSpeakerBoost: boolean;
+    removeBackgroundNoise: boolean;
+  } | null>(null);
+  const [isTransformingSingleScene, setIsTransformingSingleScene] = useState(false);
+  const [isModalVoiceDropdownOpen, setIsModalVoiceDropdownOpen] = useState(false);
+  const modalVoiceDropdownRef = useRef<HTMLDivElement>(null);
+  
+  // Review section audio playback state
+  const [reviewPlayingScene, setReviewPlayingScene] = useState<number | null>(null);
+  const [reviewPlayingType, setReviewPlayingType] = useState<'original' | 'transformed' | null>(null);
+  const reviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [reviewPlaybackProgress, setReviewPlaybackProgress] = useState<Record<number, number>>({});
+  
   // Style selection state
   const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
   const [styleSubstep, setStyleSubstep] = useState<StyleSubstep>('selection');
@@ -209,29 +280,10 @@ function AIChatPageContent() {
     }
   }, [isAuthenticated, isLoading, router]);
 
-  // Warn user before reloading or closing tab when manual audio work exists
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const hasAnyManualScenes = Object.keys(manualAudioByScene).length > 0;
-
-    const shouldWarnOnUnload =
-      currentStep === 'voice-selection' &&
-      voiceMode === 'MANUAL' &&
-      (manualRecording || hasAnyManualScenes);
-
-    const handler = (event: BeforeUnloadEvent) => {
-      if (!shouldWarnOnUnload) return;
-      event.preventDefault();
-      // Chrome requires returnValue to be set
-      event.returnValue = '';
-    };
-
-    window.addEventListener('beforeunload', handler);
-    return () => {
-      window.removeEventListener('beforeunload', handler);
-    };
-  }, [manualAudioByScene, manualRecording, currentStep, voiceMode]);
+  // NOTE: Beforeunload alert removed - audio is immediately uploaded to the server
+  // on recording completion, so there's no risk of losing unsaved work.
+  // The previous implementation incorrectly triggered on every reload because
+  // manualRecording is a boolean (not nullable), and `false !== null` is always true.
 
   // Load project if projectId exists in URL (resume functionality)
   useEffect(() => {
@@ -428,6 +480,36 @@ function AIChatPageContent() {
             if (project.metadata?.aiChatVoiceSubstep) {
               setVoiceSubstep(project.metadata.aiChatVoiceSubstep as VoiceSubstep);
             }
+            // Restore voice transformation state
+            if (project.metadata?.transformedAudioByScene) {
+              setTransformedAudioByScene(project.metadata.transformedAudioByScene);
+            }
+            if (project.metadata?.selectedStsVoiceId) {
+              setSelectedStsVoiceId(project.metadata.selectedStsVoiceId);
+            }
+            if (project.metadata?.voiceTransformSettings) {
+              setVoiceTransformSettings(project.metadata.voiceTransformSettings);
+            }
+            // Handle transform action message restoration with stuck state prevention
+            // Only restore transformActionMessage if we can also transition to scene-review
+            // Otherwise, the user gets stuck with a message but no options
+            if (project.metadata?.transformActionMessage) {
+              const savedAction = project.metadata.transformActionMessage as 'skip' | 'transform';
+              const hasTransformedAudio = project.metadata?.transformedAudioByScene && 
+                Object.values(project.metadata.transformedAudioByScene as Record<string, { status: string }>).some(
+                  (entry) => entry.status === 'completed'
+                );
+              const usedSkip = savedAction === 'skip';
+              
+              // Only restore the action message AND transition to scene-review together
+              // This prevents the stuck state where action is shown but scene-review isn't
+              if (usedSkip || hasTransformedAudio) {
+                setTransformActionMessage(savedAction);
+                setVoiceSubstep('scene-review');
+              }
+              // If neither condition is met, don't restore transformActionMessage
+              // This lets the user re-select their action (transformation may have failed/been interrupted)
+            }
             if (project.metadata?.aiChatStyleSubstep) {
               setStyleSubstep(project.metadata.aiChatStyleSubstep as StyleSubstep);
             }
@@ -519,7 +601,7 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep, transformActionMessage, stsVoices, selectedStsVoiceId, isTransformingVoice, manualAudioByScene, transformedAudioByScene]);
 
   // WebSocket effect for tracking generation progress
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
@@ -2361,6 +2443,79 @@ function AIChatPageContent() {
     }
   };
 
+  // Handle review section audio playback (for scene-review substep)
+  const handleReviewAudioPlayback = (
+    sceneNumber: number,
+    audioType: 'original' | 'transformed',
+    audioUrl: string,
+    duration?: number
+  ) => {
+    // If already playing this exact audio, toggle pause/play
+    if (reviewPlayingScene === sceneNumber && reviewPlayingType === audioType && reviewAudioRef.current) {
+      if (!reviewAudioRef.current.paused) {
+        reviewAudioRef.current.pause();
+        setReviewPlayingScene(null);
+        setReviewPlayingType(null);
+        return;
+      } else {
+        reviewAudioRef.current.play().catch(err => {
+          console.error('Failed to resume review audio:', err);
+          showToast('Failed to play audio', 'error');
+        });
+        setReviewPlayingScene(sceneNumber);
+        setReviewPlayingType(audioType);
+        return;
+      }
+    }
+
+    // Stop any existing playback
+    if (reviewAudioRef.current) {
+      reviewAudioRef.current.pause();
+      reviewAudioRef.current = null;
+    }
+
+    const audio = new Audio(audioUrl);
+    reviewAudioRef.current = audio;
+    setReviewPlayingScene(sceneNumber);
+    setReviewPlayingType(audioType);
+    setReviewPlaybackProgress(prev => ({ ...prev, [sceneNumber]: 0 }));
+
+    const handleTimeUpdate = () => {
+      const audioDuration = duration || audio.duration;
+      if (!audioDuration || !isFinite(audioDuration)) return;
+      const progress = Math.min(1, Math.max(0, audio.currentTime / audioDuration));
+      setReviewPlaybackProgress(prev => ({ ...prev, [sceneNumber]: progress }));
+    };
+
+    const handleEnded = () => {
+      setReviewPlayingScene(null);
+      setReviewPlayingType(null);
+      setReviewPlaybackProgress(prev => ({ ...prev, [sceneNumber]: 0 }));
+      reviewAudioRef.current = null;
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('ended', handleEnded);
+    };
+
+    const handleError = () => {
+      showToast(`Failed to load ${audioType} audio`, 'error');
+      setReviewPlayingScene(null);
+      setReviewPlayingType(null);
+      reviewAudioRef.current = null;
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
+
+    audio.play().catch(err => {
+      console.error('Review audio playback failed:', err);
+      showToast(`Failed to play ${audioType} audio`, 'error');
+      setReviewPlayingScene(null);
+      setReviewPlayingType(null);
+      reviewAudioRef.current = null;
+    });
+  };
+
   // Stop active recording and cleanup
   const stopActiveVoiceRecording = () => {
     if (mediaRecorderRef.current) {
@@ -2378,6 +2533,232 @@ function AIChatPageContent() {
       recordingStreamRef.current = null;
     }
     audioChunksRef.current = [];
+  };
+
+  // Input recording handlers for speech-to-text
+  const INPUT_VISUALIZER_HISTORY_LENGTH = 64;
+
+  const stopActiveInputRecording = () => {
+    try {
+      if (inputMediaRecorderRef.current && inputMediaRecorderRef.current.state !== 'inactive') {
+        inputMediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop input recording:', error);
+    }
+    if (inputRecordingStreamRef.current) {
+      inputRecordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      inputRecordingStreamRef.current = null;
+    }
+    inputMediaRecorderRef.current = null;
+    inputAudioChunksRef.current = [];
+    if (inputVisualizerRafRef.current !== null) {
+      cancelAnimationFrame(inputVisualizerRafRef.current);
+      inputVisualizerRafRef.current = null;
+    }
+    if (inputAudioContextRef.current) {
+      inputAudioContextRef.current.close().catch(() => {});
+      inputAudioContextRef.current = null;
+    }
+    inputAnalyserRef.current = null;
+    inputVisualizerLastUpdateRef.current = 0;
+    setInputVisualizerLevels([]);
+  };
+
+  const handleStartInputRecording = async () => {
+    if (isInputRecording) {
+      showToast('Recording is already in progress.', 'warning');
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      showToast('Recording is not supported in this browser.', 'error');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 44100 },
+          channelCount: { ideal: 1 },
+        },
+      });
+
+      const tracks = stream.getAudioTracks();
+      if (tracks.length === 0) {
+        throw new Error('No audio track available from microphone');
+      }
+
+      inputRecordingStreamRef.current = stream;
+
+      // Set up audio analyser for recording visualizer
+      try {
+        const AudioContextClass =
+          (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const audioContext: AudioContext = new AudioContextClass();
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 64;
+
+          const source = audioContext.createMediaStreamSource(stream);
+          source.connect(analyser);
+
+          inputAudioContextRef.current = audioContext;
+          inputAnalyserRef.current = analyser;
+
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+
+          const updateVisualizer = () => {
+            if (!inputAnalyserRef.current) {
+              return;
+            }
+
+            const now = performance.now();
+            const last = inputVisualizerLastUpdateRef.current || 0;
+            if (now - last < 80) {
+              inputVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+              return;
+            }
+            inputVisualizerLastUpdateRef.current = now;
+
+            inputAnalyserRef.current.getByteTimeDomainData(dataArray);
+
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i += 1) {
+              const value = dataArray[i] ?? 128;
+              sum += Math.abs(value - 128);
+            }
+            const avg = sum / bufferLength;
+            const amplitude = Math.min(1, avg / 50);
+
+            setInputVisualizerLevels((prev) => {
+              const next = [...prev, amplitude];
+              if (next.length > INPUT_VISUALIZER_HISTORY_LENGTH) {
+                next.splice(0, next.length - INPUT_VISUALIZER_HISTORY_LENGTH);
+              }
+              return next;
+            });
+
+            inputVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+          };
+
+          if (inputVisualizerRafRef.current !== null) {
+            cancelAnimationFrame(inputVisualizerRafRef.current);
+          }
+          setInputVisualizerLevels([]);
+          updateVisualizer();
+        }
+      } catch (visualizerError) {
+        console.error('[InputRecording] Failed to initialize visualizer', visualizerError);
+      }
+
+      const codecs = ['audio/webm;codecs=opus', 'audio/webm;codecs=pcm', 'audio/webm'];
+      let selectedMimeType = '';
+      for (const codec of codecs) {
+        if ((window as any).MediaRecorder && MediaRecorder.isTypeSupported(codec)) {
+          selectedMimeType = codec;
+          break;
+        }
+      }
+
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      inputMediaRecorderRef.current = recorder;
+      inputAudioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          inputAudioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = (event: any) => {
+        console.error('[InputRecording] MediaRecorder error:', event);
+        showToast('Recording error occurred. Please try again.', 'error');
+        stopActiveInputRecording();
+        setIsInputRecording(false);
+      };
+
+      recorder.start(1000);
+      setIsInputRecording(true);
+    } catch (error: any) {
+      console.error('Failed to start input recording:', error);
+      showToast(error?.message || 'Failed to access microphone', 'error');
+      stopActiveInputRecording();
+      setIsInputRecording(false);
+    }
+  };
+
+  const handleCancelInputRecording = () => {
+    stopActiveInputRecording();
+    setIsInputRecording(false);
+  };
+
+  const handleConfirmInputRecording = async () => {
+    if (!isInputRecording || !inputMediaRecorderRef.current) {
+      return;
+    }
+
+    // Stop the recorder and process the audio
+    try {
+      const recorder = inputMediaRecorderRef.current;
+      const mimeType = recorder.mimeType || 'audio/webm';
+      
+      // Create a promise to wait for the onstop event
+      const audioBlob = await new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          const blob = new Blob(inputAudioChunksRef.current, { type: mimeType });
+          resolve(blob);
+        };
+        recorder.stop();
+      });
+
+      setIsInputRecording(false);
+      stopActiveInputRecording();
+
+      if (audioBlob.size === 0) {
+        showToast('No audio was recorded. Please try again.', 'error');
+        return;
+      }
+
+      // Transcribe the audio
+      setIsTranscribing(true);
+      try {
+        const response = await apiClient.transcribeSpeech(audioBlob);
+        
+        if (response.success && response.data?.text) {
+          const transcribedText = response.data.text.trim();
+          
+          if (!transcribedText) {
+            showToast('No speech detected. Please try again.', 'warning');
+            return;
+          }
+
+          // Append to existing input or set as new input
+          if (scriptInput.trim()) {
+            setScriptInput(scriptInput.trimEnd() + '\n' + transcribedText);
+          } else {
+            setScriptInput(transcribedText);
+          }
+        } else {
+          showToast(response.message || 'Failed to transcribe audio', 'error');
+        }
+      } catch (error: any) {
+        console.error('Transcription error:', error);
+        showToast(error?.message || 'Failed to transcribe audio', 'error');
+      } finally {
+        setIsTranscribing(false);
+      }
+    } catch (error: any) {
+      console.error('Failed to confirm input recording:', error);
+      showToast('Failed to process recording', 'error');
+      stopActiveInputRecording();
+      setIsInputRecording(false);
+    }
   };
 
   // Handle sending voice file (processes the pending file)
@@ -2472,6 +2853,56 @@ function AIChatPageContent() {
       loadVoices(activeVoiceTab);
     }
   }, [activeVoiceTab, currentStep, voiceYesMessage]);
+
+  // Auto-fetch STS voices when entering voice-transform or scene-review substep
+  useEffect(() => {
+    const fetchStsVoices = async () => {
+      if (currentStep === 'voice-selection' && (voiceSubstep === 'voice-transform' || voiceSubstep === 'scene-review') && stsVoices.length === 0 && !stsVoicesLoading) {
+        setStsVoicesLoading(true);
+        try {
+          const response = await apiClient.getSpeechToSpeechVoices({ language: selectedLanguage || undefined });
+          if (response.success && response.data) {
+            setStsVoices(response.data);
+          }
+        } catch (e) {
+          showToast('Failed to load voices', 'error');
+        } finally {
+          setStsVoicesLoading(false);
+        }
+      }
+    };
+    fetchStsVoices();
+  }, [currentStep, voiceSubstep, stsVoices.length, stsVoicesLoading, selectedLanguage]);
+
+  // Handle click outside voice dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(event.target as Node)) {
+        setIsVoiceDropdownOpen(false);
+      }
+    };
+    if (isVoiceDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isVoiceDropdownOpen]);
+
+  // Handle click outside modal voice dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (modalVoiceDropdownRef.current && !modalVoiceDropdownRef.current.contains(event.target as Node)) {
+        setIsModalVoiceDropdownOpen(false);
+      }
+    };
+    if (isModalVoiceDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isModalVoiceDropdownOpen]);
 
   // Cleanup voice recording on unmount
   useEffect(() => {
@@ -2744,6 +3175,23 @@ function AIChatPageContent() {
 
     try {
       setIsProcessingManualAudio(true);
+      
+      // Determine if we should use transformed audio
+      // transformedAudioByScene state indicates which scenes have been transformed
+      const hasTransformedAudio = Object.values(transformedAudioByScene).some(t => t.status === 'completed');
+      const useTransformed = hasTransformedAudio && transformActionMessage !== 'skip';
+      
+      // Set audio preference before processing (tells backend which audio to use for rendering)
+      if (hasTransformedAudio) {
+        try {
+          await apiClient.setAudioPreference(projectId, useTransformed);
+          console.log(`[AIChat] Audio preference set: useTransformed=${useTransformed}`);
+        } catch (prefError: any) {
+          console.error('Failed to set audio preference:', prefError);
+          // Continue anyway, the backend will default to original if not set
+        }
+      }
+      
       // Process manual audio (padding + fade on last scene)
       const processResponse = await apiClient.processManualAudio(projectId);
       if (!processResponse.success) {
@@ -2977,6 +3425,21 @@ function AIChatPageContent() {
         if (voiceMode) {
           metadataUpdate.voiceMode = voiceMode;
         }
+        // Save transformed audio state for persistence
+        if (Object.keys(transformedAudioByScene).length > 0) {
+          metadataUpdate.transformedAudioByScene = transformedAudioByScene;
+        }
+        // Save selected STS voice for restoration
+        if (selectedStsVoiceId) {
+          metadataUpdate.selectedStsVoiceId = selectedStsVoiceId;
+        }
+        // Save voice transform settings
+        if (voiceTransformSettings) {
+          metadataUpdate.voiceTransformSettings = voiceTransformSettings;
+        }
+        // Save transform action message for display persistence
+        // Always save (even when null) to properly clear previous value on back navigation
+        metadataUpdate.transformActionMessage = transformActionMessage;
       }
       if (currentStep === 'style-selection') {
         metadataUpdate.aiChatStyleSubstep = styleSubstep;
@@ -2986,7 +3449,7 @@ function AIChatPageContent() {
         metadata: metadataUpdate,
       }).catch(err => console.error('Failed to save step progress:', err));
     }
-  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep, selectedAvatarVisualStyle]);
+  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep, selectedAvatarVisualStyle, voiceMode, transformedAudioByScene, selectedStsVoiceId, voiceTransformSettings, transformActionMessage]);
 
   // Auto-save language and tags selection to project metadata
   useEffect(() => {
@@ -3071,6 +3534,32 @@ function AIChatPageContent() {
     window.addEventListener('resize', updateLaneCount);
     return () => {
       window.removeEventListener('resize', updateLaneCount);
+    };
+  }, []);
+
+  // Recalculate input visualizer lane count responsively based on container width
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const updateInputLaneCount = () => {
+      const el = inputVisualizerContainerRef.current;
+      if (!el) return;
+      const width = el.getBoundingClientRect().width;
+      if (!width || !Number.isFinite(width)) return;
+
+      const approxLanePixelWidth = 6; // bar width + minimal spacing
+      const maxLanes = INPUT_VISUALIZER_HISTORY_LENGTH;
+      const lanes = Math.max(
+        8,
+        Math.min(maxLanes, Math.floor(width / approxLanePixelWidth)),
+      );
+      setInputVisualizerLaneCount(lanes);
+    };
+
+    updateInputLaneCount();
+    window.addEventListener('resize', updateInputLaneCount);
+    return () => {
+      window.removeEventListener('resize', updateInputLaneCount);
     };
   }, []);
 
@@ -3180,7 +3669,35 @@ function AIChatPageContent() {
         setAvatarSubstep('question'); // Reset substep
       }
     } else if (currentStep === 'voice-selection') {
-      // Navigate back through substeps
+      // Navigate back through substeps - handle both AI and MANUAL modes
+      if (voiceMode === 'MANUAL') {
+        // MANUAL mode substep order: question -> manual -> voice-transform -> scene-review -> confirmed
+        if (voiceSubstep === 'confirmed') {
+          // Go back to scene-review substep
+          setVoiceSubstep('scene-review');
+          setVoiceConfirmed(false);
+        } else if (voiceSubstep === 'scene-review') {
+          // Go back to voice-transform substep - clear transform state to allow re-selection
+          setVoiceSubstep('voice-transform');
+          setTransformActionMessage(null);
+          // Clear transformed audio so user can re-transform with different settings
+          setTransformedAudioByScene({});
+        } else if (voiceSubstep === 'voice-transform') {
+          // Go back to manual recording substep
+          setVoiceSubstep('manual');
+        } else if (voiceSubstep === 'manual') {
+          // Go back to question substep
+          setVoiceSubstep('question');
+          setVoiceMode(null);
+        } else {
+          // At question substep, go back to avatar-selection step
+          setCurrentStep('avatar-selection');
+          setVoiceSubstep('question');
+          setAvatarUploadSuccess(false);
+          setAvatarUploadMessageShown(false);
+        }
+      } else {
+        // AI mode substep order: question -> selection -> confirmed
       if (voiceSubstep === 'confirmed') {
         // Go back to selection substep
         setVoiceSubstep('selection');
@@ -3193,13 +3710,14 @@ function AIChatPageContent() {
         setVoiceYesMessage(false);
         setSelectedVoiceId(null);
         setVoiceUploadSuccess(false);
+          setVoiceMode(null);
       } else {
-        // Go back to avatar-selection step
+          // At question substep, go back to avatar-selection step
         setCurrentStep('avatar-selection');
-        setVoiceSubstep('question'); // Reset substep
-        // Re-enable avatar upload controls when returning from voice
+          setVoiceSubstep('question');
         setAvatarUploadSuccess(false);
         setAvatarUploadMessageShown(false);
+        }
       }
     } else if (currentStep === 'style-selection') {
       // Navigate back through substeps
@@ -3315,9 +3833,9 @@ function AIChatPageContent() {
       case 'voice-selection': {
         // Voice substeps depend on mode:
         // - AI mode: question -> selection -> confirmed
-        // - MANUAL mode: question -> manual -> confirmed
+        // - MANUAL mode: question -> manual -> voice-transform -> scene-review -> confirmed
         const aiOrder: VoiceSubstep[] = ['question', 'selection', 'confirmed'];
-        const manualOrder: VoiceSubstep[] = ['question', 'manual', 'confirmed'];
+        const manualOrder: VoiceSubstep[] = ['question', 'manual', 'voice-transform', 'scene-review', 'confirmed'];
         const substepOrder: VoiceSubstep[] = voiceMode === 'MANUAL' ? manualOrder : aiOrder;
         const targetIndex = substepOrder.indexOf(substep as VoiceSubstep);
         const currentIndex = substepOrder.indexOf(voiceSubstep);
@@ -4029,7 +4547,9 @@ function AIChatPageContent() {
                     {currentStep === 'assets-attached' && scriptSubstep === 'input' && !hasReachedStep('script-input') && (
                       <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                         <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
-                          Great choice! Now tell me your video idea, or paste your script if you already have one. You can use @tags for themes (e.g., @technology @professional).
+                          Perfect! Now let's shape your message.<br />
+                          Tell me your video idea, or paste your script if you already have one.<br />
+                          If you're not sure, just describe the goal—I'll write the script for you.
                         </p>
                       </div>
                     )}
@@ -4714,50 +5234,50 @@ Use a recent photo of yourself.`}
             <>
               {/* Selected Avatar Preview (for library selection) */}
               {selectedAvatar && (
-                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
-                    <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
-                      <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
-                        <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
-                          {(() => {
+              <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,275px)]">
+                  <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[12px]">
+                      <div className="w-[clamp(4.3125rem,8.98vh,88px)] h-[clamp(5.6875rem,11.82vh,118px)] relative flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                        {(() => {
                             const avatarImageUrl = selectedAvatar.thumbnailUrl || selectedAvatar.avatarUrl || selectedAvatar.originalImageUrl;
-                            const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
-                              ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
-                              : 'http://localhost:9001';
-                            const fullImageUrl = avatarImageUrl?.startsWith('http') 
-                              ? avatarImageUrl 
-                              : avatarImageUrl 
-                                ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
-                                : null;
-                            return fullImageUrl ? (
-                              <Image
-                                src={fullImageUrl}
-                                alt={selectedAvatar.name || 'Avatar'}
-                                fill
-                                className="object-cover"
-                                unoptimized
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                                <span className="text-xs text-gray-400">No Image</span>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                        <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
-                          <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
-                            {selectedAvatar.name || 'Avatar'}
-                          </span>
-                        </div>
+                          const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
+                            ? process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL.replace('/api', '')
+                            : 'http://localhost:9001';
+                          const fullImageUrl = avatarImageUrl?.startsWith('http') 
+                            ? avatarImageUrl 
+                            : avatarImageUrl 
+                              ? `${AI_CONTENT_SERVICE_BASE_URL}${avatarImageUrl}`
+                              : null;
+                          return fullImageUrl ? (
+                            <Image
+                              src={fullImageUrl}
+                              alt={selectedAvatar.name || 'Avatar'}
+                              fill
+                              className="object-cover"
+                              unoptimized
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                              <span className="text-xs text-gray-400">No Image</span>
+                            </div>
+                          );
+                        })()}
                       </div>
-                      <div className="px-[clamp(0.5rem,0.78vh,8px)]">
-                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
-                          Selected Avatar
+                      <div className="flex flex-col justify-center gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                        <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121] break-words">
+                          {selectedAvatar.name || 'Avatar'}
                         </span>
                       </div>
                     </div>
+                    <div className="px-[clamp(0.5rem,0.78vh,8px)]">
+                      <span className="font-heading text-[clamp(1rem,1.56vh,16px)] font-normal leading-[clamp(1.3125rem,2.05vh,21px)] text-[#212121]">
+                        Selected Avatar
+                      </span>
+                    </div>
                   </div>
                 </div>
+              </div>
               )}
 
               {/* AI Message - "Great! Your avatar is ready. How would you like it to appear?" */}
@@ -4855,14 +5375,14 @@ Use a recent photo of yourself.`}
                 </>
               )}
 
-              {/* SUB-PART 2: Selection Substep - User "Yes" Message and Voice Selection UI */}
+              {/* SUB-PART 2: Selection Substep - User "Generate voice using AI" Message and Voice Selection UI */}
               {voiceMode !== 'MANUAL' && hasReachedSubstep('voice-selection', 'selection') && (
                 <>
-                  {/* User "Yes" Message */}
+                  {/* User "Generate voice using AI" Message */}
                   <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                     <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
                       <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                        Yes, I need to change the voice of avatar
+                        Generate voice using AI
                       </span>
                     </div>
                   </div>
@@ -5205,14 +5725,14 @@ Read everything on screen smoothly.`}
                 </>
               )}
 
-              {/* SUB-PART 3: Manual recording UI - user keeps their own voice */}
+              {/* SUB-PART 3: Manual recording UI - user records their own voice */}
               {voiceMode === 'MANUAL' && hasReachedSubstep('voice-selection', 'manual') && (
                 <>
-                  {/* User \"No\" Message */}
+                  {/* User "Record my own voice" Message */}
                   <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                     <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(320px,55vw,380px)]">
                       <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                        No, I&apos;ll speak in my own voice. Let me record it.
+                        Record my own voice
                       </span>
                     </div>
                   </div>
@@ -5510,41 +6030,23 @@ Read everything on screen smoothly.`}
             {/* Voice Selection Buttons - Only show in question substep */}
             {currentStep === 'voice-selection' && voiceSubstep === 'question' && (
             <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
-              {/* Yes, I need to change the voice */}
+              {/* Generate voice using AI */}
               <button
                 onClick={() => handleVoiceSelection('yes')}
                 className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
               >
-                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                  <Image
-                    src="/assets/u_thumbs-up.svg"
-                    alt="Yes"
-                    width={24}
-                    height={24}
-                    className="w-full h-full"
-                  />
-                </div>
                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                  Yes, I need to change the voice of avatar
+                  Generate voice using AI
                 </span>
               </button>
 
-              {/* No, I'd like to keep it the same */}
+              {/* Record my own voice */}
               <button
                 onClick={() => handleVoiceSelection('no')}
                 className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
               >
-                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                  <Image
-                    src="/assets/u_thumbs-down.svg"
-                    alt="No"
-                    width={24}
-                    height={24}
-                    className="w-full h-full"
-                  />
-                </div>
                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                  No, I'd like to keep it the same
+                  Record my own voice
                 </span>
               </button>
             </div>
@@ -5573,7 +6075,7 @@ Read everything on screen smoothly.`}
             </div>
             )}
 
-            {/* Proceed Button for Manual Recordings - Show in chat window when all scenes recorded */}
+            {/* Voice Transformation Question - Show after all scenes are recorded, before proceed */}
             {currentStep === 'voice-selection' && voiceSubstep === 'manual' && voiceMode === 'MANUAL' && generatedScript && (generatedScript.scenes || generatedScript.scene_plan || []).length > 0 && (() => {
               const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
               const totalScenes = scenes.length;
@@ -5583,28 +6085,856 @@ Read everything on screen smoothly.`}
               ).length;
               const allRecorded = recordedCount === totalScenes;
               return allRecorded ? (
-                <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
-                  <button
-                    onClick={handleProceedWithManualRecordings}
-                    disabled={isProcessingManualAudio}
-                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                      <Image
-                        src="/assets/u_arrow-right.svg"
-                        alt="Proceed"
-                        width={12}
-                        height={12}
-                        className="w-fit"
-                      />
-                    </div>
-                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                      {isProcessingManualAudio ? 'Processing...' : 'Proceed'}
-                    </span>
-                  </button>
+                <>
+                  {/* AI Message - "Your recordings are ready" */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Great! Your voice recordings are ready. Would you like to transform your voice to sound like someone else?
+                    </p>
+                  </div>
+
+                  {/* Transform Voice Question Buttons */}
+                  <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                    {/* Yes, I need to change the voice */}
+                    <button
+                      onClick={() => {
+                        setVoiceSubstep('voice-transform');
+                      }}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-up.svg"
+                    alt="Yes"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
                 </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                  Yes, I need to change the voice of avatar
+                </span>
+              </button>
+
+              {/* No, I'd like to keep it the same */}
+              <button
+                      onClick={handleProceedWithManualRecordings}
+                      disabled={isProcessingManualAudio}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_thumbs-down.svg"
+                    alt="No"
+                    width={24}
+                    height={24}
+                    className="w-full h-full"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                        {isProcessingManualAudio ? 'Processing...' : "No, I'd like to keep it the same"}
+                </span>
+              </button>
+            </div>
+                </>
               ) : null;
             })()}
+
+            {/* Voice Transformation UI - Show in voice-transform or scene-review substep */}
+            {currentStep === 'voice-selection' && (voiceSubstep === 'voice-transform' || voiceSubstep === 'scene-review') && (
+              <>
+                {/* User "Yes, I need to change the voice of avatar" Message */}
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                      Yes, I need to change the voice of avatar
+                    </span>
+                  </div>
+                </div>
+
+                {/* AI Message - "Select a voice to transform into" */}
+                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                    Select a target voice to transform your recordings into:
+                  </p>
+                </div>
+
+                {/* Voice Transformation Container with Gradient Border */}
+                <div
+                  className={cn(
+                    "relative w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px] transition-opacity duration-300",
+                    voiceSubstep === 'scene-review' && "opacity-60 pointer-events-none"
+                  )}
+                  style={{
+                    background:
+                      'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                      'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                      'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                  }}
+                >
+                  <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                    {/* Voice Selection Dropdown */}
+                    <div className="mb-4">
+                      <h4 className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121] mb-2">
+                        Target Voice
+                      </h4>
+                      <div ref={voiceDropdownRef} className="relative">
+                        {/* Dropdown Trigger */}
+                        <button
+                          onClick={() => setIsVoiceDropdownOpen(!isVoiceDropdownOpen)}
+                          className={cn(
+                            "w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border-2 transition-all bg-white",
+                            selectedStsVoiceId 
+                              ? "border-orange-500" 
+                              : "border-gray-200 hover:border-gray-300"
+                          )}
+                        >
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            {stsVoicesLoading ? (
+                              <div className="flex items-center gap-2">
+                                <div className="animate-spin w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full"></div>
+                                <span className="text-gray-500">Loading voices...</span>
+                              </div>
+                            ) : selectedStsVoiceId ? (
+                              <>
+                                <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121] truncate">
+                                  {stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.name || 'Selected Voice'}
+                                </span>
+                                {stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.labels && (
+                                  <span className="text-sm text-gray-500 truncate">
+                                    {stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.labels?.gender}
+                                    {stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.labels?.accent && 
+                                      `, ${stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.labels?.accent}`}
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-gray-500">Select a voice...</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {selectedStsVoiceId && stsVoices.find(v => v.voice_id === selectedStsVoiceId)?.preview_url && (
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const voice = stsVoices.find(v => v.voice_id === selectedStsVoiceId);
+                                  if (voice?.preview_url) {
+                                    const audio = new Audio(voice.preview_url);
+                                    audio.play().catch(err => console.error('Audio playback failed:', err));
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.stopPropagation();
+                                    const voice = stsVoices.find(v => v.voice_id === selectedStsVoiceId);
+                                    if (voice?.preview_url) {
+                                      const audio = new Audio(voice.preview_url);
+                                      audio.play().catch(err => console.error('Audio playback failed:', err));
+                                    }
+                                  }
+                                }}
+                                className="p-2 hover:bg-gray-100 rounded-full transition-colors cursor-pointer"
+                              >
+                                <Image src="/assets/u_play.svg" alt="Preview" width={16} height={16} />
+                              </div>
+                            )}
+                            <svg 
+                              className={cn("w-5 h-5 text-gray-400 transition-transform", isVoiceDropdownOpen && "rotate-180")} 
+                              fill="none" 
+                              stroke="currentColor" 
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </div>
+                        </button>
+
+                        {/* Dropdown Panel */}
+                        {isVoiceDropdownOpen && !stsVoicesLoading && stsVoices.length > 0 && (
+                          <div className="absolute z-50 mt-2 w-full bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
+                            <div className="max-h-[250px] overflow-y-auto">
+                              {stsVoices.slice(0, 20).map((voice: any) => (
+                                <div
+                                  key={voice.voice_id}
+                                  onClick={() => {
+                                    setSelectedStsVoiceId(voice.voice_id);
+                                    setIsVoiceDropdownOpen(false);
+                                    if (!voiceTransformSettings) {
+                                      setVoiceTransformSettings({
+                                        voiceId: voice.voice_id,
+                                        stability: 0.5,
+                                        similarityBoost: 0.75,
+                                        style: 0,
+                                        useSpeakerBoost: true,
+                                        removeBackgroundNoise: false,
+                                      });
+                                    }
+                                  }}
+                                  className={cn(
+                                    "flex items-center justify-between gap-3 px-4 py-3 cursor-pointer transition-all",
+                                    selectedStsVoiceId === voice.voice_id
+                                      ? "bg-orange-50"
+                                      : "hover:bg-gray-50"
+                                  )}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121]">
+                                      {voice.name}
+                                    </span>
+                                    {voice.labels && (
+                                      <span className="ml-2 text-sm text-gray-500">
+                                        {voice.labels.gender && voice.labels.gender}
+                                        {voice.labels.accent && `, ${voice.labels.accent}`}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {voice.preview_url && (
+                                      <div
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const audio = new Audio(voice.preview_url);
+                                          audio.play().catch(err => console.error('Audio playback failed:', err));
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter' || e.key === ' ') {
+                                            e.stopPropagation();
+                                            const audio = new Audio(voice.preview_url);
+                                            audio.play().catch(err => console.error('Audio playback failed:', err));
+                                          }
+                                        }}
+                                        className="p-2 hover:bg-gray-200 rounded-full transition-colors cursor-pointer"
+                                      >
+                                        <Image src="/assets/u_play.svg" alt="Preview" width={14} height={14} />
+                                      </div>
+                                    )}
+                                    {selectedStsVoiceId === voice.voice_id && (
+                                      <svg className="w-5 h-5 text-orange-500" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                      </svg>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Voice Settings - Always visible when voice is selected */}
+                    {selectedStsVoiceId && (
+                      <div className="border-t pt-4 space-y-4">
+                        <h4 className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121]">
+                          Voice Settings
+                        </h4>
+                        
+                        <div className="space-y-4">
+                          {/* Stability Slider - Smooth */}
+                          <div>
+                            <label className="flex justify-between text-sm text-gray-600 mb-2">
+                              <span>Stability</span>
+                              <span className="font-medium text-[#212121]">{((voiceTransformSettings?.stability || 0.5) * 100).toFixed(0)}%</span>
+                            </label>
+                            <div className="relative h-2">
+                              <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                              <div 
+                                className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                                style={{ width: `${(voiceTransformSettings?.stability || 0.5) * 100}%` }}
+                              ></div>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={voiceTransformSettings?.stability || 0.5}
+                                onChange={(e) => setVoiceTransformSettings(prev => ({
+                                  voiceId: selectedStsVoiceId,
+                                  stability: parseFloat(e.target.value),
+                                  similarityBoost: prev?.similarityBoost || 0.75,
+                                  style: prev?.style || 0,
+                                  useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                                  removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                                }))}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              />
+                              <div 
+                                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                                style={{ left: `calc(${(voiceTransformSettings?.stability || 0.5) * 100}% - 8px)` }}
+                              ></div>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">Higher = more consistent, Lower = more expressive</p>
+                          </div>
+
+                          {/* Similarity Boost Slider - Smooth */}
+                          <div>
+                            <label className="flex justify-between text-sm text-gray-600 mb-2">
+                              <span>Similarity Boost</span>
+                              <span className="font-medium text-[#212121]">{((voiceTransformSettings?.similarityBoost || 0.75) * 100).toFixed(0)}%</span>
+                            </label>
+                            <div className="relative h-2">
+                              <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                              <div 
+                                className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                                style={{ width: `${(voiceTransformSettings?.similarityBoost || 0.75) * 100}%` }}
+                              ></div>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={voiceTransformSettings?.similarityBoost || 0.75}
+                                onChange={(e) => setVoiceTransformSettings(prev => ({
+                                  voiceId: selectedStsVoiceId,
+                                  stability: prev?.stability || 0.5,
+                                  similarityBoost: parseFloat(e.target.value),
+                                  style: prev?.style || 0,
+                                  useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                                  removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                                }))}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              />
+                              <div 
+                                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                                style={{ left: `calc(${(voiceTransformSettings?.similarityBoost || 0.75) * 100}% - 8px)` }}
+                              ></div>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">Higher = closer to target voice</p>
+                          </div>
+
+                          {/* Style Slider - Smooth */}
+                          <div>
+                            <label className="flex justify-between text-sm text-gray-600 mb-2">
+                              <span>Style</span>
+                              <span className="font-medium text-[#212121]">{((voiceTransformSettings?.style || 0) * 100).toFixed(0)}%</span>
+                            </label>
+                            <div className="relative h-2">
+                              <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                              <div 
+                                className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                                style={{ width: `${(voiceTransformSettings?.style || 0) * 100}%` }}
+                              ></div>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={voiceTransformSettings?.style || 0}
+                                onChange={(e) => setVoiceTransformSettings(prev => ({
+                                  voiceId: selectedStsVoiceId,
+                                  stability: prev?.stability || 0.5,
+                                  similarityBoost: prev?.similarityBoost || 0.75,
+                                  style: parseFloat(e.target.value),
+                                  useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                                  removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                                }))}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              />
+                              <div 
+                                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                                style={{ left: `calc(${(voiceTransformSettings?.style || 0) * 100}% - 8px)` }}
+                              ></div>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">Higher = more stylized delivery</p>
+                          </div>
+
+                          {/* Custom Checkboxes */}
+                          <div className="flex flex-wrap gap-4 pt-2">
+                            <label className="flex items-center gap-3 cursor-pointer group">
+                              <div 
+                                onClick={() => setVoiceTransformSettings(prev => ({
+                                  voiceId: selectedStsVoiceId,
+                                  stability: prev?.stability || 0.5,
+                                  similarityBoost: prev?.similarityBoost || 0.75,
+                                  style: prev?.style || 0,
+                                  useSpeakerBoost: !(prev?.useSpeakerBoost ?? true),
+                                  removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                                }))}
+                                className={cn(
+                                  "w-5 h-5 rounded flex items-center justify-center transition-all duration-200",
+                                  voiceTransformSettings?.useSpeakerBoost ?? true
+                                    ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                    : "bg-white border-2 border-gray-300 group-hover:border-orange-400"
+                                )}
+                              >
+                                {(voiceTransformSettings?.useSpeakerBoost ?? true) && (
+                                  <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </div>
+                              <span className="text-sm text-gray-600 group-hover:text-[#212121] transition-colors">Speaker Boost</span>
+                            </label>
+                            <label className="flex items-center gap-3 cursor-pointer group">
+                              <div 
+                                onClick={() => setVoiceTransformSettings(prev => ({
+                                  voiceId: selectedStsVoiceId,
+                                  stability: prev?.stability || 0.5,
+                                  similarityBoost: prev?.similarityBoost || 0.75,
+                                  style: prev?.style || 0,
+                                  useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                                  removeBackgroundNoise: !(prev?.removeBackgroundNoise ?? false),
+                                }))}
+                                className={cn(
+                                  "w-5 h-5 rounded flex items-center justify-center transition-all duration-200",
+                                  voiceTransformSettings?.removeBackgroundNoise ?? false
+                                    ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                                    : "bg-white border-2 border-gray-300 group-hover:border-orange-400"
+                                )}
+                              >
+                                {(voiceTransformSettings?.removeBackgroundNoise ?? false) && (
+                                  <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </div>
+                              <span className="text-sm text-gray-600 group-hover:text-[#212121] transition-colors">Remove Background Noise</span>
+                            </label>
+                          </div>
+                        </div>
+
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+
+                {/* Transform / Proceed Buttons - Show only when in voice-transform substep and no action taken yet */}
+                {voiceSubstep === 'voice-transform' && !transformActionMessage && (
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                  {/* Skip transformation - go directly to scene review */}
+              <button
+                    onClick={() => {
+                      setTransformActionMessage('skip');
+                      setVoiceSubstep('scene-review');
+                    }}
+                    disabled={isTransformingVoice || isProcessingManualAudio}
+                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                      Skip & Use Original
+                    </span>
+                  </button>
+
+                  {/* Transform button - transforms all then shows scene review */}
+                  {!isTransformingVoice && Object.values(transformedAudioByScene).filter(s => s.status === 'completed').length === 0 && (
+                    <button
+                      onClick={async () => {
+                        if (!selectedStsVoiceId || !projectId) {
+                          showToast('Please select a target voice', 'warning');
+                          return;
+                        }
+
+                        setTransformActionMessage('transform');
+                        setIsTransformingVoice(true);
+                        
+                        // Initialize transformed audio state with "processing" status
+                        const scenes = generatedScript?.scenes || generatedScript?.scene_plan || [];
+                        const initialState: Record<number, any> = {};
+                        scenes.forEach((s: any, i: number) => {
+                          const sceneNum = s.scene_number ?? s.sceneNumber ?? i + 1;
+                          if (manualAudioByScene[sceneNum]?.status === 'uploaded') {
+                            initialState[sceneNum] = { status: 'processing' };
+                          }
+                        });
+                        setTransformedAudioByScene(initialState);
+                        
+                        // Immediately show scene review with processing states
+                        setVoiceSubstep('scene-review');
+
+                        try {
+                          const response = await apiClient.transformAllSceneAudio(
+                            projectId,
+                            selectedStsVoiceId,
+                            {
+                              stability: voiceTransformSettings?.stability || 0.5,
+                              similarityBoost: voiceTransformSettings?.similarityBoost || 0.75,
+                              style: voiceTransformSettings?.style || 0,
+                              useSpeakerBoost: voiceTransformSettings?.useSpeakerBoost ?? true,
+                              removeBackgroundNoise: voiceTransformSettings?.removeBackgroundNoise ?? false,
+                            }
+                          );
+
+                          if (response.success && response.data?.results) {
+                            const newState: Record<number, any> = {};
+                            response.data.results.forEach((result) => {
+                              newState[result.sceneNumber] = {
+                                status: result.status === 'success' ? 'completed' : 'error',
+                                originalUrl: result.originalUrl,
+                                transformedUrl: result.transformedUrl,
+                                duration: result.duration,
+                                error: result.error,
+                              };
+                            });
+                            setTransformedAudioByScene(newState);
+                            
+                            const successCount = response.data.results.filter(r => r.status === 'success').length;
+                            if (successCount > 0) {
+                              showToast(`Successfully transformed ${successCount} scene(s)`, 'success');
+                            } else {
+                              showToast('All voice transformations failed', 'error');
+                              // Go back to voice-transform so user can retry
+                              setVoiceSubstep('voice-transform');
+                              setTransformActionMessage(null);
+                            }
+                          } else {
+                            showToast(response.message || 'Voice transformation failed', 'error');
+                            // Go back to voice-transform so user can retry
+                            setVoiceSubstep('voice-transform');
+                            setTransformActionMessage(null);
+                          }
+                        } catch (e: any) {
+                          showToast(e.message || 'Voice transformation failed', 'error');
+                          // Go back to voice-transform so user can retry
+                          setVoiceSubstep('voice-transform');
+                          setTransformActionMessage(null);
+                        } finally {
+                          setIsTransformingVoice(false);
+                        }
+                      }}
+                      disabled={!selectedStsVoiceId || isTransformingVoice}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Transform All Scenes
+                      </span>
+                    </button>
+                  )}
+
+                  {/* After transformation, show button to go to scene review */}
+                  {!isTransformingVoice && Object.values(transformedAudioByScene).filter(s => s.status === 'completed').length > 0 && (
+                    <button
+                      onClick={() => {
+                        setVoiceSubstep('scene-review');
+                      }}
+                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <Image
+                          src="/assets/u_arrow-right.svg"
+                          alt="Review"
+                          width={12}
+                          height={12}
+                          className="w-fit"
+                        />
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Review Scenes
+                      </span>
+                    </button>
+                  )}
+                </div>
+                )}
+
+                {/* User Transform Action Message Bubble - shows immediately when action is taken */}
+                {transformActionMessage && (voiceSubstep === 'voice-transform' || voiceSubstep === 'scene-review') && (
+                  <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                        {transformActionMessage === 'transform' ? 'Transform All Scenes' : 'Skip & Use Original'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+
+                {/* Scene-by-Scene Transformation Review View */}
+                {voiceSubstep === 'scene-review' && (
+                  <div className="w-full max-w-full sm:max-w-[750px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    {/* AI Message - Changes based on transformation state */}
+                    <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mb-[clamp(0.5rem,0.98vh,10px)]">
+                      {isTransformingVoice ? (
+                        <div className="flex items-center gap-2">
+                          <div className="animate-spin w-4 h-4 border-2 border-[#E86412] border-t-transparent rounded-full flex-shrink-0"></div>
+                          <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                            Transforming your voice recordings... ({Object.values(transformedAudioByScene).filter(s => s.status === 'completed').length}/{Object.keys(manualAudioByScene).length})
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                          Review your audio for each scene. You can transform individual scenes or proceed with the current audio.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Scene List Container with Gradient Border */}
+                    <div
+                      className="relative w-full p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]"
+                      style={{
+                        background:
+                          'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                          'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                          'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                      }}
+                    >
+                      <div className="bg-white rounded-[8px] p-[clamp(0.75rem,1.17vh,12px)] w-full">
+                        <div className="max-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto flex flex-col gap-[clamp(0.5rem,0.78vh,8px)] pr-1">
+                          {(generatedScript?.scenes || generatedScript?.scene_plan || []).map((scene: any, index: number) => {
+                            const sceneNum = scene.scene_number ?? scene.sceneNumber ?? index + 1;
+                            const voiceoverText = scene.voiceover || scene.voice_over || scene.voiceOver || '';
+                            const manualAudio = manualAudioByScene[sceneNum];
+                            const transformedAudio = transformedAudioByScene[sceneNum];
+                            const hasOriginal = manualAudio?.status === 'uploaded' && manualAudio?.localUrl;
+                            const hasTransformed = transformedAudio?.status === 'completed' && transformedAudio?.transformedUrl;
+                            const isTransformingThis = transformedAudio?.status === 'processing';
+
+                            return (
+                              <div
+                                key={sceneNum}
+                                className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] p-[clamp(0.5rem,0.78vh,8px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.12)]"
+                              >
+                                {/* Scene Header with Re-transform button */}
+                                <div className="flex flex-row items-center justify-between gap-2">
+                                  <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121]">
+                                    Scene {sceneNum}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    {isTransformingThis && (
+                                      <span className="inline-flex items-center rounded-full px-2 py-[2px] text-[clamp(0.6875rem,1.05vh,11px)] font-heading bg-[#FFF3E0] text-[#E65100]">
+                                        Transforming...
+                                      </span>
+                                    )}
+                                    {hasTransformed && !isTransformingThis && (
+                                      <span className="inline-flex items-center rounded-full px-2 py-[2px] text-[clamp(0.6875rem,1.05vh,11px)] font-heading bg-[#E8F5E9] text-[#2E7D32]">
+                                        Transformed
+                                      </span>
+                                    )}
+                                    {hasOriginal && !hasTransformed && !isTransformingThis && (
+                                      <span className="inline-flex items-center rounded-full px-2 py-[2px] text-[clamp(0.6875rem,1.05vh,11px)] font-heading bg-[#F5F5F5] text-[#616161]">
+                                        Original
+                                      </span>
+                                    )}
+                                    {/* Transform/Re-transform button in header */}
+                                    {hasOriginal && !isTransformingThis && (
+                                      <button
+                                        onClick={() => {
+                                          setPerSceneTransformModal({
+                                            isOpen: true,
+                                            sceneNumber: sceneNum,
+                                            voiceoverText: voiceoverText,
+                                          });
+                                          setPerSceneSettings(voiceTransformSettings || {
+                                            voiceId: selectedStsVoiceId || '',
+                                            stability: 0.5,
+                                            similarityBoost: 0.75,
+                                            style: 0,
+                                            useSpeakerBoost: true,
+                                            removeBackgroundNoise: false,
+                                          });
+                                        }}
+                                        disabled={isTransformingSingleScene}
+                                        className={cn(
+                                          "inline-flex items-center gap-1 rounded-full px-2 py-[2px] text-[clamp(0.6875rem,1.05vh,11px)] font-heading transition-all disabled:opacity-50",
+                                          hasTransformed 
+                                            ? "bg-[#FFF3E0] text-[#E65100] hover:bg-orange-200" 
+                                            : "bg-[#F5F5F5] text-[#616161] hover:bg-gray-200"
+                                        )}
+                                      >
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        </svg>
+                                        {hasTransformed ? 'Re-transform' : 'Transform'}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Voiceover Text */}
+                                <span className="font-heading text-[clamp(0.8125rem,1.37vh,14px)] font-normal leading-[clamp(1.1rem,1.8vh,20px)] text-[#616161] whitespace-pre-wrap break-words">
+                                  {voiceoverText || 'No voiceover text'}
+                                </span>
+
+                                {/* Audio Controls Row - Horizontal layout matching recording section */}
+                                <div className="flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)]">
+                                  {/* Play Buttons with Labels */}
+                                  <div className="flex flex-row items-center gap-[clamp(0.25rem,0.39vh,4px)] flex-shrink-0">
+                                    {/* Original Audio Play/Pause Button */}
+                                    {hasOriginal && manualAudio?.localUrl && (
+                                      <button
+                                        onClick={() => handleReviewAudioPlayback(
+                                          sceneNum,
+                                          'original',
+                                          manualAudio.localUrl!,
+                                          manualAudio.duration
+                                        )}
+                                        className={cn(
+                                          "flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full border transition-colors",
+                                          reviewPlayingScene === sceneNum && reviewPlayingType === 'original'
+                                            ? "bg-white border-[#E0E0E0] text-[#212121]"
+                                            : "bg-white border-[#E0E0E0] text-[#212121] hover:bg-[#FFF5E9]"
+                                        )}
+                                        title="Play Original"
+                                      >
+                                        {reviewPlayingScene === sceneNum && reviewPlayingType === 'original' ? (
+                                          <svg className="w-[16px] h-[16px]" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-[16px] h-[16px]" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M8 5v14l11-7z"/>
+                                          </svg>
+                                        )}
+                                      </button>
+                                    )}
+
+                                    {/* Transformed Audio Play/Pause Button */}
+                                    {hasTransformed && transformedAudio?.transformedUrl && (
+                                      <button
+                                        onClick={() => handleReviewAudioPlayback(
+                                          sceneNum,
+                                          'transformed',
+                                          transformedAudio.transformedUrl!,
+                                          transformedAudio.duration || manualAudio?.duration
+                                        )}
+                                        className="flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full bg-[#E86412] text-white hover:opacity-90 transition-opacity"
+                                        title="Play Transformed"
+                                      >
+                                        {reviewPlayingScene === sceneNum && reviewPlayingType === 'transformed' ? (
+                                          <svg className="w-[16px] h-[16px]" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-[16px] h-[16px]" fill="currentColor" viewBox="0 0 24 24">
+                                            <path d="M8 5v14l11-7z"/>
+                                          </svg>
+                                        )}
+                                      </button>
+                                    )}
+
+                                    {/* Spinning indicator when transforming */}
+                                    {isTransformingThis && (
+                                      <div 
+                                        className="flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full bg-[#FFF3E0] border border-[#FFCC80]"
+                                        title="Transforming..."
+                                      >
+                                        <div className="animate-spin w-4 h-4 border-2 border-[#E86412] border-t-transparent rounded-full"></div>
+                                      </div>
+                                    )}
+
+                                    {/* Placeholder button for non-transformed */}
+                                    {hasOriginal && !hasTransformed && !isTransformingThis && (
+                                      <div 
+                                        className="flex items-center justify-center w-[clamp(2.25rem,3.51vh,34px)] h-[clamp(2.25rem,3.51vh,34px)] rounded-full bg-gray-50 border border-dashed border-gray-300"
+                                        title="Not transformed"
+                                      >
+                                        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                                        </svg>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Progress Bar - Always visible, takes remaining space */}
+                                  <div className="flex-1 flex flex-row items-center h-[clamp(2.125rem,3.32vh,34px)] min-w-0">
+                                    <div className="w-full h-[4px] rounded-full bg-[#FFE0CC] overflow-hidden">
+                                      <div
+                                        className={cn(
+                                          "h-full transition-[width] duration-100",
+                                          reviewPlayingScene === sceneNum && reviewPlayingType === 'transformed'
+                                            ? "bg-[#E86412]"
+                                            : reviewPlayingScene === sceneNum && reviewPlayingType === 'original'
+                                            ? "bg-gray-600"
+                                            : "bg-[#E86412]"
+                                        )}
+                                        style={{
+                                          width: `${reviewPlayingScene === sceneNum 
+                                            ? Math.min(100, Math.max(0, (reviewPlaybackProgress[sceneNum] ?? 0) * 100))
+                                            : 0}%`,
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* Timestamps - on the right */}
+                                  {(() => {
+                                    const audioDuration = hasTransformed 
+                                      ? (transformedAudio?.duration || manualAudio?.duration || 0)
+                                      : (manualAudio?.duration || 0);
+                                    if (!audioDuration || audioDuration <= 0) return null;
+                                    const currentTime = reviewPlayingScene === sceneNum 
+                                      ? (reviewPlaybackProgress[sceneNum] ?? 0) * audioDuration
+                                      : 0;
+                                    return (
+                                      <div className="flex-shrink-0">
+                                        <span className="font-heading text-[clamp(0.6875rem,1.05vh,11px)] text-[#9E9E9E]">
+                                          {formatTime(currentTime)} / {formatTime(audioDuration)}
+                                        </span>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Final Proceed Buttons - Outside the scene list container */}
+                {voiceSubstep === 'scene-review' && !isTransformingVoice && (
+                  <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                    {/* Skip & Use Original Button - Only show if there are any transformed audios */}
+                    {Object.values(transformedAudioByScene).some(t => t.status === 'completed') && (
+                      <button
+                        onClick={async () => {
+                          // Explicitly set audio preference to use original audio before proceeding
+                          if (projectId) {
+                            try {
+                              await apiClient.setAudioPreference(projectId, false);
+                              console.log('[AIChat] Audio preference set to use original audio');
+                            } catch (err) {
+                              console.error('Failed to set audio preference:', err);
+                            }
+                          }
+                          // Clear transformed audio state and proceed with originals
+                          setTransformedAudioByScene({});
+                          setTransformActionMessage('skip');
+                          handleProceedWithManualRecordings();
+                        }}
+                        disabled={isProcessingManualAudio}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white border border-gray-200 shadow-[0px_1px_7px_rgba(87,73,119,0.12)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                      >
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#666666]">
+                          Skip & Use Original
+                        </span>
+                      </button>
+                    )}
+                    
+                    {/* Proceed with Transformed Button */}
+                    <button
+                      onClick={() => {
+                        handleProceedWithManualRecordings();
+                      }}
+                      disabled={isProcessingManualAudio}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                  <Image
+                    src="/assets/u_arrow-right.svg"
+                    alt="Proceed"
+                    width={12}
+                    height={12}
+                    className="w-fit"
+                  />
+                </div>
+                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        {isProcessingManualAudio ? 'Processing...' : (
+                          Object.values(transformedAudioByScene).some(t => t.status === 'completed')
+                            ? 'Use Transformed Audio'
+                            : 'Proceed'
+                        )}
+                </span>
+              </button>
+            </div>
+                )}
+              </>
+            )}
 
             {/* Voice Preview - Show in confirmed substep */}
             {hasReachedSubstep('voice-selection', 'confirmed') && selectedVoiceId && (() => {
@@ -5984,7 +7314,7 @@ Read everything on screen smoothly.`}
           {((currentStep === 'assets-attached' && scriptSubstep === 'input') || currentStep === 'script-input') && (
             <div 
               className={cn(
-                "rounded-[40px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0 transition-all box-border",
+                "rounded-[24px] w-full min-h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0 transition-all box-border",
                 inputFocused 
                   ? "p-[2px]"
                   : "p-0 shadow-[0px_3px_19.5px_rgba(224,140,138,0.4)]"
@@ -5994,42 +7324,137 @@ Read everything on screen smoothly.`}
               } : {}}
             >
               <div className={cn(
-                "flex flex-row justify-center items-center gap-[clamp(0.75rem,1.56vh,16px)] bg-white rounded-[40px] w-full h-full box-border",
-                inputFocused ? "px-[clamp(0.375rem,0.59vh,6px)] py-[clamp(0.375rem,0.59vh,6px)]" : "px-[clamp(0.5rem,0.78vh,8px)] py-[clamp(0.5rem,0.78vh,8px)]"
+                "flex flex-row items-end gap-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[24px] w-full h-full box-border",
+                inputFocused ? "px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)]" : "px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)]"
               )}>
+                {/* Textarea or Recording Visualizer */}
+                {!isInputRecording ? (
                 <AIChatTagAwareInput
                   value={scriptInput}
                   onChange={setScriptInput}
                   onKeyPress={(e) => {
-                    if (e.key === 'Enter' && scriptInput.trim() && !isGeneratingScript && selectedLanguage) {
+                      if (e.key === 'Enter' && !e.shiftKey && scriptInput.trim() && !isGeneratingScript && selectedLanguage) {
+                        e.preventDefault();
                       handleSendScript();
                     }
                   }}
                   placeholder={selectedLanguage 
-                    ? "Share your ideas here... Use @tags for themes (e.g., @technology @professional)" 
+                      ? "Share your ideas here..." 
                     : "Please select a language first"}
-                  disabled={isGeneratingScript || !selectedLanguage}
+                    disabled={isGeneratingScript || !selectedLanguage || isTranscribing}
                   className={cn(
-                    "flex-1 font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#616161] outline-none px-[clamp(0.5rem,0.98vh,10px)] bg-transparent border-none focus:ring-0",
-                    (isGeneratingScript || !selectedLanguage) && "opacity-50 cursor-not-allowed"
-                  )}
-                />
-                
-                {/* Send button */}
+                      "flex-1 font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1.25rem,1.95vh,20px)] text-[#616161] outline-none px-[clamp(0.25rem,0.39vh,4px)] bg-transparent border-none focus:ring-0 self-center",
+                      (isGeneratingScript || !selectedLanguage || isTranscribing) && "opacity-50 cursor-not-allowed"
+                    )}
+                  />
+                ) : (
+                  /* Recording Visualizer - flows right-to-left (newer bars on right, near buttons) */
+                  <div 
+                    ref={inputVisualizerContainerRef}
+                    className="flex-1 flex flex-row items-center h-[clamp(2.25rem,3.51vh,36px)] min-w-0"
+                  >
+                    {(() => {
+                      const history = inputVisualizerLevels;
+                      const laneCount = inputVisualizerLaneCount;
+                      // Build padded history: newest bars on the RIGHT side
+                      // Index 0 = leftmost (oldest/empty), index laneCount-1 = rightmost (newest)
+                      const paddedHistory = Array.from(
+                        { length: laneCount },
+                        (_, laneIndex) => {
+                          // Calculate how many empty slots we need on the left
+                          const emptySlots = laneCount - history.length;
+                          if (laneIndex < emptySlots) {
+                            return null; // Empty slot on the left
+                          }
+                          // Map to history array (oldest to newest, left to right)
+                          const srcIndex = laneIndex - emptySlots;
+                          return srcIndex >= 0 && srcIndex < history.length
+                            ? history[srcIndex]
+                            : null;
+                        },
+                      );
+
+                      return (
+                        <div className="flex flex-row items-center justify-between w-full">
+                          {paddedHistory.map((level, index) => (
+                            <div
+                              key={index}
+                              className="flex items-center justify-center"
+                              style={{ width: 4 }}
+                            >
+                              {level !== null && (
+                                <div
+                                  className="w-[4px] rounded-full bg-[#E86412] transition-[height] duration-75"
+                                  style={{
+                                    height: `${(() => {
+                                      const baseHeightPx = 4;
+                                      const maxHeightPx = 28;
+                                      const clampedLevel = Math.max(0, Math.min(1, level));
+                                      return baseHeightPx + clampedLevel * (maxHeightPx - baseHeightPx);
+                                    })()}px`,
+                                  }}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* Mic/Cancel Button */}
                 <button
-                  onClick={() => scriptInput.trim() && !isGeneratingScript && selectedLanguage && handleSendScript()}
-                  disabled={!scriptInput.trim() || isGeneratingScript || !selectedLanguage}
-                  className="flex flex-row justify-center items-center w-[clamp(2rem,5.08vh,52px)] h-[clamp(2rem,5.08vh,52px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+                  onClick={isInputRecording ? handleCancelInputRecording : handleStartInputRecording}
+                  disabled={isGeneratingScript || !selectedLanguage || isTranscribing}
+                  className={cn(
+                    "flex flex-row justify-center items-center w-[clamp(2rem,4.10vh,42px)] h-[clamp(2rem,4.10vh,42px)] rounded-full transition-all flex-shrink-0",
+                    isInputRecording 
+                      ? "bg-gray-100 hover:bg-gray-200 text-gray-600" 
+                      : "bg-gray-100 hover:bg-gray-200 text-[#616161]",
+                    "disabled:opacity-50 disabled:cursor-not-allowed"
+                  )}
                 >
-                  {isGeneratingScript ? (
-                    <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  {isInputRecording ? (
+                    <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  ) : (
+                    <svg className="w-[18px] h-[18px]" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                      <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                    </svg>
+                  )}
+                </button>
+                
+                {/* Send/Confirm button */}
+                <button
+                  onClick={isInputRecording 
+                    ? handleConfirmInputRecording 
+                    : () => scriptInput.trim() && !isGeneratingScript && selectedLanguage && handleSendScript()
+                  }
+                  disabled={isInputRecording ? false : (!scriptInput.trim() || isGeneratingScript || !selectedLanguage)}
+                  className={cn(
+                    "flex flex-row justify-center items-center w-[clamp(2rem,4.10vh,42px)] h-[clamp(2rem,4.10vh,42px)] rounded-full transition-all flex-shrink-0",
+                    "bg-gradient-to-r from-[#E86412] to-[#F12A4C] text-white",
+                    "disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+                  )}
+                >
+                  {isTranscribing ? (
+                    <div className="w-[clamp(1rem,1.95vh,20px)] h-[clamp(1rem,1.95vh,20px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : isGeneratingScript ? (
+                    <div className="w-[clamp(1rem,1.95vh,20px)] h-[clamp(1rem,1.95vh,20px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : isInputRecording ? (
+                    <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
                   ) : (
                     <Image
                       src="/assets/fi_send.svg"
                       alt="Send"
-                      width={24}
-                      height={24}
-                      className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]"
+                      width={20}
+                      height={20}
+                      className="w-[clamp(1rem,1.95vh,20px)] h-[clamp(1rem,1.95vh,20px)]"
                     />
                   )}
                 </button>
@@ -6433,6 +7858,437 @@ Read everything on screen smoothly.`}
                 Select Avatar
               </span>
             </button>
+          </div>
+        </>
+      )}
+
+      {/* Per-Scene Transform Modal */}
+      {perSceneTransformModal.isOpen && (
+        <>
+          {/* Overlay */}
+          <div 
+            className="fixed inset-0 bg-gradient-to-br from-[rgba(191,143,100,0.5)] to-[rgba(179,104,56,0.5)] opacity-90 z-40"
+            onClick={() => {
+              setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+              setIsModalVoiceDropdownOpen(false);
+            }}
+          />
+          
+          {/* Modal */}
+          <div className="fixed inset-0 flex items-center justify-center z-50 p-4 overflow-y-auto">
+            <div className="bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl p-6 w-full max-w-[500px] flex flex-col gap-4 my-auto">
+              {/* Modal Header */}
+              <div className="flex flex-row items-center justify-between w-full">
+                <h2 className="font-heading text-xl font-medium text-[#212121]">
+                  Transform Scene {perSceneTransformModal.sceneNumber}
+                </h2>
+                <button
+                  onClick={() => {
+                    setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+                    setIsModalVoiceDropdownOpen(false);
+                  }}
+                  className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-600" />
+                </button>
+    </div>
+
+              {/* Voiceover Text Preview */}
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-sm text-gray-600 line-clamp-3">
+                  {perSceneTransformModal.voiceoverText || 'No voiceover text'}
+                </p>
+              </div>
+
+              {/* Voice Selection Dropdown for Per-Scene - Custom Dropdown matching main section */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Target Voice</label>
+                <div ref={modalVoiceDropdownRef} className="relative">
+                  {/* Dropdown Trigger */}
+                  <button
+                    type="button"
+                    onClick={() => setIsModalVoiceDropdownOpen(!isModalVoiceDropdownOpen)}
+                    className={cn(
+                      "w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border-2 transition-all bg-white",
+                      perSceneSettings?.voiceId 
+                        ? "border-orange-500" 
+                        : "border-gray-200 hover:border-gray-300"
+                    )}
+                  >
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {stsVoicesLoading ? (
+                        <div className="flex items-center gap-2">
+                          <div className="animate-spin w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full"></div>
+                          <span className="text-gray-500">Loading voices...</span>
+                        </div>
+                      ) : perSceneSettings?.voiceId ? (
+                        <>
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121] truncate">
+                            {stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.name || 'Selected Voice'}
+                          </span>
+                          {stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.labels && (
+                            <span className="text-sm text-gray-500 truncate">
+                              {stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.labels?.gender}
+                              {stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.labels?.accent && 
+                                `, ${stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.labels?.accent}`}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-gray-500">Select a voice...</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {perSceneSettings?.voiceId && stsVoices.find(v => v.voice_id === perSceneSettings.voiceId)?.preview_url && (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const voice = stsVoices.find(v => v.voice_id === perSceneSettings.voiceId);
+                            if (voice?.preview_url) {
+                              const audio = new Audio(voice.preview_url);
+                              audio.play().catch(err => console.error('Audio playback failed:', err));
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.stopPropagation();
+                              const voice = stsVoices.find(v => v.voice_id === perSceneSettings.voiceId);
+                              if (voice?.preview_url) {
+                                const audio = new Audio(voice.preview_url);
+                                audio.play().catch(err => console.error('Audio playback failed:', err));
+                              }
+                            }
+                          }}
+                          className="p-2 hover:bg-gray-100 rounded-full transition-colors cursor-pointer"
+                        >
+                          <Image src="/assets/u_play.svg" alt="Preview" width={16} height={16} />
+                        </div>
+                      )}
+                      <svg 
+                        className={cn("w-5 h-5 text-gray-400 transition-transform", isModalVoiceDropdownOpen && "rotate-180")} 
+                        fill="none" 
+                        stroke="currentColor" 
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </button>
+
+                  {/* Dropdown Panel */}
+                  {isModalVoiceDropdownOpen && !stsVoicesLoading && stsVoices.length > 0 && (
+                    <div className="absolute z-50 mt-2 w-full bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
+                      <div className="max-h-[200px] overflow-y-auto">
+                        {stsVoices.slice(0, 20).map((voice: any) => (
+                          <div
+                            key={voice.voice_id}
+                            onClick={() => {
+                              setPerSceneSettings(prev => ({
+                                voiceId: voice.voice_id,
+                                stability: prev?.stability || 0.5,
+                                similarityBoost: prev?.similarityBoost || 0.75,
+                                style: prev?.style || 0,
+                                useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                                removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                              }));
+                              setIsModalVoiceDropdownOpen(false);
+                            }}
+                            className={cn(
+                              "flex items-center justify-between gap-3 px-4 py-3 cursor-pointer transition-all",
+                              perSceneSettings?.voiceId === voice.voice_id
+                                ? "bg-orange-50"
+                                : "hover:bg-gray-50"
+                            )}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium text-[#212121]">
+                                {voice.name}
+                              </span>
+                              {voice.labels && (
+                                <span className="ml-2 text-sm text-gray-500">
+                                  {voice.labels.gender && voice.labels.gender}
+                                  {voice.labels.accent && `, ${voice.labels.accent}`}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {voice.preview_url && (
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const audio = new Audio(voice.preview_url);
+                                    audio.play().catch(err => console.error('Audio playback failed:', err));
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.stopPropagation();
+                                      const audio = new Audio(voice.preview_url);
+                                      audio.play().catch(err => console.error('Audio playback failed:', err));
+                                    }
+                                  }}
+                                  className="p-1.5 hover:bg-gray-100 rounded-full transition-colors cursor-pointer"
+                                >
+                                  <Image src="/assets/u_play.svg" alt="Preview" width={14} height={14} />
+                                </div>
+                              )}
+                              {perSceneSettings?.voiceId === voice.voice_id && (
+                                <svg className="w-4 h-4 text-orange-500" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Settings */}
+              <div className="space-y-3">
+                {/* Stability Slider */}
+                <div>
+                  <label className="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Stability</span>
+                    <span className="font-medium">{((perSceneSettings?.stability || 0.5) * 100).toFixed(0)}%</span>
+                  </label>
+                  <div className="relative h-2">
+                    <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                    <div 
+                      className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                      style={{ width: `${(perSceneSettings?.stability || 0.5) * 100}%` }}
+                    ></div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={perSceneSettings?.stability || 0.5}
+                      onChange={(e) => setPerSceneSettings(prev => ({
+                        voiceId: prev?.voiceId || '',
+                        stability: parseFloat(e.target.value),
+                        similarityBoost: prev?.similarityBoost || 0.75,
+                        style: prev?.style || 0,
+                        useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                        removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                      }))}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div 
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                      style={{ left: `calc(${(perSceneSettings?.stability || 0.5) * 100}% - 6px)` }}
+                    ></div>
+                  </div>
+                </div>
+
+                {/* Similarity Boost Slider */}
+                <div>
+                  <label className="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Similarity Boost</span>
+                    <span className="font-medium">{((perSceneSettings?.similarityBoost || 0.75) * 100).toFixed(0)}%</span>
+                  </label>
+                  <div className="relative h-2">
+                    <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                    <div 
+                      className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                      style={{ width: `${(perSceneSettings?.similarityBoost || 0.75) * 100}%` }}
+                    ></div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={perSceneSettings?.similarityBoost || 0.75}
+                      onChange={(e) => setPerSceneSettings(prev => ({
+                        voiceId: prev?.voiceId || '',
+                        stability: prev?.stability || 0.5,
+                        similarityBoost: parseFloat(e.target.value),
+                        style: prev?.style || 0,
+                        useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                        removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                      }))}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div 
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                      style={{ left: `calc(${(perSceneSettings?.similarityBoost || 0.75) * 100}% - 6px)` }}
+                    ></div>
+                  </div>
+                </div>
+
+                {/* Style Slider */}
+                <div>
+                  <label className="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Style</span>
+                    <span className="font-medium">{((perSceneSettings?.style || 0) * 100).toFixed(0)}%</span>
+                  </label>
+                  <div className="relative h-2">
+                    <div className="absolute inset-0 bg-gray-200 rounded-full"></div>
+                    <div 
+                      className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-150"
+                      style={{ width: `${(perSceneSettings?.style || 0) * 100}%` }}
+                    ></div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={perSceneSettings?.style || 0}
+                      onChange={(e) => setPerSceneSettings(prev => ({
+                        voiceId: prev?.voiceId || '',
+                        stability: prev?.stability || 0.5,
+                        similarityBoost: prev?.similarityBoost || 0.75,
+                        style: parseFloat(e.target.value),
+                        useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                        removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                      }))}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div 
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md border-2 border-orange-500 transition-all duration-150 pointer-events-none"
+                      style={{ left: `calc(${(perSceneSettings?.style || 0) * 100}% - 6px)` }}
+                    ></div>
+                  </div>
+                </div>
+
+                {/* Checkboxes */}
+                <div className="flex flex-wrap gap-4 pt-1">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <div 
+                      onClick={() => setPerSceneSettings(prev => ({
+                        voiceId: prev?.voiceId || '',
+                        stability: prev?.stability || 0.5,
+                        similarityBoost: prev?.similarityBoost || 0.75,
+                        style: prev?.style || 0,
+                        useSpeakerBoost: !(prev?.useSpeakerBoost ?? true),
+                        removeBackgroundNoise: prev?.removeBackgroundNoise ?? false,
+                      }))}
+                      className={cn(
+                        "w-4 h-4 rounded flex items-center justify-center transition-all duration-200",
+                        perSceneSettings?.useSpeakerBoost ?? true
+                          ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                          : "bg-white border-2 border-gray-300 group-hover:border-orange-400"
+                      )}
+                    >
+                      {(perSceneSettings?.useSpeakerBoost ?? true) && (
+                        <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                    <span className="text-sm text-gray-600">Speaker Boost</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <div 
+                      onClick={() => setPerSceneSettings(prev => ({
+                        voiceId: prev?.voiceId || '',
+                        stability: prev?.stability || 0.5,
+                        similarityBoost: prev?.similarityBoost || 0.75,
+                        style: prev?.style || 0,
+                        useSpeakerBoost: prev?.useSpeakerBoost ?? true,
+                        removeBackgroundNoise: !(prev?.removeBackgroundNoise ?? false),
+                      }))}
+                      className={cn(
+                        "w-4 h-4 rounded flex items-center justify-center transition-all duration-200",
+                        perSceneSettings?.removeBackgroundNoise ?? false
+                          ? "bg-gradient-to-r from-[#E86412] to-[#F12A4C]"
+                          : "bg-white border-2 border-gray-300 group-hover:border-orange-400"
+                      )}
+                    >
+                      {(perSceneSettings?.removeBackgroundNoise ?? false) && (
+                        <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                    <span className="text-sm text-gray-600">Remove Background Noise</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+                    setIsModalVoiceDropdownOpen(false);
+                  }}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!perSceneSettings?.voiceId || !projectId || perSceneTransformModal.sceneNumber === null) {
+                      showToast('Please select a target voice', 'warning');
+                      return;
+                    }
+
+                    setIsTransformingSingleScene(true);
+                    const sceneNum = perSceneTransformModal.sceneNumber;
+
+                    try {
+                      const response = await apiClient.transformSceneAudio(
+                        projectId,
+                        sceneNum,
+                        perSceneSettings.voiceId,
+                        {
+                          stability: perSceneSettings.stability,
+                          similarityBoost: perSceneSettings.similarityBoost,
+                          style: perSceneSettings.style,
+                          useSpeakerBoost: perSceneSettings.useSpeakerBoost,
+                          removeBackgroundNoise: perSceneSettings.removeBackgroundNoise,
+                        }
+                      );
+
+                      if (response.success && response.data) {
+                        const responseData = response.data;
+                        setTransformedAudioByScene(prev => ({
+                          ...prev,
+                          [sceneNum]: {
+                            status: 'completed',
+                            originalUrl: responseData.originalUrl,
+                            transformedUrl: responseData.transformedUrl,
+                            duration: responseData.duration,
+                            settings: perSceneSettings,
+                          },
+                        }));
+                        showToast(`Scene ${sceneNum} transformed successfully`, 'success');
+                        setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+                        setIsModalVoiceDropdownOpen(false);
+                      } else {
+                        showToast(response.message || 'Transformation failed', 'error');
+                      }
+                    } catch (e: any) {
+                      showToast(e.message || 'Transformation failed', 'error');
+                    } finally {
+                      setIsTransformingSingleScene(false);
+                    }
+                  }}
+                  disabled={!perSceneSettings?.voiceId || isTransformingSingleScene}
+                  className="flex items-center gap-2 px-4 py-2 bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[20px] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isTransformingSingleScene ? (
+                    <>
+                      <div className="animate-spin w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full"></div>
+                      <span className="text-sm text-[#212121]">Transforming...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      <span className="text-sm text-[#212121]">Transform Scene</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}

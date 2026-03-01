@@ -479,6 +479,301 @@ export class VoiceController {
     };
   }
 
+  @Get('speech-to-speech/voices')
+  @ApiOperation({
+    summary: 'Get voices that support speech-to-speech',
+    description: 'Get list of voices that can be used for speech-to-speech conversion',
+  })
+  @ApiBearerAuth('JWT-auth')
+  @ApiResponse({
+    status: 200,
+    description: 'Voices retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: { type: 'array', items: { type: 'object' } },
+        message: { type: 'string' },
+      },
+    },
+  })
+  async getSpeechToSpeechVoices(
+    @Query('search') search?: string,
+    @Query('language') language?: 'english' | 'hindi' | 'hinglish',
+  ) {
+    const voices = await this.voiceService.getSpeechToSpeechVoices({
+      search,
+      language,
+    });
+
+    return {
+      success: true,
+      data: voices,
+      message: 'Speech-to-speech voices retrieved successfully',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  @Post('speech-to-speech')
+  @ApiOperation({
+    summary: 'Convert speech to speech',
+    description: 'Transform audio from one voice to another using ElevenLabs Speech-to-Speech API',
+  })
+  @ApiBearerAuth('JWT-auth')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        audioUrl: { type: 'string', description: 'URL of the audio to transform' },
+        voiceId: { type: 'string', description: 'Target voice ID' },
+        projectId: { type: 'string', description: 'Project ID' },
+        sceneNumber: { type: 'number', description: 'Scene number' },
+        settings: {
+          type: 'object',
+          properties: {
+            stability: { type: 'number', description: '0.0 - 1.0' },
+            similarityBoost: { type: 'number', description: '0.0 - 1.0' },
+            style: { type: 'number', description: '0.0 - 1.0' },
+            useSpeakerBoost: { type: 'boolean' },
+            removeBackgroundNoise: { type: 'boolean' },
+          },
+        },
+      },
+      required: ['audioUrl', 'voiceId', 'projectId', 'sceneNumber'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Audio transformed successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            sceneNumber: { type: 'number' },
+            originalUrl: { type: 'string' },
+            transformedUrl: { type: 'string' },
+            transformedFilePath: { type: 'string' },
+            transformedLocalUrl: { type: 'string' },
+            duration: { type: 'number' },
+          },
+        },
+      },
+    },
+  })
+  async convertSpeechToSpeech(
+    @Body() body: {
+      audioUrl: string;
+      voiceId: string;
+      projectId: string;
+      sceneNumber: number;
+      settings?: {
+        stability?: number;
+        similarityBoost?: number;
+        style?: number;
+        useSpeakerBoost?: boolean;
+        removeBackgroundNoise?: boolean;
+      };
+    },
+    @Request() req: any,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, message: 'User ID is required', error: 'Authentication failed' },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    if (!body.audioUrl || !body.voiceId || !body.projectId || body.sceneNumber == null) {
+      throw new HttpException(
+        { success: false, message: 'audioUrl, voiceId, projectId and sceneNumber are required', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    try {
+      const result = await this.voiceService.convertAndStoreSpeechToSpeech(
+        body.audioUrl,
+        body.voiceId,
+        userId,
+        body.projectId,
+        body.sceneNumber,
+        body.settings,
+      );
+
+      return {
+        success: true,
+        data: {
+          sceneNumber: body.sceneNumber,
+          originalUrl: body.audioUrl,
+          transformedUrl: result.publicUrl,
+          transformedFilePath: result.filePath,
+          transformedLocalUrl: result.localUrl,
+          duration: result.duration,
+        },
+        message: 'Audio transformed successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      console.error(`[VoiceController] Speech-to-speech conversion failed:`, error.message);
+      throw new HttpException(
+        {
+          success: false,
+          message: error.message || 'Failed to transform audio',
+          error: 'Speech-to-speech conversion failed',
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  @Post('speech-to-text')
+  @ApiOperation({
+    summary: 'Transcribe audio to text',
+    description: 'Convert speech audio to text using ElevenLabs Speech-to-Text API',
+  })
+  @ApiBearerAuth('JWT-auth')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        audio: { type: 'string', format: 'binary', description: 'Audio file to transcribe (MP3, WAV, WebM, etc.)' },
+        languageCode: { type: 'string', description: 'Optional ISO language code for better accuracy' },
+      },
+      required: ['audio'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Audio transcribed successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', example: 'Hello world' },
+            languageCode: { type: 'string', example: 'en' },
+          },
+        },
+        message: { type: 'string', example: 'Audio transcribed successfully' },
+        timestamp: { type: 'string', example: '2024-11-02T03:55:00.000Z' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Invalid audio file or missing parameters',
+  })
+  @UseInterceptors(
+    FileInterceptor('audio', {
+      storage: memoryStorage(),
+      limits: {
+        fileSize: 50 * 1024 * 1024, // 50MB limit (ElevenLabs max is 3GB but we limit it)
+      },
+    }),
+  )
+  async transcribeSpeech(
+    @Request() req: any,
+    @UploadedFile() audioFile: Multer.File,
+    @Body() body: { languageCode?: string },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'User ID is required. Please login again.',
+          error: 'Authentication failed',
+        },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    if (!audioFile) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Audio file is required',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const allowedMimeTypes = [
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/webm',
+      'audio/ogg',
+      'audio/m4a',
+      'audio/x-m4a',
+      'audio/flac',
+      'video/mp4',
+      'video/webm',
+    ];
+
+    if (!allowedMimeTypes.includes(audioFile.mimetype)) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Invalid audio file format. Supported formats: MP3, WAV, M4A, WebM, OGG, FLAC, MP4',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    try {
+      console.log(`[VoiceController] Transcribing audio for user ${userId}, size: ${audioFile.size} bytes, mimetype: ${audioFile.mimetype}`);
+
+      const result = await this.voiceService.transcribeSpeech(
+        audioFile.buffer,
+        { languageCode: body.languageCode },
+      );
+
+      console.log(`[VoiceController] Transcription successful: ${result.text.length} characters, language: ${result.languageCode}`);
+
+      return {
+        success: true,
+        data: {
+          text: result.text,
+          languageCode: result.languageCode,
+        },
+        message: 'Audio transcribed successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error: any) {
+      console.error(`[VoiceController] Speech-to-text error:`, error.message);
+
+      let httpStatus = HttpStatus.BAD_GATEWAY;
+      if (error.message?.includes('Invalid API key') || error.message?.includes('Unauthorized')) {
+        httpStatus = HttpStatus.UNAUTHORIZED;
+      } else if (error.message?.includes('validation failed') || error.message?.includes('Invalid')) {
+        httpStatus = HttpStatus.BAD_REQUEST;
+      } else if (error.message?.includes('rate limit')) {
+        httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+      }
+
+      throw new HttpException(
+        {
+          success: false,
+          message: error.message || 'Failed to transcribe audio',
+          error: 'Speech-to-text failed',
+          timestamp: new Date().toISOString(),
+        },
+        httpStatus,
+      );
+    }
+  }
+
   @Post('process-last-scene-audio')
   @ApiOperation({
     summary: 'Process last scene manual audio',

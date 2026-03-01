@@ -407,4 +407,260 @@ export class ElevenLabsProvider {
       throw new Error(`Failed to clone voice: ${error.message || 'Unknown error'}`);
     }
   }
+
+  /**
+   * Convert speech from one voice to another using ElevenLabs Speech-to-Speech API.
+   * Maintains emotion, timing and delivery from the original audio.
+   * 
+   * @param audioBuffer The audio buffer to transform
+   * @param voiceId The target voice ID to transform into
+   * @param options Optional settings for the transformation
+   * @returns The transformed audio buffer
+   */
+  async convertSpeechToSpeech(
+    audioBuffer: Buffer,
+    voiceId: string,
+    options?: {
+      modelId?: string;
+      outputFormat?: string;
+      voiceSettings?: {
+        stability?: number;
+        similarity_boost?: number;
+        style?: number;
+        use_speaker_boost?: boolean;
+      };
+      removeBackgroundNoise?: boolean;
+    }
+  ): Promise<Buffer> {
+    if (!this.apiKey) {
+      throw new Error('ElevenLabs API key is not configured');
+    }
+
+    const modelId = options?.modelId || 'eleven_multilingual_sts_v2';
+    const outputFormat = options?.outputFormat || 'mp3_44100_128';
+
+    console.log(`[ElevenLabsProvider] Converting speech to speech with voice ${voiceId}, model ${modelId}`);
+
+    try {
+      const FormData = require('form-data');
+      const formData = new FormData();
+
+      // Add the audio file
+      formData.append('audio', audioBuffer, {
+        filename: 'input.mp3',
+        contentType: 'audio/mpeg',
+      });
+
+      // Add model ID
+      formData.append('model_id', modelId);
+
+      // Add voice settings if provided
+      if (options?.voiceSettings) {
+        formData.append('voice_settings', JSON.stringify(options.voiceSettings));
+      }
+
+      // Add background noise removal option
+      if (options?.removeBackgroundNoise !== undefined) {
+        formData.append('remove_background_noise', options.removeBackgroundNoise.toString());
+      }
+
+      const response = await this.axiosInstance.post(
+        `/v1/speech-to-speech/${voiceId}`,
+        formData,
+        {
+          params: {
+            output_format: outputFormat,
+          },
+          headers: {
+            ...formData.getHeaders(),
+            'xi-api-key': this.apiKey,
+          },
+          responseType: 'arraybuffer',
+          timeout: 120000, // 2 minute timeout for speech-to-speech
+        }
+      );
+
+      const transformedBuffer = Buffer.from(response.data);
+      
+      // Validate response - ElevenLabs returns JSON error in arraybuffer on failure
+      // Valid audio should be at least 1KB, and errors are typically small JSON responses
+      const MIN_VALID_AUDIO_SIZE = 1000; // 1KB minimum for valid audio
+      
+      if (transformedBuffer.length < MIN_VALID_AUDIO_SIZE) {
+        // Try to parse as JSON error response
+        try {
+          const errorText = transformedBuffer.toString('utf-8');
+          const errorJson = JSON.parse(errorText);
+          const errorMessage = errorJson?.detail?.message || errorJson?.message || errorJson?.error || 'Unknown API error';
+          console.error(`[ElevenLabsProvider] Speech-to-speech returned error response (${transformedBuffer.length} bytes):`, errorText);
+          throw new Error(`ElevenLabs API error: ${errorMessage}`);
+        } catch (parseError) {
+          // If not JSON, it might be a truncated/corrupt response
+          console.error(`[ElevenLabsProvider] Speech-to-speech returned invalid audio (${transformedBuffer.length} bytes, too small)`);
+          throw new Error(`ElevenLabs returned invalid audio data (${transformedBuffer.length} bytes). The response may be corrupted or the API returned an error.`);
+        }
+      }
+      
+      // Validate content type if available
+      const contentType = response.headers['content-type'];
+      if (contentType && !contentType.includes('audio/') && !contentType.includes('application/octet-stream')) {
+        console.warn(`[ElevenLabsProvider] Unexpected content-type: ${contentType}, expected audio/* or application/octet-stream`);
+        // Don't throw, just warn - the size check above is more reliable
+      }
+
+      console.log(`[ElevenLabsProvider] Speech-to-speech conversion successful, received ${transformedBuffer.length} bytes`);
+      return transformedBuffer;
+    } catch (error: any) {
+      console.error(`[ElevenLabsProvider] Speech-to-speech conversion failed:`, {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        message: error.message,
+      });
+
+      if (error.response) {
+        if (error.response.status === 401) {
+          throw new Error('Invalid ElevenLabs API key for speech-to-speech.');
+        }
+        if (error.response.status === 422) {
+          const errorMessage = error.response.data?.detail?.message 
+            || 'Invalid audio data for speech-to-speech conversion.';
+          throw new Error(`Speech-to-speech validation failed: ${errorMessage}`);
+        }
+        if (error.response.status === 429) {
+          throw new Error('ElevenLabs API rate limit exceeded. Please try again later.');
+        }
+        throw new Error(`Speech-to-speech conversion failed: ${error.response.status} - ${error.response.statusText}`);
+      }
+
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('Speech-to-speech request timed out. Please try with a shorter audio file.');
+      }
+
+      throw new Error(`Failed to convert speech: ${error.message || 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get voices that support speech-to-speech conversion.
+   * Filters the voice list to only include voices with can_do_voice_conversion capability.
+   * 
+   * @param options Optional filters
+   * @returns List of voices that support STS
+   */
+  async getSpeechToSpeechVoices(options?: {
+    search?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
+    pageSize?: number;
+  }): Promise<ElevenLabsVoice[]> {
+    // Get all voices first
+    const response = await this.listVoices(options);
+    
+    // For now, return all voices since ElevenLabs STS works with most voices
+    // In the future, we can filter by can_do_voice_conversion if the API provides this
+    console.log(`[ElevenLabsProvider] Returning ${response.voices.length} voices for speech-to-speech`);
+    return response.voices;
+  }
+
+  /**
+   * Transcribe audio to text using ElevenLabs Speech-to-Text API.
+   * Uses the Scribe model for accurate transcription.
+   * 
+   * @param audioBuffer The audio buffer to transcribe
+   * @param options Optional settings for transcription
+   * @returns Object containing the transcribed text and detected language
+   */
+  async transcribeSpeech(
+    audioBuffer: Buffer,
+    options?: {
+      languageCode?: string;
+      modelId?: 'scribe_v1' | 'scribe_v2';
+    }
+  ): Promise<{ text: string; languageCode: string }> {
+    if (!this.apiKey) {
+      throw new Error('ElevenLabs API key is not configured');
+    }
+
+    const modelId = options?.modelId || 'scribe_v2';
+
+    console.log(`[ElevenLabsProvider] Transcribing speech with model ${modelId}`);
+
+    try {
+      const FormData = require('form-data');
+      const formData = new FormData();
+
+      // Add the audio file
+      formData.append('file', audioBuffer, {
+        filename: 'audio.webm',
+        contentType: 'audio/webm',
+      });
+
+      // Add model ID
+      formData.append('model_id', modelId);
+
+      // Add language code if provided (optional - helps with accuracy)
+      if (options?.languageCode) {
+        formData.append('language_code', options.languageCode);
+      }
+
+      const response = await this.axiosInstance.post(
+        '/v1/speech-to-text',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+            'xi-api-key': this.apiKey,
+          },
+          timeout: 60000, // 1 minute timeout for transcription
+        }
+      );
+
+      if (!response.data) {
+        throw new Error('ElevenLabs API returned empty response');
+      }
+
+      // Handle error responses
+      if (response.status >= 400) {
+        const errorMessage = response.data?.detail?.message 
+          || response.data?.message 
+          || 'Unknown transcription error';
+        throw new Error(`ElevenLabs transcription failed: ${errorMessage}`);
+      }
+
+      const { text, language_code } = response.data;
+
+      console.log(`[ElevenLabsProvider] Transcription successful, detected language: ${language_code}, text length: ${text?.length || 0}`);
+
+      return {
+        text: text || '',
+        languageCode: language_code || 'unknown',
+      };
+    } catch (error: any) {
+      console.error(`[ElevenLabsProvider] Speech-to-text conversion failed:`, {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        message: error.message,
+      });
+
+      if (error.response) {
+        if (error.response.status === 401) {
+          throw new Error('Invalid ElevenLabs API key for speech-to-text.');
+        }
+        if (error.response.status === 422) {
+          const errorMessage = error.response.data?.detail?.message 
+            || 'Invalid audio data for transcription.';
+          throw new Error(`Transcription validation failed: ${errorMessage}`);
+        }
+        if (error.response.status === 429) {
+          throw new Error('ElevenLabs API rate limit exceeded. Please try again later.');
+        }
+        throw new Error(`Transcription failed: ${error.response.status} - ${error.response.statusText}`);
+      }
+
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('Transcription request timed out. Please try with a shorter audio file.');
+      }
+
+      throw new Error(`Failed to transcribe speech: ${error.message || 'Unknown error'}`);
+    }
+  }
 }

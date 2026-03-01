@@ -1040,6 +1040,199 @@ class ApiClient {
 
     return response.data;
   }
+
+  // Speech-to-Speech (Voice Transformation) API methods
+  
+  /**
+   * Get voices that support speech-to-speech conversion
+   */
+  async getSpeechToSpeechVoices(options?: {
+    search?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
+  }): Promise<ApiResponse<any[]>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (options?.search) queryParams.append('search', options.search);
+    if (options?.language) queryParams.append('language', options.language);
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${voiceServiceUrl}/voice/speech-to-speech/voices${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Transform a single scene's audio using speech-to-speech
+   */
+  async transformSceneAudio(
+    projectId: string,
+    sceneNumber: number,
+    voiceId: string,
+    settings: {
+      stability?: number;
+      similarityBoost?: number;
+      style?: number;
+      useSpeakerBoost?: boolean;
+      removeBackgroundNoise?: boolean;
+    }
+  ): Promise<ApiResponse<{
+    sceneNumber: number;
+    originalUrl: string;
+    transformedUrl: string;
+    duration: number;
+  }>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{
+      sceneNumber: number;
+      originalUrl: string;
+      transformedUrl: string;
+      duration: number;
+    }>>(
+      `${voiceServiceUrl}/voice/speech-to-speech`,
+      {
+        projectId,
+        sceneNumber,
+        voiceId,
+        settings,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Transform all scenes' audio using speech-to-speech with global settings
+   */
+  async transformAllSceneAudio(
+    projectId: string,
+    voiceId: string,
+    settings: {
+      stability?: number;
+      similarityBoost?: number;
+      style?: number;
+      useSpeakerBoost?: boolean;
+      removeBackgroundNoise?: boolean;
+    },
+    sceneNumbers?: number[]
+  ): Promise<ApiResponse<{
+    results: Array<{
+      sceneNumber: number;
+      status: 'success' | 'error';
+      originalUrl?: string;
+      transformedUrl?: string;
+      duration?: number;
+      error?: string;
+    }>;
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{
+      results: Array<{
+        sceneNumber: number;
+        status: 'success' | 'error';
+        originalUrl?: string;
+        transformedUrl?: string;
+        duration?: number;
+        error?: string;
+      }>;
+    }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/transform-voice`,
+      {
+        voiceId,
+        settings,
+        sceneNumbers,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Transcribe audio to text using ElevenLabs Speech-to-Text API
+   */
+  async transcribeSpeech(audioBlob: Blob, languageCode?: string): Promise<ApiResponse<{
+    text: string;
+    languageCode: string;
+  }>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'audio.webm');
+    if (languageCode) {
+      formData.append('languageCode', languageCode);
+    }
+
+    const response = await axios.post<ApiResponse<{
+      text: string;
+      languageCode: string;
+    }>>(
+      `${voiceServiceUrl}/voice/speech-to-text`,
+      formData,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Set audio preference for video rendering (original vs transformed)
+   */
+  async setAudioPreference(
+    projectId: string,
+    useTransformed: boolean,
+    sceneNumbers?: number[]
+  ): Promise<ApiResponse<{
+    audioFiles: any[];
+  }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{
+      audioFiles: any[];
+    }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/set-audio-preference`,
+      {
+        useTransformed,
+        sceneNumbers,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
 }
 
 export const apiClient = new ApiClient();

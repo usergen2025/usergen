@@ -111,6 +111,26 @@ export class RenderingService {
   }
 
   /**
+   * Get the appropriate audio file path based on user's selection (original vs transformed)
+   * @param audioFile The audio file object containing original, transformed, and useTransformed properties
+   * @returns The filePath to use based on user's preference
+   */
+  private getAudioFilePath(audioFile: any): string | null {
+    // If useTransformed is true and we have transformed audio, use it
+    if (audioFile.useTransformed && audioFile.transformed?.filePath) {
+      return audioFile.transformed.filePath;
+    }
+    
+    // If we have original audio stored in the new structure, use it
+    if (audioFile.original?.filePath) {
+      return audioFile.original.filePath;
+    }
+    
+    // Fallback to the legacy filePath field for backwards compatibility with old AI-generated audio
+    return audioFile.filePath || null;
+  }
+
+  /**
    * Public method for AlternateAvatarService and other consumers to fetch avatar details for ALTERNATE style
    */
   async getAvatarDetailsForAlternate(avatarId: string, userId: string, authToken?: string) {
@@ -593,23 +613,24 @@ export class RenderingService {
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
     
     const audioPaths = sortedAudioFiles.map(af => {
-      if (!af.filePath) return null;
+      const audioFilePath = this.getAudioFilePath(af);
+      if (!audioFilePath) return null;
       
       // Try multiple path resolution strategies
       let resolvedPath: string | null = null;
       
-      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
-        resolvedPath = af.filePath;
+      if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
+        resolvedPath = audioFilePath;
       } else {
-        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const voiceServicePath = path.join(voiceServiceDir, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(voiceServicePath)) {
           resolvedPath = voiceServicePath;
         } else {
-          const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+          const serverRootPath = path.join(serverRoot, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
           if (fs.existsSync(serverRootPath)) {
             resolvedPath = serverRootPath;
           } else {
-            const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+            const cwdPath = path.join(process.cwd(), audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
             if (fs.existsSync(cwdPath)) {
               resolvedPath = cwdPath;
             }
@@ -618,7 +639,7 @@ export class RenderingService {
       }
       
       if (!resolvedPath) {
-        console.warn(`[RenderingService] Audio file not found. Tried: ${af.filePath}`);
+        console.warn(`[RenderingService] Audio file not found. Tried: ${audioFilePath}`);
       }
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
@@ -1016,39 +1037,40 @@ export class RenderingService {
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
     
     const audioPaths = sortedAudioFiles.map(af => {
-      if (!af.filePath) return null;
+      const audioFilePath = this.getAudioFilePath(af);
+      if (!audioFilePath) return null;
       
       // Try multiple path resolution strategies
       let resolvedPath: string | null = null;
       
       // Strategy 1: If path is already absolute and exists, use it
-      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
-        resolvedPath = af.filePath;
+      if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
+        resolvedPath = audioFilePath;
       }
       // Strategy 2: Try relative to voice-service directory
       else if (!resolvedPath) {
-        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const voiceServicePath = path.join(voiceServiceDir, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(voiceServicePath)) {
           resolvedPath = voiceServicePath;
         }
       }
       // Strategy 3: Try relative to server root
       else if (!resolvedPath) {
-        const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const serverRootPath = path.join(serverRoot, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(serverRootPath)) {
           resolvedPath = serverRootPath;
         }
       }
       // Strategy 4: Try relative to current working directory
       else if (!resolvedPath) {
-        const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const cwdPath = path.join(process.cwd(), audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(cwdPath)) {
           resolvedPath = cwdPath;
         }
       }
       
       if (!resolvedPath) {
-        console.warn(`[RenderingService] Audio file not found. Tried: ${af.filePath}`);
+        console.warn(`[RenderingService] Audio file not found. Tried: ${audioFilePath}`);
       }
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
@@ -1566,7 +1588,7 @@ export class RenderingService {
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
 
     const resolveAudioPath = (audioFile: any): string | null => {
-      const p = audioFile.filePath;
+      const p = this.getAudioFilePath(audioFile);
       if (!p) return null;
       if (path.isAbsolute(p) && fs.existsSync(p)) return p;
       const rel = p.startsWith('/') ? p.slice(1) : p;
@@ -1752,22 +1774,23 @@ export class RenderingService {
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
 
     const audioPaths = sortedAudioFiles.map(af => {
-      if (!af.filePath) return null;
+      const audioFilePath = this.getAudioFilePath(af);
+      if (!audioFilePath) return null;
       
       let resolvedPath: string | null = null;
       
-      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
-        resolvedPath = af.filePath;
+      if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
+        resolvedPath = audioFilePath;
       } else {
-        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const voiceServicePath = path.join(voiceServiceDir, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(voiceServicePath)) {
           resolvedPath = voiceServicePath;
         } else {
-          const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+          const serverRootPath = path.join(serverRoot, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
           if (fs.existsSync(serverRootPath)) {
             resolvedPath = serverRootPath;
           } else {
-            const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+            const cwdPath = path.join(process.cwd(), audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
             if (fs.existsSync(cwdPath)) {
               resolvedPath = cwdPath;
             }
@@ -1776,7 +1799,7 @@ export class RenderingService {
       }
       
       if (!resolvedPath) {
-        console.warn(`[RenderingService] Audio file not found: ${af.filePath}`);
+        console.warn(`[RenderingService] Audio file not found: ${audioFilePath}`);
       }
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
@@ -1898,22 +1921,23 @@ export class RenderingService {
 
     // Resolve audio paths
     const audioPaths = sortedAudioFiles.map(af => {
-      if (!af.filePath) return null;
+      const audioFilePath = this.getAudioFilePath(af);
+      if (!audioFilePath) return null;
       
       let resolvedPath: string | null = null;
       
-      if (path.isAbsolute(af.filePath) && fs.existsSync(af.filePath)) {
-        resolvedPath = af.filePath;
+      if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
+        resolvedPath = audioFilePath;
       } else {
-        const voiceServicePath = path.join(voiceServiceDir, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+        const voiceServicePath = path.join(voiceServiceDir, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
         if (fs.existsSync(voiceServicePath)) {
           resolvedPath = voiceServicePath;
         } else {
-          const serverRootPath = path.join(serverRoot, af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+          const serverRootPath = path.join(serverRoot, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
           if (fs.existsSync(serverRootPath)) {
             resolvedPath = serverRootPath;
           } else {
-            const cwdPath = path.join(process.cwd(), af.filePath.startsWith('/') ? af.filePath.slice(1) : af.filePath);
+            const cwdPath = path.join(process.cwd(), audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
             if (fs.existsSync(cwdPath)) {
               resolvedPath = cwdPath;
             }
@@ -1922,7 +1946,7 @@ export class RenderingService {
       }
       
       if (!resolvedPath) {
-        console.warn(`[RenderingService] Audio file not found: ${af.filePath}`);
+        console.warn(`[RenderingService] Audio file not found: ${audioFilePath}`);
       }
       return resolvedPath;
     }).filter(p => p !== null && fs.existsSync(p)) as string[];
@@ -2087,21 +2111,24 @@ export class RenderingService {
         }
         
       // Resolve audio path
+        const audioFilePathFromHelper = this.getAudioFilePath(audioFile);
         let audioFilePath: string | null = null;
-        if (path.isAbsolute(audioFile.filePath) && fs.existsSync(audioFile.filePath)) {
-          audioFilePath = audioFile.filePath;
-        } else {
-          const voiceServicePath = path.join(voiceServiceDir, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-          if (fs.existsSync(voiceServicePath)) {
-            audioFilePath = voiceServicePath;
+        if (audioFilePathFromHelper) {
+          if (path.isAbsolute(audioFilePathFromHelper) && fs.existsSync(audioFilePathFromHelper)) {
+            audioFilePath = audioFilePathFromHelper;
           } else {
-            const serverRootPath = path.join(serverRoot, audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-            if (fs.existsSync(serverRootPath)) {
-              audioFilePath = serverRootPath;
+            const voiceServicePath = path.join(voiceServiceDir, audioFilePathFromHelper.startsWith('/') ? audioFilePathFromHelper.slice(1) : audioFilePathFromHelper);
+            if (fs.existsSync(voiceServicePath)) {
+              audioFilePath = voiceServicePath;
             } else {
-              const cwdPath = path.join(process.cwd(), audioFile.filePath.startsWith('/') ? audioFile.filePath.slice(1) : audioFile.filePath);
-              if (fs.existsSync(cwdPath)) {
-                audioFilePath = cwdPath;
+              const serverRootPath = path.join(serverRoot, audioFilePathFromHelper.startsWith('/') ? audioFilePathFromHelper.slice(1) : audioFilePathFromHelper);
+              if (fs.existsSync(serverRootPath)) {
+                audioFilePath = serverRootPath;
+              } else {
+                const cwdPath = path.join(process.cwd(), audioFilePathFromHelper.startsWith('/') ? audioFilePathFromHelper.slice(1) : audioFilePathFromHelper);
+                if (fs.existsSync(cwdPath)) {
+                  audioFilePath = cwdPath;
+                }
               }
             }
           }

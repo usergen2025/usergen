@@ -732,6 +732,159 @@ export class VoiceService {
     return await this.elevenLabsProvider.cloneVoice(name, audioFiles, options);
   }
 
+  /**
+   * Get voices that support speech-to-speech conversion
+   */
+  async getSpeechToSpeechVoices(options?: {
+    search?: string;
+    language?: 'english' | 'hindi' | 'hinglish';
+  }): Promise<any[]> {
+    return await this.elevenLabsProvider.getSpeechToSpeechVoices(options);
+  }
+
+  /**
+   * Transcribe audio to text using ElevenLabs Speech-to-Text API
+   */
+  async transcribeSpeech(
+    audioBuffer: Buffer,
+    options?: {
+      languageCode?: string;
+    }
+  ): Promise<{ text: string; languageCode: string }> {
+    return await this.elevenLabsProvider.transcribeSpeech(audioBuffer, options);
+  }
+
+  /**
+   * Convert speech to speech and store the result
+   * Downloads the original audio, transforms it using ElevenLabs STS, and uploads to GCS
+   */
+  async convertAndStoreSpeechToSpeech(
+    audioUrl: string,
+    voiceId: string,
+    userId: string,
+    projectId: string,
+    sceneNumber: number,
+    settings?: {
+      stability?: number;
+      similarityBoost?: number;
+      style?: number;
+      useSpeakerBoost?: boolean;
+      removeBackgroundNoise?: boolean;
+    }
+  ): Promise<{ publicUrl: string; gcsUrl?: string; duration: number; filePath: string; localUrl: string }> {
+    const tempDir = path.join(os.tmpdir(), `sts-${projectId}-${Date.now()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    let inputPath: string | null = null;
+    let convertedPath: string | null = null;
+    let outputPath: string | null = null;
+
+    try {
+      // Download the original audio
+      const ext = audioUrl.includes('.webm') ? '.webm' : audioUrl.includes('.mp3') ? '.mp3' : '.webm';
+      inputPath = path.join(tempDir, `input_${sceneNumber}${ext}`);
+      
+      console.log(`[VoiceService] Downloading audio from ${audioUrl}`);
+      const response = await axios.get(audioUrl, { responseType: 'arraybuffer' });
+      fs.writeFileSync(inputPath, Buffer.from(response.data));
+
+      // Convert WebM to MP3 if needed
+      let audioForSTS = inputPath;
+      if (ext === '.webm') {
+        console.log(`[VoiceService] Converting WebM to MP3 for STS...`);
+        convertedPath = path.join(tempDir, `converted_${sceneNumber}.mp3`);
+        try {
+          execFileSync('ffmpeg', [
+            '-i', inputPath,
+            '-vn',
+            '-acodec', 'libmp3lame',
+            '-b:a', '192k',
+            '-y',
+            convertedPath
+          ], { stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 });
+          audioForSTS = convertedPath;
+          console.log(`[VoiceService] WebM to MP3 conversion successful`);
+        } catch (convErr: any) {
+          console.error(`[VoiceService] WebM to MP3 conversion failed: ${convErr?.message}`);
+          throw new Error(`Failed to convert WebM to MP3: ${convErr?.message}`);
+        }
+      }
+
+      // Read the audio buffer
+      const audioBuffer = fs.readFileSync(audioForSTS);
+
+      // Transform using ElevenLabs Speech-to-Speech API
+      console.log(`[VoiceService] Transforming audio with voice ${voiceId}`);
+      const transformedBuffer = await this.elevenLabsProvider.convertSpeechToSpeech(
+        audioBuffer,
+        voiceId,
+        {
+          voiceSettings: settings ? {
+            stability: settings.stability,
+            similarity_boost: settings.similarityBoost,
+            style: settings.style,
+            use_speaker_boost: settings.useSpeakerBoost,
+          } : undefined,
+          removeBackgroundNoise: settings?.removeBackgroundNoise,
+        }
+      );
+
+      // Save transformed audio locally
+      const outFilename = `sts_scene_${sceneNumber}_${projectId}_${Date.now()}.mp3`;
+      const userDir = path.join(this.uploadsDir, userId);
+      this.ensureDirectory(userDir);
+      outputPath = path.join(userDir, outFilename);
+      fs.writeFileSync(outputPath, transformedBuffer);
+
+      // Get duration of transformed audio
+      let duration = 0;
+      try {
+        duration = this.getAudioDurationRobust(outputPath);
+      } catch (e) {
+        console.warn(`[VoiceService] Could not get duration for transformed audio: ${e}`);
+      }
+
+      // Upload to GCS
+      let gcsUrl: string | undefined;
+      let publicUrl: string;
+      try {
+        const storageResult = await this.publicUrlService.uploadFromPath(
+          outputPath,
+          `audio/${userId}`,
+          outFilename,
+          'audio/mpeg'
+        );
+        gcsUrl = storageResult.gcsUrl;
+        publicUrl = storageResult.publicUrl;
+      } catch (e: any) {
+        console.warn(`[VoiceService] GCS upload failed for STS audio: ${e?.message}`);
+        publicUrl = `/uploads/audio/${userId}/${outFilename}`;
+      }
+
+      console.log(`[VoiceService] Speech-to-speech conversion complete: ${publicUrl}, duration: ${duration}s`);
+      const localUrl = `/uploads/audio/${userId}/${outFilename}`;
+      return { publicUrl, gcsUrl, duration, filePath: outputPath, localUrl };
+    } finally {
+      // Cleanup temp files
+      for (const p of [inputPath, convertedPath]) {
+        if (p && fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (e) {
+            console.warn(`[VoiceService] Failed to cleanup temp file ${p}: ${e}`);
+          }
+        }
+      }
+      try {
+        if (fs.existsSync(tempDir)) {
+          fs.rmdirSync(tempDir);
+        }
+      } catch (e) {
+        console.warn(`[VoiceService] Failed to remove temp dir: ${e}`);
+      }
+    }
+  }
+
   private sanitizeFilename(name: string): string {
     return name
       .trim()

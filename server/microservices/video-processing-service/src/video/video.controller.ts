@@ -707,6 +707,385 @@ export class VideoController {
     };
   }
 
+  @Post(':projectId/transform-voice')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Transform voice using speech-to-speech',
+    description: 'Transform recorded audio to a different voice using ElevenLabs Speech-to-Speech API',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        voiceId: { type: 'string', description: 'Target voice ID' },
+        settings: {
+          type: 'object',
+          properties: {
+            stability: { type: 'number', description: '0.0 - 1.0' },
+            similarityBoost: { type: 'number', description: '0.0 - 1.0' },
+            style: { type: 'number', description: '0.0 - 1.0' },
+            useSpeakerBoost: { type: 'boolean' },
+            removeBackgroundNoise: { type: 'boolean' },
+          },
+        },
+        sceneNumbers: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Optional - if not provided, transform all scenes',
+        },
+      },
+      required: ['voiceId', 'settings'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Voice transformation completed',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            results: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  sceneNumber: { type: 'number' },
+                  status: { type: 'string', enum: ['success', 'error'] },
+                  originalUrl: { type: 'string' },
+                  transformedUrl: { type: 'string' },
+                  duration: { type: 'number' },
+                  error: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  async transformVoice(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body: {
+      voiceId: string;
+      settings: {
+        stability?: number;
+        similarityBoost?: number;
+        style?: number;
+        useSpeakerBoost?: boolean;
+        removeBackgroundNoise?: boolean;
+      };
+      sceneNumbers?: number[];
+    },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    if (!body.voiceId) {
+      throw new HttpException('voiceId is required', HttpStatus.BAD_REQUEST);
+    }
+
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data as any;
+    const audioFiles = projectData.audioFiles || [];
+
+    if (!audioFiles.length) {
+      throw new HttpException('No audio files found for this project', HttpStatus.BAD_REQUEST);
+    }
+
+    // Filter scenes to transform
+    const scenesToTransform = body.sceneNumbers
+      ? audioFiles.filter((af: any) => body.sceneNumbers?.includes(af.sceneNumber))
+      : audioFiles;
+
+    if (scenesToTransform.length === 0) {
+      throw new HttpException('No matching scenes found to transform', HttpStatus.BAD_REQUEST);
+    }
+
+    const voiceServiceUrl = this.configService.get<string>('VOICE_SERVICE_URL') || 'http://localhost:9002/api';
+    const token = req.headers?.authorization;
+
+    console.log(`[VideoController] Starting voice transformation for ${scenesToTransform.length} scenes`);
+
+    // Helper function to transform a single scene with retry logic
+    const transformScene = async (audioFile: any, retryCount = 0): Promise<{
+      sceneNumber: number;
+      status: 'success' | 'error';
+      originalUrl?: string;
+      transformedUrl?: string;
+      transformedFilePath?: string;
+      transformedLocalUrl?: string;
+      duration?: number;
+      error?: string;
+    }> => {
+      const audioUrl = audioFile.publicUrl || audioFile.gcsUrl || audioFile.localUrl;
+      if (!audioUrl) {
+        return {
+          sceneNumber: audioFile.sceneNumber,
+          status: 'error',
+          error: 'No audio URL found for scene',
+        };
+      }
+
+      const MAX_RETRIES = 2;
+      const RETRY_DELAY_MS = 3000;
+
+      try {
+        const response = await axios.post<{
+          success: boolean;
+          data?: {
+            sceneNumber: number;
+            originalUrl: string;
+            transformedUrl: string;
+            transformedFilePath: string;
+            transformedLocalUrl: string;
+            duration: number;
+          };
+          message?: string;
+        }>(
+          `${voiceServiceUrl}/voice/speech-to-speech`,
+          {
+            audioUrl,
+            voiceId: body.voiceId,
+            projectId,
+            sceneNumber: audioFile.sceneNumber,
+            settings: body.settings,
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: token } : {}),
+            },
+            timeout: 180000, // 3 minute timeout per scene (increased from 2 minutes)
+          },
+        );
+
+        if (response.data?.success && response.data?.data) {
+          return {
+            sceneNumber: audioFile.sceneNumber,
+            status: 'success',
+            originalUrl: audioUrl,
+            transformedUrl: response.data.data.transformedUrl,
+            transformedFilePath: response.data.data.transformedFilePath,
+            transformedLocalUrl: response.data.data.transformedLocalUrl,
+            duration: response.data.data.duration,
+          };
+        } else {
+          return {
+            sceneNumber: audioFile.sceneNumber,
+            status: 'error',
+            error: response.data?.message || 'Transformation failed',
+          };
+        }
+      } catch (error: any) {
+        const statusCode = error.response?.status;
+        const isRetryable = statusCode === 502 || statusCode === 503 || statusCode === 504 || error.code === 'ECONNRESET';
+        
+        if (isRetryable && retryCount < MAX_RETRIES) {
+          console.warn(`[VideoController] Retryable error for scene ${audioFile.sceneNumber} (status: ${statusCode}, attempt ${retryCount + 1}/${MAX_RETRIES}). Retrying in ${RETRY_DELAY_MS}ms...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * (retryCount + 1)));
+          return transformScene(audioFile, retryCount + 1);
+        }
+        
+        console.error(`[VideoController] STS error for scene ${audioFile.sceneNumber}:`, error.message);
+        return {
+          sceneNumber: audioFile.sceneNumber,
+          status: 'error',
+          error: error.message || 'Transformation failed',
+        };
+      }
+    };
+
+    // Process scenes with limited concurrency (2 at a time to avoid rate limiting)
+    const CONCURRENCY_LIMIT = 2;
+    const results: Array<{
+      sceneNumber: number;
+      status: 'success' | 'error';
+      originalUrl?: string;
+      transformedUrl?: string;
+      transformedFilePath?: string;
+      transformedLocalUrl?: string;
+      duration?: number;
+      error?: string;
+    }> = [];
+
+    for (let i = 0; i < scenesToTransform.length; i += CONCURRENCY_LIMIT) {
+      const batch = scenesToTransform.slice(i, i + CONCURRENCY_LIMIT);
+      console.log(`[VideoController] Processing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1} of ${Math.ceil(scenesToTransform.length / CONCURRENCY_LIMIT)} (scenes: ${batch.map((af: any) => af.sceneNumber).join(', ')})`);
+      
+      const batchResults = await Promise.all(batch.map((audioFile: any) => transformScene(audioFile)));
+      results.push(...batchResults);
+    }
+
+    // Update project audioFiles with transformed URLs for successful transformations
+    // Store original and transformed audio separately so user can choose which to use
+    const successfulTransforms = results.filter((r) => r.status === 'success');
+    if (successfulTransforms.length > 0) {
+      const updatedAudioFiles = audioFiles.map((af: any) => {
+        const transform = successfulTransforms.find((t) => t.sceneNumber === af.sceneNumber);
+        if (transform) {
+          // Store original audio data if not already stored
+          const original = af.original || {
+            filePath: af.filePath,
+            localUrl: af.localUrl,
+            publicUrl: af.publicUrl || af.gcsUrl,
+            gcsUrl: af.gcsUrl,
+            duration: af.duration,
+          };
+          
+          // Store transformed audio data
+          const transformed = {
+            filePath: transform.transformedFilePath,
+            localUrl: transform.transformedLocalUrl,
+            publicUrl: transform.transformedUrl,
+            gcsUrl: transform.transformedUrl,
+            duration: transform.duration,
+          };
+          
+          return {
+            ...af,
+            original,
+            transformed,
+            useTransformed: true, // Default to using transformed audio after transformation
+            isTransformed: true,
+            transformSettings: body.settings,
+          };
+        }
+        return af;
+      });
+
+      await this.videoService.updateProject(projectId, userId, {
+        audioFiles: updatedAudioFiles,
+        metadata: {
+          ...(projectData.metadata || {}),
+          transformedVoiceId: body.voiceId,
+        } as any,
+      });
+    }
+
+    const successCount = results.filter((r) => r.status === 'success').length;
+    const errorCount = results.filter((r) => r.status === 'error').length;
+
+    console.log(`[VideoController] Voice transformation complete: ${successCount} success, ${errorCount} errors`);
+
+    return {
+      success: true,
+      data: { results },
+      message: `Voice transformation completed: ${successCount} scenes transformed${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+    };
+  }
+
+  @Post(':projectId/set-audio-preference')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Set audio preference for rendering',
+    description: 'Choose whether to use original or transformed audio for video rendering',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        useTransformed: { type: 'boolean', description: 'If true, use transformed audio; if false, use original audio' },
+        sceneNumbers: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Optional - if not provided, applies to all scenes',
+        },
+      },
+      required: ['useTransformed'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Audio preference updated successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            audioFiles: { type: 'array' },
+          },
+        },
+        message: { type: 'string' },
+      },
+    },
+  })
+  async setAudioPreference(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body: {
+      useTransformed: boolean;
+      sceneNumbers?: number[];
+    },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    if (body.useTransformed === undefined || body.useTransformed === null) {
+      throw new HttpException('useTransformed is required', HttpStatus.BAD_REQUEST);
+    }
+
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const projectData = project.data as any;
+    const audioFiles = projectData.audioFiles || [];
+
+    if (!audioFiles.length) {
+      throw new HttpException('No audio files found for this project', HttpStatus.BAD_REQUEST);
+    }
+
+    // Update useTransformed flag for specified scenes (or all scenes if not specified)
+    const updatedAudioFiles = audioFiles.map((af: any) => {
+      // Only update scenes that have been transformed
+      if (!af.transformed) {
+        return af;
+      }
+
+      // If specific scenes are provided, only update those
+      if (body.sceneNumbers && body.sceneNumbers.length > 0) {
+        if (body.sceneNumbers.includes(af.sceneNumber)) {
+          return { ...af, useTransformed: body.useTransformed };
+        }
+        return af;
+      }
+
+      // Update all transformed scenes
+      return { ...af, useTransformed: body.useTransformed };
+    });
+
+    await this.videoService.updateProject(projectId, userId, {
+      audioFiles: updatedAudioFiles,
+    });
+
+    const updatedCount = updatedAudioFiles.filter((af: any) => af.transformed).length;
+
+    console.log(`[VideoController] Audio preference updated: useTransformed=${body.useTransformed} for ${updatedCount} scenes`);
+
+    return {
+      success: true,
+      data: { audioFiles: updatedAudioFiles },
+      message: `Audio preference updated: ${body.useTransformed ? 'transformed' : 'original'} audio will be used for rendering`,
+    };
+  }
+
   @Post(':projectId/regenerate-image/:sceneNumber')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
