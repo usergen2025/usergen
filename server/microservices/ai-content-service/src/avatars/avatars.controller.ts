@@ -342,6 +342,67 @@ export class AvatarsController {
     return { success: true, data: result };
   }
 
+  @Post('generate-preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Generate avatar preview image',
+    description: 'Generates an avatar preview image for immediate display. Returns both imageKey for HeyGen and a publicUrl for frontend preview.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        avatarId: { type: 'string' },
+        userId: { type: 'string' },
+        script: { type: 'object', properties: { avatar_image_prompt: { type: 'string' }, visual_style_guide: { type: 'object' } } },
+        style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'] },
+        avatarVisualStylePreset: { type: 'string', description: 'original, random, or preset id' },
+      },
+      required: ['projectId', 'avatarId', 'script'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Avatar preview generated successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            imageKey: { type: 'string' },
+            publicUrl: { type: 'string' },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Missing avatar_image_prompt or invalid request' })
+  async generatePreview(
+    @Body() body: { projectId: string; avatarId: string; userId?: string; script: any; style?: string; avatarVisualStylePreset?: string },
+    @Request() req: any,
+  ) {
+    const userId = body.userId ?? this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, error: 'User ID required', code: 'MISSING_USER_ID' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const result = await this.avatarsService.generateAvatarPreview({
+      projectId: body.projectId,
+      avatarId: body.avatarId,
+      userId,
+      script: body.script,
+      style: body.style,
+      avatarVisualStylePreset: body.avatarVisualStylePreset,
+    });
+    return { success: true, data: result };
+  }
+
   @Get(':id')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get avatar details', description: 'Get specific avatar by ID' })

@@ -288,6 +288,31 @@ class ApiClient {
     return response.data;
   }
 
+  async generateAvatarPreview(data: {
+    projectId: string;
+    avatarId: string;
+    userId?: string;
+    script: { avatar_image_prompt?: string; visual_style_guide?: any };
+    style?: string;
+    avatarVisualStylePreset?: string;
+  }): Promise<ApiResponse<{ imageKey: string; publicUrl: string }>> {
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ imageKey: string; publicUrl: string }>>(
+      `${avatarServiceUrl}/avatars/generate-preview`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Video Project endpoints
   async createVideoProject(data: {
     videoType: 'WITH_AVATAR' | 'WITHOUT_AVATAR';

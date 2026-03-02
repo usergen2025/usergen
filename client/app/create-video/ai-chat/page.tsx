@@ -11,6 +11,7 @@ import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
 import AIChatTagAwareInput from '@/components/ui/AIChatTagAwareInput';
+import ImagePreview from '@/components/ui/ImagePreview';
 import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
 
 // Define asset types
@@ -37,7 +38,7 @@ type VoiceMode = 'AI' | 'MANUAL' | null;
 type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
-type AvatarSubstep = 'question' | 'selection' | 'visual-style';
+type AvatarSubstep = 'question' | 'selection' | 'visual-style' | 'avatar-preview';
 type VoiceSubstep = 'question' | 'selection' | 'manual' | 'voice-transform' | 'scene-review' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
 type ScriptSubstep = 'language' | 'input';
@@ -94,6 +95,14 @@ function AIChatPageContent() {
   const [avatarUploadMessageShown, setAvatarUploadMessageShown] = useState<boolean>(false);
   const [pendingAvatarFile, setPendingAvatarFile] = useState<File | null>(null);
   const [pendingAvatarPreview, setPendingAvatarPreview] = useState<string | null>(null);
+  // Avatar preview state (new substep after visual-style)
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+  const [avatarPreviewImageKey, setAvatarPreviewImageKey] = useState<string | null>(null);
+  const [isGeneratingAvatarPreview, setIsGeneratingAvatarPreview] = useState<boolean>(false);
+  const [avatarPreviewModalOpen, setAvatarPreviewModalOpen] = useState(false);
+  // Avatar-only video rendering state (for direct rendering in AI chat)
+  const [isRenderingVideo, setIsRenderingVideo] = useState<boolean>(false);
+  const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   // Voice selection state
   const [voicePreference, setVoicePreference] = useState<'yes' | 'no' | null>(null);
   const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
@@ -477,6 +486,13 @@ function AIChatPageContent() {
             if (project.metadata?.avatarVisualStylePreset) {
               setSelectedAvatarVisualStyle(project.metadata.avatarVisualStylePreset as AvatarVisualStylePresetId);
             }
+            // Restore avatar preview state
+            if (project.metadata?.avatarPreviewUrl) {
+              setAvatarPreviewUrl(project.metadata.avatarPreviewUrl as string);
+            }
+            if (project.metadata?.generatedAvatarImageKey) {
+              setAvatarPreviewImageKey(project.metadata.generatedAvatarImageKey as string);
+            }
             if (project.metadata?.aiChatVoiceSubstep) {
               setVoiceSubstep(project.metadata.aiChatVoiceSubstep as VoiceSubstep);
             }
@@ -601,7 +617,7 @@ function AIChatPageContent() {
         }
       }, 150);
     }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep, transformActionMessage, stsVoices, selectedStsVoiceId, isTransformingVoice, manualAudioByScene, transformedAudioByScene]);
+  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, avatarPreviewUrl, isGeneratingAvatarPreview, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep, transformActionMessage, stsVoices, selectedStsVoiceId, isTransformingVoice, manualAudioByScene, transformedAudioByScene]);
 
   // WebSocket effect for tracking generation progress
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
@@ -621,10 +637,25 @@ function AIChatPageContent() {
         console.log('[AIChat] Processing audio generation update:', update.state);
         if (update.state === 'completed') {
           setIsGeneratingVoice(false);
-          setGenerationProgress(prev => Math.min(prev + 50, 100));
           if (audioJobIdRef.current) {
             unsubscribeFromJob(audioJobIdRef.current);
             audioJobIdRef.current = null;
+          }
+          
+          // Check if this is an avatar-only style that should trigger direct rendering
+          const styleToCheck = selectedVideoStyle || 
+            (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+          const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' || 
+                                     styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
+          
+          if (isAvatarOnlyStyle && projectId) {
+            // For avatar-only styles, trigger rendering directly
+            console.log('[AIChat] Audio completed for avatar-only style, starting rendering');
+            setGenerationProgress(30);
+            startAvatarOnlyRendering(projectId);
+          } else {
+            // Normal flow - update progress for b-roll styles
+            setGenerationProgress(prev => Math.min(prev + 50, 100));
           }
         } else if (update.state === 'failed') {
           setIsGeneratingVoice(false);
@@ -634,8 +665,19 @@ function AIChatPageContent() {
             audioJobIdRef.current = null;
           }
         } else if (update.progress !== undefined) {
+          // Check if avatar-only for progress range
+          const styleToCheck = selectedVideoStyle || 
+            (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+          const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' || 
+                                     styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
+          
+          if (isAvatarOnlyStyle) {
+            // Update progress for voice (0-30% range for avatar-only)
+            setGenerationProgress(update.progress * 0.3);
+          } else {
           // Update progress for voice (0-50% range)
           setGenerationProgress(update.progress * 0.5);
+          }
         }
       } else if (update.queueType === 'image-generation' && imageJobIdsRef.current.has(update.jobId)) {
         console.log('[AIChat] Processing image generation update:', update.state, 'Remaining jobs:', imageJobIdsRef.current.size);
@@ -3013,12 +3055,20 @@ function AIChatPageContent() {
         return;
       }
       
+      const styleToUse = selectedVideoStyle || 
+        (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+      
+      // Check if this is an avatar-only style that skips b-roll
+      const isAvatarOnlyStyle = styleToUse === 'avatar-only' || styleToUse === 'AVATAR_ONLY' || 
+                                 styleToUse === 'animated-avatar' || styleToUse === 'ANIMATED_AVATAR';
+      
       // After 1.5 seconds, move to audio-image-generation step
       setTimeout(async () => {
         setCurrentStep('audio-image-generation');
         setGenerationProgress(0);
         
         // Start voice generation
+        let audioCompleted = false;
         try {
           setIsGeneratingVoice(true);
           const audioResponse = await apiClient.generateAudio(projectId);
@@ -3029,7 +3079,12 @@ function AIChatPageContent() {
           } else if (audioResponse.success && audioResponse.data?.existing) {
             // Audio already exists, skip voice generation
             setIsGeneratingVoice(false);
+            audioCompleted = true;
+            if (isAvatarOnlyStyle) {
+              setGenerationProgress(30); // Audio done = 30% for avatar-only
+            } else {
             setGenerationProgress(50);
+            }
           } else {
             throw new Error('Failed to start voice generation');
           }
@@ -3037,9 +3092,23 @@ function AIChatPageContent() {
           console.error('Failed to generate audio:', error);
           setIsGeneratingVoice(false);
           showToast('Failed to start voice generation', 'error');
+          return;
         }
 
-        // Start broll image generation for all scenes
+        // For avatar-only styles, skip b-roll and trigger direct rendering after audio completes
+        if (isAvatarOnlyStyle) {
+          console.log('[AIChat] Avatar-only style detected, skipping b-roll image generation');
+          setIsGeneratingBroll(false);
+          
+          // If audio is already done, start rendering immediately
+          if (audioCompleted) {
+            await startAvatarOnlyRendering(projectId);
+          }
+          // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
+          return;
+        }
+
+        // Start broll image generation for all scenes (non-avatar-only styles)
         if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
           try {
             setIsGeneratingBroll(true);
@@ -3049,9 +3118,6 @@ function AIChatPageContent() {
             const productImageUrl = attachedAssets.find(asset => 
               asset.type === 'image' && asset.id.startsWith('product-')
             )?.url || null;
-            
-            const styleToUse = selectedVideoStyle || 
-              (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
             
             // Get avatar image key if avatar is selected (for avatar-product style)
             let avatarImageKey: string | undefined = undefined;
@@ -3152,6 +3218,97 @@ function AIChatPageContent() {
     }
   };
 
+  // Start rendering for avatar-only styles (called after audio completes)
+  const startAvatarOnlyRendering = async (pid: string) => {
+    try {
+      console.log('[AIChat] Starting avatar-only video rendering for project:', pid);
+      setIsRenderingVideo(true);
+      setGenerationProgress(30); // Start rendering progress at 30%
+      
+      // Start rendering
+      const renderResponse = await apiClient.startVideoRendering(pid);
+      if (!renderResponse.success) {
+        throw new Error(renderResponse.message || 'Failed to start video rendering');
+      }
+      
+      console.log('[AIChat] Rendering started, polling for status...');
+      
+      // Poll for rendering status
+      pollRenderingStatus(pid);
+    } catch (error: any) {
+      console.error('Failed to start avatar-only rendering:', error);
+      setIsRenderingVideo(false);
+      showToast('Failed to create video. Please try again.', 'error');
+    }
+  };
+
+  // Poll rendering status for avatar-only styles
+  const pollRenderingStatus = async (pid: string) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const statusResponse = await apiClient.getRenderingStatus(pid);
+        if (statusResponse.success && statusResponse.data) {
+          const { renderingStatus, status, renderingProgress, videoUrl } = statusResponse.data;
+          
+          // Use renderingStatus if available, otherwise fallback to status
+          const effectiveStatus = renderingStatus || status;
+          
+          // Map rendering progress to UI progress (30-100%)
+          const effectiveProgress = renderingProgress ?? 0;
+          const uiProgress = 30 + (effectiveProgress * 0.7);
+          setGenerationProgress(Math.min(uiProgress, 99));
+          
+          if (effectiveStatus === 'completed' || effectiveStatus === 'COMPLETED') {
+            clearInterval(pollInterval);
+            setGenerationProgress(100);
+            setIsRenderingVideo(false);
+            setIsGeneratingVoice(false);
+            
+            const styleToCheck = selectedVideoStyle ||
+              (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+            const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' ||
+              styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
+
+            if (isAvatarOnlyStyle && pid) {
+              if (videoUrl) {
+                try {
+                  await apiClient.updateVideoProject(pid, {
+                    videoUrl,
+                    status: 'COMPLETED',
+                    currentStep: 'COMPLETED',
+                    metadata: {
+                      generationFlow: 'AI_CHAT',
+                      aiChatStep: 'workspace',
+                    },
+                  });
+                } catch (err) {
+                  console.error('[AIChat] Failed to update project with video URL:', err);
+                }
+              }
+              router.replace(`/create-video/workspace?projectId=${pid}`);
+              return;
+            }
+
+            if (videoUrl) {
+              setFinalVideoUrl(videoUrl);
+            }
+            console.log('[AIChat] Avatar-only video rendering completed:', videoUrl);
+          } else if (effectiveStatus === 'failed' || effectiveStatus === 'FAILED') {
+            clearInterval(pollInterval);
+            setIsRenderingVideo(false);
+            setIsGeneratingVoice(false);
+            showToast('Video creation failed. Please try again.', 'error');
+          }
+        }
+      } catch (error: any) {
+        console.error('Error polling rendering status:', error);
+      }
+    }, 3000); // Poll every 3 seconds
+
+    // Clean up interval on component unmount
+    return () => clearInterval(pollInterval);
+  };
+
   // Handle proceed with manual recordings (all scenes recorded, process and continue)
   const handleProceedWithManualRecordings = async () => {
     if (!projectId) {
@@ -3202,6 +3359,13 @@ function AIChatPageContent() {
       setCurrentStep('audio-image-generation');
       setGenerationProgress(0);
 
+      const styleToUse = selectedVideoStyle ||
+        (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+      
+      // Check if this is an avatar-only style that skips b-roll
+      const isAvatarOnlyStyle = styleToUse === 'avatar-only' || styleToUse === 'AVATAR_ONLY' || 
+                                 styleToUse === 'animated-avatar' || styleToUse === 'ANIMATED_AVATAR';
+
       // generateAudio returns existing for MANUAL mode
       let audioDone = false;
       setIsGeneratingVoice(true);
@@ -3209,8 +3373,12 @@ function AIChatPageContent() {
         const audioResponse = await apiClient.generateAudio(projectId);
         if (audioResponse.success && audioResponse.data?.existing) {
           setIsGeneratingVoice(false);
-          setGenerationProgress(50);
           audioDone = true;
+          if (isAvatarOnlyStyle) {
+            setGenerationProgress(30); // Audio done = 30% for avatar-only
+          } else {
+            setGenerationProgress(50);
+          }
         } else if (audioResponse.success && audioResponse.data?.jobId) {
           audioJobIdRef.current = audioResponse.data.jobId;
           subscribeToJob(audioResponse.data.jobId, 'audio-generation');
@@ -3221,16 +3389,28 @@ function AIChatPageContent() {
         console.error('Failed to generate audio:', error);
         setIsGeneratingVoice(false);
         showToast('Failed to prepare audio', 'error');
+        return;
       }
 
-      // Start broll image generation (same as AI path)
+      // For avatar-only styles, skip b-roll and trigger direct rendering after audio completes
+      if (isAvatarOnlyStyle) {
+        console.log('[AIChat] Avatar-only style (manual), skipping b-roll image generation');
+        setIsGeneratingBroll(false);
+        
+        // If audio is already done, start rendering immediately
+        if (audioDone) {
+          await startAvatarOnlyRendering(projectId);
+        }
+        // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
+        return;
+      }
+
+      // Start broll image generation (same as AI path, for non-avatar-only styles)
       try {
         setIsGeneratingBroll(true);
         const productImageUrl = attachedAssets.find(asset =>
           asset.type === 'image' && asset.id.startsWith('product-')
         )?.url || null;
-        const styleToUse = selectedVideoStyle ||
-          (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
 
         const promises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number ?? (index + 1);
@@ -3604,7 +3784,7 @@ function AIChatPageContent() {
     }
   };
 
-  // Handle proceed with visual style - PATCH project and advance to voice-selection
+  // Handle proceed with visual style - generate avatar preview and show preview substep
   const handleProceedWithVisualStyle = async () => {
     if (!selectedAvatarVisualStyle) {
       showToast('Please select a visual style first', 'warning');
@@ -3614,11 +3794,117 @@ function AIChatPageContent() {
       showToast('Project not found. Please try again.', 'error');
       return;
     }
+    if (!selectedAvatarId) {
+      showToast('No avatar selected. Please select an avatar.', 'error');
+      return;
+    }
     try {
+      // Save visual style, step, and substep to ensure proper restoration on page reload
       await apiClient.updateVideoProject(projectId, {
         metadata: {
+          aiChatStep: 'avatar-selection',
+          aiChatAvatarSubstep: 'avatar-preview',
           avatarVisualStylePreset: selectedAvatarVisualStyle,
-          aiChatAvatarSubstep: 'visual-style',
+        },
+      });
+      
+      // Start generating avatar preview
+      setIsGeneratingAvatarPreview(true);
+      setAvatarSubstep('avatar-preview');
+      setAvatarPreviewUrl(null);
+      setAvatarPreviewImageKey(null);
+      
+      // Call the avatar preview generation API
+      const previewResult = await apiClient.generateAvatarPreview({
+        projectId,
+        avatarId: selectedAvatarId,
+        script: generatedScript,
+        style: selectedVideoStyle || undefined,
+        avatarVisualStylePreset: selectedAvatarVisualStyle,
+      });
+      
+      if (previewResult.success && previewResult.data) {
+        setAvatarPreviewUrl(previewResult.data.publicUrl);
+        setAvatarPreviewImageKey(previewResult.data.imageKey);
+        
+        // Save all avatar preview state in a single consolidated update for reliable restoration
+        await apiClient.updateVideoProject(projectId, {
+          metadata: {
+            aiChatStep: 'avatar-selection',
+            aiChatAvatarSubstep: 'avatar-preview',
+            avatarVisualStylePreset: selectedAvatarVisualStyle,
+            generatedAvatarImageKey: previewResult.data.imageKey,
+            avatarPreviewUrl: previewResult.data.publicUrl,
+          },
+        });
+      } else {
+        throw new Error(previewResult.message || 'Failed to generate avatar preview');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to generate avatar preview', 'error');
+      // Stay on visual-style substep on error
+      setAvatarSubstep('visual-style');
+    } finally {
+      setIsGeneratingAvatarPreview(false);
+    }
+  };
+
+  // Handle regenerate avatar preview
+  const handleRegenerateAvatarPreview = async () => {
+    if (!projectId || !selectedAvatarId) {
+      showToast('Project or avatar not found. Please try again.', 'error');
+      return;
+    }
+    try {
+      setIsGeneratingAvatarPreview(true);
+      setAvatarPreviewUrl(null);
+      setAvatarPreviewImageKey(null);
+      
+      const previewResult = await apiClient.generateAvatarPreview({
+        projectId,
+        avatarId: selectedAvatarId,
+        script: generatedScript,
+        style: selectedVideoStyle || undefined,
+        avatarVisualStylePreset: selectedAvatarVisualStyle || undefined,
+      });
+      
+      if (previewResult.success && previewResult.data) {
+        setAvatarPreviewUrl(previewResult.data.publicUrl);
+        setAvatarPreviewImageKey(previewResult.data.imageKey);
+        
+        // Save all avatar preview state in a single consolidated update for reliable restoration
+        await apiClient.updateVideoProject(projectId, {
+          metadata: {
+            aiChatStep: 'avatar-selection',
+            aiChatAvatarSubstep: 'avatar-preview',
+            avatarVisualStylePreset: selectedAvatarVisualStyle,
+            generatedAvatarImageKey: previewResult.data.imageKey,
+            avatarPreviewUrl: previewResult.data.publicUrl,
+          },
+        });
+      } else {
+        throw new Error(previewResult.message || 'Failed to regenerate avatar preview');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to regenerate avatar preview', 'error');
+    } finally {
+      setIsGeneratingAvatarPreview(false);
+    }
+  };
+
+  // Handle proceed from avatar preview to voice selection
+  const handleProceedFromAvatarPreview = async () => {
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+    try {
+      // Update to voice-selection step with proper metadata for restoration
+      await apiClient.updateVideoProject(projectId, {
+        metadata: {
+          aiChatStep: 'voice-selection',
+          aiChatAvatarSubstep: 'avatar-preview',
+          aiChatVoiceSubstep: 'question',
         },
       });
       setCurrentStep('voice-selection');
@@ -3627,7 +3913,7 @@ function AIChatPageContent() {
       setSelectedVoiceId(null);
       setVoiceUploadSuccess(false);
     } catch (err: any) {
-      showToast(err.message || 'Failed to save visual style', 'error');
+      showToast(err.message || 'Failed to proceed', 'error');
     }
   };
 
@@ -3650,7 +3936,12 @@ function AIChatPageContent() {
       setPendingAssets([]);
     } else if (currentStep === 'avatar-selection') {
       // Navigate back through substeps
-      if (avatarSubstep === 'visual-style') {
+      if (avatarSubstep === 'avatar-preview') {
+        // Go back to visual-style substep
+        setAvatarSubstep('visual-style');
+        setAvatarPreviewUrl(null);
+        setAvatarPreviewImageKey(null);
+      } else if (avatarSubstep === 'visual-style') {
         setAvatarSubstep('selection');
         setSelectedAvatarVisualStyle(null);
       } else if (avatarSubstep === 'selection') {
@@ -3690,8 +3981,9 @@ function AIChatPageContent() {
           setVoiceSubstep('question');
           setVoiceMode(null);
         } else {
-          // At question substep, go back to avatar-selection step
+          // At question substep, go back to avatar-selection step (avatar-preview substep)
           setCurrentStep('avatar-selection');
+          setAvatarSubstep('avatar-preview');
           setVoiceSubstep('question');
           setAvatarUploadSuccess(false);
           setAvatarUploadMessageShown(false);
@@ -3712,8 +4004,9 @@ function AIChatPageContent() {
         setVoiceUploadSuccess(false);
           setVoiceMode(null);
       } else {
-          // At question substep, go back to avatar-selection step
+          // At question substep, go back to avatar-selection step (avatar-preview substep)
         setCurrentStep('avatar-selection');
+        setAvatarSubstep('avatar-preview');
           setVoiceSubstep('question');
         setAvatarUploadSuccess(false);
         setAvatarUploadMessageShown(false);
@@ -3825,7 +4118,7 @@ function AIChatPageContent() {
     
     switch (step) {
       case 'avatar-selection': {
-        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'visual-style'];
+        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'visual-style', 'avatar-preview'];
         const targetIndex = substepOrder.indexOf(substep as AvatarSubstep);
         const currentIndex = substepOrder.indexOf(avatarSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
@@ -5354,6 +5647,109 @@ Use a recent photo of yourself.`}
                     </span>
                   </button>
                 </div>
+              )}
+
+              {/* Avatar Preview Substep - Show generated avatar image with regenerate/proceed options */}
+              {hasReachedSubstep('avatar-selection', 'avatar-preview') && (
+                <>
+                  {/* AI Message - Preview intro */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      {isGeneratingAvatarPreview 
+                        ? "Hold on while I generate a preview of your avatar..."
+                        : "Here's a preview of how your avatar will appear in the video. Take a look and let me know if you'd like to try a different variation or proceed to voice selection."
+                      }
+                    </p>
+                  </div>
+
+                  {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
+                  <div 
+                    className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
+                    style={{
+                      background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                        'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                        'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                    }}
+                  >
+                    <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
+                      {isGeneratingAvatarPreview ? (
+                        <div className="flex flex-col items-center justify-center gap-3">
+                          <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
+                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                            Generating preview...
+                          </span>
+                        </div>
+                      ) : avatarPreviewUrl ? (
+                        <img
+                          src={avatarPreviewUrl}
+                          alt="Avatar Preview"
+                          className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                          onClick={() => {
+                            setAvatarPreviewModalOpen(true);
+                          }}
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center gap-3 h-[236px] min-h-[236px]">
+                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                            Preview not available
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Style Label */}
+                  {!isGeneratingAvatarPreview && avatarPreviewUrl && selectedAvatarVisualStyle && (
+                    <div className="flex flex-col items-start gap-[clamp(0.25rem,0.39vh,4px)] mt-[clamp(0.25rem,0.49vh,5px)]">
+                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal text-gray-600">
+                        Style: {AVATAR_VISUAL_STYLE_PRESETS.find(p => p.id === selectedAvatarVisualStyle)?.label || selectedAvatarVisualStyle}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Regenerate and Proceed Buttons */}
+                  {!isGeneratingAvatarPreview && avatarPreviewUrl && (
+                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
+                      {/* Regenerate Button */}
+                      <button
+                        onClick={handleRegenerateAvatarPreview}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                      >
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_redo.svg"
+                            alt="Regenerate"
+                            width={16}
+                            height={16}
+                            className="w-fit"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                          Regenerate
+                        </span>
+                      </button>
+
+                      {/* Proceed Button */}
+                      <button
+                        onClick={handleProceedFromAvatarPreview}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                      >
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_arrow-right.svg"
+                            alt="Proceed"
+                            width={16}
+                            height={16}
+                            className="w-fit"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                          Proceed
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </>
             )}
@@ -6998,12 +7394,25 @@ Read everything on screen smoothly.`}
           {hasReachedStep('audio-image-generation') && (
             <>
               {/* Generating state with loader */}
-              {currentStep === 'audio-image-generation' && (
+              {currentStep === 'audio-image-generation' && !finalVideoUrl && (
                 <>
-                  {/* AI message */}
+                  {/* AI message - different for avatar-only vs b-roll styles */}
                   <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                     <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] text-center w-full">
-                      Perfect! We're stitching everything together — scenes, voice, avatar, effects… the whole magic potion. Sit tight for a moment... Your video is being crafted!
+                      {(() => {
+                        const styleToCheck = selectedVideoStyle || 
+                          (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+                        const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' || 
+                                                   styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
+                        
+                        if (isAvatarOnlyStyle) {
+                          if (isRenderingVideo) {
+                            return "Perfect! We're bringing your avatar to life with your voice. Sit tight for a moment... Your video is being crafted!";
+                          }
+                          return "Perfect! Preparing your audio... Your video is on its way!";
+                        }
+                        return "Perfect! We're stitching everything together — scenes, voice, avatar, effects… the whole magic potion. Sit tight for a moment... Your video is being crafted!";
+                      })()}
                     </p>
                   </div>
 
@@ -7012,9 +7421,107 @@ Read everything on screen smoothly.`}
                     <div className="flex flex-col items-start w-full px-[clamp(0.25rem,0.39vh,4px)] py-[clamp(0.25rem,0.39vh,4px)] bg-[#F6F6F6] rounded-[18px]">
                       <div 
                         className="flex flex-col justify-center items-center py-[clamp(0.25rem,0.39vh,4px)] px-[clamp(0.5rem,0.78vh,8px)] bg-[#E86412] rounded-[20px] transition-all duration-300"
-                        style={{ width: `${generationProgress}%` }}
+                        style={{ width: `${Math.max(generationProgress, 5)}%` }}
                       />
                     </div>
+                  </div>
+                </>
+              )}
+
+              {/* Final video display for avatar-only styles */}
+              {finalVideoUrl && (
+                <>
+                  {/* Success message */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      Your video is ready! Here's the final result.
+                    </p>
+                  </div>
+
+                  {/* Video Player */}
+                  <div 
+                    className="relative w-full max-w-[400px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden bg-black"
+                    style={{ aspectRatio: '9/16' }}
+                  >
+                    <video
+                      src={finalVideoUrl}
+                      controls
+                      className="w-full h-full object-contain"
+                      playsInline
+                    />
+                  </div>
+
+                  {/* Download and Share Buttons */}
+                  <div className="flex flex-row justify-start items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
+                    {/* Download Button */}
+                    <a
+                      href={finalVideoUrl}
+                      download={`video-${projectId || 'output'}.mp4`}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Download
+                      </span>
+                    </a>
+
+                    {/* Share Button */}
+                    <button
+                      onClick={() => {
+                        if (navigator.share && finalVideoUrl) {
+                          navigator.share({
+                            title: 'My Generated Video',
+                            url: finalVideoUrl,
+                          }).catch(console.error);
+                        } else {
+                          navigator.clipboard.writeText(finalVideoUrl || '');
+                          showToast('Video link copied to clipboard!', 'success');
+                        }
+                      }}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="18" cy="5" r="3" />
+                          <circle cx="6" cy="12" r="3" />
+                          <circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                          <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Share
+                      </span>
+                    </button>
+
+                    {/* Go to Workspace Button */}
+                    <button
+                      onClick={() => {
+                        if (projectId) {
+                          router.push(`/create-video/workspace?projectId=${projectId}`);
+                        }
+                      }}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <Image
+                          src="/assets/u_arrow-right.svg"
+                          alt="Workspace"
+                          width={16}
+                          height={16}
+                          className="w-fit"
+                        />
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Go to Workspace
+                      </span>
+                    </button>
                   </div>
                 </>
               )}
@@ -8292,6 +8799,14 @@ Read everything on screen smoothly.`}
           </div>
         </>
       )}
+
+      {/* Avatar Preview Modal - full-screen image on click */}
+      <ImagePreview
+        imageUrl={avatarPreviewUrl || ''}
+        isOpen={avatarPreviewModalOpen}
+        onClose={() => setAvatarPreviewModalOpen(false)}
+        alt="Avatar Preview"
+      />
     </div>
   );
 }

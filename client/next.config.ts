@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
         port: '3003',
         pathname: '/uploads/**',
       },
+      {
+        protocol: 'https',
+        hostname: 'storage.googleapis.com',
+        pathname: '/**',
+      },
     ],
   },
 };

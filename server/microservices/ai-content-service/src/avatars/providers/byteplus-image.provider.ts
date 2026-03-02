@@ -52,7 +52,7 @@ export class BytePlusImageProvider {
         'Authorization': `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
-      timeout: 120000, // 2 minutes for image generation
+      timeout: 300000, // 5 minutes for image generation
     });
   }
 

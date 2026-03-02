@@ -521,6 +521,199 @@ export class AvatarsService {
   }
 
   /**
+   * Generate avatar preview image for immediate display.
+   * Similar to generateAvatarImageForProject but also stores locally and returns public URL.
+   * Used in the avatar preview step so user can see the generated avatar before proceeding.
+   */
+  async generateAvatarPreview(params: {
+    projectId: string;
+    avatarId: string;
+    userId: string;
+    script: { avatar_image_prompt?: string; visual_style_guide?: any };
+    style?: string;
+    avatarVisualStylePreset?: string | null;
+  }): Promise<{ imageKey: string; publicUrl: string }> {
+    const { projectId, avatarId, userId, script, style, avatarVisualStylePreset } = params;
+    this.logger.log(
+      `Generating avatar preview for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}`,
+      'AvatarsService',
+    );
+
+    const avatar = await this.databaseService.avatar.findFirst({
+      where: { id: avatarId, userId },
+    });
+    if (!avatar) {
+      throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
+    }
+
+    const originalImageUrl = avatar.originalImageUrl;
+    if (!originalImageUrl) {
+      throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
+    }
+
+    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
+    const possiblePaths = urlMatch
+      ? [
+          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+          path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+        ]
+      : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
+    let imagePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        imagePath = p;
+        break;
+      }
+    }
+    if (!imagePath) {
+      throw new BadRequestException(`Avatar original image not found at: ${originalImageUrl}`);
+    }
+
+    const imageBuffer = fs.readFileSync(imagePath);
+    const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
+
+    let resultImageBuffer: Buffer;
+
+    if (avatarVisualStylePreset === 'original' && style !== 'ANIMATED_AVATAR') {
+      if (useBottomHalfFraming) {
+        const halfBuffer = await sharp(imageBuffer)
+          .resize(1080, 960, { fit: 'cover', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+        const whiteHeight = 960;
+        const whiteTop = await sharp({
+          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .jpeg()
+          .toBuffer();
+        resultImageBuffer = await sharp({
+          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .composite([
+            { input: whiteTop, top: 0, left: 0 },
+            { input: halfBuffer, top: whiteHeight, left: 0 },
+          ])
+          .jpeg()
+          .toBuffer();
+      } else {
+        resultImageBuffer = await sharp(imageBuffer)
+          .resize(1080, 1920, { fit: 'cover', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
+    } else {
+      let effectivePrompt: string;
+      const avatarImagePrompt = script?.avatar_image_prompt;
+
+      if (style === 'ANIMATED_AVATAR') {
+        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+          throw new BadRequestException(
+            'Script must include avatar_image_prompt (string) for Animated Avatar style. Regenerate the script.',
+          );
+        }
+        const presetForPose = avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+          ? avatarVisualStylePreset
+          : 'front-facing';
+        const presetPose = PRESET_POSE_PROMPTS[presetForPose];
+        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
+        effectivePrompt = `${avatarImagePrompt}, ${presetPose}, ${theme}`;
+      } else if (
+        avatarVisualStylePreset === 'random' ||
+        !avatarVisualStylePreset ||
+        !PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+      ) {
+        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+          throw new BadRequestException(
+            'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected, or choose a visual style preset.',
+          );
+        }
+        const frontFacingSuffix = useBottomHalfFraming
+          ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+          : '';
+        effectivePrompt = avatarImagePrompt + frontFacingSuffix;
+      } else {
+        const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
+        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
+        effectivePrompt = `${presetPose}, ${theme}`;
+      }
+
+      const imageBase64 = imageBuffer.toString('base64');
+      const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
+
+      if (useBottomHalfFraming) {
+        const bytePlusSize = '2304x2048';
+        const result = await this.bytePlusImageProvider.generateImageVariant(
+          base64DataUri,
+          effectivePrompt,
+          bytePlusSize,
+        );
+        const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+        let halfBuffer = Buffer.from(downloaded.data);
+        halfBuffer = await sharp(halfBuffer)
+          .resize(1080, 960, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+        const whiteHeight = 960;
+        const whiteTop = await sharp({
+          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .jpeg()
+          .toBuffer();
+        resultImageBuffer = await sharp({
+          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .composite([
+            { input: whiteTop, top: 0, left: 0 },
+            { input: halfBuffer, top: whiteHeight, left: 0 },
+          ])
+          .jpeg()
+          .toBuffer();
+      } else {
+        const bytePlusSize = '1440x2560';
+        const result = await this.bytePlusImageProvider.generateImageVariant(
+          base64DataUri,
+          effectivePrompt,
+          bytePlusSize,
+        );
+        const downloaded = await axios.get(result.imageUrl, { responseType: 'arraybuffer', timeout: 60000 });
+        const largeBuffer = Buffer.from(downloaded.data);
+        resultImageBuffer = await sharp(largeBuffer)
+          .resize(1080, 1920, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
+    }
+
+    const uploadResponse = await this.heygenProvider.uploadImage(
+      resultImageBuffer,
+      'image/jpeg',
+      `project_${projectId}_avatar_preview.jpg`,
+    );
+    if (!uploadResponse.image_key) {
+      throw new Error('HeyGen upload did not return image_key');
+    }
+
+    const timestamp = Date.now();
+    const previewFilename = `avatar_preview_${timestamp}.jpg`;
+    const subPath = `avatars/previews/${projectId}`;
+    const storageResult = await this.publicUrlService.uploadFromBuffer(
+      resultImageBuffer,
+      subPath,
+      previewFilename,
+      'image/jpeg',
+    );
+
+    const publicUrl = storageResult.gcsUrl || storageResult.publicUrl || `${storageResult.localUrl}`;
+
+    this.logger.log(
+      `Avatar preview for project ${projectId} generated, image_key: ${uploadResponse.image_key}, publicUrl: ${publicUrl}`,
+      'AvatarsService',
+    );
+
+    return { imageKey: uploadResponse.image_key, publicUrl };
+  }
+
+  /**
    * Background process to generate avatar via HeyGen
    * Flow: Create Group -> Train -> Generate Looks -> Add Motion
    */
