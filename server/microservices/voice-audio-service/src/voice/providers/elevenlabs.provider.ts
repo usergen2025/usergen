@@ -430,6 +430,8 @@ export class ElevenLabsProvider {
         use_speaker_boost?: boolean;
       };
       removeBackgroundNoise?: boolean;
+      /** Integer 0-4294967295 for deterministic sampling across scenes */
+      seed?: number;
     }
   ): Promise<Buffer> {
     if (!this.apiKey) {
@@ -462,6 +464,11 @@ export class ElevenLabsProvider {
       // Add background noise removal option
       if (options?.removeBackgroundNoise !== undefined) {
         formData.append('remove_background_noise', options.removeBackgroundNoise.toString());
+      }
+
+      // Add seed for deterministic sampling (consistent voice across scenes)
+      if (options?.seed != null && Number.isInteger(options.seed) && options.seed >= 0 && options.seed <= 4294967295) {
+        formData.append('seed', options.seed.toString());
       }
 
       const response = await this.axiosInstance.post(

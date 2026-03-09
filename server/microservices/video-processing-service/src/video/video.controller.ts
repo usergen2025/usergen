@@ -18,6 +18,7 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } from '@nestjs/swagger';
 import { VideoService } from './video.service';
 import { RenderingService } from '../rendering/rendering.service';
+import { VideoCompositorProvider } from '../rendering/providers/video-compositor.provider';
 import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { ModelRegistryService } from '../rendering/providers/model-registry.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
@@ -31,6 +32,8 @@ import { ConfigService } from '@nestjs/config';
 import { buildAudioGenerationConfig, shouldRegenerateAudio } from '../common/utils/audio-config.util';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import type { Multer } from 'multer';
@@ -46,6 +49,7 @@ export class VideoController {
     private readonly configService: ConfigService,
     private readonly modelRegistry: ModelRegistryService,
     private readonly publicUrlService: PublicUrlService,
+    private readonly videoCompositor: VideoCompositorProvider,
   ) {}
 
   /**
@@ -815,7 +819,18 @@ export class VideoController {
     const voiceServiceUrl = this.configService.get<string>('VOICE_SERVICE_URL') || 'http://localhost:9002/api';
     const token = req.headers?.authorization;
 
-    console.log(`[VideoController] Starting voice transformation for ${scenesToTransform.length} scenes`);
+    // Get or create stsSeed for consistent voice across scenes (ElevenLabs deterministic sampling)
+    let stsSeed = projectData.metadata?.stsSeed;
+    if (stsSeed == null || !Number.isInteger(stsSeed) || stsSeed < 0 || stsSeed > 4294967295) {
+      stsSeed = Math.floor(Math.random() * 4294967296);
+      await this.videoService.updateProject(projectId, userId, {
+        metadata: { ...(projectData.metadata || {}), stsSeed } as any,
+      });
+      projectData.metadata = projectData.metadata || {};
+      (projectData.metadata as any).stsSeed = stsSeed;
+    }
+
+    console.log(`[VideoController] Starting voice transformation for ${scenesToTransform.length} scenes (per-scene, seed=${stsSeed})`);
 
     // Helper function to transform a single scene with retry logic
     const transformScene = async (audioFile: any, retryCount = 0): Promise<{
@@ -860,6 +875,7 @@ export class VideoController {
             projectId,
             sceneNumber: audioFile.sceneNumber,
             settings: body.settings,
+            seed: (projectData.metadata as any)?.stsSeed ?? stsSeed,
           },
           {
             headers: {

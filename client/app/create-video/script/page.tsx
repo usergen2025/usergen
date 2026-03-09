@@ -111,8 +111,8 @@ function ScriptPageContent() {
         console.error('Failed to load project:', error);
         setIsInitialized(true);
         if (error.response?.status === 401) {
-          showToast('Authentication failed. Please login again', 'error');
-          router.push('/login');
+          showToast('Session expired. Please log in again.', 'error');
+          // AuthExpiryProvider handles 401
         }
       }
     };

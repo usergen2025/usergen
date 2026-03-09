@@ -43,7 +43,7 @@ function RenderingPageContent() {
     if (authLoading) return;
     
     if (!isAuthenticated) {
-      router.push('/login?redirect=/create-video/rendering');
+      sessionStorage.setItem('pendingRedirect', '/create-video/rendering');
       return;
     }
 

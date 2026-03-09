@@ -538,6 +538,7 @@ export class VoiceController {
             removeBackgroundNoise: { type: 'boolean' },
           },
         },
+        seed: { type: 'number', description: 'Integer 0-4294967295 for deterministic sampling across scenes' },
       },
       required: ['audioUrl', 'voiceId', 'projectId', 'sceneNumber'],
     },
@@ -576,6 +577,7 @@ export class VoiceController {
         useSpeakerBoost?: boolean;
         removeBackgroundNoise?: boolean;
       };
+      seed?: number;
     },
     @Request() req: any,
   ) {
@@ -602,6 +604,7 @@ export class VoiceController {
         body.projectId,
         body.sceneNumber,
         body.settings,
+        body.seed,
       );
 
       return {
@@ -628,6 +631,23 @@ export class VoiceController {
         HttpStatus.BAD_GATEWAY,
       );
     }
+  }
+
+  @Post('speech-to-speech-concatenated')
+  @ApiOperation({
+    summary: 'Deprecated: Use per-scene STS with seed instead',
+    description: 'This endpoint is deprecated. Use per-scene speech-to-speech with seed for consistent voice across scenes.',
+  })
+  @ApiResponse({ status: 410, description: 'Gone - Migrated to per-scene STS with seed' })
+  async convertSpeechToSpeechConcatenated() {
+    throw new HttpException(
+      {
+        success: false,
+        message: 'This endpoint has been deprecated. Use per-scene speech-to-speech with seed for consistent voice across scenes.',
+        error: 'Endpoint deprecated - use POST /voice/speech-to-speech with seed',
+      },
+      HttpStatus.GONE,
+    );
   }
 
   @Post('speech-to-text')

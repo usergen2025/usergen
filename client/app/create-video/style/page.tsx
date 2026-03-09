@@ -312,7 +312,7 @@ function StylePageContent() {
         // If 401, redirect to login
         if (error.response?.status === 401 || errorMessage.includes('Unauthorized') || errorMessage.includes('User ID')) {
           sessionStorage.setItem('pendingRedirect', `/create-video/style?projectId=${currentProjectId}`);
-          router.push(`/login?redirect=/create-video/style&projectId=${currentProjectId}`);
+          // AuthExpiryProvider handles 401 via auth:session-expired
           return;
         }
         // Don't prevent navigation on other errors - user can still proceed
@@ -344,9 +344,8 @@ function StylePageContent() {
 
     // If this is the first page and user is not authenticated, redirect to login
     if (isFirstPage && !isLoading && !isAuthenticated) {
-      sessionStorage.setItem('pendingRedirect', '/create-video/style');
+      sessionStorage.setItem('pendingRedirect', `/create-video/style${selectedStyle ? `?style=${selectedStyle}` : ''}`);
       sessionStorage.setItem('videoCreationStyle', selectedStyle);
-      router.push(`/login?redirect=/create-video/style&from=style&style=${selectedStyle}`);
       return;
     }
     

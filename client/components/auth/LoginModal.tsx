@@ -98,9 +98,8 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
           }
 
           const finalRedirectUrl = redirectUrl || searchParams?.get('redirect') || sessionStorage.getItem('pendingRedirect') || defaultRedirect;
-          const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
           
-          // Clear the flag after checking
+          // Clear fromCreateVideo flag after use
           if (typeof window !== 'undefined') {
             sessionStorage.removeItem('fromCreateVideo');
           }
@@ -109,13 +108,8 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
           if (userRole === 'BRAND') {
             router.push(finalRedirectUrl);
           } else if (finalRedirectUrl.includes('/create-video')) {
-            // If user came from "Create a Video" button, go to new chat flow
-            if (fromCreateVideo) {
-              router.push('/create-video/ai-chat');
-            } else {
-              // Otherwise, go to old style selection flow
-              router.push('/create-video/style');
-            }
+            // Prefer ai-chat flow (AuthGuard overlay), not style
+            router.push('/create-video/ai-chat');
           } else if (finalRedirectUrl === '/dashboard' || finalRedirectUrl === '/dashboard/projects') {
             router.push('/projects');
           } else {

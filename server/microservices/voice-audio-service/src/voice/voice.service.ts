@@ -755,6 +755,34 @@ export class VoiceService {
   }
 
   /**
+   * Convert a single concatenated audio to speech (for manual recording: concat-transform-split flow).
+   * Same as convertAndStoreSpeechToSpeech but without sceneNumber - used when transforming
+   * concatenated scene audios as one file.
+   */
+  async convertAndStoreSpeechToSpeechSingle(
+    audioUrl: string,
+    voiceId: string,
+    userId: string,
+    projectId: string,
+    settings?: {
+      stability?: number;
+      similarityBoost?: number;
+      style?: number;
+      useSpeakerBoost?: boolean;
+      removeBackgroundNoise?: boolean;
+    }
+  ): Promise<{ publicUrl: string; gcsUrl?: string; duration: number; filePath: string; localUrl: string }> {
+    return this.convertAndStoreSpeechToSpeech(
+      audioUrl,
+      voiceId,
+      userId,
+      projectId,
+      0, // sceneNumber 0 = concatenated (filename will use 0)
+      settings,
+    );
+  }
+
+  /**
    * Convert speech to speech and store the result
    * Downloads the original audio, transforms it using ElevenLabs STS, and uploads to GCS
    */
@@ -770,7 +798,8 @@ export class VoiceService {
       style?: number;
       useSpeakerBoost?: boolean;
       removeBackgroundNoise?: boolean;
-    }
+    },
+    seed?: number
   ): Promise<{ publicUrl: string; gcsUrl?: string; duration: number; filePath: string; localUrl: string }> {
     const tempDir = path.join(os.tmpdir(), `sts-${projectId}-${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
@@ -782,7 +811,8 @@ export class VoiceService {
     try {
       // Download the original audio
       const ext = audioUrl.includes('.webm') ? '.webm' : audioUrl.includes('.mp3') ? '.mp3' : '.webm';
-      inputPath = path.join(tempDir, `input_${sceneNumber}${ext}`);
+      const inputLabel = sceneNumber === 0 ? 'concatenated' : `scene_${sceneNumber}`;
+      inputPath = path.join(tempDir, `input_${inputLabel}${ext}`);
       
       console.log(`[VoiceService] Downloading audio from ${audioUrl}`);
       const response = await axios.get(audioUrl, { responseType: 'arraybuffer' });
@@ -792,7 +822,7 @@ export class VoiceService {
       let audioForSTS = inputPath;
       if (ext === '.webm') {
         console.log(`[VoiceService] Converting WebM to MP3 for STS...`);
-        convertedPath = path.join(tempDir, `converted_${sceneNumber}.mp3`);
+        convertedPath = path.join(tempDir, `converted_${inputLabel}.mp3`);
         try {
           execFileSync('ffmpeg', [
             '-i', inputPath,
@@ -826,11 +856,14 @@ export class VoiceService {
             use_speaker_boost: settings.useSpeakerBoost,
           } : undefined,
           removeBackgroundNoise: settings?.removeBackgroundNoise,
+          seed,
         }
       );
 
       // Save transformed audio locally
-      const outFilename = `sts_scene_${sceneNumber}_${projectId}_${Date.now()}.mp3`;
+      const outFilename = sceneNumber === 0
+        ? `sts_concatenated_${projectId}_${Date.now()}.mp3`
+        : `sts_scene_${sceneNumber}_${projectId}_${Date.now()}.mp3`;
       const userDir = path.join(this.uploadsDir, userId);
       this.ensureDirectory(userDir);
       outputPath = path.join(userDir, outFilename);

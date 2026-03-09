@@ -19,9 +19,8 @@ function CreateVideoPageContent() {
       if (isLoading) return;
 
       if (!isAuthenticated) {
-        // Not authenticated, redirect to login with return URL
+        // AuthGuard shows LoginModal overlay; set redirect for after login
         sessionStorage.setItem('pendingRedirect', '/create-video/style');
-        router.replace('/login?redirect=/create-video/style');
         return;
       }
 

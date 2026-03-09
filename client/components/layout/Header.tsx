@@ -390,6 +390,7 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
       isOpen={loginModalOpen} 
       onClose={closeAllModals}
       onShowGetStarted={handleShowGetStarted}
+      redirectUrl={pathname || '/'}
     />
     <GetStartedModal
       isOpen={getStartedModalOpen}

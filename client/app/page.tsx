@@ -184,6 +184,7 @@ export default function HomePage() {
         isOpen={loginModalOpen}
         onClose={closeAllModals}
         onShowGetStarted={handleShowGetStarted}
+        redirectUrl="/"
       />
     </div>
   );

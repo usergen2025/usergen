@@ -281,13 +281,7 @@ function AIChatPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Redirect to login if not authenticated
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      sessionStorage.setItem('pendingRedirect', '/create-video/ai-chat');
-      router.replace('/login?redirect=/create-video/ai-chat');
-    }
-  }, [isAuthenticated, isLoading, router]);
+  // AuthGuard shows LoginModal overlay when not authenticated - no redirect to /login
 
   // NOTE: Beforeunload alert removed - audio is immediately uploaded to the server
   // on recording completion, so there's no risk of losing unsaved work.
@@ -6916,113 +6910,23 @@ Read everything on screen smoothly.`}
                     </span>
                   </button>
 
-                  {/* Transform button - transforms all then shows scene review */}
-                  {!isTransformingVoice && Object.values(transformedAudioByScene).filter(s => s.status === 'completed').length === 0 && (
-                    <button
-                      onClick={async () => {
-                        if (!selectedStsVoiceId || !projectId) {
-                          showToast('Please select a target voice', 'warning');
-                          return;
-                        }
-
-                        setTransformActionMessage('transform');
-                        setIsTransformingVoice(true);
-                        
-                        // Initialize transformed audio state with "processing" status
-                        const scenes = generatedScript?.scenes || generatedScript?.scene_plan || [];
-                        const initialState: Record<number, any> = {};
-                        scenes.forEach((s: any, i: number) => {
-                          const sceneNum = s.scene_number ?? s.sceneNumber ?? i + 1;
-                          if (manualAudioByScene[sceneNum]?.status === 'uploaded') {
-                            initialState[sceneNum] = { status: 'processing' };
-                          }
-                        });
-                        setTransformedAudioByScene(initialState);
-                        
-                        // Immediately show scene review with processing states
-                        setVoiceSubstep('scene-review');
-
-                        try {
-                          const response = await apiClient.transformAllSceneAudio(
-                            projectId,
-                            selectedStsVoiceId,
-                            {
-                              stability: voiceTransformSettings?.stability || 0.5,
-                              similarityBoost: voiceTransformSettings?.similarityBoost || 0.75,
-                              style: voiceTransformSettings?.style || 0,
-                              useSpeakerBoost: voiceTransformSettings?.useSpeakerBoost ?? true,
-                              removeBackgroundNoise: voiceTransformSettings?.removeBackgroundNoise ?? false,
-                            }
-                          );
-
-                          if (response.success && response.data?.results) {
-                            const newState: Record<number, any> = {};
-                            response.data.results.forEach((result) => {
-                              newState[result.sceneNumber] = {
-                                status: result.status === 'success' ? 'completed' : 'error',
-                                originalUrl: result.originalUrl,
-                                transformedUrl: result.transformedUrl,
-                                duration: result.duration,
-                                error: result.error,
-                              };
-                            });
-                            setTransformedAudioByScene(newState);
-                            
-                            const successCount = response.data.results.filter(r => r.status === 'success').length;
-                            if (successCount > 0) {
-                              showToast(`Successfully transformed ${successCount} scene(s)`, 'success');
-                            } else {
-                              showToast('All voice transformations failed', 'error');
-                              // Go back to voice-transform so user can retry
-                              setVoiceSubstep('voice-transform');
-                              setTransformActionMessage(null);
-                            }
-                          } else {
-                            showToast(response.message || 'Voice transformation failed', 'error');
-                            // Go back to voice-transform so user can retry
-                            setVoiceSubstep('voice-transform');
-                            setTransformActionMessage(null);
-                          }
-                        } catch (e: any) {
-                          showToast(e.message || 'Voice transformation failed', 'error');
-                          // Go back to voice-transform so user can retry
-                          setVoiceSubstep('voice-transform');
-                          setTransformActionMessage(null);
-                        } finally {
-                          setIsTransformingVoice(false);
-                        }
-                      }}
-                      disabled={!selectedStsVoiceId || isTransformingVoice}
-                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                        Transform All Scenes
-                      </span>
-                    </button>
-                  )}
-
-                  {/* After transformation, show button to go to scene review */}
-                  {!isTransformingVoice && Object.values(transformedAudioByScene).filter(s => s.status === 'completed').length > 0 && (
-                    <button
-                      onClick={() => {
-                        setVoiceSubstep('scene-review');
-                      }}
-                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                    >
-                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                        <Image
-                          src="/assets/u_arrow-right.svg"
-                          alt="Review"
-                          width={12}
-                          height={12}
-                          className="w-fit"
-                        />
-                      </div>
-                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                        Review Scenes
-                      </span>
-                    </button>
-                  )}
+                  {/* Review & Transform Scenes - navigate to scene-review for per-scene transformation */}
+                  <button
+                    onClick={() => {
+                      if (!selectedStsVoiceId || !projectId) {
+                        showToast('Please select a target voice', 'warning');
+                        return;
+                      }
+                      setTransformActionMessage('transform');
+                      setVoiceSubstep('scene-review');
+                    }}
+                    disabled={!selectedStsVoiceId || isTransformingVoice || isProcessingManualAudio}
+                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                      Review & Transform Scenes
+                    </span>
+                  </button>
                 </div>
                 )}
 
@@ -7031,7 +6935,7 @@ Read everything on screen smoothly.`}
                   <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                     <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
                       <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                        {transformActionMessage === 'transform' ? 'Transform All Scenes' : 'Skip & Use Original'}
+                        {transformActionMessage === 'transform' ? 'Review & Transform Scenes' : 'Skip & Use Original'}
                       </span>
                     </div>
                   </div>
@@ -7104,7 +7008,7 @@ Read everything on screen smoothly.`}
                                         Original
                                       </span>
                                     )}
-                                    {/* Transform/Re-transform button in header */}
+                                    {/* Transform/Re-transform button - per-scene transform (all modes including MANUAL) */}
                                     {hasOriginal && !isTransformingThis && (
                                       <button
                                         onClick={() => {
@@ -7274,7 +7178,7 @@ Read everything on screen smoothly.`}
 
                 {/* Final Proceed Buttons - Outside the scene list container */}
                 {voiceSubstep === 'scene-review' && !isTransformingVoice && (
-                  <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                  <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full flex-wrap">
                     {/* Skip & Use Original Button - Only show if there are any transformed audios */}
                     {Object.values(transformedAudioByScene).some(t => t.status === 'completed') && (
                       <button
@@ -8740,9 +8644,8 @@ Read everything on screen smoothly.`}
                     const sceneNum = perSceneTransformModal.sceneNumber;
 
                     try {
-                      const response = await apiClient.transformSceneAudio(
+                      const response = await apiClient.transformAllSceneAudio(
                         projectId,
-                        sceneNum,
                         perSceneSettings.voiceId,
                         {
                           stability: perSceneSettings.stability,
@@ -8750,24 +8653,29 @@ Read everything on screen smoothly.`}
                           style: perSceneSettings.style,
                           useSpeakerBoost: perSceneSettings.useSpeakerBoost,
                           removeBackgroundNoise: perSceneSettings.removeBackgroundNoise,
-                        }
+                        },
+                        [sceneNum]
                       );
 
-                      if (response.success && response.data) {
-                        const responseData = response.data;
-                        setTransformedAudioByScene(prev => ({
-                          ...prev,
-                          [sceneNum]: {
-                            status: 'completed',
-                            originalUrl: responseData.originalUrl,
-                            transformedUrl: responseData.transformedUrl,
-                            duration: responseData.duration,
-                            settings: perSceneSettings,
-                          },
-                        }));
-                        showToast(`Scene ${sceneNum} transformed successfully`, 'success');
-                        setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
-                        setIsModalVoiceDropdownOpen(false);
+                      if (response.success && response.data?.results?.length) {
+                        const result = response.data.results[0];
+                        if (result.status === 'success' && result.transformedUrl) {
+                          setTransformedAudioByScene(prev => ({
+                            ...prev,
+                            [sceneNum]: {
+                              status: 'completed',
+                              originalUrl: result.originalUrl,
+                              transformedUrl: result.transformedUrl,
+                              duration: result.duration,
+                              settings: perSceneSettings,
+                            },
+                          }));
+                          showToast(`Scene ${sceneNum} transformed successfully`, 'success');
+                          setPerSceneTransformModal({ isOpen: false, sceneNumber: null, voiceoverText: '' });
+                          setIsModalVoiceDropdownOpen(false);
+                        } else {
+                          showToast(result.error || response.message || 'Transformation failed', 'error');
+                        }
                       } else {
                         showToast(response.message || 'Transformation failed', 'error');
                       }

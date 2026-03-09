@@ -103,8 +103,7 @@ function PreviewPageContent() {
 
       // Redirect if not authenticated
       if (!isAuthenticated) {
-        console.log('User not authenticated, redirecting to login...');
-        router.push('/login');
+        sessionStorage.setItem('pendingRedirect', '/create-video/preview');
         setLoading(false);
         return;
       }
@@ -246,7 +245,7 @@ function PreviewPageContent() {
         console.error('Failed to load project:', error);
         showToast(error.response?.data?.message || error.message || 'Failed to load project', 'error');
         if (error.response?.status === 401) {
-          router.push('/login');
+          // AuthExpiryProvider handles 401
         }
       } finally {
         setLoading(false);

@@ -5,6 +5,7 @@ import Header from "@/components/layout/Header";
 import { ToastProvider } from "@/lib/toast/toast";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import ConditionalHeader from "@/components/layout/ConditionalHeader";
+import { AuthExpiryProvider } from "@/contexts/AuthExpiryContext";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -26,10 +27,12 @@ export default function RootLayout({
       <body className={`${inter.variable} antialiased h-full flex flex-col`}>
         <WebSocketProvider>
           <ToastProvider>
-            <ConditionalHeader />
-            <main className="flex-1 min-h-0">
-              {children}
-            </main>
+            <AuthExpiryProvider>
+              <ConditionalHeader />
+              <main className="flex-1 min-h-0">
+                {children}
+              </main>
+            </AuthExpiryProvider>
           </ToastProvider>
         </WebSocketProvider>
       </body>

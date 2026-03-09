@@ -2,10 +2,10 @@
 
 /**
  * Toast Notification System
- * Provides a simple toast notification system for displaying messages
+ * Light theme matching app design (warm palette)
  */
 
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 
@@ -29,18 +29,11 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const showToast = useCallback((message: string, type: ToastType = 'info', duration: number = 5000) => {
+  const showToast = useCallback((message: string, type: ToastType = 'info', duration?: number) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
     const newToast: Toast = { id, message, type, duration };
 
     setToasts((prev) => [...prev, newToast]);
-
-    // Auto-remove after duration
-    if (duration > 0) {
-      setTimeout(() => {
-        removeToast(id);
-      }, duration);
-    }
   }, []);
 
   const removeToast = useCallback((id: string) => {
@@ -67,7 +60,7 @@ function ToastContainer({ toasts, removeToast }: { toasts: Toast[]; removeToast:
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-md w-full">
+    <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 w-[310px] max-w-[calc(100vw-2rem)]">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onRemove={removeToast} />
       ))}
@@ -77,16 +70,52 @@ function ToastContainer({ toasts, removeToast }: { toasts: Toast[]; removeToast:
 
 function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (id: string) => void }) {
   const [isVisible, setIsVisible] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const effectiveDuration =
+    toast.duration === 0
+      ? 0
+      : toast.duration !== undefined && toast.duration > 0
+        ? toast.duration
+        : toast.type === 'error'
+          ? 10000
+          : 3000;
+
+  const handleClose = useCallback(() => {
+    if (isClosing) return;
+    setIsClosing(true);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    closeTimerRef.current = setTimeout(() => {
+      onRemove(toast.id);
+      closeTimerRef.current = null;
+    }, 500);
+  }, [isClosing, onRemove, toast.id]);
 
   useEffect(() => {
-    // Animate in
     setTimeout(() => setIsVisible(true), 10);
   }, []);
 
-  const handleRemove = () => {
-    setIsVisible(false);
-    setTimeout(() => onRemove(toast.id), 300);
-  };
+  useEffect(() => {
+    if (effectiveDuration > 0) {
+      timerRef.current = setTimeout(handleClose, effectiveDuration);
+      return () => {
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+        }
+      };
+    }
+  }, [effectiveDuration, handleClose]);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, []);
 
   const icons = {
     success: CheckCircle,
@@ -95,32 +124,50 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (id: string) =
     info: Info,
   };
 
-  const styles = {
-    success: 'bg-green-50 border-green-200 text-green-800',
-    error: 'bg-red-50 border-red-200 text-red-800',
-    warning: 'bg-yellow-50 border-yellow-200 text-yellow-800',
-    info: 'bg-blue-50 border-blue-200 text-blue-800',
+  const iconPanelStyles = {
+    success: 'bg-emerald-50',
+    error: 'bg-red-50',
+    warning: 'bg-amber-50',
+    info: 'bg-sky-50',
+  };
+
+  const iconStyles = {
+    success: 'text-emerald-600',
+    error: 'text-red-600',
+    warning: 'text-amber-600',
+    info: 'text-sky-600',
   };
 
   const Icon = icons[toast.type];
 
   return (
     <div
+      role="alert"
       className={cn(
-        'flex items-center gap-3 p-4 rounded-lg border shadow-lg transition-all duration-300',
-        styles[toast.type],
-        isVisible ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-full'
+        'flex items-center w-full overflow-hidden rounded-2xl border border-[var(--border-light)] bg-white shadow-[var(--shadow-card)] transition-all duration-500',
+        isVisible && !isClosing ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0',
+        isClosing && 'translate-y-[-20px] opacity-0'
       )}
     >
-      <Icon className="w-5 h-5 flex-shrink-0" />
-      <p className="flex-1 text-sm font-medium">{toast.message}</p>
-      <button
-        onClick={handleRemove}
-        className="flex-shrink-0 p-1 hover:bg-black/10 rounded transition-colors"
+      <div
+        className={cn(
+          'flex shrink-0 items-center justify-center rounded-l-2xl p-4',
+          iconPanelStyles[toast.type]
+        )}
       >
-        <X className="w-4 h-4" />
+        <Icon className={cn('h-6 w-6', iconStyles[toast.type])} />
+      </div>
+      <p className="min-w-0 flex-1 px-4 py-4 text-sm font-medium leading-[1.5] tracking-[-0.02em] text-[var(--text-primary)]">
+        {toast.message}
+      </p>
+      <button
+        type="button"
+        onClick={handleClose}
+        className="shrink-0 p-4 text-[var(--text-muted)] transition-opacity hover:text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30 focus:ring-offset-2 focus:ring-offset-white"
+        aria-label="Dismiss"
+      >
+        <X className="h-6 w-6" />
       </button>
     </div>
   );
 }
-

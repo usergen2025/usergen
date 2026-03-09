@@ -68,6 +68,10 @@ class ApiClient {
         return response;
       },
       (error: AxiosError<ApiResponse>) => {
+        // Handle 401: emit event for auth expiry overlay (do not redirect; let global handler react)
+        if (error.response?.status === 401 && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('auth:session-expired'));
+        }
         // Handle axios errors
         if (error.response) {
           // Server responded with error status
@@ -1259,6 +1263,17 @@ class ApiClient {
     return response.data;
   }
 }
+
+// Global 401 handler for direct axios calls (e.g. uploadAvatarImage, createAvatarFromUpload)
+axios.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError<ApiResponse>) => {
+    if (error.response?.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('auth:session-expired'));
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const apiClient = new ApiClient();
 

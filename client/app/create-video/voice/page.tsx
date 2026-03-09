@@ -172,8 +172,8 @@ function VoicePageContent() {
       } catch (error: any) {
         console.error('Failed to load/create project:', error);
         if (error.response?.status === 401) {
-          showToast('Authentication failed. Please login again', 'error');
-          router.push('/login');
+          showToast('Session expired. Please log in again.', 'error');
+          // AuthExpiryProvider handles 401 via auth:session-expired
         }
       }
     };

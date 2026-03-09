@@ -67,7 +67,6 @@ function VideoTypePageContent() {
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       sessionStorage.setItem('pendingRedirect', `/create-video/type${projectId ? `?projectId=${projectId}` : ''}`);
-      router.push(`/login?redirect=/create-video/type${projectId ? `&projectId=${projectId}` : ''}`);
     }
   }, [isAuthenticated, isLoading, router, projectId]);
 
@@ -134,7 +133,7 @@ function VideoTypePageContent() {
         // If 401, redirect to login
         if (error.response?.status === 401 || errorMessage.includes('Unauthorized') || errorMessage.includes('User ID')) {
           sessionStorage.setItem('pendingRedirect', `/create-video/type?projectId=${currentProjectId}`);
-          router.push(`/login?redirect=/create-video/type&projectId=${currentProjectId}`);
+          // AuthExpiryProvider handles 401
           return;
         }
         // Don't prevent navigation on other errors - user can still proceed

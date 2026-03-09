@@ -374,7 +374,7 @@ function WorkspacePageContent() {
         console.error('Failed to load project:', error);
         showToast('Failed to load project', 'error');
         if (error.response?.status === 401) {
-          router.push('/login');
+          // AuthExpiryProvider handles 401 via auth:session-expired
         }
       } finally {
         setLoading(false);
