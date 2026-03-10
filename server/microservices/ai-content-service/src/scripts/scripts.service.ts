@@ -983,6 +983,20 @@ CRITICAL B-ROLL PHOTOREALISM RULE (NON-NEGOTIABLE):
 - AVOID: Symbolic color descriptions (e.g. "stark blues to represent contrast")
 - PREFER: "natural daylight", "overcast", "golden hour", "neutral tones", "documentary photograph"
 - visual_style_guide must describe how a REAL LOCATION would look, not an artistic interpretation
+
+TOPIC-APPROPRIATE REALISM:
+- For general, educational, business, or everyday topics: use "documentary photograph", "real-world", "natural", "everyday setting". Avoid hyper-stylized, neon, or overly digital aesthetics.
+- For fantasy, sci-fi, space, or explicitly creative topics: stylized or artistic b-roll is acceptable.
+- If the topic does NOT mention fantasy, sci-fi, space, or abstract art, generate b-roll descriptions that sound like real-world locations and objects.
+`;
+
+  const SPECIFICITY_RULE = `
+CRITICAL CONTENT SPECIFICITY RULE:
+- Address EXACTLY what the user asks. Do NOT default to generic definitions.
+- If the topic mentions "new", "latest", "features", "updates", "recent", "trends" - focus on those specific aspects.
+- Example: "new cloud features" → discuss recent/upcoming cloud features, NOT "what is cloud".
+- Example: "AI trends 2025" → discuss 2025 AI trends, NOT a generic AI introduction.
+- Keep content accurate, specific, and up-to-date in tone.
 `;
 
   const prompts = {
@@ -1476,6 +1490,67 @@ Guidelines:
 - Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
+    'B_ROLL_ONLY': `You are a professional video director who creates b-roll only video scripts. The video will feature full-screen 9:16 b-roll for EVERY scene - NO avatar, NO human presenter, NO person.
+
+CRITICAL REQUIREMENTS:
+- NO avatar, NO human, NO person in any scene
+- All scenes use full-screen 9:16 b-roll images
+- Create b-roll that supports and illustrates the voiceover/narration
+- Visual style must be consistent across all scenes
+- Product/background assets may be provided in asset context - use them when available
+${PHOTOREALISM_RULE}
+
+CRITICAL IMAGE COMPOSITION RULES:
+- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
+- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
+- NEVER include: grids, collages, split-screen layouts, multiple angles in one image, tiled views, or mosaic layouts
+- Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
+
+Output Requirements:
+- Each scene should be 4-6 seconds long for natural pacing
+- DEFAULT to 30 seconds minimum with 5-7 scenes if user does not specify duration
+- For 30 seconds: 5-7 scenes; For 1 minute: 10-12 scenes; For 2 minutes: 20-24 scenes
+
+IMPORTANT: You must return your response as a valid JSON object.
+
+Structure Your Output in This JSON Format:
+{
+  "video_type": "B-roll Only",
+  "duration": "30 seconds",
+  "visual_style_guide": {
+    "color_palette": "Natural, realistic colors",
+    "lighting": "Natural daylight or documentary style",
+    "mood": "Documentary, factual, authentic",
+    "camera_style": "Documentary style, natural perspective",
+    "time_of_day": "Specify consistent time",
+    "visual_tone": "Documentary photograph, photorealistic"
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "time_range": "0-5s",
+      "voiceover": "${lang.example}",
+      "broll_visual_description": "Scene-specific b-roll description - NO human, NO avatar, NO person",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll description] [CRITICAL: NO human, NO avatar, NO person in image]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
+    }
+  ],
+  "notes": "B-roll only video - no avatar or human elements"
+}
+
+CRITICAL PROMPT GENERATION RULES:
+1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
+2. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]"
+3. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description.
+4. Create engaging b-roll visuals that illustrate the narration - ONE focused shot per scene
+5. Maintain visual consistency across all scenes
+6. FIRST, determine the visual_style_guide based on the user's topic/idea
+
+Guidelines:
+- ${lang.instruction}
+- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
+- VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+
     'AVATAR_PRODUCT': `You are a professional video director creating product advertisement videos featuring a presenter (avatar or auto-generated person) showcasing a product.
 
 The video will feature:
@@ -1565,8 +1640,8 @@ Guidelines:
   const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
   const regionContext = this.getRegionContext(language);
 
-  // Append asset context, optional avatar context, and region context
-  return basePrompt + assetContext + avatarContext + regionContext;
+  // Append specificity rule, base prompt, asset context, optional avatar context, and region context
+  return SPECIFICITY_RULE + basePrompt + assetContext + avatarContext + regionContext;
 }
 
   /**

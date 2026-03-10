@@ -491,7 +491,7 @@ export class RenderingService {
         await this.processAvatarOnly(projectId, userId, audioFiles, project, authToken);
       } else if (project.style === 'ANIMATED_AVATAR') {
         await this.processAvatarOnly(projectId, userId, audioFiles, project, authToken);
-      } else if (project.style === 'PRODUCT_ONLY') {
+      } else if (project.style === 'PRODUCT_ONLY' || (project.style as string) === 'B_ROLL_ONLY') {
         await this.processProductOnly(projectId, userId, audioFiles, bRollVideos, project);
       } else if (project.style === 'AVATAR_PRODUCT') {
         await this.processAvatarProduct(projectId, userId, audioFiles, bRollVideos, project, authToken);

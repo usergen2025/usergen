@@ -398,6 +398,7 @@ function AIChatPageContent() {
                 'PRODUCT_ONLY': 'product-only',
                 'AVATAR_PRODUCT': 'avatar-product',
                 'ANIMATED_AVATAR': 'animated-avatar',
+                'B_ROLL_ONLY': 'broll-only',
               };
               const frontendStyle = styleMap[project.style];
               if (frontendStyle) {
@@ -425,13 +426,14 @@ function AIChatPageContent() {
                     'PRODUCT_ONLY': 'product-only',
                     'AVATAR_PRODUCT': 'avatar-product',
                     'ANIMATED_AVATAR': 'animated-avatar',
+                    'B_ROLL_ONLY': 'broll-only',
                   };
                   return styleMap[project.style];
                 })() : null);
               
-              if (restoredStep === 'avatar-selection' && restoredStyle === 'product-only') {
+              if (restoredStep === 'avatar-selection' && (restoredStyle === 'product-only' || restoredStyle === 'broll-only')) {
                 restoredStep = 'voice-selection';
-                // Set avatar preference to 'no' for product-only
+                // Set avatar preference to 'no' for product-only and broll-only
                 setAvatarPreference('no');
                 if (typeof window !== 'undefined') {
                   sessionStorage.setItem('avatarPreference', 'no');
@@ -1258,6 +1260,7 @@ function AIChatPageContent() {
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
         'animated-avatar': 'ANIMATED_AVATAR',
+        'broll-only': 'B_ROLL_ONLY',
       };
       
       // Extract product image URL from attached assets (if any)
@@ -1331,7 +1334,7 @@ function AIChatPageContent() {
       // For product-only style, hasAvatar is always false
       // For avatar-product style, hasAvatar depends on avatarPreference
       // For other styles, hasAvatar depends on avatarPreference
-      const hasAvatar = styleToUse === 'product-only' 
+      const hasAvatar = (styleToUse === 'product-only' || styleToUse === 'broll-only')
         ? false 
         : (avatarPreference === 'yes' && selectedAvatar !== null);
       
@@ -1512,6 +1515,7 @@ function AIChatPageContent() {
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
         'animated-avatar': 'ANIMATED_AVATAR',
+        'broll-only': 'B_ROLL_ONLY',
       };
       
       // Extract product image URL from attached assets (if any)
@@ -1582,7 +1586,8 @@ function AIChatPageContent() {
       }
       
       // Determine if avatar is being used
-      const hasAvatar = styleToUse === 'product-only' 
+      // For product-only and broll-only styles, hasAvatar is always false
+      const hasAvatar = (styleToUse === 'product-only' || styleToUse === 'broll-only') 
         ? false 
         : (avatarPreference === 'yes' && selectedAvatar !== null);
       
@@ -3127,6 +3132,12 @@ function AIChatPageContent() {
               // So we need to handle cases where avatar-type scenes might not have broll_image_prompt
               let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
               
+              // For B_ROLL_ONLY style, fallback prompt if empty
+              if (!prompt && (styleToUse === 'broll-only' || styleToUse === 'B_ROLL_ONLY')) {
+                prompt = scene.broll_visual_description || 
+                         (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                         `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
+              }
               // For ALTERNATE style, if prompt is empty, generate fallback based on scene number
               if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
                 if (sceneNumber % 2 === 1) {
@@ -3479,10 +3490,11 @@ function AIChatPageContent() {
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
         'animated-avatar': 'ANIMATED_AVATAR',
+        'broll-only': 'B_ROLL_ONLY',
       };
       
       // Determine next step based on style
-      const shouldSkipAvatarSelection = styleToUse === 'product-only';
+      const shouldSkipAvatarSelection = styleToUse === 'product-only' || styleToUse === 'broll-only';
       const nextStep = shouldSkipAvatarSelection ? 'voice-selection' : 'avatar-selection';
       
       const createResponse = await apiClient.createVideoProject({
@@ -3669,6 +3681,7 @@ function AIChatPageContent() {
         'product-only': 'PRODUCT_ONLY',
         'avatar-product': 'AVATAR_PRODUCT',
         'animated-avatar': 'ANIMATED_AVATAR',
+        'broll-only': 'B_ROLL_ONLY',
       };
       
       apiClient.updateVideoProject(projectId, {
@@ -4505,6 +4518,41 @@ function AIChatPageContent() {
                       </div>
                     </button>
 
+                    {/* B-roll Only Card */}
+                    <button
+                      onClick={() => setSelectedVideoStyle('broll-only')}
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      style={selectedVideoStyle === 'broll-only'
+                        ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                        : {}}
+                    >
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                          <Image
+                            src="/assets/style-alternate.svg"
+                            alt="B-roll Only"
+                            width={120}
+                            height={160}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                          <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                            <Image
+                              src="/assets/u_sync.svg"
+                              alt="B-roll Only"
+                              width={24}
+                              height={24}
+                              className="w-full h-full"
+                            />
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                            B-roll Only
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+
                     {/* Avatar with Product Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-product')}
@@ -4615,6 +4663,7 @@ function AIChatPageContent() {
                                   selectedVideoStyle === 'avatar-only' ? 'Avatar Only' : 
                                   selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
                                   selectedVideoStyle === 'product-only' ? 'Product Only' :
+                                  selectedVideoStyle === 'broll-only' ? 'B-roll Only' :
                                   selectedVideoStyle === 'avatar-product' ? 'Avatar with Product' :
                                   selectedVideoStyle === 'animated-avatar' ? 'Animated Avatar' :
                                   'Alternate'} visual style
@@ -4629,6 +4678,7 @@ function AIChatPageContent() {
                                           selectedVideoStyle === 'avatar-only' ? 'avatar-only' : 
                                           selectedVideoStyle === 'avatar-cutout' ? 'avatar-cutout' : 
                                           selectedVideoStyle === 'product-only' ? 'product-only' :
+                                          selectedVideoStyle === 'broll-only' ? 'alternate' :
                                           selectedVideoStyle === 'avatar-product' ? 'avatar-product' :
                                           selectedVideoStyle === 'animated-avatar' ? 'avatar-only' : 'alternate'}.svg`}
                               alt={selectedVideoStyle}
@@ -4644,6 +4694,7 @@ function AIChatPageContent() {
                                 src={`/assets/${selectedVideoStyle === 'avatar-cutout' ? 'fi_scissors' : 
                                         selectedVideoStyle === 'alternate' ? 'u_sync' : 
                                         selectedVideoStyle === 'product-only' ? 'u_product' :
+                                        selectedVideoStyle === 'broll-only' ? 'u_sync' :
                                         selectedVideoStyle === 'animated-avatar' ? 'u_user-square' :
                                         'u_user-square'}.svg`}
                                 alt={selectedVideoStyle}
@@ -4657,6 +4708,7 @@ function AIChatPageContent() {
                                selectedVideoStyle === 'avatar-only' ? 'Avatar Only' : 
                                selectedVideoStyle === 'avatar-cutout' ? 'Avatar Cut-out' : 
                                selectedVideoStyle === 'product-only' ? 'Product Only' :
+                               selectedVideoStyle === 'broll-only' ? 'B-roll Only' :
                                selectedVideoStyle === 'avatar-product' ? 'Avatar with Product' :
                                selectedVideoStyle === 'animated-avatar' ? 'Animated Avatar' :
                                'Alternate'}
@@ -4928,7 +4980,7 @@ function AIChatPageContent() {
             )}
 
             {/* Avatar Selection Step - Only show NEW avatar-specific content */}
-            {hasReachedStep('avatar-selection') && selectedVideoStyle !== 'product-only' && (
+            {hasReachedStep('avatar-selection') && selectedVideoStyle !== 'product-only' && selectedVideoStyle !== 'broll-only' && (
               <>
                 {/* User Confirmation Message - "Looks good, let's go ahead!" - Only show if we just came from script-generated */}
                 {proceedConfirmed && (
@@ -5451,7 +5503,7 @@ Use a recent photo of yourself.`}
             )}
 
             {/* Avatar Selection Buttons - Only show in question substep */}
-            {currentStep === 'avatar-selection' && avatarSubstep === 'question' && selectedVideoStyle !== 'product-only' && (
+            {currentStep === 'avatar-selection' && avatarSubstep === 'question' && selectedVideoStyle !== 'product-only' && selectedVideoStyle !== 'broll-only' && (
             <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               {/* Yes, I need an avatar */}
               <button

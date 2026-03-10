@@ -461,6 +461,11 @@ export class AvatarsService {
         effectivePrompt = `${presetPose}, ${theme}`;
       }
 
+      // Non-animated styles: enforce photorealistic output; only ANIMATED_AVATAR gets 3D/animated treatment
+      if (style !== 'ANIMATED_AVATAR') {
+        effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
+      }
+
       const imageBase64 = imageBuffer.toString('base64');
       const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
 
@@ -635,6 +640,11 @@ export class AvatarsService {
         const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
         const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
         effectivePrompt = `${presetPose}, ${theme}`;
+      }
+
+      // Non-animated styles: enforce photorealistic output; only ANIMATED_AVATAR gets 3D/animated treatment
+      if (style !== 'ANIMATED_AVATAR') {
+        effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
       }
 
       const imageBase64 = imageBuffer.toString('base64');

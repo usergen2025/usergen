@@ -52,6 +52,9 @@ export class AssetProcessorService {
       case 'PRODUCT_ONLY':
       case 'AVATAR_PRODUCT':
         return this.getAssetsForProduct(assets, sceneNumber);
+      case 'B_ROLL_ONLY':
+        // B-roll only can use background/env assets if provided; return all for context
+        return assets;
       default:
         return assets;
     }

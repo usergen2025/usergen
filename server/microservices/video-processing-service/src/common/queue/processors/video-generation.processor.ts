@@ -486,8 +486,8 @@ export class VideoGenerationProcessor extends WorkerHost {
         videoRatio = '3:4';
       }
       videoResolution = '1080p';
-    } else if (project.style === 'AVATAR_CUTOUT' || project.style === 'PRODUCT_ONLY') {
-      // For cutout and product-only, b-roll videos should be 9:16 ratio
+    } else if (project.style === 'AVATAR_CUTOUT' || project.style === 'PRODUCT_ONLY' || project.style === 'B_ROLL_ONLY') {
+      // For cutout, product-only, and broll-only, b-roll videos should be 9:16 ratio
       videoRatio = '9:16';
       videoResolution = '1080p'; // Results in 1080x1920
     } else if (project.style === 'ALTERNATE') {

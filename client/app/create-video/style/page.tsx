@@ -16,8 +16,8 @@ import { useToast } from '@/lib/toast/toast';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 // Map frontend style to backend enum
-const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' => {
-  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR'> = {
+const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' | 'B_ROLL_ONLY' => {
+  const map: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' | 'B_ROLL_ONLY'> = {
     'half-n-half': 'HALF_N_HALF',
     'alternate': 'ALTERNATE',
     'avatar-cutout': 'AVATAR_CUTOUT',
@@ -25,6 +25,7 @@ const mapStyleToBackend = (style: VideoStyle): 'HALF_N_HALF' | 'ALTERNATE' | 'AV
     'product-only': 'PRODUCT_ONLY',
     'avatar-product': 'AVATAR_PRODUCT',
     'animated-avatar': 'ANIMATED_AVATAR',
+    'broll-only': 'B_ROLL_ONLY',
   };
   return map[style];
 };
@@ -40,6 +41,7 @@ const mapStyleFromBackend = (style?: string): VideoStyle | null => {
     PRODUCT_ONLY: 'product-only',
     AVATAR_PRODUCT: 'avatar-product',
     ANIMATED_AVATAR: 'animated-avatar',
+    B_ROLL_ONLY: 'broll-only',
   };
   return map[style] || null;
 };
@@ -159,6 +161,7 @@ function StylePageContent() {
     { id: 'product-only', name: 'Product Only', description: 'Product showcase only' },
     { id: 'avatar-product', name: 'Avatar with Product', description: 'Avatar with product' },
     { id: 'animated-avatar', name: 'Animated Avatar', description: '3D animated avatar style' },
+    { id: 'broll-only', name: 'B-roll Only', description: 'Full-screen b-roll, no avatar' },
   ];
 
   // Save to backend when style changes

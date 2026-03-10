@@ -998,8 +998,12 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     let finalPrompt = prompt;
     // Prepend photorealism for b-roll images if not already present (safety net for script prompts that lack it)
+    // Skip photorealism for topics that warrant stylized/artistic visuals (space, sci-fi, fantasy, abstract)
+    const lowerPrompt = finalPrompt.toLowerCase();
+    const stylizedTopicKeywords = ['space', 'sci-fi', 'science fiction', 'fantasy', 'galaxy', 'alien', 'abstract art', 'cosmic', 'surreal'];
+    const isStylizedTopic = stylizedTopicKeywords.some((kw) => lowerPrompt.includes(kw));
     const PHOTOREALISM_PREFIX = 'Photorealistic, documentary photograph, real-world, ';
-    if (!finalPrompt.toLowerCase().includes('photorealistic') && !finalPrompt.toLowerCase().includes('documentary')) {
+    if (!isStylizedTopic && !lowerPrompt.includes('photorealistic') && !lowerPrompt.includes('documentary')) {
       finalPrompt = PHOTOREALISM_PREFIX + finalPrompt;
     }
     finalPrompt = finalPrompt.includes('[COMPOSITION:')

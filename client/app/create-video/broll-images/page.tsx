@@ -265,7 +265,7 @@ function BrollImagesPageContent() {
     
     const style = project.style;
     
-    if (style === 'HALF_N_HALF' || style === 'AVATAR_CUTOUT') {
+    if (style === 'HALF_N_HALF' || style === 'AVATAR_CUTOUT' || style === 'B_ROLL_ONLY') {
       // All scenes need B-roll
       return scenes;
     } else if (style === 'ALTERNATE') {

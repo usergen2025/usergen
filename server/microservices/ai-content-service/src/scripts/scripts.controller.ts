@@ -186,7 +186,7 @@ export class ScriptsController {
       type: 'object',
       properties: {
         userPrompt: { type: 'string', example: 'Introduction to artificial intelligence and its applications', description: 'User input topic or idea for the video' },
-        videoStyle: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'PRODUCT_ONLY', 'AVATAR_PRODUCT'], example: 'HALF_N_HALF', description: 'Video style/format' },
+        videoStyle: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'PRODUCT_ONLY', 'AVATAR_PRODUCT', 'B_ROLL_ONLY'], example: 'HALF_N_HALF', description: 'Video style/format' },
         duration: { type: 'string', example: '30 seconds', description: 'Desired video duration' },
         language: { type: 'string', enum: ['english', 'hindi', 'hinglish'], example: 'hinglish', description: 'Language for script dialogue (defaults to hinglish if not provided)' },
         tags: { type: 'array', items: { type: 'string' }, example: ['technology', 'professional', 'modern'], description: 'Optional tags for visual style guidance (e.g., technology, professional, modern, food, casual)' },
