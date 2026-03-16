@@ -42,6 +42,28 @@ export class RenderingService {
   }
 
   /**
+   * Calculate dynamic max polling attempts based on video duration
+   * Formula: 90 attempts per 30 seconds of video duration
+   * This ensures longer videos have enough time to complete generation
+   * 
+   * @param durationSeconds Total duration of the video in seconds
+   * @returns Number of max polling attempts
+   */
+  private calculateMaxPollingAttempts(durationSeconds: number): number {
+    // Each 30-second bucket gets 90 attempts
+    // With 5-second polling interval, that's 7.5 minutes per 30 seconds of video
+    const buckets = Math.ceil(durationSeconds / 30);
+    const maxAttempts = buckets * 90;
+    
+    // Minimum of 90 attempts (covers videos up to 30 seconds)
+    const finalAttempts = Math.max(90, maxAttempts);
+    
+    console.log(`[RenderingService] Calculated polling attempts: ${finalAttempts} for ${durationSeconds}s video (${buckets} x 30s buckets)`);
+    
+    return finalAttempts;
+  }
+
+  /**
    * Generate a hash of file paths and modification times to detect changes
    */
   private generateSourceHash(filePaths: string[]): string {
@@ -750,7 +772,16 @@ export class RenderingService {
     });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+    
+    // Calculate total audio duration for dynamic polling
+    const totalAudioDurationHNH = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    const maxPollingAttemptsHNH = this.calculateMaxPollingAttempts(totalAudioDurationHNH);
+    
+    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
+      videoResponse.video_id,
+      maxPollingAttemptsHNH,
+      5000
+    );
 
     if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL');
@@ -1171,7 +1202,16 @@ export class RenderingService {
     });
 
     console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+    
+    // Calculate total audio duration for dynamic polling
+    const totalAudioDurationCutout = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    const maxPollingAttemptsCutout = this.calculateMaxPollingAttempts(totalAudioDurationCutout);
+    
+    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
+      videoResponse.video_id,
+      maxPollingAttemptsCutout,
+      5000
+    );
 
     if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL');
@@ -1236,26 +1276,66 @@ export class RenderingService {
       console.log(`[RenderingService] CUTOUT: Avatar video doesn't have transparency, removing background using AI...`);
       await this.updateRenderingStatus(projectId, 'avatar_generating', 65);
       
-      // Use consistent filename for processed version
-      const transparentVideoFilename = `avatar_transparent_${projectId}.mp4`;
-      const transparentVideoPath = path.join(path.dirname(avatarVideoPath), transparentVideoFilename);
+      // Use base path for processed version - removeBackgroundAI will create .webm and _frames directory
+      // Note: We pass .mp4 extension but the actual outputs are .webm (alpha-supporting) and PNG sequence
+      const transparentVideoBasename = `avatar_transparent_${projectId}`;
+      const transparentVideoBasePath = path.join(path.dirname(avatarVideoPath), transparentVideoBasename);
+      const transparentVideoMarkerPath = transparentVideoBasePath + '.mp4'; // Marker file path
+      const transparentWebmPath = transparentVideoBasePath + '.webm'; // Actual WebM with alpha
+      const transparentPngDir = transparentVideoBasePath + '_frames'; // PNG sequence directory
       
-      // Check if processed version already exists
-      if (!fs.existsSync(transparentVideoPath)) {
-      try {
-        // Remove background from video using AI
-        await this.videoCompositor.removeBackgroundAI(
-          avatarVideoPath,
-          transparentVideoPath,
-          'u2net_human_seg'
-        );
-        
-          if (fs.existsSync(transparentVideoPath)) {
-        finalAvatarVideoPath = transparentVideoPath;
-            console.log(`[RenderingService] CUTOUT: ✅ Background removed successfully, using transparent video`);
+      // Check if processed version already exists (check for WebM or PNG directory)
+      const hasExistingWebm = fs.existsSync(transparentWebmPath);
+      const hasExistingPngDir = fs.existsSync(transparentPngDir);
+      
+      if (!hasExistingWebm && !hasExistingPngDir) {
+        console.log(`[RenderingService] CUTOUT: No cached transparent video found, processing...`);
+        try {
+          // Remove background from video using AI
+          // IMPORTANT: Capture the return value - it returns the actual usable path (.webm or PNG dir)
+          const actualTransparentPath = await this.videoCompositor.removeBackgroundAI(
+            avatarVideoPath,
+            transparentVideoMarkerPath, // Pass the marker path, but use the return value
+            'u2net_human_seg'
+          );
+          
+          // Use the returned path - this is the actual WebM or PNG sequence path
+          if (actualTransparentPath && fs.existsSync(actualTransparentPath)) {
+            finalAvatarVideoPath = actualTransparentPath;
+            console.log(`[RenderingService] CUTOUT: ✅ Background removed successfully`);
+            console.log(`[RenderingService] CUTOUT: Using transparent video: ${actualTransparentPath}`);
+            
+            // Determine the actual filename for URL generation
+            const actualFilename = path.basename(actualTransparentPath);
+            const isWebm = actualTransparentPath.endsWith('.webm');
+            const isPngDir = fs.statSync(actualTransparentPath).isDirectory();
+            
+            // Upload WebM to GCS for accessibility
+            let transparentGcsUrl: string | undefined;
+            let transparentPublicUrl: string | undefined;
+            
+            if (isWebm) {
+              try {
+                const avatarType = avatarMode.toLowerCase();
+                const styleType = this.getStyleDirectoryName(project.style);
+                const gcsPath = `videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}`;
+                
+                console.log(`[RenderingService] CUTOUT: Uploading transparent WebM to GCS...`);
+                const storageResult = await this.publicUrlService.uploadFromPath(
+                  actualTransparentPath,
+                  gcsPath,
+                  actualFilename,
+                  'video/webm'
+                );
+                transparentGcsUrl = storageResult.gcsUrl;
+                transparentPublicUrl = storageResult.publicUrl;
+                console.log(`[RenderingService] CUTOUT: ✅ Transparent video uploaded to GCS: ${transparentGcsUrl}`);
+              } catch (gcsError: any) {
+                console.warn(`[RenderingService] CUTOUT: GCS upload failed for transparent video: ${gcsError.message}`);
+              }
+            }
             
             // Update database with processed path (don't delete original - keep it for retry)
-            // Refetch project to get latest avatarVideos
             const updatedProject = await this.databaseService.videoProject.findUnique({
               where: { id: projectId },
             });
@@ -1265,12 +1345,20 @@ export class RenderingService {
             );
             
             if (avatarVideoIndex >= 0) {
-              const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
-              const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
-              updatedAvatarVideos[avatarVideoIndex].processedPath = transparentVideoPath;
-              updatedAvatarVideos[avatarVideoIndex].processedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${transparentVideoFilename}`;
-              updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = transparentVideoPath; // Final video used for composition
-              updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${transparentVideoFilename}`;
+              const avatarType = avatarMode.toLowerCase();
+              const styleType = this.getStyleDirectoryName(project.style);
+              
+              // Store the actual path (WebM or PNG dir), not the marker file
+              updatedAvatarVideos[avatarVideoIndex].processedPath = actualTransparentPath;
+              updatedAvatarVideos[avatarVideoIndex].processedUrl = transparentPublicUrl || `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${actualFilename}`;
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = actualTransparentPath;
+              updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = transparentPublicUrl || `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/${actualFilename}`;
+              updatedAvatarVideos[avatarVideoIndex].processedFormat = isWebm ? 'webm' : (isPngDir ? 'png_sequence' : 'unknown');
+              
+              // Store GCS URL separately for easy access
+              if (transparentGcsUrl) {
+                updatedAvatarVideos[avatarVideoIndex].processedGcsUrl = transparentGcsUrl;
+              }
               
               await this.databaseService.videoProject.update({
                 where: { id: projectId },
@@ -1282,14 +1370,13 @@ export class RenderingService {
               console.log(`[RenderingService] CUTOUT: ✅ Processed video path saved to database`);
             }
           } else {
-            throw new Error('Background removal completed but output file not found');
+            throw new Error(`Background removal completed but output file not found at: ${actualTransparentPath}`);
           }
-      } catch (bgRemovalError: any) {
-        console.error(`[RenderingService] CUTOUT: ❌ Background removal failed: ${bgRemovalError.message}`);
-          console.log(`[RenderingService] CUTOUT: ⚠️  Using original video (may have background, can retry later)`);
-        // Continue with original video if background removal fails
-          // Original video is preserved, so user can retry background removal
-        finalAvatarVideoPath = avatarVideoPath;
+        } catch (bgRemovalError: any) {
+          console.error(`[RenderingService] CUTOUT: ❌ Background removal failed: ${bgRemovalError.message}`);
+          console.log(`[RenderingService] CUTOUT: ⚠️ Using original video (may have background, can retry later)`);
+          // Continue with original video if background removal fails
+          finalAvatarVideoPath = avatarVideoPath;
           
           // Still save the original as final processed path
           const updatedProject = await this.databaseService.videoProject.findUnique({
@@ -1301,10 +1388,11 @@ export class RenderingService {
           );
           
           if (avatarVideoIndex >= 0) {
-            const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
-            const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+            const avatarType = avatarMode.toLowerCase();
+            const styleType = this.getStyleDirectoryName(project.style);
             updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
             updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/avatar_full_${projectId}.mp4`;
+            updatedAvatarVideos[avatarVideoIndex].processedFormat = 'mp4_no_alpha';
             
             await this.databaseService.videoProject.update({
               where: { id: projectId },
@@ -1315,8 +1403,14 @@ export class RenderingService {
           }
         }
       } else {
-        console.log(`[RenderingService] CUTOUT: Processed video already exists, reusing: ${transparentVideoPath}`);
-        finalAvatarVideoPath = transparentVideoPath;
+        // Use existing cached transparent video
+        if (hasExistingWebm) {
+          finalAvatarVideoPath = transparentWebmPath;
+          console.log(`[RenderingService] CUTOUT: Reusing cached WebM video: ${transparentWebmPath}`);
+        } else if (hasExistingPngDir) {
+          finalAvatarVideoPath = transparentPngDir;
+          console.log(`[RenderingService] CUTOUT: Reusing cached PNG sequence: ${transparentPngDir}`);
+        }
       }
     } else {
       console.log(`[RenderingService] CUTOUT: ✅ Avatar video already has transparent background`);
@@ -1331,10 +1425,11 @@ export class RenderingService {
       );
       
       if (avatarVideoIndex >= 0) {
-        const avatarType = avatarMode.toLowerCase(); // 'basic' or 'premium'
-        const styleType = this.getStyleDirectoryName(project.style); // 'half-n-half', 'avatar-cutout', or 'alternate'
+        const avatarType = avatarMode.toLowerCase();
+        const styleType = this.getStyleDirectoryName(project.style);
         updatedAvatarVideos[avatarVideoIndex].finalProcessedPath = avatarVideoPath;
         updatedAvatarVideos[avatarVideoIndex].finalProcessedUrl = `/uploads/videos/${userId}/avatars/${projectId}/${styleType}/${avatarType}/avatar_full_${projectId}.mp4`;
+        updatedAvatarVideos[avatarVideoIndex].processedFormat = 'original_with_alpha';
         
         await this.databaseService.videoProject.update({
           where: { id: projectId },
@@ -1425,18 +1520,153 @@ export class RenderingService {
 
     await this.updateRenderingStatus(projectId, 'overlaying', 80);
 
-    // Overlay avatar video on stitched b-roll (bottom center, max 40% height, remove background)
-    // For CUTOUT mode, always use AI background removal (works for both Basic and Premium avatars)
-    // Use finalAvatarVideoPath which may have been processed to remove background
-    const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
-    console.log(`[RenderingService] CUTOUT: Overlaying avatar video on b-roll...`);
-    await this.videoCompositor.overlayAvatarOnBroll(
-      stitchedBrollWithAudioPath,
-      finalAvatarVideoPath, // Use processed video (with transparency if available)
-      finalVideoPath,
-      40, // Max 40% height
-      true // useAIBackgroundRemoval: Always use AI removal for CUTOUT mode
-    );
+    // Get avatar overlay settings from project metadata (or use defaults)
+    const avatarOverlay = project.metadata?.avatarOverlay || {
+      enabled: true,
+      applyToAll: true,
+      globalPosition: { x: 0.5, y: 0.85, scale: 0.4 }
+    };
+    
+    const globalPosition = avatarOverlay.globalPosition || { x: 0.5, y: 0.85, scale: 0.4 };
+    const perScenePositions = avatarOverlay.perScenePositions || {};
+    const applyToAll = avatarOverlay.applyToAll !== false; // Default to true
+    
+    console.log(`[RenderingService] CUTOUT: Avatar overlay settings - enabled: ${avatarOverlay.enabled}, applyToAll: ${applyToAll}`);
+    console.log(`[RenderingService] CUTOUT: Global position - x: ${globalPosition.x}, y: ${globalPosition.y}, scale: ${globalPosition.scale}`);
+    
+    let finalVideoPath: string;
+    
+    if (applyToAll) {
+      // Use global position for all scenes - overlay on stitched b-roll
+      console.log(`[RenderingService] CUTOUT: Using global position for all scenes`);
+      
+      finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+      console.log(`[RenderingService] CUTOUT: Overlaying avatar video on b-roll...`);
+      await this.videoCompositor.overlayAvatarOnBroll(
+        stitchedBrollWithAudioPath,
+        finalAvatarVideoPath,
+        finalVideoPath,
+        globalPosition,
+        true // useAIBackgroundRemoval: Always use AI removal for CUTOUT mode
+      );
+    } else {
+      // Per-scene positioning: clip avatar video per scene and overlay with scene-specific positions
+      console.log(`[RenderingService] CUTOUT: Using per-scene positions`);
+      console.log(`[RenderingService] CUTOUT: Per-scene positions:`, perScenePositions);
+      
+      // Calculate audio duration breakpoints per scene
+      const sceneDurations: { sceneNumber: number; duration: number; startTime: number }[] = [];
+      let cumulativeTime = 0;
+      
+      for (const audioFile of audioFiles) {
+        const duration = audioFile.duration || 0;
+        sceneDurations.push({
+          sceneNumber: audioFile.sceneNumber,
+          duration,
+          startTime: cumulativeTime
+        });
+        cumulativeTime += duration;
+      }
+      
+      console.log(`[RenderingService] CUTOUT: Scene durations:`, sceneDurations);
+      
+      // Process each scene: extract avatar segment, overlay on b-roll
+      const sceneComposites: string[] = [];
+      const tempDir = path.join(userDir, 'temp_scenes');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      for (let i = 0; i < sortedBrollVideos.length; i++) {
+        const brollVideo = sortedBrollVideos[i];
+        const sceneNumber = brollVideo.sceneNumber;
+        const sceneDuration = sceneDurations.find(sd => sd.sceneNumber === sceneNumber);
+        
+        if (!sceneDuration) {
+          console.warn(`[RenderingService] CUTOUT: No duration found for scene ${sceneNumber}, skipping`);
+          continue;
+        }
+        
+        // Get b-roll video path
+        let brollPath: string | null = null;
+        if (brollVideo.localPath) {
+          brollPath = path.isAbsolute(brollVideo.localPath) 
+            ? brollVideo.localPath 
+            : path.resolve(brollVideo.localPath);
+        } else if (brollVideo.localUrl) {
+          const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
+          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+          brollPath = path.join(userDir, relativePath);
+        }
+        
+        if (!brollPath || !fs.existsSync(brollPath)) {
+          console.warn(`[RenderingService] CUTOUT: B-roll video not found for scene ${sceneNumber}, skipping`);
+          continue;
+        }
+        
+        // Get position for this scene (fall back to global if not specified)
+        const scenePosition = perScenePositions[sceneNumber] || globalPosition;
+        console.log(`[RenderingService] CUTOUT: Scene ${sceneNumber} position - x: ${scenePosition.x}, y: ${scenePosition.y}, scale: ${scenePosition.scale}`);
+        
+        // Extract avatar video segment for this scene
+        const avatarSegmentPath = path.join(tempDir, `avatar_segment_scene_${sceneNumber}.mp4`);
+        await this.videoCompositor.extractVideoSegment(
+          finalAvatarVideoPath,
+          avatarSegmentPath,
+          sceneDuration.startTime,
+          sceneDuration.duration,
+          true // preserveAlpha: avatar video should have transparency
+        );
+        
+        // Add audio to b-roll for this scene
+        const sceneAudioFile = audioFiles.find(af => af.sceneNumber === sceneNumber);
+        let brollWithAudioPath = brollPath;
+        
+        if (sceneAudioFile) {
+          const audioPath = sceneAudioFile.localPath || 
+            (sceneAudioFile.localUrl ? path.join(process.cwd(), sceneAudioFile.localUrl.replace(/^\//, '')) : null);
+          
+          if (audioPath && fs.existsSync(audioPath)) {
+            brollWithAudioPath = path.join(tempDir, `broll_audio_scene_${sceneNumber}.mp4`);
+            await this.videoCompositor.addAudioToVideo(brollPath, audioPath, brollWithAudioPath);
+          }
+        }
+        
+        // Overlay avatar segment on b-roll scene
+        const sceneCompositePath = path.join(tempDir, `composite_scene_${sceneNumber}.mp4`);
+        await this.videoCompositor.overlayAvatarOnBroll(
+          brollWithAudioPath,
+          avatarSegmentPath,
+          sceneCompositePath,
+          scenePosition,
+          true // useAIBackgroundRemoval
+        );
+        
+        sceneComposites.push(sceneCompositePath);
+        console.log(`[RenderingService] CUTOUT: Scene ${sceneNumber} composite created`);
+      }
+      
+      if (sceneComposites.length === 0) {
+        throw new Error('No scene composites were created');
+      }
+      
+      // Concatenate all scene composites into final video
+      finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+      console.log(`[RenderingService] CUTOUT: Concatenating ${sceneComposites.length} scene composites...`);
+      await this.videoCompositor.concatenateVideos(sceneComposites, finalVideoPath);
+      
+      // Cleanup temp directory
+      try {
+        const tempFiles = fs.readdirSync(tempDir);
+        for (const file of tempFiles) {
+          fs.unlinkSync(path.join(tempDir, file));
+        }
+        fs.rmdirSync(tempDir);
+        console.log(`[RenderingService] CUTOUT: Cleaned up temp directory`);
+      } catch (cleanupError: any) {
+        console.warn(`[RenderingService] CUTOUT: Failed to cleanup temp directory: ${cleanupError.message}`);
+      }
+    }
 
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
@@ -1514,7 +1744,16 @@ export class RenderingService {
     });
 
     console.log(`[RenderingService] ALTERNATE: Created avatar video task ${videoResponse.video_id} for scene ${sceneNumber}`);
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+    
+    // Calculate audio duration for dynamic polling (use getVideoDuration which works for audio)
+    const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
+    const maxPollingAttemptsAlternate = this.calculateMaxPollingAttempts(sceneAudioDuration);
+    
+    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
+      videoResponse.video_id,
+      maxPollingAttemptsAlternate,
+      5000
+    );
 
     if (!completedVideo.data.video_url) {
       throw new Error(`Avatar video generation completed but no video URL for scene ${sceneNumber}`);
@@ -1838,16 +2077,24 @@ export class RenderingService {
     console.log(`[RenderingService] AVATAR_ONLY: Created avatar video task ${videoResponse.video_id}`);
     await this.updateRenderingStatus(projectId, 'avatar_generating', 60);
 
-      const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+    // Calculate total audio duration for dynamic polling
+    const totalAudioDurationAvatarOnly = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    const maxPollingAttemptsAvatarOnly = this.calculateMaxPollingAttempts(totalAudioDurationAvatarOnly);
+    
+    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
+      videoResponse.video_id,
+      maxPollingAttemptsAvatarOnly,
+      5000
+    );
 
-      if (!completedVideo.data.video_url) {
+    if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL returned');
-      }
+    }
 
     await this.updateRenderingStatus(projectId, 'stitching', 80);
 
     const avatarVideoPath = path.join(userDir, `avatar_only_${projectId}_${Date.now()}.mp4`);
-      await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+    await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);

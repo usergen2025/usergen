@@ -464,119 +464,115 @@ export class VoiceService {
         let finalGcsUrl = result.gcsUrl;
         let finalPublicUrl = result.publicUrl;
 
-        // CRITICAL: Only process the last scene with padding and fade-out
-        if (isLastScene && (applyPadding || applyFadeOut)) {
-          console.log(`[VoiceService] Processing last scene ${scene.sceneNumber} with padding=${applyPadding} and fade-out=${applyFadeOut}`);
-          
-          let processedAudioPath = result.filePath;
+        let processedAudioPath = result.filePath;
 
-          // Step 1: Apply padding (round up + add padding)
-          if (applyPadding) {
-            const paddedFilename = `scene_${scene.sceneNumber}_${projectId}_padded_${Date.now()}.mp3`;
-            const paddedPath = path.join(path.dirname(result.filePath), paddedFilename);
-            
-            try {
-              finalDuration = await this.processAudioWithPadding(
-                processedAudioPath,
-                paddedPath,
-                paddingSeconds,
-                true, // roundUp
-                0.7   // threshold: if decimal <= 0.7, only round up; if > 0.7, round up + add padding
-              );
-              
-              // Update processed audio path for next step
-              processedAudioPath = paddedPath;
-              
-              // Clean up original file if it's different from processed
-              if (processedAudioPath !== result.filePath && fs.existsSync(result.filePath)) {
-                try {
-                  fs.unlinkSync(result.filePath);
-                } catch (e) {
-                  console.warn(`[VoiceService] Failed to cleanup original audio file: ${e}`);
-                }
+        // Step 1: Apply padding (round up for every scene; last scene may get extra padding)
+        if (applyPadding) {
+          // For non-last scenes, we only want to round up to the next whole second (no extra padding)
+          const scenePaddingSeconds = isLastScene ? paddingSeconds : 0.0;
+          const paddedFilename = `scene_${scene.sceneNumber}_${projectId}_padded_${Date.now()}.mp3`;
+          const paddedPath = path.join(path.dirname(result.filePath), paddedFilename);
+
+          try {
+            finalDuration = await this.processAudioWithPadding(
+              processedAudioPath,
+              paddedPath,
+              scenePaddingSeconds,
+              true, // roundUp
+              0.7   // threshold: if decimal <= 0.7, only round up; if > 0.7, round up + paddingSeconds
+            );
+
+            // Update processed audio path for next steps (including optional fade-out)
+            processedAudioPath = paddedPath;
+
+            // Clean up original file if it's different from processed
+            if (processedAudioPath !== result.filePath && fs.existsSync(result.filePath)) {
+              try {
+                fs.unlinkSync(result.filePath);
+              } catch (e) {
+                console.warn(`[VoiceService] Failed to cleanup original audio file: ${e}`);
               }
-              
-              console.log(`[VoiceService] Last scene padding applied: new duration=${finalDuration.toFixed(2)}s`);
-            } catch (error: any) {
-              console.error(`[VoiceService] Failed to apply padding to last scene: ${error.message}`);
-              throw new Error(`Failed to apply padding to last scene: ${error.message}`);
             }
-          }
 
-          // Step 2: Apply fade-out
-          if (applyFadeOut) {
-            const fadedFilename = `scene_${scene.sceneNumber}_${projectId}_faded_${Date.now()}.mp3`;
-            const fadedPath = path.join(path.dirname(processedAudioPath), fadedFilename);
-            
-            try {
-              await this.applyAudioFadeOut(
-                processedAudioPath,
-                fadedPath,
-                fadeOutDuration
-              );
-              
-              // Clean up intermediate padded file if it exists
-              if (fadedPath !== processedAudioPath && fs.existsSync(processedAudioPath)) {
-                try {
-                  fs.unlinkSync(processedAudioPath);
-                } catch (e) {
-                  console.warn(`[VoiceService] Failed to cleanup intermediate audio file: ${e}`);
-                }
+            console.log(`[VoiceService] Scene ${scene.sceneNumber} padding applied: new duration=${finalDuration.toFixed(2)}s (isLastScene=${isLastScene})`);
+          } catch (error: any) {
+            console.error(`[VoiceService] Failed to apply padding to scene ${scene.sceneNumber}: ${error.message}`);
+            throw new Error(`Failed to apply padding to scene ${scene.sceneNumber}: ${error.message}`);
+          }
+        }
+
+        // Step 2: Apply fade-out only for the last scene (after any padding)
+        if (isLastScene && applyFadeOut) {
+          console.log(`[VoiceService] Applying fade-out to last scene ${scene.sceneNumber}`);
+          const fadedFilename = `scene_${scene.sceneNumber}_${projectId}_faded_${Date.now()}.mp3`;
+          const fadedPath = path.join(path.dirname(processedAudioPath), fadedFilename);
+
+          try {
+            await this.applyAudioFadeOut(
+              processedAudioPath,
+              fadedPath,
+              fadeOutDuration
+            );
+
+            // Clean up intermediate padded file if it exists
+            if (fadedPath !== processedAudioPath && fs.existsSync(processedAudioPath)) {
+              try {
+                fs.unlinkSync(processedAudioPath);
+              } catch (e) {
+                console.warn(`[VoiceService] Failed to cleanup intermediate audio file: ${e}`);
               }
-              
-              finalFilePath = fadedPath;
-              finalLocalUrl = `/uploads/audio/${userId}/${fadedFilename}`;
-              
-              // Re-upload to GCS if original was uploaded
-              if (result.gcsUrl) {
-                try {
-                  const storageResult = await this.publicUrlService.uploadFromPath(
-                    finalFilePath,
-                    `audio/${userId}`,
-                    fadedFilename,
-                    'audio/mpeg'
-                  );
-                  finalGcsUrl = storageResult.gcsUrl;
-                  finalPublicUrl = storageResult.publicUrl;
-                } catch (error: any) {
-                  console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
-                  finalPublicUrl = finalLocalUrl;
-                }
-              } else {
+            }
+
+            finalFilePath = fadedPath;
+            finalLocalUrl = `/uploads/audio/${userId}/${fadedFilename}`;
+
+            // Re-upload to GCS if original was uploaded
+            if (result.gcsUrl) {
+              try {
+                const storageResult = await this.publicUrlService.uploadFromPath(
+                  finalFilePath,
+                  `audio/${userId}`,
+                  fadedFilename,
+                  'audio/mpeg'
+                );
+                finalGcsUrl = storageResult.gcsUrl;
+                finalPublicUrl = storageResult.publicUrl;
+              } catch (error: any) {
+                console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
                 finalPublicUrl = finalLocalUrl;
               }
-              
-              console.log(`[VoiceService] Last scene fade-out applied successfully`);
+            } else {
+              finalPublicUrl = finalLocalUrl;
+            }
+
+            console.log(`[VoiceService] Last scene fade-out applied successfully`);
+          } catch (error: any) {
+            console.error(`[VoiceService] Failed to apply fade-out to last scene: ${error.message}`);
+            throw new Error(`Failed to apply fade-out to last scene: ${error.message}`);
+          }
+        } else if (applyPadding && processedAudioPath !== result.filePath) {
+          // If only padding was applied (non-last scene or last without fade-out), update URLs
+          const paddedFilename = path.basename(processedAudioPath);
+          finalFilePath = processedAudioPath;
+          finalLocalUrl = `/uploads/audio/${userId}/${paddedFilename}`;
+
+          // Re-upload to GCS if original was uploaded
+          if (result.gcsUrl) {
+            try {
+              const storageResult = await this.publicUrlService.uploadFromPath(
+                finalFilePath,
+                `audio/${userId}`,
+                paddedFilename,
+                'audio/mpeg'
+              );
+              finalGcsUrl = storageResult.gcsUrl;
+              finalPublicUrl = storageResult.publicUrl;
             } catch (error: any) {
-              console.error(`[VoiceService] Failed to apply fade-out to last scene: ${error.message}`);
-              throw new Error(`Failed to apply fade-out to last scene: ${error.message}`);
+              console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
+              finalPublicUrl = finalLocalUrl;
             }
           } else {
-            // If only padding was applied, update URLs
-            if (applyPadding && processedAudioPath !== result.filePath) {
-              const paddedFilename = path.basename(processedAudioPath);
-              finalFilePath = processedAudioPath;
-              finalLocalUrl = `/uploads/audio/${userId}/${paddedFilename}`;
-              
-              // Re-upload to GCS if original was uploaded
-              if (result.gcsUrl) {
-                try {
-                  const storageResult = await this.publicUrlService.uploadFromPath(
-                    finalFilePath,
-                    `audio/${userId}`,
-                    paddedFilename,
-                    'audio/mpeg'
-                  );
-                  finalGcsUrl = storageResult.gcsUrl;
-                  finalPublicUrl = storageResult.publicUrl;
-                } catch (error: any) {
-                  console.warn(`[VoiceService] GCS upload failed for processed audio: ${error.message}`);
-                  finalPublicUrl = finalLocalUrl;
-                }
-              } else {
-                finalPublicUrl = finalLocalUrl;
-              }
-            }
+            finalPublicUrl = finalLocalUrl;
           }
         }
 
@@ -597,6 +593,196 @@ export class VoiceService {
 
     console.log(`[VoiceService] Successfully generated ${audioFiles.length} audio files`);
     return audioFiles;
+  }
+
+  /**
+   * Generate audio with word-level timestamps for captions
+   * Uses ElevenLabs with-timestamps API for accurate timing
+   */
+  async generateScriptAudioWithTimestamps(
+    voiceId: string,
+    scenes: Array<{ sceneNumber: number; voiceover: string; timeRange?: string }>,
+    userId: string,
+    projectId: string,
+    options?: {
+      model_id?: string;
+      output_format?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
+      voice_settings?: {
+        stability?: number;
+        similarity_boost?: number;
+        style?: number;
+        use_speaker_boost?: boolean;
+        speed?: number;
+      };
+    }
+  ): Promise<Array<{
+    sceneNumber: number;
+    filePath: string;
+    localUrl: string;
+    voiceover: string;
+    duration?: number;
+    gcsUrl?: string;
+    publicUrl?: string;
+    wordTimestamps?: Array<{ word: string; startTime: number; endTime: number }>;
+  }>> {
+    const audioFiles: Array<{
+      sceneNumber: number;
+      filePath: string;
+      localUrl: string;
+      voiceover: string;
+      duration?: number;
+      gcsUrl?: string;
+      publicUrl?: string;
+      wordTimestamps?: Array<{ word: string; startTime: number; endTime: number }>;
+    }> = [];
+
+    console.log(`[VoiceService] Generating audio WITH TIMESTAMPS for ${scenes.length} scenes for project ${projectId}`);
+
+    // Get language-specific settings
+    const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
+    const mergedSettings = {
+      ...languageSettings,
+      ...options?.voice_settings,
+    };
+
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      console.log(`[VoiceService] Generating audio with timestamps for scene ${scene.sceneNumber} (${i + 1}/${scenes.length})`);
+
+      const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
+      const userDir = path.join(this.uploadsDir, 'audio', userId);
+
+      // Ensure directory exists
+      if (!fs.existsSync(userDir)) {
+        fs.mkdirSync(userDir, { recursive: true });
+      }
+
+      try {
+        // Generate speech with timestamps
+        const result = await this.elevenLabsProvider.generateSpeechWithTimestamps({
+          voice_id: voiceId,
+          text: scene.voiceover,
+          model_id: options?.model_id || 'eleven_multilingual_v2',
+          output_format: options?.output_format || 'mp3_44100_128',
+          voice_settings: mergedSettings,
+        });
+
+        // Save audio file
+        const filePath = path.join(userDir, filename);
+        fs.writeFileSync(filePath, result.audio);
+
+        // Get duration using ffprobe
+        let duration = 0;
+        try {
+          duration = await this.getAudioDuration(filePath);
+        } catch (e) {
+          console.warn(`[VoiceService] Could not get duration for ${filename}`);
+        }
+
+        // Convert character timestamps to word timestamps
+        const wordTimestamps = this.elevenLabsProvider.convertCharacterTimestampsToWords(
+          scene.voiceover,
+          result.alignment
+        );
+
+        // Save timestamps to a JSON file alongside audio
+        const timestampsFilename = `scene_${scene.sceneNumber}_${projectId}_timestamps.json`;
+        const timestampsPath = path.join(userDir, timestampsFilename);
+        fs.writeFileSync(timestampsPath, JSON.stringify({
+          sceneNumber: scene.sceneNumber,
+          voiceover: scene.voiceover,
+          duration,
+          wordTimestamps,
+          characterAlignment: result.alignment,
+        }, null, 2));
+
+        // Upload to GCS
+        let gcsUrl: string | undefined;
+        let publicUrl: string = `/uploads/audio/${userId}/${filename}`;
+
+        try {
+          const storageResult = await this.publicUrlService.uploadFromPath(
+            filePath,
+            `audio/${userId}`,
+            filename,
+            'audio/mpeg'
+          );
+          gcsUrl = storageResult.gcsUrl;
+          publicUrl = storageResult.publicUrl;
+
+          // Also upload timestamps JSON
+          await this.publicUrlService.uploadFromPath(
+            timestampsPath,
+            `audio/${userId}`,
+            timestampsFilename,
+            'application/json'
+          );
+        } catch (error: any) {
+          console.warn(`[VoiceService] GCS upload failed: ${error.message}`);
+        }
+
+        console.log(`[VoiceService] Audio with timestamps generated for scene ${scene.sceneNumber}: ${wordTimestamps.length} words`);
+
+        audioFiles.push({
+          sceneNumber: scene.sceneNumber,
+          filePath,
+          localUrl: `/uploads/audio/${userId}/${filename}`,
+          voiceover: scene.voiceover,
+          duration,
+          gcsUrl,
+          publicUrl,
+          wordTimestamps,
+        });
+      } catch (error: any) {
+        console.error(`[VoiceService] Failed to generate audio with timestamps for scene ${scene.sceneNumber}:`, error.message);
+        throw new Error(`Failed to generate audio with timestamps for scene ${scene.sceneNumber}: ${error.message}`);
+      }
+    }
+
+    console.log(`[VoiceService] Successfully generated ${audioFiles.length} audio files with timestamps`);
+    return audioFiles;
+  }
+
+  /**
+   * Get word timestamps from existing audio using Speech-to-Text
+   * Useful for user-recorded audio that wasn't generated with timestamps
+   */
+  async getTimestampsForAudio(
+    audioBuffer: Buffer,
+    text: string
+  ): Promise<Array<{ word: string; startTime: number; endTime: number }>> {
+    try {
+      // Use ElevenLabs Speech-to-Text to get transcript with timestamps
+      const transcription = await this.elevenLabsProvider.transcribeSpeech(audioBuffer);
+      
+      // For now, we just have the text - word-level timestamps require using
+      // the full transcription response. This is a simplified version.
+      // TODO: Update transcribeSpeech to return word-level timing data
+      
+      console.log(`[VoiceService] Transcribed audio: "${transcription.text.substring(0, 50)}..."`);
+      
+      // Fallback: estimate timestamps based on word count and duration
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      const estimatedDuration = words.length * 0.3; // Rough estimate: 0.3s per word
+      const wordTimestamps: Array<{ word: string; startTime: number; endTime: number }> = [];
+      
+      let currentTime = 0;
+      for (const word of words) {
+        const wordDuration = (word.length / 5) * 0.3; // Longer words take more time
+        wordTimestamps.push({
+          word,
+          startTime: currentTime,
+          endTime: currentTime + wordDuration,
+        });
+        currentTime += wordDuration;
+      }
+      
+      return wordTimestamps;
+    } catch (error: any) {
+      console.error(`[VoiceService] Failed to get timestamps for audio: ${error.message}`);
+      throw error;
+    }
   }
 
   /**

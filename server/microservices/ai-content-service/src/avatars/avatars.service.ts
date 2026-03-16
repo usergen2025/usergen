@@ -28,6 +28,34 @@ export interface CreateAvatarFromUploadDto {
   originalImageUrl?: string; // Local URL for the uploaded image
 }
 
+/**
+ * Normalize video style to backend format (UPPER_SNAKE_CASE).
+ * Handles both frontend format ('avatar-cutout') and backend format ('AVATAR_CUTOUT').
+ */
+function normalizeStyleToBackend(style?: string): string | undefined {
+  if (!style) return undefined;
+  
+  // Style mapping from frontend (kebab-case) to backend (UPPER_SNAKE_CASE)
+  const styleMap: Record<string, string> = {
+    'half-n-half': 'HALF_N_HALF',
+    'alternate': 'ALTERNATE',
+    'avatar-cutout': 'AVATAR_CUTOUT',
+    'avatar-only': 'AVATAR_ONLY',
+    'product-only': 'PRODUCT_ONLY',
+    'avatar-product': 'AVATAR_PRODUCT',
+    'animated-avatar': 'ANIMATED_AVATAR',
+    'broll-only': 'B_ROLL_ONLY',
+  };
+  
+  // If it's already in backend format (uppercase with underscores), return as-is
+  if (style === style.toUpperCase() && style.includes('_')) {
+    return style;
+  }
+  
+  // Convert from frontend format
+  return styleMap[style.toLowerCase()] || style.toUpperCase().replace(/-/g, '_');
+}
+
 /** Preset pose/framing prompts only (no lighting/background). Theme comes from script visual_style_guide. */
 const PRESET_POSE_PROMPTS: Record<string, string> = {
   'front-facing': 'Front-facing waist-up portrait, person looking directly at camera, professional video look, simple talking-to-camera style',
@@ -352,9 +380,13 @@ export class AvatarsService {
     style?: string;
     avatarVisualStylePreset?: string | null;
   }): Promise<{ imageKey: string }> {
-    const { projectId, avatarId, userId, script, style, avatarVisualStylePreset } = params;
+    const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset } = params;
+    
+    // Normalize style to backend format (handles both 'avatar-cutout' and 'AVATAR_CUTOUT')
+    const style = normalizeStyleToBackend(rawStyle);
+    
     this.logger.log(
-      `Generating avatar image for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}`,
+      `Generating avatar image for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}, style: ${style ?? 'none'}`,
       'AvatarsService',
     );
 
@@ -466,6 +498,11 @@ export class AvatarsService {
         effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
       }
 
+      // For AVATAR_CUTOUT style, request a plain/simple background to make background removal easier
+      if (style === 'AVATAR_CUTOUT') {
+        effectivePrompt += ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
+      }
+
       const imageBase64 = imageBuffer.toString('base64');
       const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
 
@@ -538,9 +575,13 @@ export class AvatarsService {
     style?: string;
     avatarVisualStylePreset?: string | null;
   }): Promise<{ imageKey: string; publicUrl: string }> {
-    const { projectId, avatarId, userId, script, style, avatarVisualStylePreset } = params;
+    const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset } = params;
+    
+    // Normalize style to backend format (handles both 'avatar-cutout' and 'AVATAR_CUTOUT')
+    const style = normalizeStyleToBackend(rawStyle);
+    
     this.logger.log(
-      `Generating avatar preview for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}`,
+      `Generating avatar preview for project ${projectId}, avatar ${avatarId}, preset: ${avatarVisualStylePreset ?? 'null'}, style: ${style ?? 'none'}`,
       'AvatarsService',
     );
 
@@ -647,6 +688,11 @@ export class AvatarsService {
         effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
       }
 
+      // For AVATAR_CUTOUT style, request a plain/simple background to make background removal easier
+      if (style === 'AVATAR_CUTOUT') {
+        effectivePrompt += ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
+      }
+
       const imageBase64 = imageBuffer.toString('base64');
       const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
 
@@ -694,23 +740,66 @@ export class AvatarsService {
       }
     }
 
+    // For AVATAR_CUTOUT style, remove background to create transparent PNG
+    let finalImageBuffer = resultImageBuffer;
+    let mimeType: 'image/jpeg' | 'image/png' = 'image/jpeg';
+    let fileExtension = 'jpg';
+
+    if (style === 'AVATAR_CUTOUT') {
+      this.logger.log(`[AvatarPreview] AVATAR_CUTOUT style detected, removing background for transparent preview`, 'AvatarsService');
+      
+      try {
+        // Save temp file for background removal
+        const tempDir = path.join(process.cwd(), 'uploads', 'temp');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        const tempInputPath = path.join(tempDir, `avatar_preview_input_${Date.now()}.jpg`);
+        const tempOutputPath = path.join(tempDir, `avatar_preview_output_${Date.now()}.png`);
+        
+        // Write input image
+        fs.writeFileSync(tempInputPath, resultImageBuffer);
+        
+        // Remove background using existing method
+        await this.removeImageBackground(tempInputPath, tempOutputPath);
+        
+        // Read the transparent PNG
+        if (fs.existsSync(tempOutputPath)) {
+          finalImageBuffer = fs.readFileSync(tempOutputPath);
+          mimeType = 'image/png';
+          fileExtension = 'png';
+          this.logger.log(`[AvatarPreview] Background removed successfully, PNG size: ${finalImageBuffer.length} bytes`, 'AvatarsService');
+          
+          // Cleanup temp files
+          if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+          if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+        } else {
+          this.logger.warn(`[AvatarPreview] Background removal output not found, using original image`, 'AvatarsService');
+        }
+      } catch (bgRemovalError: any) {
+        this.logger.warn(`[AvatarPreview] Background removal failed: ${bgRemovalError.message}, using original image`, 'AvatarsService');
+        // Continue with original image if background removal fails
+      }
+    }
+
     const uploadResponse = await this.heygenProvider.uploadImage(
-      resultImageBuffer,
-      'image/jpeg',
-      `project_${projectId}_avatar_preview.jpg`,
+      finalImageBuffer,
+      mimeType,
+      `project_${projectId}_avatar_preview.${fileExtension}`,
     );
     if (!uploadResponse.image_key) {
       throw new Error('HeyGen upload did not return image_key');
     }
 
     const timestamp = Date.now();
-    const previewFilename = `avatar_preview_${timestamp}.jpg`;
+    const previewFilename = `avatar_preview_${timestamp}.${fileExtension}`;
     const subPath = `avatars/previews/${projectId}`;
     const storageResult = await this.publicUrlService.uploadFromBuffer(
-      resultImageBuffer,
+      finalImageBuffer,
       subPath,
       previewFilename,
-      'image/jpeg',
+      mimeType,
     );
 
     const publicUrl = storageResult.gcsUrl || storageResult.publicUrl || `${storageResult.localUrl}`;

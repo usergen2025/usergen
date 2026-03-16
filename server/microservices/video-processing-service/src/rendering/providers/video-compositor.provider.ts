@@ -432,6 +432,10 @@ export class VideoCompositorProvider {
     modelName: string = 'u2net_human_seg'
   ): Promise<string> {
     this.checkFFmpeg();
+    
+    const startTime = Date.now();
+    console.log(`[VideoCompositor] ========== BACKGROUND REMOVAL START ==========`);
+    console.log(`[VideoCompositor] Start time: ${new Date().toISOString()}`);
 
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) {
@@ -444,14 +448,22 @@ export class VideoCompositorProvider {
       throw new Error(`Background removal script not found: ${scriptPath}`);
     }
 
+    // Try to use venv Python if available, otherwise fall back to system python3
+    const venvPython = path.join(process.cwd(), 'venv', 'bin', 'python3');
+    const pythonCommand = fs.existsSync(venvPython) ? venvPython : 'python3';
+
     console.log(`[VideoCompositor] Removing background using AI model: ${modelName}`);
-    console.log(`[VideoCompositor] Input: ${videoPath}`);
-    console.log(`[VideoCompositor] Output: ${outputPath}`);
+    console.log(`[VideoCompositor] Using Python: ${pythonCommand}`);
+    console.log(`[VideoCompositor] Input video: ${videoPath}`);
+    console.log(`[VideoCompositor] Output base path: ${outputPath}`);
+    console.log(`[VideoCompositor] Expected outputs:`);
+    console.log(`[VideoCompositor]   - WebM: ${outputPath.replace(/\.[^.]+$/, '.webm')}`);
+    console.log(`[VideoCompositor]   - PNG dir: ${outputPath.replace(/\.[^.]+$/, '_frames')}`);
 
     return new Promise((resolve, reject) => {
       // Use spawn instead of execSync to avoid blocking event loop
       // This allows the service to handle other HTTP requests while processing
-      const pythonProcess = spawn('python3', [
+      const pythonProcess = spawn(pythonCommand, [
         scriptPath,
         videoPath,
         outputPath,
@@ -462,40 +474,53 @@ export class VideoCompositorProvider {
 
       let stdout = '';
       let stderr = '';
+      let lastProgressLog = Date.now();
+      const progressInterval = 10000; // Log progress heartbeat every 10 seconds
 
       // Set timeout (15 minutes for video processing - should be enough for most videos)
       const timeoutDuration = 15 * 60 * 1000; // 15 minutes
       const timeout = setTimeout(() => {
         pythonProcess.kill('SIGTERM');
-        console.error(`[VideoCompositor] Background removal timeout after ${timeoutDuration / 1000 / 60} minutes`);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.error(`[VideoCompositor] ❌ Background removal TIMEOUT after ${timeoutDuration / 1000 / 60} minutes (${elapsed}s elapsed)`);
         reject(new Error(`Background removal timeout after ${timeoutDuration / 1000 / 60} minutes`));
       }, timeoutDuration);
+      
+      // Heartbeat interval to show process is still running
+      const heartbeat = setInterval(() => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[VideoCompositor] 💓 Background removal still running... (${elapsed}s elapsed)`);
+      }, 30000); // Every 30 seconds
 
       // Capture stdout (Python script progress logs)
       if (pythonProcess.stdout) {
         pythonProcess.stdout.on('data', (data) => {
           const output = data.toString();
           stdout += output;
-          // Log progress in real-time (Python script already has progress logging)
-          const lines = output.trim().split('\n').filter(line => line.trim());
-          lines.forEach(line => {
-            if (line.includes('[BackgroundRemoval]')) {
-              console.log(`[VideoCompositor] ${line}`);
+          // Log progress in real-time
+          const lines = output.trim().split('\n').filter((line: string) => line.trim());
+          lines.forEach((line: string) => {
+            // Log all output from Python script, not just [BackgroundRemoval] lines
+            if (line.trim()) {
+              console.log(`[VideoCompositor] [Python] ${line}`);
             }
           });
         });
       }
 
-      // Capture stderr (Python script errors)
+      // Capture stderr (Python script errors/warnings)
       if (pythonProcess.stderr) {
         pythonProcess.stderr.on('data', (data) => {
           const output = data.toString();
           stderr += output;
-          // Log errors in real-time
-          const lines = output.trim().split('\n').filter(line => line.trim());
-          lines.forEach(line => {
+          // Log warnings/errors in real-time
+          const lines = output.trim().split('\n').filter((line: string) => line.trim());
+          lines.forEach((line: string) => {
             if (line.trim()) {
-              console.error(`[VideoCompositor] ${line}`);
+              // Filter out common non-error messages
+              if (line.includes('WARNING') || line.includes('Error') || line.includes('error')) {
+                console.warn(`[VideoCompositor] [Python Warning] ${line}`);
+              }
             }
           });
         });
@@ -504,18 +529,73 @@ export class VideoCompositorProvider {
       // Handle process completion
       pythonProcess.on('close', (code) => {
         clearTimeout(timeout);
+        clearInterval(heartbeat);
+        
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[VideoCompositor] Background removal process completed in ${elapsed}s with exit code: ${code}`);
         
         if (code === 0) {
-          // Check if output file exists
-          if (!fs.existsSync(outputPath)) {
-            reject(new Error('Background removal script completed but output file not found'));
+          // The Python script now outputs:
+          // 1. A WebM file with alpha at outputPath.replace('.mp4', '.webm')
+          // 2. A PNG sequence directory at outputPath.replace('.mp4', '_frames/')
+          // 3. A metadata JSON at outputPath.replace('.mp4', '_metadata.json')
+          // 4. A marker file at outputPath with paths to the above
+          
+          const outputBase = outputPath.replace(/\.[^.]+$/, '');
+          const webmPath = outputBase + '.webm';
+          const pngDir = outputBase + '_frames';
+          const metadataPath = outputBase + '_metadata.json';
+          
+          // Check which outputs exist
+          const hasWebm = fs.existsSync(webmPath);
+          const hasPngDir = fs.existsSync(pngDir);
+          
+          console.log(`[VideoCompositor] Checking output files:`);
+          console.log(`[VideoCompositor]   WebM exists: ${hasWebm} (${webmPath})`);
+          console.log(`[VideoCompositor]   PNG dir exists: ${hasPngDir} (${pngDir})`);
+          
+          if (!hasWebm && !hasPngDir) {
+            console.error(`[VideoCompositor] ❌ No output files found after ${elapsed}s`);
+            reject(new Error('Background removal script completed but no output files found'));
             return;
           }
-          console.log(`[VideoCompositor] ✅ Background removed successfully: ${outputPath}`);
-          resolve(outputPath);
+          
+          // Log file sizes for debugging
+          if (hasWebm) {
+            try {
+              const stats = fs.statSync(webmPath);
+              console.log(`[VideoCompositor]   WebM size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+            } catch (e) {
+              console.warn(`[VideoCompositor]   Could not get WebM file size`);
+            }
+          }
+          
+          if (hasPngDir) {
+            try {
+              const files = fs.readdirSync(pngDir);
+              console.log(`[VideoCompositor]   PNG sequence: ${files.length} frames`);
+            } catch (e) {
+              console.warn(`[VideoCompositor]   Could not count PNG frames`);
+            }
+          }
+          
+          console.log(`[VideoCompositor] ✅ Background removed successfully in ${elapsed}s`);
+          console.log(`[VideoCompositor] ========== BACKGROUND REMOVAL END ==========`);
+          
+          // Return the WebM path if it exists, otherwise return a reference to PNG dir
+          if (hasWebm) {
+            console.log(`[VideoCompositor] Returning WebM path: ${webmPath}`);
+            resolve(webmPath);
+          } else {
+            // Return the PNG directory path - caller needs to handle this
+            console.log(`[VideoCompositor] Returning PNG directory path: ${pngDir}`);
+            resolve(pngDir);
+          }
         } else {
           const errorMsg = stderr || stdout || `Process exited with code ${code}`;
-          console.error(`[VideoCompositor] ❌ Background removal failed (exit code ${code}): ${errorMsg}`);
+          console.error(`[VideoCompositor] ❌ Background removal failed after ${elapsed}s (exit code ${code})`);
+          console.error(`[VideoCompositor] Error output: ${errorMsg.substring(0, 500)}`);
+          console.log(`[VideoCompositor] ========== BACKGROUND REMOVAL FAILED ==========`);
           reject(new Error(`Failed to remove background: ${errorMsg}`));
         }
       });
@@ -523,7 +603,10 @@ export class VideoCompositorProvider {
       // Handle process spawn errors
       pythonProcess.on('error', (error) => {
         clearTimeout(timeout);
-        console.error(`[VideoCompositor] Failed to start background removal process: ${error.message}`);
+        clearInterval(heartbeat);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.error(`[VideoCompositor] ❌ Failed to start background removal process after ${elapsed}s: ${error.message}`);
+        console.log(`[VideoCompositor] ========== BACKGROUND REMOVAL FAILED ==========`);
         reject(new Error(`Failed to start background removal: ${error.message}`));
       });
     });
@@ -647,22 +730,33 @@ export class VideoCompositorProvider {
 
   /**
    * Overlay avatar video on b-roll video (for CUTOUT style)
-   * Avatar video is positioned at bottom center with background removal
+   * Avatar video is positioned based on normalized coordinates with background removal
    * Supports both green screen (chroma key) and AI-based background removal
    * @param brollVideoPath Path to b-roll video (background)
    * @param avatarVideoPath Path to avatar video (foreground)
    * @param outputPath Path for output video
-   * @param avatarMaxHeight Maximum height of avatar video as percentage of b-roll height (default: 40%)
+   * @param position Normalized position object with x (0-1), y (0-1), and scale (0.2-0.8)
+   *                 x: 0 = left edge, 1 = right edge, 0.5 = center
+   *                 y: 0 = top edge, 1 = bottom edge, 1.0 = bottom
+   *                 scale: percentage of video height (0.4 = 40%)
    * @param useAIBackgroundRemoval Force AI background removal even if green screen is detected (default: false)
    */
   async overlayAvatarOnBroll(
     brollVideoPath: string,
     avatarVideoPath: string,
     outputPath: string,
-    avatarMaxHeight: number = 40,
+    position: { x: number; y: number; scale: number } = { x: 0.5, y: 0.85, scale: 0.4 },
     useAIBackgroundRemoval: boolean = false
   ): Promise<string> {
     this.checkFFmpeg();
+    
+    const overlayStartTime = Date.now();
+    console.log(`[VideoCompositor] ========== AVATAR OVERLAY START ==========`);
+    console.log(`[VideoCompositor] Start time: ${new Date().toISOString()}`);
+    console.log(`[VideoCompositor] B-roll video: ${brollVideoPath}`);
+    console.log(`[VideoCompositor] Avatar video: ${avatarVideoPath}`);
+    console.log(`[VideoCompositor] Output path: ${outputPath}`);
+    console.log(`[VideoCompositor] Use AI background removal: ${useAIBackgroundRemoval}`);
 
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) {
@@ -677,61 +771,194 @@ export class VideoCompositorProvider {
 
     const brollWidth = brollRes.width;
     const brollHeight = brollRes.height;
-    const avatarMaxHeightPx = Math.floor((brollHeight * avatarMaxHeight) / 100);
-    const avatarX = Math.floor((brollWidth - avatarMaxHeightPx) / 2); // Center horizontally
-    const avatarY = brollHeight - avatarMaxHeightPx; // Bottom
+    
+    // Calculate avatar dimensions from normalized scale
+    // IMPORTANT: libx264 requires dimensions to be divisible by 2, so we round to even numbers
+    const rawAvatarHeight = Math.floor(brollHeight * position.scale);
+    const avatarHeightPx = Math.floor(rawAvatarHeight / 2) * 2; // Ensure even height
+    
+    // Get avatar video resolution to maintain aspect ratio
+    // Handle both video files and directories (PNG sequences)
+    let avatarRes: { width: number; height: number } | null = null;
+    const isDirectory = fs.existsSync(avatarVideoPath) && fs.statSync(avatarVideoPath).isDirectory();
+    
+    if (isDirectory) {
+      // For PNG sequences, get resolution from actual first frame (most accurate)
+      // Metadata might have original video dimensions, but PNG frames might differ
+      const firstFramePath = path.join(avatarVideoPath, 'frame_000000.png');
+      if (fs.existsSync(firstFramePath)) {
+        try {
+          // Use ffprobe to get actual PNG dimensions
+          const probeCommand = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${firstFramePath}"`;
+          const result = execSync(probeCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+          const [width, height] = result.split('x').map(Number);
+          if (width && height) {
+            avatarRes = { width, height };
+            console.log(`[VideoCompositor] Got PNG frame resolution from first frame: ${avatarRes.width}x${avatarRes.height}`);
+          }
+        } catch (e) {
+          console.warn(`[VideoCompositor] Could not probe first PNG frame, trying metadata`);
+        }
+      }
+      
+      // Fallback to metadata if probing failed
+      if (!avatarRes) {
+        const metadataPath = avatarVideoPath.replace(/_frames$/, '_metadata.json');
+        if (fs.existsSync(metadataPath)) {
+          try {
+            const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+            if (metadata.width && metadata.height) {
+              avatarRes = { width: metadata.width, height: metadata.height };
+              console.log(`[VideoCompositor] Got PNG sequence resolution from metadata: ${avatarRes.width}x${avatarRes.height}`);
+            }
+          } catch (e) {
+            console.warn(`[VideoCompositor] Could not read PNG metadata for resolution`);
+          }
+        }
+      }
+    } else {
+      avatarRes = await this.getVideoResolution(avatarVideoPath);
+    }
+    
+    let avatarWidthPx: number;
+    if (avatarRes) {
+      const avatarAspectRatio = avatarRes.width / avatarRes.height;
+      const rawWidth = Math.floor(avatarHeightPx * avatarAspectRatio);
+      avatarWidthPx = Math.floor(rawWidth / 2) * 2; // Ensure even width
+    } else {
+      // Fallback: assume 9:16 portrait aspect ratio
+      const rawWidth = Math.floor(avatarHeightPx * (9 / 16));
+      avatarWidthPx = Math.floor(rawWidth / 2) * 2; // Ensure even width
+    }
+    
+    // Calculate pixel position from normalized coordinates
+    // x: 0 = avatar left edge at video left, 1 = avatar right edge at video right
+    // y: 0 = avatar top edge at video top, 1 = avatar bottom edge at video bottom
+    const avatarX = Math.floor((brollWidth - avatarWidthPx) * position.x);
+    const avatarY = Math.floor((brollHeight - avatarHeightPx) * position.y);
 
-    console.log(`[VideoCompositor] Overlaying avatar (max ${avatarMaxHeight}% height) on b-roll ${brollWidth}x${brollHeight}`);
-    console.log(`[VideoCompositor] Avatar position: x=${avatarX}, y=${avatarY}, max_height=${avatarMaxHeightPx}`);
+    // Calculate what frontend would have used (9:16 hardcoded aspect ratio for comparison)
+    const frontendAspectRatio = 9 / 16;
+    const frontendWidth = Math.floor(avatarHeightPx * frontendAspectRatio / 2) * 2;
+    const frontendX = Math.floor((brollWidth - frontendWidth) * position.x);
+    
+    console.log(`[VideoCompositor] ========== OVERLAY POSITION DEBUG ==========`);
+    console.log(`[VideoCompositor] B-roll resolution: ${brollWidth}x${brollHeight}`);
+    console.log(`[VideoCompositor] Avatar source resolution: ${avatarRes ? `${avatarRes.width}x${avatarRes.height}` : 'unknown (using 9:16 fallback)'}`);
+    console.log(`[VideoCompositor] Avatar actual aspect ratio: ${avatarRes ? (avatarRes.width / avatarRes.height).toFixed(4) : '0.5625 (9:16 default)'}`);
+    console.log(`[VideoCompositor] Overlay position params: scale=${(position.scale * 100).toFixed(0)}%, x=${position.x.toFixed(4)}, y=${position.y.toFixed(4)}`);
+    console.log(`[VideoCompositor] Backend calculated avatar size: ${avatarWidthPx}x${avatarHeightPx}`);
+    console.log(`[VideoCompositor] Backend calculated avatar position: x=${avatarX}, y=${avatarY}`);
+    console.log(`[VideoCompositor] Frontend would calculate (9:16): size=${frontendWidth}x${avatarHeightPx}, x=${frontendX}`);
+    if (avatarX !== frontendX) {
+      console.log(`[VideoCompositor] ⚠️ POSITION MISMATCH: Backend X=${avatarX} vs Frontend X=${frontendX} (diff=${avatarX - frontendX}px)`);
+    }
+    console.log(`[VideoCompositor] ==========================================`);
 
-    // Determine background removal method
+    // Track if we're using PNG sequence (directory) or video file
+    let usePngSequence = false;
+    let pngSequenceDir = '';
+    let pngMetadata: { fps?: number; width?: number; height?: number } = {};
     let processedAvatarPath = avatarVideoPath;
     let hasGreenScreen = false;
-    
-    if (!useAIBackgroundRemoval) {
-      // Try to detect green screen
-      hasGreenScreen = await this.detectGreenScreen(avatarVideoPath);
-      console.log(`[VideoCompositor] Green screen detected: ${hasGreenScreen}`);
-    }
+    let isAlreadyProcessed = false;
 
-    if (!hasGreenScreen || useAIBackgroundRemoval) {
-      // Use AI background removal for non-green backgrounds
-      console.log(`[VideoCompositor] Using AI background removal for avatar`);
-      const tempAvatarPath = path.join(outputDir, `avatar_no_bg_${Date.now()}.mp4`);
-      try {
-        processedAvatarPath = await this.removeBackgroundAI(avatarVideoPath, tempAvatarPath, 'u2net_human_seg');
-      } catch (aiError: any) {
-        console.error(`[VideoCompositor] AI background removal failed: ${aiError.message}`);
-        console.log(`[VideoCompositor] Falling back to chroma key method`);
-        // Fallback to chroma key if AI removal fails
-        hasGreenScreen = true;
+    // Check if input is already a processed format (PNG directory or WebM with alpha)
+    if (isDirectory) {
+      // Input is a PNG sequence directory - already processed!
+      console.log(`[VideoCompositor] Input is PNG sequence directory (already processed): ${avatarVideoPath}`);
+      usePngSequence = true;
+      pngSequenceDir = avatarVideoPath;
+      isAlreadyProcessed = true;
+      
+      // Try to read metadata from parent directory
+      const metadataPath = avatarVideoPath.replace(/_frames$/, '_metadata.json');
+      if (fs.existsSync(metadataPath)) {
+        try {
+          pngMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+          console.log(`[VideoCompositor] PNG metadata: ${JSON.stringify(pngMetadata)}`);
+        } catch (e) {
+          console.warn(`[VideoCompositor] Could not read PNG metadata: ${e}`);
+        }
+      }
+    } else if (avatarVideoPath.endsWith('.webm')) {
+      // Input is WebM - check if it has alpha channel (already processed)
+      const hasAlpha = await this.hasAlphaChannel(avatarVideoPath);
+      if (hasAlpha) {
+        console.log(`[VideoCompositor] Input is WebM with alpha channel (already processed): ${avatarVideoPath}`);
+        isAlreadyProcessed = true;
         processedAvatarPath = avatarVideoPath;
       }
     }
 
-    // Scale avatar while preserving alpha channel (CRITICAL for AI-removed backgrounds)
-    const scaledAvatarPath = path.join(outputDir, `avatar_scaled_${Date.now()}.mp4`);
-    const pixFmtFlag = (!hasGreenScreen || useAIBackgroundRemoval) ? '-pix_fmt yuva420p' : '';
-    const scaleCommand = `
-      ffmpeg -i "${processedAvatarPath}" \
-      -vf "scale=-1:${avatarMaxHeightPx}:force_original_aspect_ratio=decrease" \
-      -c:v libx264 -preset medium -crf 23 \
-      ${pixFmtFlag} \
-      -y "${scaledAvatarPath}"
-    `.replace(/\s+/g, ' ').trim();
+    // Only do background removal if NOT already processed
+    if (!isAlreadyProcessed) {
+      if (!useAIBackgroundRemoval) {
+        // Try to detect green screen
+        hasGreenScreen = await this.detectGreenScreen(avatarVideoPath);
+        console.log(`[VideoCompositor] Green screen detected: ${hasGreenScreen}`);
+      }
 
-    try {
-      execSync(scaleCommand, { stdio: 'inherit' });
-    } catch (error: any) {
-      console.error(`[VideoCompositor] Failed to scale avatar: ${error.message}`);
-      throw new Error(`Failed to scale avatar: ${error.message}`);
+      if (!hasGreenScreen || useAIBackgroundRemoval) {
+        // Use AI background removal for non-green backgrounds
+        console.log(`[VideoCompositor] Using AI background removal for avatar`);
+        const tempAvatarPath = path.join(outputDir, `avatar_no_bg_${Date.now()}.mp4`);
+        try {
+          processedAvatarPath = await this.removeBackgroundAI(avatarVideoPath, tempAvatarPath, 'u2net_human_seg');
+          
+          // Check if we got a PNG sequence directory or a WebM file
+          if (fs.existsSync(processedAvatarPath) && fs.statSync(processedAvatarPath).isDirectory()) {
+            usePngSequence = true;
+            pngSequenceDir = processedAvatarPath;
+            console.log(`[VideoCompositor] Using PNG sequence from: ${pngSequenceDir}`);
+            
+            // Try to read metadata
+            const metadataPath = tempAvatarPath.replace(/\.[^.]+$/, '_metadata.json');
+            if (fs.existsSync(metadataPath)) {
+              try {
+                pngMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+                console.log(`[VideoCompositor] PNG metadata: ${JSON.stringify(pngMetadata)}`);
+              } catch (e) {
+                console.warn(`[VideoCompositor] Could not read PNG metadata: ${e}`);
+              }
+            }
+          } else if (processedAvatarPath.endsWith('.webm')) {
+            console.log(`[VideoCompositor] Using WebM with alpha: ${processedAvatarPath}`);
+          }
+        } catch (aiError: any) {
+          console.error(`[VideoCompositor] AI background removal failed: ${aiError.message}`);
+          console.log(`[VideoCompositor] Falling back to chroma key method`);
+          // Fallback to chroma key if AI removal fails
+          hasGreenScreen = true;
+          processedAvatarPath = avatarVideoPath;
+        }
+      }
+    } else {
+      console.log(`[VideoCompositor] Skipping background removal - input already processed`);
     }
 
     // Overlay based on background removal method
     let ffmpegCommand: string;
 
-    if (hasGreenScreen && !useAIBackgroundRemoval) {
+    if (hasGreenScreen && !useAIBackgroundRemoval && !isAlreadyProcessed) {
       // Use chroma key for green screen (100% opacity - blend=0)
+      // First scale the avatar
+      const scaledAvatarPath = path.join(outputDir, `avatar_scaled_${Date.now()}.mp4`);
+      const scaleCommand = `
+        ffmpeg -i "${processedAvatarPath}" \
+        -vf "scale=-2:${avatarHeightPx}:force_original_aspect_ratio=decrease" \
+        -c:v libx264 -preset medium -crf 23 \
+        -y "${scaledAvatarPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      try {
+        console.log(`[VideoCompositor] Scaling avatar for chroma key...`);
+        execSync(scaleCommand, { stdio: 'pipe' });
+      } catch (error: any) {
+        console.error(`[VideoCompositor] Failed to scale avatar: ${error.message}`);
+        throw new Error(`Failed to scale avatar: ${error.message}`);
+      }
+
       ffmpegCommand = `
         ffmpeg -i "${brollVideoPath}" -i "${scaledAvatarPath}" \
         -filter_complex "[1:v]chromakey=color=0x00FF00:similarity=0.25:blend=0:yuv=1[avatar_no_bg]; \
@@ -740,13 +967,32 @@ export class VideoCompositorProvider {
         -map 0:a -c:a aac -b:a 192k \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
-    } else {
-      // Use alpha channel overlay (for AI-removed backgrounds)
-      // The AI-processed video should have alpha channel (yuva420p)
+    } else if (usePngSequence) {
+      // Use PNG sequence directly for overlay (BEST alpha preservation)
+      console.log(`[VideoCompositor] Using PNG sequence for overlay with proper alpha...`);
+      const fps = pngMetadata.fps || 30;
+      
+      // FFmpeg can read PNG sequence and overlay directly
+      // This is the most reliable way to preserve alpha
       ffmpegCommand = `
-        ffmpeg -i "${brollVideoPath}" -i "${scaledAvatarPath}" \
-        -filter_complex "[1:v]format=yuva420p[avatar_alpha]; \
-        [0:v][avatar_alpha]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
+        ffmpeg -i "${brollVideoPath}" \
+        -framerate ${fps} -i "${path.join(pngSequenceDir, 'frame_%06d.png')}" \
+        -filter_complex "[1:v]scale=${avatarWidthPx}:${avatarHeightPx}[scaled_avatar]; \
+        [0:v][scaled_avatar]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
+        -map "[v]" -c:v libx264 -preset medium -crf 23 \
+        -pix_fmt yuv420p \
+        -map 0:a -c:a aac -b:a 192k \
+        -shortest -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+    } else {
+      // Use WebM with alpha channel for overlay
+      console.log(`[VideoCompositor] Using WebM with alpha for overlay...`);
+      
+      // WebM/VP9 already has alpha, we can overlay directly
+      ffmpegCommand = `
+        ffmpeg -i "${brollVideoPath}" -c:v libvpx-vp9 -i "${processedAvatarPath}" \
+        -filter_complex "[1:v]scale=${avatarWidthPx}:${avatarHeightPx}[scaled_avatar]; \
+        [0:v][scaled_avatar]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
         -map "[v]" -c:v libx264 -preset medium -crf 23 \
         -pix_fmt yuv420p \
         -map 0:a -c:a aac -b:a 192k \
@@ -755,29 +1001,73 @@ export class VideoCompositorProvider {
     }
 
     try {
+      const ffmpegStartTime = Date.now();
       console.log(`[VideoCompositor] Executing FFmpeg overlay command...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
-      console.log(`[VideoCompositor] Video overlaid successfully: ${outputPath}`);
+      console.log(`[VideoCompositor] Full command: ${ffmpegCommand}`);
+      
+      // Execute with pipe to capture output
+      const result = execSync(ffmpegCommand, { 
+        stdio: 'pipe',
+        maxBuffer: 50 * 1024 * 1024 // 50MB buffer for FFmpeg output
+      });
+      
+      const ffmpegElapsed = ((Date.now() - ffmpegStartTime) / 1000).toFixed(1);
+      console.log(`[VideoCompositor] FFmpeg overlay completed in ${ffmpegElapsed}s`);
+      
+      // Verify output file exists and has size
+      if (fs.existsSync(outputPath)) {
+        const stats = fs.statSync(outputPath);
+        console.log(`[VideoCompositor] ✅ Output video created: ${outputPath}`);
+        console.log(`[VideoCompositor]   File size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+      } else {
+        throw new Error(`FFmpeg completed but output file not found: ${outputPath}`);
+      }
       
       // Cleanup temporary files
-      if (processedAvatarPath !== avatarVideoPath && fs.existsSync(processedAvatarPath)) {
-        try {
-          fs.unlinkSync(processedAvatarPath);
-        } catch (e) {
-          console.warn(`[VideoCompositor] Failed to cleanup temp avatar: ${e}`);
+      if (processedAvatarPath !== avatarVideoPath) {
+        // If it's a WebM file, clean it up
+        if (fs.existsSync(processedAvatarPath) && !fs.statSync(processedAvatarPath).isDirectory()) {
+          try {
+            fs.unlinkSync(processedAvatarPath);
+            console.log(`[VideoCompositor] Cleaned up temp WebM file`);
+          } catch (e) {
+            console.warn(`[VideoCompositor] Failed to cleanup temp avatar: ${e}`);
+          }
+        }
+        // If it's a PNG sequence directory, clean it up
+        if (usePngSequence && fs.existsSync(pngSequenceDir)) {
+          try {
+            // Remove all PNGs in the directory
+            const files = fs.readdirSync(pngSequenceDir);
+            for (const file of files) {
+              fs.unlinkSync(path.join(pngSequenceDir, file));
+            }
+            fs.rmdirSync(pngSequenceDir);
+            console.log(`[VideoCompositor] Cleaned up PNG sequence directory (${files.length} frames)`);
+          } catch (e) {
+            console.warn(`[VideoCompositor] Failed to cleanup PNG sequence: ${e}`);
+          }
         }
       }
-      if (fs.existsSync(scaledAvatarPath)) {
-        try {
-          fs.unlinkSync(scaledAvatarPath);
-        } catch (e) {
-          console.warn(`[VideoCompositor] Failed to cleanup scaled avatar: ${e}`);
-        }
-      }
+      
+      const totalElapsed = ((Date.now() - overlayStartTime) / 1000).toFixed(1);
+      console.log(`[VideoCompositor] ✅ Avatar overlay completed in ${totalElapsed}s total`);
+      console.log(`[VideoCompositor] ========== AVATAR OVERLAY END ==========`);
       
       return outputPath;
     } catch (error: any) {
-      console.error(`[VideoCompositor] FFmpeg overlay error:`, error.message);
+      const totalElapsed = ((Date.now() - overlayStartTime) / 1000).toFixed(1);
+      console.error(`[VideoCompositor] ❌ FFmpeg overlay error after ${totalElapsed}s:`, error.message);
+      
+      // Try to extract stderr from the error for more details
+      if (error.stderr) {
+        console.error(`[VideoCompositor] FFmpeg stderr: ${error.stderr.toString().substring(0, 1000)}`);
+      }
+      if (error.stdout) {
+        console.log(`[VideoCompositor] FFmpeg stdout: ${error.stdout.toString().substring(0, 500)}`);
+      }
+      
+      console.log(`[VideoCompositor] ========== AVATAR OVERLAY FAILED ==========`);
       throw new Error(`Failed to overlay avatar on b-roll: ${error.message}`);
     }
   }
@@ -1011,6 +1301,333 @@ export class VideoCompositorProvider {
       console.error(`[VideoCompositor] FFmpeg crop error:`, error.message);
       throw new Error(`Failed to crop video: ${error.message}`);
     }
+  }
+
+  /**
+   * Extract a segment/clip from a video by time range
+   * @param videoPath Path to input video
+   * @param outputPath Path for output video segment
+   * @param startTime Start time in seconds
+   * @param duration Duration in seconds
+   * @param preserveAlpha Whether to preserve alpha channel (for transparent videos)
+   */
+  async extractVideoSegment(
+    videoPath: string,
+    outputPath: string,
+    startTime: number,
+    duration: number,
+    preserveAlpha: boolean = false
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    console.log(`[VideoCompositor] Extracting video segment: start=${startTime.toFixed(2)}s, duration=${duration.toFixed(2)}s`);
+
+    try {
+      const pixFmtFlag = preserveAlpha ? '-pix_fmt yuva420p' : '';
+      const ffmpegCommand = `
+        ffmpeg -ss ${startTime} -i "${videoPath}" \
+        -t ${duration} \
+        -c:v libx264 -preset medium -crf 23 \
+        ${pixFmtFlag} \
+        -c:a aac -b:a 192k \
+        -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      execSync(ffmpegCommand, { stdio: 'inherit' });
+      console.log(`[VideoCompositor] Video segment extracted successfully: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg segment extraction error:`, error.message);
+      throw new Error(`Failed to extract video segment: ${error.message}`);
+    }
+  }
+
+  /**
+   * Overlay avatar on a single b-roll clip with per-scene positioning
+   * Returns the path to the composited scene video
+   */
+  async overlayAvatarOnBrollScene(
+    brollVideoPath: string,
+    avatarVideoPath: string,
+    outputPath: string,
+    position: { x: number; y: number; scale: number },
+    useAIBackgroundRemoval: boolean = false
+  ): Promise<string> {
+    // This is a wrapper that calls the existing overlayAvatarOnBroll method
+    // for a single scene. The avatar video should already be clipped to match
+    // the b-roll scene duration.
+    return this.overlayAvatarOnBroll(
+      brollVideoPath,
+      avatarVideoPath,
+      outputPath,
+      position,
+      useAIBackgroundRemoval
+    );
+  }
+
+  /**
+   * Generate ASS subtitle file from caption entries
+   * ASS format allows for rich styling including background boxes
+   */
+  generateAssSubtitles(
+    captions: Array<{ text: string; startTime: number; endTime: number }>,
+    style: {
+      fontFamily: string;
+      fontSize: number;
+      fontWeight: 'normal' | 'bold';
+      fontStyle: 'normal' | 'italic';
+      textColor: string;
+      backgroundColor: string;
+      borderColor: string;
+      borderWidth: number;
+    },
+    outputPath: string,
+    videoWidth: number,
+    videoHeight: number,
+    position: { x: number; y: number }
+  ): string {
+    // Convert hex colors to ASS format (BGR with alpha)
+    const hexToAssBgr = (hex: string): string => {
+      if (hex === 'transparent') return '&H00000000'; // Transparent
+      const clean = hex.replace('#', '');
+      const r = clean.substring(0, 2);
+      const g = clean.substring(2, 4);
+      const b = clean.substring(4, 6);
+      return `&H00${b}${g}${r}`; // ASS uses BGR format
+    };
+
+    // Calculate position
+    // ASS uses bottom-left origin, MarginV is distance from bottom
+    const marginL = Math.floor(videoWidth * 0.05);
+    const marginR = Math.floor(videoWidth * 0.05);
+    const marginV = Math.floor(videoHeight * (1 - position.y));
+
+    const primaryColor = hexToAssBgr(style.textColor);
+    const backColor = style.backgroundColor === 'transparent' 
+      ? '&H00000000' 
+      : hexToAssBgr(style.backgroundColor).replace('&H00', '&H80'); // 50% opacity
+    const outlineColor = style.borderColor === 'transparent'
+      ? '&H00000000'
+      : hexToAssBgr(style.borderColor);
+
+    const bold = style.fontWeight === 'bold' ? -1 : 0;
+    const italic = style.fontStyle === 'italic' ? -1 : 0;
+
+    // ASS file content
+    let assContent = `[Script Info]
+Title: Video Captions
+ScriptType: v4.00+
+PlayResX: ${videoWidth}
+PlayResY: ${videoHeight}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,${style.fontFamily},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${style.backgroundColor === 'transparent' ? 1 : 3},${style.borderWidth},0,2,${marginL},${marginR},${marginV},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+    // Add caption events
+    for (const caption of captions) {
+      const startTime = this.formatAssTime(caption.startTime);
+      const endTime = this.formatAssTime(caption.endTime);
+      // Escape special characters for ASS
+      const text = caption.text
+        .replace(/\\/g, '\\\\')
+        .replace(/\n/g, '\\N')
+        .replace(/\{/g, '\\{')
+        .replace(/\}/g, '\\}');
+      assContent += `Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${text}\n`;
+    }
+
+    // Write ASS file
+    fs.writeFileSync(outputPath, assContent, 'utf-8');
+    console.log(`[VideoCompositor] Generated ASS subtitle file: ${outputPath} with ${captions.length} captions`);
+    
+    return outputPath;
+  }
+
+  /**
+   * Format time in seconds to ASS time format (H:MM:SS.CC)
+   */
+  private formatAssTime(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const centisecs = Math.floor((seconds % 1) * 100);
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(centisecs).padStart(2, '0')}`;
+  }
+
+  /**
+   * Add captions to video using ASS subtitles
+   * @param videoPath Input video path
+   * @param outputPath Output video path
+   * @param captions Array of caption entries with text and timing
+   * @param style Caption styling settings
+   */
+  async addCaptionsToVideo(
+    videoPath: string,
+    outputPath: string,
+    captions: Array<{ text: string; startTime: number; endTime: number }>,
+    style: {
+      fontFamily: string;
+      fontSize: number;
+      fontWeight: 'normal' | 'bold';
+      fontStyle: 'normal' | 'italic';
+      textColor: string;
+      backgroundColor: string;
+      borderColor: string;
+      borderWidth: number;
+      position: { x: number; y: number };
+    }
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    if (!captions || captions.length === 0) {
+      console.log('[VideoCompositor] No captions to add, copying video as-is');
+      fs.copyFileSync(videoPath, outputPath);
+      return outputPath;
+    }
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get video resolution
+    const videoRes = await this.getVideoResolution(videoPath);
+    if (!videoRes) {
+      throw new Error('Failed to get video resolution for caption rendering');
+    }
+
+    // Generate ASS subtitle file
+    const assPath = outputPath.replace(/\.[^.]+$/, '_captions.ass');
+    this.generateAssSubtitles(
+      captions,
+      style,
+      assPath,
+      videoRes.width,
+      videoRes.height,
+      style.position
+    );
+
+    console.log(`[VideoCompositor] Adding ${captions.length} captions to video...`);
+    console.log(`[VideoCompositor] Caption style: font=${style.fontFamily}, size=${style.fontSize}, color=${style.textColor}, bg=${style.backgroundColor}`);
+
+    try {
+      // Use ass filter to burn in subtitles
+      // Escape the path for filter (Windows and special characters)
+      const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+      
+      const ffmpegCommand = `
+        ffmpeg -i "${videoPath}" \
+        -vf "ass='${escapedAssPath}'" \
+        -c:v libx264 -preset medium -crf 23 \
+        -c:a copy \
+        -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      console.log(`[VideoCompositor] FFmpeg caption command: ${ffmpegCommand}`);
+      
+      execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+      
+      // Verify output
+      if (fs.existsSync(outputPath)) {
+        const stats = fs.statSync(outputPath);
+        console.log(`[VideoCompositor] ✅ Captions added successfully: ${outputPath} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+      }
+
+      // Cleanup ASS file
+      try {
+        if (fs.existsSync(assPath)) {
+          fs.unlinkSync(assPath);
+        }
+      } catch (e) {
+        console.warn(`[VideoCompositor] Could not cleanup ASS file: ${assPath}`);
+      }
+
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg caption error:`, error.message);
+      
+      // Cleanup ASS file on error
+      try {
+        if (fs.existsSync(assPath)) {
+          fs.unlinkSync(assPath);
+        }
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      
+      throw new Error(`Failed to add captions to video: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add word-by-word captions that appear one word at a time
+   * Creates multiple caption entries from word timestamps
+   */
+  async addWordByWordCaptions(
+    videoPath: string,
+    outputPath: string,
+    wordTimestamps: Array<{ word: string; startTime: number; endTime: number }>,
+    style: {
+      fontFamily: string;
+      fontSize: number;
+      fontWeight: 'normal' | 'bold';
+      fontStyle: 'normal' | 'italic';
+      textColor: string;
+      backgroundColor: string;
+      borderColor: string;
+      borderWidth: number;
+      position: { x: number; y: number };
+    }
+  ): Promise<string> {
+    // For word-by-word, each word becomes its own caption entry
+    const captions = wordTimestamps.map(wt => ({
+      text: wt.word,
+      startTime: wt.startTime,
+      endTime: wt.endTime,
+    }));
+
+    return this.addCaptionsToVideo(videoPath, outputPath, captions, style);
+  }
+
+  /**
+   * Add full-sentence captions that show entire sentences
+   * Groups words into sentences based on punctuation or timing gaps
+   */
+  async addFullSentenceCaptions(
+    videoPath: string,
+    outputPath: string,
+    sceneVoiceovers: Array<{ sceneNumber: number; voiceover: string; startTime: number; duration: number }>,
+    style: {
+      fontFamily: string;
+      fontSize: number;
+      fontWeight: 'normal' | 'bold';
+      fontStyle: 'normal' | 'italic';
+      textColor: string;
+      backgroundColor: string;
+      borderColor: string;
+      borderWidth: number;
+      position: { x: number; y: number };
+    }
+  ): Promise<string> {
+    // For full-sentence, each scene's voiceover becomes one caption
+    const captions = sceneVoiceovers.map(sv => ({
+      text: sv.voiceover,
+      startTime: sv.startTime,
+      endTime: sv.startTime + sv.duration,
+    }));
+
+    return this.addCaptionsToVideo(videoPath, outputPath, captions, style);
   }
 }
 

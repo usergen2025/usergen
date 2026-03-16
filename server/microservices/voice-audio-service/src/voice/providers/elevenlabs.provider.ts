@@ -209,6 +209,137 @@ export class ElevenLabsProvider {
   }
 
   /**
+   * Generate speech with character-level timestamp information
+   * Useful for captions and audio-text synchronization
+   */
+  async generateSpeechWithTimestamps(request: GenerateSpeechRequest): Promise<{
+    audio: Buffer;
+    alignment: {
+      characters: string[];
+      character_start_times_seconds: number[];
+      character_end_times_seconds: number[];
+    };
+    normalized_alignment?: {
+      characters: string[];
+      character_start_times_seconds: number[];
+      character_end_times_seconds: number[];
+    };
+  }> {
+    try {
+      const {
+        voice_id,
+        text,
+        model_id = 'eleven_multilingual_v2',
+        output_format = 'mp3_44100_128',
+        voice_settings,
+      } = request;
+
+      console.log(`[ElevenLabs] Generating speech with timestamps for ${text.length} chars`);
+
+      const response = await this.axiosInstance.post(
+        `/v1/text-to-speech/${voice_id}/with-timestamps`,
+        {
+          text,
+          model_id,
+          voice_settings,
+        },
+        {
+          params: {
+            output_format,
+          },
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      // Response contains audio_base64 and alignment data
+      const { audio_base64, alignment, normalized_alignment } = response.data;
+
+      if (!audio_base64) {
+        throw new Error('No audio data received from ElevenLabs with-timestamps endpoint');
+      }
+
+      const audio = Buffer.from(audio_base64, 'base64');
+
+      console.log(`[ElevenLabs] Generated speech with timestamps: ${audio.length} bytes, ${alignment?.characters?.length || 0} characters aligned`);
+
+      return {
+        audio,
+        alignment: alignment || { characters: [], character_start_times_seconds: [], character_end_times_seconds: [] },
+        normalized_alignment,
+      };
+    } catch (error: any) {
+      if (error.response) {
+        const errorMessage = error.response.data?.detail?.message || error.response.statusText;
+        throw new Error(`ElevenLabs speech with timestamps failed: ${error.response.status} - ${errorMessage}`);
+      }
+      throw new Error(`Failed to generate speech with timestamps: ${error.message}`);
+    }
+  }
+
+  /**
+   * Convert character-level timestamps to word-level timestamps
+   * Groups characters by spaces to form words
+   */
+  convertCharacterTimestampsToWords(
+    text: string,
+    alignment: {
+      characters: string[];
+      character_start_times_seconds: number[];
+      character_end_times_seconds: number[];
+    }
+  ): Array<{ word: string; startTime: number; endTime: number }> {
+    const words: Array<{ word: string; startTime: number; endTime: number }> = [];
+    
+    if (!alignment.characters || alignment.characters.length === 0) {
+      return words;
+    }
+
+    let currentWord = '';
+    let wordStartTime = 0;
+    let wordEndTime = 0;
+
+    for (let i = 0; i < alignment.characters.length; i++) {
+      const char = alignment.characters[i];
+      const startTime = alignment.character_start_times_seconds[i];
+      const endTime = alignment.character_end_times_seconds[i];
+
+      if (char === ' ' || char === '\n') {
+        // End of word
+        if (currentWord.length > 0) {
+          words.push({
+            word: currentWord,
+            startTime: wordStartTime,
+            endTime: wordEndTime,
+          });
+          currentWord = '';
+        }
+      } else {
+        // Add character to current word
+        if (currentWord.length === 0) {
+          wordStartTime = startTime;
+        }
+        currentWord += char;
+        wordEndTime = endTime;
+      }
+    }
+
+    // Don't forget the last word
+    if (currentWord.length > 0) {
+      words.push({
+        word: currentWord,
+        startTime: wordStartTime,
+        endTime: wordEndTime,
+      });
+    }
+
+    console.log(`[ElevenLabs] Converted ${alignment.characters.length} characters to ${words.length} words`);
+
+    return words;
+  }
+
+  /**
    * Clone a voice from audio files
    */
   async cloneVoice(

@@ -262,7 +262,25 @@ export class ScriptsService {
         analyzedAssets
       );
       
-      const duration = request.duration || '30 seconds';
+      // Get duration from request, or extract from user prompt, or use default
+      let duration = request.duration;
+      if (!duration) {
+        // Try to extract duration from user prompt
+        const extractedDuration = this.extractDurationFromPrompt(request.userPrompt);
+        if (extractedDuration) {
+          duration = extractedDuration;
+          console.log(`[ScriptsService] Using duration extracted from user prompt: ${duration}`);
+        } else {
+          duration = '30 seconds';
+          console.log(`[ScriptsService] Using default duration: ${duration}`);
+        }
+      } else {
+        console.log(`[ScriptsService] Using duration from request: ${duration}`);
+      }
+      
+      // Calculate expected scene count for strong enforcement
+      const durationSeconds = this.parseDurationToSeconds(duration);
+      const expectedScenes = this.calculateExpectedScenes(durationSeconds, request.videoStyle);
       
       // Determine if we need to use vision API (only for visual reference with analyzed assets, not for analysis)
       const hasAnalyzedAssets = analyzedAssets && analyzedAssets.length > 0;
@@ -282,8 +300,15 @@ export class ScriptsService {
         // Build content array with text and images (for visual reference only, not for analysis)
         const content: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }> = [];
         
-        // Add text prompt
-        let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}.`;
+        // Add text prompt with strong scene count enforcement
+        let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
+
+CRITICAL DURATION REQUIREMENTS:
+- Total video duration: ${duration} (${durationSeconds} seconds)
+- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
+- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
+- The total of all scene durations MUST equal ${durationSeconds} seconds
+- DO NOT generate fewer scenes than required - this is a strict requirement`;
         
         // Add context from analyzed assets (product info, brand info already in system prompt)
         if (hasAnalyzedAssets) {
@@ -356,10 +381,19 @@ export class ScriptsService {
           content: content as any,
         });
       } else {
-        // Standard text-only prompt
+        // Standard text-only prompt with strong scene count enforcement
         messages.push({
           role: 'user',
-          content: `Create a video script for the following topic/idea: "${request.userPrompt}". Duration: ${duration}. Return the response as a JSON object.`
+          content: `Create a video script for the following topic/idea: "${request.userPrompt}".
+
+CRITICAL DURATION REQUIREMENTS:
+- Total video duration: ${duration} (${durationSeconds} seconds)
+- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
+- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
+- The total of all scene durations MUST equal ${durationSeconds} seconds
+- DO NOT generate fewer scenes than required - this is a strict requirement
+
+Return the response as a JSON object.`
         });
       }
 
@@ -990,6 +1024,28 @@ TOPIC-APPROPRIATE REALISM:
 - If the topic does NOT mention fantasy, sci-fi, space, or abstract art, generate b-roll descriptions that sound like real-world locations and objects.
 `;
 
+  const BROLL_TEXT_RULE = `
+CRITICAL B-ROLL TEXT RULE:
+- Avoid specific readable text, signs, or on-screen UI with words in b-roll unless the user explicitly requests it.
+- Prefer abstract visuals, iconography, or data visualizations without clearly readable words.
+- When describing screens, dashboards, or interfaces, use phrases like "blurred interface", "generic charts", or "unreadable placeholder text" instead of concrete sentences or product names.
+- Do NOT ask the image or video model to draw specific sentences or detailed typography.
+- When broll_video_prompt describes screens or text, add guidance like "use static or subtle camera motion; avoid zooms, rotations, or heavy transitions that would distort any on-screen text".
+`;
+
+  const PHYSICAL_PLAUSIBILITY_RULE = `
+CRITICAL PHYSICAL PLAUSIBILITY RULE:
+- All scene descriptions and b-roll prompts must be physically plausible in the real world.
+- People must be in normal positions relative to objects (e.g., standing next to a desk, sitting at a table), never inside solid objects or merged with furniture.
+- Do NOT describe impossible compositions such as "person inside the table", "person inside the desk", or body parts intersecting with solid objects.
+- Avoid impossible camera perspectives that would break realism (e.g., multiple conflicting viewpoints in a single shot).
+- When in doubt, choose grounded, realistic compositions that could be filmed with a normal camera.
+`;
+
+  const GLOBAL_BROLL_RULES = `${PHOTOREALISM_RULE}
+${BROLL_TEXT_RULE}
+${PHYSICAL_PLAUSIBILITY_RULE}`;
+
   const SPECIFICITY_RULE = `
 CRITICAL CONTENT SPECIFICITY RULE:
 - Address EXACTLY what the user asks. Do NOT default to generic definitions.
@@ -1009,7 +1065,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL scenes
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1110,7 +1166,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL b-roll images
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1212,7 +1268,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - You MUST create a "visual_style_guide" that defines consistent parameters for ALL scenes
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1421,7 +1477,7 @@ CRITICAL REQUIREMENTS:
 - All b-roll should showcase the product from different angles, contexts, and uses
 - Visual style must be consistent across all scenes
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1490,15 +1546,15 @@ Guidelines:
 - Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
-    'B_ROLL_ONLY': `You are a professional video director who creates b-roll only video scripts. The video will feature full-screen 9:16 b-roll for EVERY scene - NO avatar, NO human presenter, NO person.
+    'B_ROLL_ONLY': `You are a professional video director who creates b-roll only video scripts. The video will feature full-screen 9:16 b-roll for EVERY scene - no avatar overlay or separate presenter layer. B-roll may include people when they naturally support the story or demonstrate the topic.
 
 CRITICAL REQUIREMENTS:
-- NO avatar, NO human, NO person in any scene
+- NO avatar overlay or separate presenter layer in any scene
 - All scenes use full-screen 9:16 b-roll images
-- Create b-roll that supports and illustrates the voiceover/narration
+- B-roll should primarily focus on the topic or product, but CAN include people when they naturally support the story or demonstrate the product in use
 - Visual style must be consistent across all scenes
 - Product/background assets may be provided in asset context - use them when available
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1530,21 +1586,20 @@ Structure Your Output in This JSON Format:
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
-      "broll_visual_description": "Scene-specific b-roll description - NO human, NO avatar, NO person",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll description] [CRITICAL: NO human, NO avatar, NO person in image]",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
+      "broll_visual_description": "Scene-specific b-roll description that may include people when it naturally supports the narrative. Do NOT describe a separate avatar overlay.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll description with physically plausible human presence when appropriate]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll with motion, optionally including people in natural positions when appropriate]"
     }
   ],
-  "notes": "B-roll only video - no avatar or human elements"
+  "notes": "B-roll only video - no avatar overlay; b-roll may include people when appropriate and physically plausible"
 }
 
 CRITICAL PROMPT GENERATION RULES:
-1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
-2. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]"
-3. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description.
-4. Create engaging b-roll visuals that illustrate the narration - ONE focused shot per scene
-5. Maintain visual consistency across all scenes
-6. FIRST, determine the visual_style_guide based on the user's topic/idea
+1. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]"
+2. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description.
+3. Create engaging b-roll visuals that illustrate the narration - ONE focused shot per scene
+4. Maintain visual consistency across all scenes
+5. FIRST, determine the visual_style_guide based on the user's topic/idea
 
 Guidelines:
 - ${lang.instruction}
@@ -1564,7 +1619,7 @@ CRITICAL REQUIREMENTS:
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
-${PHOTOREALISM_RULE}
+${GLOBAL_BROLL_RULES}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1962,6 +2017,73 @@ REGION CONTEXT (CRITICAL - Indian Default):
     
     // Default fallback
     return 30;
+  }
+
+  /**
+   * Extract duration from user prompt text as a fallback
+   * Looks for patterns like "1 minute video", "30 second", "2 min", etc.
+   */
+  private extractDurationFromPrompt(userPrompt: string): string | null {
+    if (!userPrompt) return null;
+    
+    const normalized = userPrompt.toLowerCase();
+    
+    // Patterns to match duration mentions in user text
+    const patterns = [
+      // "one minute", "two minutes", etc.
+      /\b(one|two|three|four|five)\s*(minute|min)s?\b/i,
+      // "1 minute", "2 minutes", "30 seconds", etc.
+      /\b(\d+)\s*(minute|min|second|sec)s?\b/i,
+      // "1-minute", "30-second" (hyphenated)
+      /\b(\d+)-(minute|min|second|sec)s?\b/i,
+    ];
+    
+    // Word to number mapping
+    const wordToNum: Record<string, number> = {
+      'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5
+    };
+    
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern);
+      if (match) {
+        let value = match[1];
+        const unit = match[2].toLowerCase();
+        
+        // Convert word to number if needed
+        if (wordToNum[value]) {
+          value = String(wordToNum[value]);
+        }
+        
+        const num = parseInt(value, 10);
+        if (!isNaN(num)) {
+          if (unit.startsWith('min')) {
+            console.log(`[ScriptsService] Extracted duration from prompt: ${num} minute(s)`);
+            return `${num} minute${num > 1 ? 's' : ''}`;
+          } else {
+            console.log(`[ScriptsService] Extracted duration from prompt: ${num} second(s)`);
+            return `${num} second${num > 1 ? 's' : ''}`;
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Calculate expected number of scenes based on duration and video style
+   */
+  private calculateExpectedScenes(durationSeconds: number, videoStyle: string): { min: number; max: number; target: number } {
+    // Different styles have different pacing
+    const secondsPerScene = videoStyle === 'ALTERNATE' ? 6 : 5;
+    
+    const target = Math.round(durationSeconds / secondsPerScene);
+    const min = Math.max(3, Math.floor(durationSeconds / (secondsPerScene + 1)));
+    const max = Math.ceil(durationSeconds / (secondsPerScene - 1));
+    
+    console.log(`[ScriptsService] Expected scenes for ${durationSeconds}s ${videoStyle}: target=${target}, range=${min}-${max}`);
+    
+    return { min, max, target };
   }
 
   /**
