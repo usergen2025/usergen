@@ -3,12 +3,14 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Edit, Music, Type, ChevronUp, Play, Loader2 } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Edit, Music, Type, ChevronUp, Play, Loader2, User, Check } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils/cn';
+import { DraggableResizableAvatar } from '@/components/create-video/DraggableResizableAvatar';
+import { DraggableResizableCaption } from '@/components/create-video/DraggableResizableCaption';
 
 interface Scene {
   scene_number?: number;
@@ -79,9 +81,38 @@ function WorkspacePageContent() {
   const [loading, setLoading] = useState(true);
   const [backgroundMusicEnabled, setBackgroundMusicEnabled] = useState(true);
   const [musicTab, setMusicTab] = useState<'library' | 'upload'>('library');
-  const [captionsEnabled, setCaptionsEnabled] = useState(true);
+  const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [musicExpanded, setMusicExpanded] = useState(true);
   const [captionsExpanded, setCaptionsExpanded] = useState(true);
+  
+  // Caption settings state
+  const [captionDisplayMode, setCaptionDisplayMode] = useState<'word-by-word' | 'full-sentence'>('word-by-word');
+  const [captionApplyToAll, setCaptionApplyToAll] = useState(true);
+  const [captionGlobalPosition, setCaptionGlobalPosition] = useState({ x: 0.5, y: 0.9, scale: 0.1, widthScale: 0.8 });
+  const [captionPerScenePositions, setCaptionPerScenePositions] = useState<Record<number, { x: number; y: number; scale: number; widthScale: number }>>({});
+  const [captionStyle, setCaptionStyle] = useState({
+    fontFamily: 'Inter',
+    fontSize: 16,
+    fontWeight: 'bold' as 'normal' | 'bold',
+    fontStyle: 'normal' as 'normal' | 'italic',
+    textDecoration: 'none' as 'none' | 'underline',
+    textColor: '#FFFFFF',
+    backgroundColor: '#000000',
+    borderColor: 'transparent',
+    borderWidth: 0,
+  });
+  const [captionStylePreset, setCaptionStylePreset] = useState<'light' | 'dark' | 'custom'>('dark');
+  
+  // Avatar overlay state (AVATAR_CUTOUT style only)
+  const [avatarOverlayEnabled, setAvatarOverlayEnabled] = useState(true);
+  const [avatarOverlayExpanded, setAvatarOverlayExpanded] = useState(true);
+  const [avatarApplyToAll, setAvatarApplyToAll] = useState(true);
+  const [avatarGlobalPosition, setAvatarGlobalPosition] = useState({ x: 0.5, y: 0.85, scale: 0.4 });
+  const [avatarPerScenePositions, setAvatarPerScenePositions] = useState<Record<number, { x: number; y: number; scale: number }>>({});
+  const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null);
+  const avatarSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+  const [previewDimensions, setPreviewDimensions] = useState({ width: 320, height: 537 });
   
   // Workspace mode: 'images' | 'converting' | 'videos'
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('images');
@@ -299,6 +330,61 @@ function WorkspacePageContent() {
             const scriptScenes = script.scenes || script.scene_plan || [];
             setScenes(scriptScenes);
           }
+          
+          // Load avatar overlay settings from project metadata (AVATAR_CUTOUT only)
+          if (projectData.style === 'AVATAR_CUTOUT' && projectData.metadata?.avatarOverlay) {
+            const overlay = projectData.metadata.avatarOverlay;
+            setAvatarOverlayEnabled(overlay.enabled ?? true);
+            setAvatarApplyToAll(overlay.applyToAll ?? true);
+            setAvatarGlobalPosition(overlay.globalPosition ?? { x: 0.5, y: 0.85, scale: 0.4 });
+            setAvatarPerScenePositions(overlay.perScenePositions ?? {});
+          }
+          
+          // Load avatar image URL for AVATAR_CUTOUT style
+          if (projectData.style === 'AVATAR_CUTOUT') {
+            console.log('[Workspace] Loading avatar image for AVATAR_CUTOUT style');
+            console.log('[Workspace] Project metadata:', projectData.metadata);
+            
+            // Try multiple sources for avatar image URL:
+            // 1. avatarPublicImageUrl (cached public URL from GCS)
+            // 2. avatarImageUrl or avatarLocalUrl in metadata
+            // 3. Avatar's originalImageUrl from avatar data
+            const avatarUrl = projectData.metadata?.avatarPublicImageUrl ||
+                              projectData.metadata?.avatarPreviewUrl ||
+                              projectData.metadata?.avatarImageUrl ||
+                              projectData.metadata?.avatarLocalUrl ||
+                              projectData.metadata?.avatarGcsUrl;
+            
+            console.log('[Workspace] Avatar URL candidates:', {
+              avatarPublicImageUrl: projectData.metadata?.avatarPublicImageUrl,
+              avatarPreviewUrl: projectData.metadata?.avatarPreviewUrl,
+              avatarImageUrl: projectData.metadata?.avatarImageUrl,
+              avatarLocalUrl: projectData.metadata?.avatarLocalUrl,
+              avatarGcsUrl: projectData.metadata?.avatarGcsUrl,
+              selectedUrl: avatarUrl
+            });
+            
+            if (avatarUrl) {
+              const finalUrl = avatarUrl.startsWith('http') ? avatarUrl : `${VIDEO_SERVICE_BASE_URL}${avatarUrl}`;
+              console.log('[Workspace] Setting avatar image URL:', finalUrl);
+              setAvatarImageUrl(finalUrl);
+            } else if (projectData.avatarId) {
+              // Fallback: try to get avatar image from avatar data
+              console.log('[Workspace] No avatar URL in metadata, fetching from avatar service for avatarId:', projectData.avatarId);
+              try {
+                const avatarResponse = await apiClient.getAvatar(projectData.avatarId);
+                console.log('[Workspace] Avatar response:', avatarResponse);
+                if (avatarResponse.success && avatarResponse.data?.originalImageUrl) {
+                  console.log('[Workspace] Using avatar originalImageUrl:', avatarResponse.data.originalImageUrl);
+                  setAvatarImageUrl(avatarResponse.data.originalImageUrl);
+                }
+              } catch (error) {
+                console.warn('[Workspace] Could not load avatar image:', error);
+              }
+            } else {
+              console.warn('[Workspace] No avatar URL found and no avatarId available');
+            }
+          }
 
           // Load broll images
           if (projectData.bRollImages) {
@@ -393,6 +479,22 @@ function WorkspacePageContent() {
     }
   };
 
+  // Track preview container dimensions for avatar overlay positioning
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (previewContainerRef.current) {
+        setPreviewDimensions({
+          width: previewContainerRef.current.offsetWidth,
+          height: previewContainerRef.current.offsetHeight,
+        });
+      }
+    };
+    
+    updateDimensions();
+    window.addEventListener('resize', updateDimensions);
+    return () => window.removeEventListener('resize', updateDimensions);
+  }, []);
+
   // Handle scene navigation
   const handlePreviousScene = () => {
     if (selectedSceneIndex > 0) {
@@ -410,6 +512,191 @@ function WorkspacePageContent() {
   const handleUpload = () => {
     showToast('Upload functionality coming soon', 'info');
   };
+
+  // Save avatar overlay settings to project metadata (debounced)
+  const saveAvatarOverlaySettings = useCallback(async (settings: {
+    enabled: boolean;
+    applyToAll: boolean;
+    globalPosition: { x: number; y: number; scale: number };
+    perScenePositions?: Record<number, { x: number; y: number; scale: number }>;
+  }) => {
+    if (!projectId || !project) return;
+    
+    // Clear any existing timeout
+    if (avatarSaveTimeoutRef.current) {
+      clearTimeout(avatarSaveTimeoutRef.current);
+    }
+    
+    // Debounce save by 300ms
+    avatarSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await apiClient.updateVideoProject(projectId, {
+          metadata: {
+            ...project.metadata,
+            avatarOverlay: settings
+          }
+        });
+        console.log('[Workspace] Avatar overlay settings saved');
+      } catch (error) {
+        console.error('[Workspace] Failed to save avatar overlay settings:', error);
+      }
+    }, 300);
+  }, [projectId, project]);
+
+  // Handle avatar overlay toggle
+  const handleAvatarOverlayToggle = useCallback(() => {
+    const newEnabled = !avatarOverlayEnabled;
+    setAvatarOverlayEnabled(newEnabled);
+    saveAvatarOverlaySettings({
+      enabled: newEnabled,
+      applyToAll: avatarApplyToAll,
+      globalPosition: avatarGlobalPosition,
+      perScenePositions: avatarPerScenePositions
+    });
+  }, [avatarOverlayEnabled, avatarApplyToAll, avatarGlobalPosition, avatarPerScenePositions, saveAvatarOverlaySettings]);
+
+  // Handle "Apply to all scenes" toggle
+  const handleApplyToAllToggle = useCallback(() => {
+    const newApplyToAll = !avatarApplyToAll;
+    setAvatarApplyToAll(newApplyToAll);
+    
+    if (!newApplyToAll) {
+      // Switching to per-scene mode: initialize all scenes with current global position
+      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                  scenes[selectedSceneIndex]?.sceneNumber || 
+                                  (selectedSceneIndex + 1);
+      const newPerScenePositions: Record<number, { x: number; y: number; scale: number }> = {};
+      scenes.forEach((scene, idx) => {
+        const sceneNum = scene.scene_number || scene.sceneNumber || (idx + 1);
+        newPerScenePositions[sceneNum] = { ...avatarGlobalPosition };
+      });
+      setAvatarPerScenePositions(newPerScenePositions);
+      
+      saveAvatarOverlaySettings({
+        enabled: avatarOverlayEnabled,
+        applyToAll: false,
+        globalPosition: avatarGlobalPosition,
+        perScenePositions: newPerScenePositions
+      });
+    } else {
+      // Switching to global mode: use current scene's position as the new global
+      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                  scenes[selectedSceneIndex]?.sceneNumber || 
+                                  (selectedSceneIndex + 1);
+      const currentPosition = avatarPerScenePositions[currentSceneNumber] || avatarGlobalPosition;
+      setAvatarGlobalPosition(currentPosition);
+      
+      saveAvatarOverlaySettings({
+        enabled: avatarOverlayEnabled,
+        applyToAll: true,
+        globalPosition: currentPosition,
+        perScenePositions: avatarPerScenePositions
+      });
+    }
+  }, [avatarApplyToAll, avatarOverlayEnabled, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex, saveAvatarOverlaySettings]);
+
+  // Handle avatar position change (from drag or resize)
+  const handleAvatarPositionChange = useCallback((newPosition: { x: number; y: number; scale: number }) => {
+    if (avatarApplyToAll) {
+      // Update global position for all scenes
+      setAvatarGlobalPosition(newPosition);
+      saveAvatarOverlaySettings({
+        enabled: avatarOverlayEnabled,
+        applyToAll: true,
+        globalPosition: newPosition,
+        perScenePositions: avatarPerScenePositions
+      });
+    } else {
+      // Update only current scene's position
+      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                  scenes[selectedSceneIndex]?.sceneNumber || 
+                                  (selectedSceneIndex + 1);
+      const newPerScenePositions = {
+        ...avatarPerScenePositions,
+        [currentSceneNumber]: newPosition
+      };
+      setAvatarPerScenePositions(newPerScenePositions);
+      saveAvatarOverlaySettings({
+        enabled: avatarOverlayEnabled,
+        applyToAll: false,
+        globalPosition: avatarGlobalPosition,
+        perScenePositions: newPerScenePositions
+      });
+    }
+  }, [avatarApplyToAll, avatarOverlayEnabled, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex, saveAvatarOverlaySettings]);
+
+  // Get current avatar position for the selected scene
+  const getCurrentAvatarPosition = useCallback(() => {
+    if (avatarApplyToAll) {
+      return avatarGlobalPosition;
+    }
+    const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                scenes[selectedSceneIndex]?.sceneNumber || 
+                                (selectedSceneIndex + 1);
+    return avatarPerScenePositions[currentSceneNumber] || avatarGlobalPosition;
+  }, [avatarApplyToAll, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex]);
+
+  // Handle caption position change
+  const handleCaptionPositionChange = useCallback((newPosition: { x: number; y: number; scale: number; widthScale: number }) => {
+    if (captionApplyToAll) {
+      setCaptionGlobalPosition(newPosition);
+    } else {
+      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                  scenes[selectedSceneIndex]?.sceneNumber || 
+                                  (selectedSceneIndex + 1);
+      setCaptionPerScenePositions(prev => ({
+        ...prev,
+        [currentSceneNumber]: newPosition
+      }));
+    }
+  }, [captionApplyToAll, scenes, selectedSceneIndex]);
+
+  // Handle caption style change
+  const handleCaptionStyleChange = useCallback((newStyle: typeof captionStyle) => {
+    setCaptionStyle(newStyle);
+    setCaptionStylePreset('custom');
+  }, []);
+
+  // Get current caption position for the selected scene
+  const getCurrentCaptionPosition = useCallback(() => {
+    if (captionApplyToAll) {
+      return captionGlobalPosition;
+    }
+    const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
+                                scenes[selectedSceneIndex]?.sceneNumber || 
+                                (selectedSceneIndex + 1);
+    return captionPerScenePositions[currentSceneNumber] || captionGlobalPosition;
+  }, [captionApplyToAll, captionGlobalPosition, captionPerScenePositions, scenes, selectedSceneIndex]);
+
+  // Apply caption style preset
+  const applyCaptionPreset = useCallback((preset: 'light' | 'dark') => {
+    setCaptionStylePreset(preset);
+    if (preset === 'light') {
+      setCaptionStyle({
+        fontFamily: 'Inter',
+        fontSize: 16,
+        fontWeight: 'bold',
+        fontStyle: 'normal',
+        textDecoration: 'none',
+        textColor: '#000000',
+        backgroundColor: '#FFFFFF',
+        borderColor: 'transparent',
+        borderWidth: 0,
+      });
+    } else {
+      setCaptionStyle({
+        fontFamily: 'Inter',
+        fontSize: 16,
+        fontWeight: 'bold',
+        fontStyle: 'normal',
+        textDecoration: 'none',
+        textColor: '#FFFFFF',
+        backgroundColor: '#000000',
+        borderColor: 'transparent',
+        borderWidth: 0,
+      });
+    }
+  }, []);
 
   // Handle image regeneration
   const handleRegenerate = async () => {
@@ -551,7 +838,7 @@ function WorkspacePageContent() {
   };
 
   // Rendering timeout (10 minutes)
-  const RENDERING_TIMEOUT_MS = 10 * 60 * 1000;
+  const RENDERING_TIMEOUT_MS = 30 * 60 * 1000;
   const renderingStartTimeRef = useRef<number | null>(null);
   const consecutiveErrorsRef = useRef<number>(0);
   const MAX_CONSECUTIVE_ERRORS = 5;
@@ -1261,79 +1548,119 @@ function WorkspacePageContent() {
         </div>
 
         {/* Center - Preview */}
-        <div className="flex flex-col items-center pt-[clamp(20px,2.93vh,30px)] gap-[clamp(12px,1.56vh,20px)] w-[clamp(320px,31.7vw,410px)] h-full overflow-y-auto">
-          {/* Scene navigation */}
-          <div className="flex flex-row justify-between items-center gap-[clamp(8px,0.98vh,10px)] w-full">
-            <button
-              onClick={handlePreviousScene}
-              disabled={selectedSceneIndex === 0}
-              className="w-[clamp(24px,2.5vh,32px)] h-[clamp(24px,2.5vh,32px)] rounded-[16px] flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors"
-            >
-              <ChevronLeft className="w-[clamp(14px,1.56vh,16px)] h-[clamp(14px,1.56vh,16px)] text-[#212121]" />
-            </button>
+        <div className="flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-[clamp(380px,38vw,480px)] h-full">
+          {/* Scene counter */}
+          <div className="flex flex-row justify-center items-center w-full">
             <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121]">
               Scene {selectedSceneIndex + 1} of {sceneCount}
             </span>
+          </div>
+
+          {/* Preview area with navigation arrows on sides */}
+          <div className="flex flex-row items-center justify-center gap-[clamp(8px,0.98vh,12px)] w-full flex-1 min-h-0">
+            {/* Left navigation arrow */}
+            <button
+              onClick={handlePreviousScene}
+              disabled={selectedSceneIndex === 0}
+              className="w-[clamp(32px,3.5vh,40px)] h-[clamp(32px,3.5vh,40px)] rounded-full flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors bg-white shadow-sm border border-gray-200 flex-shrink-0"
+            >
+              <ChevronLeft className="w-[clamp(16px,1.76vh,20px)] h-[clamp(16px,1.76vh,20px)] text-[#212121]" />
+            </button>
+
+            {/* Preview image/video - 9:16 aspect ratio */}
+            <div 
+              ref={previewContainerRef}
+              className="relative rounded-[12px] overflow-hidden bg-gray-200 flex items-center justify-center flex-shrink-0"
+              style={{ 
+                width: 'min(260px, calc((100% - 100px)))',
+                aspectRatio: '9/16'
+              }}
+            >
+              {workspaceMode === 'videos' && getVideoUrl(currentSceneNumber) ? (
+                <video
+                  ref={(el) => {
+                    // Use ref to avoid infinite re-renders - don't call setState here
+                    if (el && !videoElementsRef.current[currentSceneNumber]) {
+                      el.controls = true;
+                      el.className = 'w-full h-full object-cover';
+                      el.onended = () => handleVideoEnd(currentSceneNumber);
+                      videoElementsRef.current[currentSceneNumber] = el;
+                    }
+                  }}
+                  src={getVideoUrl(currentSceneNumber) || undefined}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    console.error('Video failed to load:', getVideoUrl(currentSceneNumber));
+                    const target = e.target as HTMLVideoElement;
+                    target.style.opacity = '0.5';
+                  }}
+                />
+              ) : (workspaceMode === 'converting' || generatingVideos.has(currentSceneNumber)) ? (
+                <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden">
+                  {/* Skeleton shimmer background */}
+                  <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div 
+                      className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent" 
+                      style={{ 
+                        animation: 'shimmer 1.5s infinite',
+                        transform: 'translateX(-100%)'
+                      }} 
+                    />
+                  </div>
+                  <div className="relative z-10 flex flex-col items-center justify-center">
+                    <Loader2 className="w-[clamp(40px,5vh,48px)] h-[clamp(40px,5vh,48px)] text-gray-500 animate-spin" />
+                    <span className="text-[clamp(14px,1.76vh,18px)] text-gray-600 mt-2">Converting to video...</span>
+                    <span className="text-[clamp(11px,1.27vh,13px)] text-gray-400 mt-1">
+                      {generatingVideos.size > 0 ? `${generatingVideos.size} scene(s) remaining` : 'Preparing...'}
+                    </span>
+                  </div>
+                </div>
+              ) : currentImageUrl ? (
+                <img
+                  src={currentImageUrl}
+                  alt={`Scene ${currentSceneNumber}`}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <span className="text-[clamp(14px,1.76vh,18px)] text-gray-500">No image available</span>
+              )}
+              
+              {/* Avatar Overlay - Only for AVATAR_CUTOUT style when enabled, hidden during rendering/converting */}
+              {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && currentImageUrl && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+                <DraggableResizableAvatar
+                  avatarImageUrl={avatarImageUrl}
+                  position={getCurrentAvatarPosition()}
+                  onPositionChange={handleAvatarPositionChange}
+                  containerWidth={previewDimensions.width}
+                  containerHeight={previewDimensions.height}
+                  disabled={false}
+                />
+              )}
+              
+              {/* Caption Overlay - For all styles when captions enabled, hidden during rendering/converting */}
+              {captionsEnabled && currentImageUrl && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+                <DraggableResizableCaption
+                  captionText={currentSceneText || 'Sample caption text'}
+                  position={getCurrentCaptionPosition()}
+                  style={captionStyle}
+                  onPositionChange={handleCaptionPositionChange}
+                  onStyleChange={handleCaptionStyleChange}
+                  containerWidth={previewDimensions.width}
+                  containerHeight={previewDimensions.height}
+                  disabled={false}
+                />
+              )}
+            </div>
+
+            {/* Right navigation arrow */}
             <button
               onClick={handleNextScene}
               disabled={selectedSceneIndex >= sceneCount - 1}
-              className="w-[clamp(24px,2.5vh,32px)] h-[clamp(24px,2.5vh,32px)] rounded-[16px] flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors"
+              className="w-[clamp(32px,3.5vh,40px)] h-[clamp(32px,3.5vh,40px)] rounded-full flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors bg-white shadow-sm border border-gray-200 flex-shrink-0"
             >
-              <ChevronRight className="w-[clamp(14px,1.56vh,16px)] h-[clamp(14px,1.56vh,16px)] text-[#212121]" />
+              <ChevronRight className="w-[clamp(16px,1.76vh,20px)] h-[clamp(16px,1.76vh,20px)] text-[#212121]" />
             </button>
-          </div>
-
-          {/* Preview image/video */}
-          <div className="w-[clamp(280px,31.7vw,320px)] h-[clamp(430px,52.5vh,537px)] rounded-[12px] overflow-hidden bg-gray-200 flex items-center justify-center relative">
-            {workspaceMode === 'videos' && getVideoUrl(currentSceneNumber) ? (
-              <video
-                ref={(el) => {
-                  // Use ref to avoid infinite re-renders - don't call setState here
-                  if (el && !videoElementsRef.current[currentSceneNumber]) {
-                    el.controls = true;
-                    el.className = 'w-full h-full object-cover';
-                    el.onended = () => handleVideoEnd(currentSceneNumber);
-                    videoElementsRef.current[currentSceneNumber] = el;
-                  }
-                }}
-                src={getVideoUrl(currentSceneNumber) || undefined}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  console.error('Video failed to load:', getVideoUrl(currentSceneNumber));
-                  const target = e.target as HTMLVideoElement;
-                  target.style.opacity = '0.5';
-                }}
-              />
-            ) : (workspaceMode === 'converting' || generatingVideos.has(currentSceneNumber)) ? (
-              <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden">
-                {/* Skeleton shimmer background */}
-                <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
-                <div className="absolute inset-0 overflow-hidden">
-                  <div 
-                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent" 
-                    style={{ 
-                      animation: 'shimmer 1.5s infinite',
-                      transform: 'translateX(-100%)'
-                    }} 
-                  />
-                </div>
-                <div className="relative z-10 flex flex-col items-center justify-center">
-                  <Loader2 className="w-[clamp(40px,5vh,48px)] h-[clamp(40px,5vh,48px)] text-gray-500 animate-spin" />
-                  <span className="text-[clamp(14px,1.76vh,18px)] text-gray-600 mt-2">Converting to video...</span>
-                  <span className="text-[clamp(11px,1.27vh,13px)] text-gray-400 mt-1">
-                    {generatingVideos.size > 0 ? `${generatingVideos.size} scene(s) remaining` : 'Preparing...'}
-                  </span>
-                </div>
-              </div>
-            ) : currentImageUrl ? (
-              <img
-                src={currentImageUrl}
-                alt={`Scene ${currentSceneNumber}`}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <span className="text-[clamp(14px,1.76vh,18px)] text-gray-500">No image available</span>
-            )}
           </div>
 
           {/* Action buttons */}
@@ -1358,8 +1685,61 @@ function WorkspacePageContent() {
         {/* Right sidebar - Settings */}
         <div className="flex flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-[clamp(300px,26.7vw,384px)] h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] rounded-[20px] overflow-hidden">
           <div className="flex flex-col justify-start items-start gap-[clamp(8px,0.98vh,10px)] w-full h-full overflow-hidden">
-            {/* Background Music Section - 65% of available space */}
-            <div className="flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] flex-[0.65] min-h-0 overflow-hidden">
+            
+            {/* Avatar Overlay Section - Only for AVATAR_CUTOUT style */}
+            {project?.style === 'AVATAR_CUTOUT' && (
+              <div className="flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] flex-shrink-0">
+                <div className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] w-full flex-shrink-0">
+                  <User className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] text-[#212121]" />
+                  <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121] flex-1">Avatar Overlay</span>
+                  <button
+                    onClick={() => setAvatarOverlayExpanded(!avatarOverlayExpanded)}
+                    className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] flex items-center justify-center flex-shrink-0"
+                  >
+                    <ChevronUp className={`w-full h-full text-[#212121] transition-transform ${avatarOverlayExpanded ? '' : 'rotate-180'}`} />
+                  </button>
+                  <div
+                    onClick={handleAvatarOverlayToggle}
+                    className={`relative w-[44px] h-[24px] rounded-full cursor-pointer transition-all flex-shrink-0 ${avatarOverlayEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : 'bg-gray-300'}`}
+                  >
+                    <div className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-all shadow-sm ${avatarOverlayEnabled ? 'left-[22px]' : 'left-[2px]'}`} />
+                  </div>
+                </div>
+
+                {avatarOverlayExpanded && (
+                  <div className="flex flex-col gap-[clamp(8px,1.17vh,12px)] w-full">
+                    {/* Apply to all scenes checkbox - custom styled */}
+                    <label className="flex items-center gap-[clamp(8px,0.98vh,10px)] cursor-pointer group">
+                      <div 
+                        onClick={(e) => { e.preventDefault(); handleApplyToAllToggle(); }}
+                        className={`relative w-[20px] h-[20px] rounded-[4px] border-2 transition-all flex items-center justify-center ${
+                          avatarApplyToAll 
+                            ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] border-transparent' 
+                            : 'bg-white border-gray-300 group-hover:border-[#E86412]'
+                        }`}
+                      >
+                        {avatarApplyToAll && (
+                          <svg className="w-[12px] h-[12px] text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </div>
+                      <span className="font-heading font-normal text-[clamp(12px,1.37vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121]">
+                        Apply to all scenes
+                      </span>
+                    </label>
+                    
+                    {/* Helper text */}
+                    <p className="font-heading font-normal text-[clamp(10px,1.17vh,12px)] leading-[clamp(12px,1.37vh,14px)] text-[#616161]">
+                      Drag the avatar on the preview to reposition. Use corner handles to resize.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Background Music Section - takes equal remaining space with Captions when expanded */}
+            <div className={`flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] min-h-0 overflow-hidden ${musicExpanded ? 'flex-1' : 'flex-shrink-0'}`}>
               <div className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] w-full flex-shrink-0">
                 <Music className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] text-[#212121]" />
                 <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121] flex-1">Background Music</span>
@@ -1371,9 +1751,9 @@ function WorkspacePageContent() {
                 </button>
                 <div
                   onClick={() => setBackgroundMusicEnabled(!backgroundMusicEnabled)}
-                  className={`flex flex-row items-center p-[clamp(10px,1.17vh,12px)] gap-[clamp(6px,0.69vw,8px)] w-[clamp(32px,3.9vw,40px)] h-[clamp(18px,1.95vh,20px)] rounded-[14px] cursor-pointer transition-all flex-shrink-0 ${backgroundMusicEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] justify-end' : 'bg-gray-300 justify-start'}`}
+                  className={`relative w-[44px] h-[24px] rounded-full cursor-pointer transition-all flex-shrink-0 ${backgroundMusicEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : 'bg-gray-300'}`}
                 >
-                  <div className="w-[clamp(14px,1.67vw,16px)] h-[clamp(14px,1.67vw,16px)] bg-white rounded-full transition-transform" />
+                  <div className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-all shadow-sm ${backgroundMusicEnabled ? 'left-[22px]' : 'left-[2px]'}`} />
                 </div>
               </div>
 
@@ -1417,8 +1797,8 @@ function WorkspacePageContent() {
               )}
             </div>
 
-            {/* Captions Section - 35% of available space */}
-            <div className="flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] flex-[0.35] min-h-0 overflow-hidden">
+            {/* Captions Section - takes equal remaining space with Background Music when expanded */}
+            <div className={`flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] min-h-0 overflow-hidden ${captionsExpanded ? 'flex-1' : 'flex-shrink-0'}`}>
               <div className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] w-full flex-shrink-0">
                 <Type className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] text-[#212121]" />
                 <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121] flex-1">Captions</span>
@@ -1430,35 +1810,111 @@ function WorkspacePageContent() {
                 </button>
                 <div
                   onClick={() => setCaptionsEnabled(!captionsEnabled)}
-                  className={`flex flex-row items-center p-[clamp(10px,1.17vh,12px)] gap-[clamp(6px,0.69vw,8px)] w-[clamp(32px,3.9vw,40px)] h-[clamp(18px,1.95vh,20px)] rounded-[14px] cursor-pointer transition-all flex-shrink-0 ${captionsEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] justify-end' : 'bg-gray-300 justify-start'}`}
+                  className={`relative w-[44px] h-[24px] rounded-full cursor-pointer transition-all flex-shrink-0 ${captionsEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : 'bg-gray-300'}`}
                 >
-                  <div className="w-[clamp(14px,1.67vw,16px)] h-[clamp(14px,1.67vw,16px)] bg-white rounded-full transition-transform" />
+                  <div className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-all shadow-sm ${captionsEnabled ? 'left-[22px]' : 'left-[2px]'}`} />
                 </div>
               </div>
 
               {captionsExpanded && (
-                <div className="flex flex-col items-center gap-[clamp(8px,0.98vh,10px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
-                  {/* Light caption preview */}
-                  <div className="flex flex-col items-start p-[clamp(4px,0.52vw,4px)] gap-[clamp(8px,0.98vh,10px)] w-full rounded-[12px] flex-shrink-0">
-                    <div className="flex flex-col justify-center items-center p-[clamp(6px,0.78vh,8px)] px-[clamp(12px,1.56vh,16px)] w-full bg-gradient-to-r from-[#E0E0E0] to-[#7A7A7A] rounded-[8px]">
-                      <div className="flex flex-col items-center p-[clamp(10px,1.17vh,12px)] w-[clamp(200px,20.8vw,240px)] bg-white rounded-[12px]">
-                        <span className="font-heading font-normal text-[clamp(12px,1.37vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-center text-black">
-                          {currentSceneText || 'The quick brown fox jumps over the lazy dog'}
-                        </span>
-                      </div>
+                <div className="flex flex-col items-start gap-[clamp(10px,1.17vh,12px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
+                  {/* Info text when disabled */}
+                  {!captionsEnabled && (
+                    <div className="text-[clamp(11px,1.17vh,13px)] text-gray-500 text-center w-full py-2">
+                      Enable captions to show them on the video preview
                     </div>
-                  </div>
+                  )}
 
-                  {/* Dark caption preview */}
-                  <div className="flex flex-col items-start p-[clamp(4px,0.52vw,4px)] gap-[clamp(8px,0.98vh,10px)] w-full rounded-[12px] flex-shrink-0">
-                    <div className="flex flex-col justify-center items-center p-[clamp(6px,0.78vh,8px)] px-[clamp(12px,1.56vh,16px)] w-full bg-gradient-to-r from-[#616161] to-[#C7C7C7] rounded-[8px]">
-                      <div className="flex flex-col items-center p-[clamp(10px,1.17vh,12px)] w-[clamp(200px,20.8vw,240px)] bg-black rounded-[12px]">
-                        <span className="font-heading font-normal text-[clamp(12px,1.37vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-center text-white">
-                          {currentSceneText || 'The quick brown fox jumps over the lazy dog'}
-                        </span>
+                  {captionsEnabled && (
+                    <>
+                      {/* Display Mode */}
+                      <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full">
+                        <span className="text-[clamp(11px,1.27vh,13px)] font-medium text-gray-600">Display Mode</span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setCaptionDisplayMode('word-by-word')}
+                            className={`flex-1 px-3 py-1.5 text-[clamp(10px,1.17vh,12px)] rounded-lg border transition-all ${
+                              captionDisplayMode === 'word-by-word'
+                                ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] text-white border-transparent'
+                                : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            Word-by-word
+                          </button>
+                          <button
+                            onClick={() => setCaptionDisplayMode('full-sentence')}
+                            className={`flex-1 px-3 py-1.5 text-[clamp(10px,1.17vh,12px)] rounded-lg border transition-all ${
+                              captionDisplayMode === 'full-sentence'
+                                ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] text-white border-transparent'
+                                : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            Full sentence
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+
+                      {/* Style Presets */}
+                      <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full">
+                        <span className="text-[clamp(11px,1.27vh,13px)] font-medium text-gray-600">Style Preset</span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => applyCaptionPreset('light')}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
+                              captionStylePreset === 'light'
+                                ? 'border-[#E86412] bg-orange-50'
+                                : 'border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            <div className="w-5 h-5 rounded bg-white border border-gray-300 flex items-center justify-center">
+                              <span className="text-[8px] font-bold text-black">Aa</span>
+                            </div>
+                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Light</span>
+                            {captionStylePreset === 'light' && <Check className="w-3 h-3 text-[#E86412]" />}
+                          </button>
+                          <button
+                            onClick={() => applyCaptionPreset('dark')}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
+                              captionStylePreset === 'dark'
+                                ? 'border-[#E86412] bg-orange-50'
+                                : 'border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            <div className="w-5 h-5 rounded bg-black flex items-center justify-center">
+                              <span className="text-[8px] font-bold text-white">Aa</span>
+                            </div>
+                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Dark</span>
+                            {captionStylePreset === 'dark' && <Check className="w-3 h-3 text-[#E86412]" />}
+                          </button>
+                        </div>
+                        {captionStylePreset === 'custom' && (
+                          <div className="text-[clamp(10px,1.07vh,11px)] text-gray-500 text-center">
+                            Custom style - edit using the overlay toolbar
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Apply to All Scenes */}
+                      <div className="flex items-center gap-2 w-full pt-1">
+                        <button
+                          onClick={() => setCaptionApplyToAll(!captionApplyToAll)}
+                          className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                            captionApplyToAll
+                              ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] border-transparent'
+                              : 'bg-white border-gray-300'
+                          }`}
+                        >
+                          {captionApplyToAll && <Check className="w-3 h-3 text-white" />}
+                        </button>
+                        <span className="text-[clamp(11px,1.27vh,13px)] text-gray-700">Apply to all scenes</span>
+                      </div>
+
+                      {/* Tip */}
+                      <div className="text-[clamp(10px,1.07vh,11px)] text-gray-400 italic">
+                        Drag and resize the caption box on the preview to position it
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>

@@ -273,6 +273,22 @@ class ApiClient {
     return response.data;
   }
 
+  async getAvatar(avatarId: string): Promise<ApiResponse<any>> {
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<any>>(
+      `${avatarServiceUrl}/avatars/${avatarId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async getLibraryAvatars(filters?: { category?: string; search?: string }): Promise<ApiResponse<any[]>> {
     const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
