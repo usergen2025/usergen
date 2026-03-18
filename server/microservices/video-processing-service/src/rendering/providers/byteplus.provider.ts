@@ -394,9 +394,15 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
     try {
       console.log(`[BytePlus] Creating video generation task with model: ${request.model}`);
       
-      // Build content array for Seedance format
-      const content: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }> = [];
-      
+      // Build content array for Seedance format.
+      // [PRODUCT_ONLY/AVATAR_PRODUCT reference - commented out: r2v does not support seedance-1-0-pro; use single scene image only]
+      // When referenceImageUrl is set (PRODUCT_ONLY/AVATAR_PRODUCT): send both product and scene as role "reference_image" (reference-only mode; no first/last frame).
+      // Otherwise: send only scene image with no role (first frame to animate).
+      type ContentItem =
+        | { type: 'text'; text?: string }
+        | { type: 'image_url'; image_url: { url: string }; role?: string };
+      const content: ContentItem[] = [];
+
       // Add text prompt if provided
       if (request.prompt) {
         // Include duration and ratio in the prompt (Seedance format)
@@ -409,36 +415,42 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
         if (request.duration) {
           promptText += ` --dur ${request.duration}`;
         }
-        
+
         content.push({
           type: 'text',
           text: promptText,
         });
       }
-      
-      // Add image(s): when referenceImageUrl is set (product reference), add it first, then scene image
-      const urlsToAdd: string[] = [];
-      if (request.referenceImageUrl && !request.referenceImageUrl.startsWith('data:image/')) {
-        urlsToAdd.push(request.referenceImageUrl);
-      }
-      if (request.image && !request.image.startsWith('data:image/')) {
-        urlsToAdd.push(request.image);
-      }
+
+      // const useReferenceOnlyMode = request.referenceImageUrl && !request.referenceImageUrl.startsWith('data:image/');
+      // if (useReferenceOnlyMode) {
+      //   // Both product and scene as reference_image (reference-only mode; prompt should refer to [Image 1] / [Image 2] or first/second image)
+      //   console.log('[BytePlus] Pre-warming reference image URL (product)...');
+      //   const warmedRef = await preWarmUrl(request.referenceImageUrl!, 3);
+      //   if (!warmedRef) {
+      //     console.warn('[BytePlus] ⚠️ Product reference URL pre-warming failed, proceeding anyway...');
+      //   }
+      //   await new Promise((resolve) => setTimeout(resolve, 500));
+      //   content.push({
+      //     type: 'image_url',
+      //     image_url: { url: request.referenceImageUrl! },
+      //     role: 'reference_image',
+      //   });
+      // }
+
       if (request.image?.startsWith('data:image/')) {
         console.warn('[BytePlus] Base64 images not supported in Seedance content format. Use a publicly accessible URL.');
-      }
-
-      for (let i = 0; i < urlsToAdd.length; i++) {
-        const imageUrl = urlsToAdd[i];
-        console.log(`[BytePlus] Pre-warming image URL ${i + 1}/${urlsToAdd.length}...`);
-        const warmed = await preWarmUrl(imageUrl, 3);
+      } else if (request.image) {
+        console.log('[BytePlus] Pre-warming scene image URL...');
+        const warmed = await preWarmUrl(request.image, 3);
         if (!warmed) {
-          console.warn(`[BytePlus] ⚠️ Image URL pre-warming failed, proceeding anyway...`);
+          console.warn('[BytePlus] ⚠️ Scene image URL pre-warming failed, proceeding anyway...');
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         content.push({
           type: 'image_url',
-          image_url: { url: imageUrl },
+          image_url: { url: request.image },
+          // ...(useReferenceOnlyMode && { role: 'reference_image' }),
         });
       }
       

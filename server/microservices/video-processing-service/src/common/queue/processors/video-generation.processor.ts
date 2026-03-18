@@ -521,24 +521,25 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(15);
 
+    // [PRODUCT_ONLY/AVATAR_PRODUCT reference image - commented out to use single scene image until r2v model supported]
     // For PRODUCT_ONLY/AVATAR_PRODUCT with reference image: explicit prompt so model keeps product consistent
-    const referenceImageUrl = job.data.referenceImageUrl;
-    const finalPrompt = referenceImageUrl
-      ? `The first image is the actual product for reference. The second image is the scene to animate. Generate video from the scene image while keeping the product appearance identical to the reference. ${videoPrompt}`
-      : videoPrompt;
+    // const referenceImageUrl = job.data.referenceImageUrl;
+    // const finalPrompt = referenceImageUrl
+    //   ? `The first image is the actual product for reference. The second image is the scene to animate. Generate video from the scene image while keeping the product appearance identical to the reference. ${videoPrompt}`
+    //   : videoPrompt;
 
     // Generate video using unified interface
     let videoResponse;
     try {
       videoResponse = await provider.generateVideo({
-        prompt: finalPrompt,
+        prompt: videoPrompt,
         imageUrl: imageUrl,
         modelId: selectedModelId,
         aspectRatio: videoRatio,
         resolution: videoResolution,
         duration: finalDuration,
         generateAudio: model.defaultConfig.generateAudio,
-        ...(referenceImageUrl && { referenceImageUrl }),
+        // ...(referenceImageUrl && { referenceImageUrl }),
       }, (progress) => {
         // Map provider progress (0-100) to job progress (15-80)
         const mappedProgress = 15 + (progress * 0.65); // 15% to 80%
