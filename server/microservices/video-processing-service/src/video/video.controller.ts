@@ -14,6 +14,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } from '@nestjs/swagger';
 import { VideoService } from './video.service';
@@ -667,25 +668,45 @@ export class VideoController {
       this.configService.get<string>('VOICE_AUDIO_SERVICE_URL') || 'http://localhost:9002/api';
     const token = req.headers?.authorization || null;
 
-    const response = await axios.post<{
-      success: boolean;
-      data?: { publicUrl: string; gcsUrl?: string; duration: number };
-      message?: string;
-    }>(
-      `${voiceServiceUrl}/voice/process-last-scene-audio`,
-      {
-        audioUrl,
-        userId,
-        projectId,
-        sceneNumber: lastEntry.sceneNumber,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: token } : {}),
+    let response: {
+      data: {
+        success: boolean;
+        data?: { publicUrl: string; gcsUrl?: string; duration: number };
+        message?: string;
+      };
+    };
+
+    try {
+      response = await axios.post<{
+        success: boolean;
+        data?: { publicUrl: string; gcsUrl?: string; duration: number };
+        message?: string;
+      }>(
+        `${voiceServiceUrl}/voice/process-last-scene-audio`,
+        {
+          audioUrl,
+          userId,
+          projectId,
+          sceneNumber: lastEntry.sceneNumber,
         },
-      },
-    );
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: token } : {}),
+          },
+        },
+      );
+    } catch (error: any) {
+      if (error.code === 'ECONNREFUSED') {
+        throw new ServiceUnavailableException(
+          'Voice audio service is not available. Please ensure the voice-audio-service is running.',
+        );
+      }
+      throw new HttpException(
+        error.response?.data?.message || error.message || 'Failed to connect to voice service',
+        error.response?.status || HttpStatus.BAD_GATEWAY,
+      );
+    }
 
     if (!response.data?.success || !response.data?.data) {
       const errMsg = (response.data as { message?: string })?.message || 'Failed to process manual audio';
@@ -1711,6 +1732,225 @@ export class VideoController {
       success: true,
       data: status,
     };
+  }
+
+  @Post(':projectId/upload-broll')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Project ID' })
+  @ApiOperation({ summary: 'Upload B-roll file', description: 'Upload an image or video file for use as B-roll; returns a URL to pass to process-custom-broll' })
+  @ApiBody({ schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } }, required: ['file'] } })
+  @ApiResponse({ status: 201, description: 'File uploaded; returns url' })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadBroll(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @UploadedFile() file: Multer.File,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+    if (!file || !file.buffer) {
+      throw new BadRequestException('File is required');
+    }
+    const uploadsDir = this.configService.get<string>('UPLOADS_DIR') || join(process.cwd(), 'uploads');
+    const brollDir = join(uploadsDir, 'broll', userId, projectId);
+    if (!fs.existsSync(brollDir)) {
+      fs.mkdirSync(brollDir, { recursive: true });
+    }
+    const ext = path.extname(file.originalname || '') || (file.mimetype?.startsWith('video/') ? '.mp4' : '.jpg');
+    const filename = `broll_${Date.now()}${ext}`;
+    const filePath = join(brollDir, filename);
+    fs.writeFileSync(filePath, file.buffer);
+    const localUrl = `/uploads/broll/${userId}/${projectId}/${filename}`;
+    let publicUrl: string | undefined;
+    try {
+      const mimeType = file.mimetype || (ext === '.mp4' || ext === '.mov' ? 'video/mp4' : 'image/jpeg');
+    const result = await this.publicUrlService.uploadFromPath(
+        filePath,
+        `broll/${userId}/${projectId}`,
+        filename,
+        mimeType,
+      );
+      publicUrl = result.publicUrl;
+    } catch (err: any) {
+      console.warn(`[VideoController] upload-broll GCS upload failed: ${err?.message}`);
+    }
+    return {
+      success: true,
+      data: { url: publicUrl || localUrl },
+      message: 'B-roll file uploaded successfully',
+    };
+  }
+
+  @Post(':projectId/process-custom-broll')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Project ID' })
+  @ApiOperation({
+    summary: 'Process custom B-roll upload',
+    description: 'Process uploaded or stock B-roll media for a scene: aspect ratio check, video frame extraction, resize',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        sceneNumber: { type: 'number', description: 'Scene number to apply B-roll to' },
+        source: { type: 'string', enum: ['upload', 'freepik'], description: 'Source of the B-roll' },
+        sourceId: { type: 'string', description: 'Stock item ID (for Freepik)' },
+        fileUrl: { type: 'string', description: 'URL of uploaded file in GCS/local storage' },
+        mediaType: { type: 'string', enum: ['image', 'video'], description: 'Type of media' },
+        targetAspectRatio: { type: 'string', enum: ['9:16', '9:8'], description: 'Target aspect ratio for B-roll' },
+        scriptContext: { type: 'string', description: 'Optional script context for generating video prompt from image' },
+      },
+      required: ['sceneNumber', 'source', 'mediaType', 'targetAspectRatio'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'B-roll processed successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid request parameters' })
+  async processCustomBRoll(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body: {
+      sceneNumber: number;
+      source: 'upload' | 'freepik';
+      sourceId?: string;
+      fileUrl?: string;
+      mediaType: 'image' | 'video';
+      targetAspectRatio: '9:16' | '9:8';
+      scriptContext?: string;
+    },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const { sceneNumber, source, sourceId, fileUrl, mediaType, targetAspectRatio, scriptContext } = body;
+
+    if (!sceneNumber || !source || !mediaType || !targetAspectRatio) {
+      throw new HttpException('Missing required fields', HttpStatus.BAD_REQUEST);
+    }
+
+    if (source === 'freepik' && !sourceId) {
+      throw new HttpException('sourceId is required for Freepik source', HttpStatus.BAD_REQUEST);
+    }
+
+    if (source === 'upload' && !fileUrl) {
+      throw new HttpException('fileUrl is required for upload source', HttpStatus.BAD_REQUEST);
+    }
+
+    try {
+      const project = await this.videoService.getProject(projectId, userId);
+      if (!project.success || !project.data) {
+        throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+      }
+
+      const projectData = project.data as any;
+      const bRollImages = Array.isArray(projectData.bRollImages) ? [...projectData.bRollImages] : [];
+      const bRollVideoTasks = Array.isArray(projectData.bRollVideoTasks) ? [...projectData.bRollVideoTasks] : [];
+
+      let processedImageUrl: string | undefined;
+      let processedVideoUrl: string | undefined;
+
+      if (source === 'upload' && fileUrl) {
+        if (mediaType === 'image') {
+          processedImageUrl = fileUrl;
+          const existingIndex = bRollImages.findIndex((b: any) => b.sceneNumber === sceneNumber);
+          const brollEntry = {
+            sceneNumber,
+            imageUrl: processedImageUrl,
+            source: 'custom_upload',
+            customUpload: true,
+            uploadedAt: new Date().toISOString(),
+          };
+          if (existingIndex >= 0) {
+            bRollImages[existingIndex] = { ...bRollImages[existingIndex], ...brollEntry };
+          } else {
+            bRollImages.push(brollEntry);
+          }
+        } else {
+          processedVideoUrl = fileUrl;
+          const existingIndex = bRollVideoTasks.findIndex((b: any) => b.sceneNumber === sceneNumber);
+          const brollEntry = {
+            sceneNumber,
+            videoUrl: processedVideoUrl,
+            source: 'custom_upload',
+            customUpload: true,
+            uploadedAt: new Date().toISOString(),
+          };
+          if (existingIndex >= 0) {
+            bRollVideoTasks[existingIndex] = { ...bRollVideoTasks[existingIndex], ...brollEntry };
+          } else {
+            bRollVideoTasks.push(brollEntry);
+          }
+        }
+      } else if (source === 'freepik' && fileUrl) {
+        // Stock (Freepik) selection: persist so convert-to-videos and rendering use it
+        if (mediaType === 'image') {
+          processedImageUrl = fileUrl;
+          const existingIndex = bRollImages.findIndex((b: any) => b.sceneNumber === sceneNumber);
+          const brollEntry = {
+            sceneNumber,
+            imageUrl: processedImageUrl,
+            source: 'freepik',
+            sourceId: sourceId || undefined,
+            customUpload: false,
+          };
+          if (existingIndex >= 0) {
+            bRollImages[existingIndex] = { ...bRollImages[existingIndex], ...brollEntry };
+          } else {
+            bRollImages.push(brollEntry);
+          }
+        } else {
+          processedVideoUrl = fileUrl;
+          const existingIndex = bRollVideoTasks.findIndex((b: any) => b.sceneNumber === sceneNumber);
+          const brollEntry = {
+            sceneNumber,
+            videoUrl: processedVideoUrl,
+            source: 'freepik',
+            sourceId: sourceId || undefined,
+            customUpload: false,
+          };
+          if (existingIndex >= 0) {
+            bRollVideoTasks[existingIndex] = { ...bRollVideoTasks[existingIndex], ...brollEntry };
+          } else {
+            bRollVideoTasks.push(brollEntry);
+          }
+        }
+      }
+
+      // Update project with B-roll data: use bRollVideoTasks for video entries (Prisma expects String[] for bRollVideos)
+      await this.videoService.updateProject(projectId, userId, {
+        bRollImages,
+        bRollVideoTasks: bRollVideoTasks as any,
+        metadata: {
+          ...projectData.metadata,
+          customBRollUpdatedAt: new Date().toISOString(),
+        },
+      });
+
+      return {
+        success: true,
+        data: {
+          processedImageUrl,
+          processedVideoUrl,
+          sceneNumber,
+        },
+        message: 'Custom B-roll processed successfully',
+      };
+    } catch (error: any) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error.message || 'Failed to process custom B-roll',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
 

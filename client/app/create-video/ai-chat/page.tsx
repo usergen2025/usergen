@@ -13,6 +13,7 @@ import { VideoStyle } from '@/types';
 import AIChatTagAwareInput from '@/components/ui/AIChatTagAwareInput';
 import ImagePreview from '@/components/ui/ImagePreview';
 import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
+import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
 
 // Define asset types
 interface Asset {
@@ -38,7 +39,7 @@ type VoiceMode = 'AI' | 'MANUAL' | null;
 type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
-type AvatarSubstep = 'question' | 'selection' | 'visual-style' | 'avatar-preview';
+type AvatarSubstep = 'question' | 'selection' | 'text-generation' | 'visual-style' | 'avatar-preview';
 type VoiceSubstep = 'question' | 'selection' | 'manual' | 'voice-transform' | 'scene-review' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
 type ScriptSubstep = 'language' | 'input';
@@ -65,11 +66,13 @@ function AIChatPageContent() {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [generatedScript, setGeneratedScript] = useState<any | null>(null);
   const [formattedScript, setFormattedScript] = useState<string | null>(null);
+  const [isEditingScript, setIsEditingScript] = useState<boolean>(false);
+  const [editableScriptText, setEditableScriptText] = useState<string>('');
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [userScriptMessage, setUserScriptMessage] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [proceedConfirmed, setProceedConfirmed] = useState<boolean>(false);
-  const [avatarPreference, setAvatarPreference] = useState<'yes' | 'no' | null>(null);
+  const [avatarPreference, setAvatarPreference] = useState<'library' | 'generate' | 'skip' | null>(null);
   const [avatarYesMessage, setAvatarYesMessage] = useState<boolean>(false); // Track if user selected "yes"
   // Avatar selection state
   const [activeAvatarTab, setActiveAvatarTab] = useState<'library' | 'upload' | 'hire'>('library');
@@ -84,6 +87,11 @@ function AIChatPageContent() {
   const [avatarConfirmed, setAvatarConfirmed] = useState<boolean>(false); // Track if avatar is confirmed and ready to proceed
   const [avatarSubstep, setAvatarSubstep] = useState<AvatarSubstep>('question'); // Track avatar selection substep
   const [selectedAvatarVisualStyle, setSelectedAvatarVisualStyle] = useState<AvatarVisualStylePresetId | null>(null);
+  // Avatar text-to-image generation state
+  const [avatarDescription, setAvatarDescription] = useState<string>('');
+  const [isGeneratingAvatarFromText, setIsGeneratingAvatarFromText] = useState<boolean>(false);
+  const [avatarGenerationError, setAvatarGenerationError] = useState<string | null>(null);
+  const [avatarDescriptionFocused, setAvatarDescriptionFocused] = useState<boolean>(false);
   // Avatar upload state
   const [avatarUploadFile, setAvatarUploadFile] = useState<File | null>(null);
   const [avatarUploadPreview, setAvatarUploadPreview] = useState<string | null>(null);
@@ -173,6 +181,19 @@ function AIChatPageContent() {
   const [inputVisualizerLevels, setInputVisualizerLevels] = useState<number[]>([]);
   const inputVisualizerContainerRef = useRef<HTMLDivElement | null>(null);
   const [inputVisualizerLaneCount, setInputVisualizerLaneCount] = useState<number>(64);
+
+  // Avatar description recording state (speech-to-text for avatar step)
+  const [avatarDescriptionRecording, setAvatarDescriptionRecording] = useState(false);
+  const avatarMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const avatarRecordingStreamRef = useRef<MediaStream | null>(null);
+  const avatarAudioChunksRef = useRef<Blob[]>([]);
+  const avatarAudioContextRef = useRef<AudioContext | null>(null);
+  const avatarAnalyserRef = useRef<AnalyserNode | null>(null);
+  const avatarVisualizerRafRef = useRef<number | null>(null);
+  const avatarVisualizerLastUpdateRef = useRef<number>(0);
+  const [avatarDescriptionVisualizerLevels, setAvatarDescriptionVisualizerLevels] = useState<number[]>([]);
+  const avatarVisualizerContainerRef = useRef<HTMLDivElement | null>(null);
+  const AVATAR_VISUALIZER_HISTORY_LENGTH = 64;
   
   // Voice transformation state (Speech-to-Speech)
   // Note: showVoiceTransformQuestion is now derived from voiceSubstep === 'voice-transform' || voiceSubstep === 'scene-review'
@@ -229,6 +250,19 @@ function AIChatPageContent() {
   const [reviewPlayingType, setReviewPlayingType] = useState<'original' | 'transformed' | null>(null);
   const reviewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [reviewPlaybackProgress, setReviewPlaybackProgress] = useState<Record<number, number>>({});
+  
+  // B-roll source selection state
+  const [brollSourcePreference, setBrollSourcePreference] = useState<'ai' | 'manual' | null>(null);
+  const [brollSourceConfirmed, setBrollSourceConfirmed] = useState(false);
+  const [manualBrollByScene, setManualBrollByScene] = useState<Record<number, {
+    type: 'stock-image' | 'stock-video' | 'upload-image' | 'upload-video';
+    url: string;
+    thumbnailUrl?: string;
+    id: string;
+    source: 'freepik' | 'upload';
+  } | null>>({});
+  const [brollModalOpen, setBrollModalOpen] = useState(false);
+  const [brollModalSceneNumber, setBrollModalSceneNumber] = useState(1);
   
   // Style selection state
   const [selectedVideoStyle, setSelectedVideoStyle] = useState<VideoStyle | null>(null);
@@ -350,7 +384,7 @@ function AIChatPageContent() {
             // Restore avatar
             if (project.avatarId) {
               setSelectedAvatarId(project.avatarId);
-              setAvatarPreference('yes');
+              setAvatarPreference('library');
               setAvatarYesMessage(true);
             }
             
@@ -433,10 +467,10 @@ function AIChatPageContent() {
               
               if (restoredStep === 'avatar-selection' && (restoredStyle === 'product-only' || restoredStyle === 'broll-only')) {
                 restoredStep = 'voice-selection';
-                // Set avatar preference to 'no' for product-only and broll-only
-                setAvatarPreference('no');
+                // Set avatar preference to 'skip' for product-only and broll-only
+                setAvatarPreference('skip');
                 if (typeof window !== 'undefined') {
-                  sessionStorage.setItem('avatarPreference', 'no');
+                  sessionStorage.setItem('avatarPreference', 'skip');
                 }
               }
               
@@ -1231,6 +1265,7 @@ function AIChatPageContent() {
     setExtractedTags(tags);
     
     setUserScriptMessage(userMessage); // Keep original message with @ for display
+    setScriptInput(''); // Clear input immediately to avoid duplicate display
     setIsGeneratingScript(true);
     setScriptError(null);
     
@@ -1336,7 +1371,7 @@ function AIChatPageContent() {
       // For other styles, hasAvatar depends on avatarPreference
       const hasAvatar = (styleToUse === 'product-only' || styleToUse === 'broll-only')
         ? false 
-        : (avatarPreference === 'yes' && selectedAvatar !== null);
+        : ((avatarPreference === 'library' || avatarPreference === 'generate') && selectedAvatar !== null);
       
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
@@ -1465,9 +1500,6 @@ function AIChatPageContent() {
         // Advance to script-generated step
         setCurrentStep('script-generated');
         
-        // Clear script input
-        setScriptInput('');
-        
         showToast('Script generated successfully!', 'success');
       } else {
         throw new Error(response.message || 'Failed to generate script');
@@ -1589,7 +1621,7 @@ function AIChatPageContent() {
       // For product-only and broll-only styles, hasAvatar is always false
       const hasAvatar = (styleToUse === 'product-only' || styleToUse === 'broll-only') 
         ? false 
-        : (avatarPreference === 'yes' && selectedAvatar !== null);
+        : ((avatarPreference === 'library' || avatarPreference === 'generate') && selectedAvatar !== null);
       
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
@@ -1656,24 +1688,25 @@ function AIChatPageContent() {
     }
   };
 
-  const handleAvatarSelection = (preference: 'yes' | 'no') => {
+  const handleAvatarSelection = (preference: 'library' | 'generate' | 'skip') => {
     setAvatarPreference(preference);
     // Save preference to sessionStorage for later use
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('avatarPreference', preference);
     }
     
-    if (preference === 'yes') {
-      // Move to selection substep
+    if (preference === 'library') {
+      // Move to selection substep - Choose from Library
       setAvatarYesMessage(true);
       setAvatarSubstep('selection');
       // Load avatars for the active tab
       loadAvatars(activeAvatarTab);
-    } else {
-      // Skip avatar selection and move to voice selection
-      setAvatarSubstep('question'); // Reset substep
-      setCurrentStep('voice-selection');
+    } else if (preference === 'generate') {
+      // Move to text-generation substep - Generate with AI
+      setAvatarYesMessage(true);
+      setAvatarSubstep('text-generation');
     }
+    // Skip option removed from UI; product-only/broll-only still set avatarPreference to 'skip' for metadata
   };
 
   // Load avatars based on active tab
@@ -2802,6 +2835,169 @@ function AIChatPageContent() {
     }
   };
 
+  const stopActiveAvatarDescriptionRecording = () => {
+    try {
+      if (avatarMediaRecorderRef.current && avatarMediaRecorderRef.current.state !== 'inactive') {
+        avatarMediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error('Failed to stop avatar description recording:', error);
+    }
+    if (avatarRecordingStreamRef.current) {
+      avatarRecordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      avatarRecordingStreamRef.current = null;
+    }
+    avatarMediaRecorderRef.current = null;
+    avatarAudioChunksRef.current = [];
+    if (avatarVisualizerRafRef.current !== null) {
+      cancelAnimationFrame(avatarVisualizerRafRef.current);
+      avatarVisualizerRafRef.current = null;
+    }
+    if (avatarAudioContextRef.current) {
+      avatarAudioContextRef.current.close().catch(() => {});
+      avatarAudioContextRef.current = null;
+    }
+    avatarAnalyserRef.current = null;
+    avatarVisualizerLastUpdateRef.current = 0;
+    setAvatarDescriptionVisualizerLevels([]);
+  };
+
+  const handleStartAvatarDescriptionRecording = async () => {
+    if (avatarDescriptionRecording) {
+      showToast('Recording is already in progress.', 'warning');
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      showToast('Recording is not supported in this browser.', 'error');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          sampleRate: { ideal: 44100 },
+          channelCount: { ideal: 1 },
+        },
+      });
+      const tracks = stream.getAudioTracks();
+      if (tracks.length === 0) throw new Error('No audio track available from microphone');
+      avatarRecordingStreamRef.current = stream;
+      try {
+        const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const audioContext: AudioContext = new AudioContextClass();
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 64;
+          const source = audioContext.createMediaStreamSource(stream);
+          source.connect(analyser);
+          avatarAudioContextRef.current = audioContext;
+          avatarAnalyserRef.current = analyser;
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+          const updateVisualizer = () => {
+            if (!avatarAnalyserRef.current) return;
+            const now = performance.now();
+            const last = avatarVisualizerLastUpdateRef.current || 0;
+            if (now - last < 80) {
+              avatarVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+              return;
+            }
+            avatarVisualizerLastUpdateRef.current = now;
+            avatarAnalyserRef.current.getByteTimeDomainData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i += 1) {
+              const value = dataArray[i] ?? 128;
+              sum += Math.abs(value - 128);
+            }
+            const avg = sum / bufferLength;
+            const amplitude = Math.min(1, avg / 50);
+            setAvatarDescriptionVisualizerLevels((prev) => {
+              const next = [...prev, amplitude];
+              if (next.length > AVATAR_VISUALIZER_HISTORY_LENGTH) {
+                next.splice(0, next.length - AVATAR_VISUALIZER_HISTORY_LENGTH);
+              }
+              return next;
+            });
+            avatarVisualizerRafRef.current = requestAnimationFrame(updateVisualizer);
+          };
+          if (avatarVisualizerRafRef.current !== null) cancelAnimationFrame(avatarVisualizerRafRef.current);
+          setAvatarDescriptionVisualizerLevels([]);
+          updateVisualizer();
+        }
+      } catch (e) {
+        console.error('[AvatarDescriptionRecording] Failed to initialize visualizer', e);
+      }
+      const codecs = ['audio/webm;codecs=opus', 'audio/webm;codecs=pcm', 'audio/webm'];
+      let selectedMimeType = '';
+      for (const codec of codecs) {
+        if ((window as any).MediaRecorder && MediaRecorder.isTypeSupported(codec)) {
+          selectedMimeType = codec;
+          break;
+        }
+      }
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      avatarMediaRecorderRef.current = recorder;
+      avatarAudioChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) avatarAudioChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        showToast('Recording error occurred. Please try again.', 'error');
+        stopActiveAvatarDescriptionRecording();
+        setAvatarDescriptionRecording(false);
+      };
+      recorder.start(1000);
+      setAvatarDescriptionRecording(true);
+    } catch (error: any) {
+      console.error('Failed to start avatar description recording:', error);
+      showToast(error?.message || 'Failed to access microphone', 'error');
+      stopActiveAvatarDescriptionRecording();
+      setAvatarDescriptionRecording(false);
+    }
+  };
+
+  const handleCancelAvatarDescriptionRecording = () => {
+    stopActiveAvatarDescriptionRecording();
+    setAvatarDescriptionRecording(false);
+  };
+
+  const handleConfirmAvatarDescriptionRecording = async () => {
+    if (!avatarDescriptionRecording || !avatarMediaRecorderRef.current) return;
+    try {
+      const recorder = avatarMediaRecorderRef.current;
+      const mimeType = recorder.mimeType || 'audio/webm';
+      const audioBlob = await new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          resolve(new Blob(avatarAudioChunksRef.current, { type: mimeType }));
+        };
+        recorder.stop();
+      });
+      setAvatarDescriptionRecording(false);
+      stopActiveAvatarDescriptionRecording();
+      if (audioBlob.size === 0) {
+        showToast('No audio was recorded. Please try again.', 'error');
+        return;
+      }
+      const response = await apiClient.transcribeSpeech(audioBlob);
+      if (response.success && response.data?.text) {
+        const text = response.data.text.trim();
+        if (text) {
+          setAvatarDescription((prev) => (prev.trim() ? prev.trimEnd() + '\n' + text : text));
+        } else {
+          showToast('No speech detected. Please try again.', 'warning');
+        }
+      } else {
+        showToast(response.message || 'Failed to transcribe audio', 'error');
+      }
+    } catch (error: any) {
+      console.error('Avatar description transcription error:', error);
+      showToast(error?.message || 'Failed to transcribe audio', 'error');
+    }
+  };
+
   // Handle sending voice file (processes the pending file)
   const handleSendVoiceFile = async () => {
     if (!pendingVoiceFile) {
@@ -3061,165 +3257,384 @@ function AIChatPageContent() {
       const isAvatarOnlyStyle = styleToUse === 'avatar-only' || styleToUse === 'AVATAR_ONLY' || 
                                  styleToUse === 'animated-avatar' || styleToUse === 'ANIMATED_AVATAR';
       
-      // After 1.5 seconds, move to audio-image-generation step
+      // For avatar-only styles, proceed directly to generation
+      // For other styles, show B-roll source choice first
+      if (isAvatarOnlyStyle) {
+        // After 1.5 seconds, move directly to audio-image-generation
+        setTimeout(async () => {
+          await startAvatarOnlyGeneration(projectId);
+        }, 1500);
+      }
+      // For non-avatar-only styles, B-roll choice UI will be shown automatically
+      // Generation will be triggered by handleBrollSourceSelection or handleProceedWithManualBroll
+    }
+  };
+
+  // Start avatar-only generation (no B-roll needed)
+  const startAvatarOnlyGeneration = async (projectIdToUse: string) => {
+    setCurrentStep('audio-image-generation');
+    setGenerationProgress(0);
+    
+    // Start voice generation
+    let audioCompleted = false;
+    try {
+      setIsGeneratingVoice(true);
+      const audioResponse = await apiClient.generateAudio(projectIdToUse);
+      if (audioResponse.success && audioResponse.data?.jobId) {
+        audioJobIdRef.current = audioResponse.data.jobId;
+        console.log('[AIChat] Started audio generation, jobId:', audioResponse.data.jobId);
+        subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+      } else if (audioResponse.success && audioResponse.data?.existing) {
+        // Audio already exists, skip voice generation
+        setIsGeneratingVoice(false);
+        audioCompleted = true;
+        setGenerationProgress(30); // Audio done = 30% for avatar-only
+      } else {
+        throw new Error('Failed to start voice generation');
+      }
+    } catch (error: any) {
+      console.error('Failed to generate audio:', error);
+      setIsGeneratingVoice(false);
+      showToast('Failed to start voice generation', 'error');
+      return;
+    }
+
+    console.log('[AIChat] Avatar-only style detected, skipping b-roll image generation');
+    setIsGeneratingBroll(false);
+    
+    // If audio is already done, start rendering immediately
+    if (audioCompleted) {
+      await startAvatarOnlyRendering(projectIdToUse);
+    }
+    // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
+  };
+
+  // Handle B-roll source selection (AI or manual)
+  const handleBrollSourceSelection = async (source: 'ai' | 'manual') => {
+    setBrollSourcePreference(source);
+    
+    if (source === 'ai') {
+      // User chose AI-generated B-roll, proceed with generation
+      setBrollSourceConfirmed(true);
       setTimeout(async () => {
-        setCurrentStep('audio-image-generation');
-        setGenerationProgress(0);
+        await startBrollGeneration();
+      }, 500);
+    }
+    // If 'manual', scene cards will be shown for selection
+  };
+
+  // Handle B-roll selection from modal (stock or upload)
+  const handleBrollSelection = (selection: BRollSelection) => {
+    const sceneNumber = brollModalSceneNumber;
+    
+    setManualBrollByScene(prev => ({
+      ...prev,
+      [sceneNumber]: {
+        type: selection.type,
+        url: selection.downloadUrl || selection.url,
+        thumbnailUrl: selection.type.includes('video') ? selection.url : undefined,
+        id: selection.id || `upload-${Date.now()}`,
+        source: selection.source,
+      }
+    }));
+    
+    setBrollModalOpen(false);
+    console.log(`[AIChat] B-roll selected for scene ${sceneNumber}:`, selection.type, selection.source);
+  };
+
+  // Handle proceeding with manual B-roll selections
+  const handleProceedWithManualBroll = async () => {
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+
+    setBrollSourceConfirmed(true);
+    setCurrentStep('audio-image-generation');
+    setGenerationProgress(0);
+
+    const styleToUse = selectedVideoStyle || 
+      (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+
+    // Start voice generation first
+    try {
+      setIsGeneratingVoice(true);
+      const audioResponse = await apiClient.generateAudio(projectId);
+      if (audioResponse.success && audioResponse.data?.jobId) {
+        audioJobIdRef.current = audioResponse.data.jobId;
+        console.log('[AIChat] Started audio generation, jobId:', audioResponse.data.jobId);
+        subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+      } else if (audioResponse.success && audioResponse.data?.existing) {
+        setIsGeneratingVoice(false);
+        setGenerationProgress(50);
+      } else {
+        throw new Error('Failed to start voice generation');
+      }
+    } catch (error: any) {
+      console.error('Failed to generate audio:', error);
+      setIsGeneratingVoice(false);
+      showToast('Failed to start voice generation', 'error');
+      return;
+    }
+
+    // Process scenes: use manual selections or generate with AI
+    if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
+      try {
+        setIsGeneratingBroll(true);
+        const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
         
-        // Start voice generation
-        let audioCompleted = false;
-        try {
-          setIsGeneratingVoice(true);
-          const audioResponse = await apiClient.generateAudio(projectId);
-          if (audioResponse.success && audioResponse.data?.jobId) {
-            audioJobIdRef.current = audioResponse.data.jobId;
-            console.log('[AIChat] Started audio generation, jobId:', audioResponse.data.jobId);
-            subscribeToJob(audioResponse.data.jobId, 'audio-generation');
-          } else if (audioResponse.success && audioResponse.data?.existing) {
-            // Audio already exists, skip voice generation
-            setIsGeneratingVoice(false);
-            audioCompleted = true;
-            if (isAvatarOnlyStyle) {
-              setGenerationProgress(30); // Audio done = 30% for avatar-only
-            } else {
-            setGenerationProgress(50);
-            }
-          } else {
-            throw new Error('Failed to start voice generation');
-          }
-        } catch (error: any) {
-          console.error('Failed to generate audio:', error);
-          setIsGeneratingVoice(false);
-          showToast('Failed to start voice generation', 'error');
-          return;
-        }
+        const productImageUrl = attachedAssets.find(asset => 
+          asset.type === 'image' && asset.id.startsWith('product-')
+        )?.url || null;
 
-        // For avatar-only styles, skip b-roll and trigger direct rendering after audio completes
-        if (isAvatarOnlyStyle) {
-          console.log('[AIChat] Avatar-only style detected, skipping b-roll image generation');
-          setIsGeneratingBroll(false);
+        const promises = scenes.map(async (scene: any, index: number) => {
+          const sceneNumber = scene.scene_number || (index + 1);
+          const manualSelection = manualBrollByScene[sceneNumber];
+
+          if (manualSelection) {
+            // Scene has manual B-roll selection - save it to the project
+            console.log(`[AIChat] Using manual B-roll for scene ${sceneNumber}:`, manualSelection.type);
+            
+            try {
+              // Update scene with manual B-roll URL
+              await apiClient.updateSceneBroll(projectId, sceneNumber, {
+                brollUrl: manualSelection.url,
+                brollType: manualSelection.type.includes('video') ? 'video' : 'image',
+                source: manualSelection.source,
+              });
+              return; // Skip AI generation for this scene
+            } catch (error: any) {
+              console.error(`Failed to save manual B-roll for scene ${sceneNumber}:`, error);
+              // Fall through to AI generation if manual save fails
+            }
+          }
+
+          // No manual selection - generate with AI
+          let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
           
-          // If audio is already done, start rendering immediately
-          if (audioCompleted) {
-            await startAvatarOnlyRendering(projectId);
+          if (!prompt && (styleToUse === 'broll-only' || styleToUse === 'B_ROLL_ONLY')) {
+            prompt = scene.broll_visual_description || 
+                     (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                     `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
           }
-          // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
-          return;
-        }
-
-        // Start broll image generation for all scenes (non-avatar-only styles)
-        if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
-          try {
-            setIsGeneratingBroll(true);
-            const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
-            
-            // Extract product image URL and avatar info for avatar-product style
-            const productImageUrl = attachedAssets.find(asset => 
-              asset.type === 'image' && asset.id.startsWith('product-')
-            )?.url || null;
-            
-            // Get avatar image key if avatar is selected (for avatar-product style)
-            let avatarImageKey: string | undefined = undefined;
-            if (styleToUse === 'avatar-product' && selectedAvatar) {
-              // Avatar image key will be retrieved from backend based on avatarId
-              // We'll pass avatarId and let backend handle it
+          
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
+            if (sceneNumber % 2 === 1) {
+              prompt = scene.broll_visual_description || 
+                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
+            } else {
+              prompt = scene.broll_visual_description || 
+                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
             }
-            
-            const promises = scenes.map(async (scene: any, index: number) => {
-              const sceneNumber = scene.scene_number || (index + 1);
-              
-              // For ALTERNATE style, ALL scenes need b-roll images (odd: full 9:16, even: 3:4 for top half)
-              // So we need to handle cases where avatar-type scenes might not have broll_image_prompt
-              let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
-              
-              // For B_ROLL_ONLY style, fallback prompt if empty
-              if (!prompt && (styleToUse === 'broll-only' || styleToUse === 'B_ROLL_ONLY')) {
-                prompt = scene.broll_visual_description || 
-                         (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                         `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
-              }
-              // For ALTERNATE style, if prompt is empty, generate fallback based on scene number
-              if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
-                if (sceneNumber % 2 === 1) {
-                  // Odd scene: Full 9:16 b-roll image
-                  // Use broll_visual_description, voiceover context, or generate fallback
-                  prompt = scene.broll_visual_description || 
-                           (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                           `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
-                } else {
-                  // Even scene: 3:4 b-roll image for top half (half-n-half composition)
-                  prompt = scene.broll_visual_description || 
-                           (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                           `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
-                }
-              }
-              
-              // Skip if still no prompt (shouldn't happen, but safety check)
-              if (!prompt) {
-                console.warn(`[AIChat] No prompt found for scene ${sceneNumber}, skipping image generation`);
-                return;
-              }
-              
-              // Use model-4 for product/avatar-product; model-1 for other styles (backend uses model-4 when refs present)
-              const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
-                ? 'model-4'  // nano-banana-pro supports reference images
-                : 'model-1'; // FAL imagen4 for non-product; processor overrides to model-4 when assets exist
+          }
+          
+          if (!prompt) {
+            console.warn(`[AIChat] No prompt found for scene ${sceneNumber}, skipping AI generation`);
+            return;
+          }
 
-              try {
-                const imageResponse = await apiClient.regenerateImage(
-                  projectId,
-                  sceneNumber,
-                  prompt,
-                  modelId,
-                  undefined, // aspectRatio
-                  undefined, // resolution
-                  productImageUrl || undefined, // productImageUrl
-                  styleToUse || undefined // videoStyle
-                );
+          const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
+            ? 'model-4' 
+            : 'model-1';
 
-                if (imageResponse.success && imageResponse.data?.jobId) {
-                  imageJobIdsRef.current.add(imageResponse.data.jobId);
-                  console.log('[AIChat] Started image generation for scene', sceneNumber, 'jobId:', imageResponse.data.jobId, 'Total jobs:', imageJobIdsRef.current.size);
-                  subscribeToJob(imageResponse.data.jobId, 'image-generation');
-                } else if (imageResponse.success && imageResponse.data?.existing) {
-                  // Image already exists, skip
-                }
-              } catch (error: any) {
-                console.error(`Failed to generate image for scene ${sceneNumber}:`, error);
-              }
-            });
+          try {
+            console.log(`[AIChat] Generating AI B-roll for scene ${sceneNumber}`);
+            const imageResponse = await apiClient.regenerateImage(
+              projectId,
+              sceneNumber,
+              prompt,
+              modelId,
+              undefined,
+              undefined,
+              productImageUrl || undefined,
+              styleToUse || undefined
+            );
 
-            // Wait for all API calls to complete (they're non-blocking)
-            await Promise.all(promises);
-
-            // If no images needed generation and voice is done, navigate immediately
-            if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
-              setIsGeneratingBroll(false);
-              setGenerationProgress(100);
-              setTimeout(() => {
-                console.log('[AIChat] No images needed, navigating to workspace');
-                router.push(`/create-video/workspace?projectId=${projectId}`);
-              }, 1000);
+            if (imageResponse.success && imageResponse.data?.jobId) {
+              imageJobIdsRef.current.add(imageResponse.data.jobId);
+              console.log('[AIChat] Started image generation for scene', sceneNumber, 'jobId:', imageResponse.data.jobId);
+              subscribeToJob(imageResponse.data.jobId, 'image-generation');
             }
           } catch (error: any) {
-            console.error('Failed to start image generation:', error);
-            setIsGeneratingBroll(false);
-            showToast('Failed to start image generation', 'error');
+            console.error(`Failed to generate AI image for scene ${sceneNumber}:`, error);
           }
-        } else {
-          // No script, just navigate if voice is done
-          if (!isGeneratingVoice) {
-            setIsGeneratingBroll(false);
-            setGenerationProgress(100);
-            setTimeout(() => {
-              console.log('[AIChat] No script, navigating to workspace');
-              router.push(`/create-video/workspace?projectId=${projectId}`);
-            }, 1000);
-          }
+        });
+
+        await Promise.all(promises);
+
+        // Check if we can navigate immediately
+        if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
+          setIsGeneratingBroll(false);
+          setGenerationProgress(100);
+          setTimeout(() => {
+            console.log('[AIChat] All manual B-roll saved, navigating to workspace');
+            router.push(`/create-video/workspace?projectId=${projectId}`);
+          }, 1000);
         }
-      }, 1500);
+      } catch (error: any) {
+        console.error('Failed to process B-roll:', error);
+        setIsGeneratingBroll(false);
+        showToast('Failed to process visuals', 'error');
+      }
     } else {
-      showToast('Please select a voice first', 'warning');
+      if (!isGeneratingVoice) {
+        setIsGeneratingBroll(false);
+        setGenerationProgress(100);
+        setTimeout(() => {
+          router.push(`/create-video/workspace?projectId=${projectId}`);
+        }, 1000);
+      }
+    }
+  };
+
+  // Start B-roll generation (AI-generated)
+  const startBrollGeneration = async () => {
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+
+    setCurrentStep('audio-image-generation');
+    setGenerationProgress(0);
+    
+    const styleToUse = selectedVideoStyle || 
+      (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+    
+    // Start voice generation
+    let audioCompleted = false;
+    try {
+      setIsGeneratingVoice(true);
+      const audioResponse = await apiClient.generateAudio(projectId);
+      if (audioResponse.success && audioResponse.data?.jobId) {
+        audioJobIdRef.current = audioResponse.data.jobId;
+        console.log('[AIChat] Started audio generation, jobId:', audioResponse.data.jobId);
+        subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+      } else if (audioResponse.success && audioResponse.data?.existing) {
+        // Audio already exists, skip voice generation
+        setIsGeneratingVoice(false);
+        audioCompleted = true;
+        setGenerationProgress(50);
+      } else {
+        throw new Error('Failed to start voice generation');
+      }
+    } catch (error: any) {
+      console.error('Failed to generate audio:', error);
+      setIsGeneratingVoice(false);
+      showToast('Failed to start voice generation', 'error');
+      return;
+    }
+
+    // Start broll image generation for all scenes (non-avatar-only styles)
+    if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
+      try {
+        setIsGeneratingBroll(true);
+        const scenes = generatedScript.scenes || generatedScript.scene_plan || [];
+        
+        // Extract product image URL and avatar info for avatar-product style
+        const productImageUrl = attachedAssets.find(asset => 
+          asset.type === 'image' && asset.id.startsWith('product-')
+        )?.url || null;
+        
+        // Get avatar image key if avatar is selected (for avatar-product style)
+        let avatarImageKey: string | undefined = undefined;
+        if (styleToUse === 'avatar-product' && selectedAvatar) {
+          // Avatar image key will be retrieved from backend based on avatarId
+          // We'll pass avatarId and let backend handle it
+        }
+        
+        const promises = scenes.map(async (scene: any, index: number) => {
+          const sceneNumber = scene.scene_number || (index + 1);
+          
+          // For ALTERNATE style, ALL scenes need b-roll images (odd: full 9:16, even: 3:4 for top half)
+          // So we need to handle cases where avatar-type scenes might not have broll_image_prompt
+          let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
+          
+          // For B_ROLL_ONLY style, fallback prompt if empty
+          if (!prompt && (styleToUse === 'broll-only' || styleToUse === 'B_ROLL_ONLY')) {
+            prompt = scene.broll_visual_description || 
+                     (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                     `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
+          }
+          // For ALTERNATE style, if prompt is empty, generate fallback based on scene number
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
+            if (sceneNumber % 2 === 1) {
+              // Odd scene: Full 9:16 b-roll image
+              // Use broll_visual_description, voiceover context, or generate fallback
+              prompt = scene.broll_visual_description || 
+                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
+            } else {
+              // Even scene: 3:4 b-roll image for top half (half-n-half composition)
+              prompt = scene.broll_visual_description || 
+                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
+            }
+          }
+          
+          // Skip if still no prompt (shouldn't happen, but safety check)
+          if (!prompt) {
+            console.warn(`[AIChat] No prompt found for scene ${sceneNumber}, skipping image generation`);
+            return;
+          }
+          
+          // Use model-4 for product/avatar-product; model-1 for other styles (backend uses model-4 when refs present)
+          const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
+            ? 'model-4'  // nano-banana-pro supports reference images
+            : 'model-1'; // FAL imagen4 for non-product; processor overrides to model-4 when assets exist
+
+          try {
+            const imageResponse = await apiClient.regenerateImage(
+              projectId,
+              sceneNumber,
+              prompt,
+              modelId,
+              undefined, // aspectRatio
+              undefined, // resolution
+              productImageUrl || undefined, // productImageUrl
+              styleToUse || undefined // videoStyle
+            );
+
+            if (imageResponse.success && imageResponse.data?.jobId) {
+              imageJobIdsRef.current.add(imageResponse.data.jobId);
+              console.log('[AIChat] Started image generation for scene', sceneNumber, 'jobId:', imageResponse.data.jobId, 'Total jobs:', imageJobIdsRef.current.size);
+              subscribeToJob(imageResponse.data.jobId, 'image-generation');
+            } else if (imageResponse.success && imageResponse.data?.existing) {
+              // Image already exists, skip
+            }
+          } catch (error: any) {
+            console.error(`Failed to generate image for scene ${sceneNumber}:`, error);
+          }
+        });
+
+        // Wait for all API calls to complete (they're non-blocking)
+        await Promise.all(promises);
+
+        // If no images needed generation and voice is done, navigate immediately
+        if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
+          setIsGeneratingBroll(false);
+          setGenerationProgress(100);
+          setTimeout(() => {
+            console.log('[AIChat] No images needed, navigating to workspace');
+            router.push(`/create-video/workspace?projectId=${projectId}`);
+          }, 1000);
+        }
+      } catch (error: any) {
+        console.error('Failed to start image generation:', error);
+        setIsGeneratingBroll(false);
+        showToast('Failed to start image generation', 'error');
+      }
+    } else {
+      // No script, just navigate if voice is done
+      if (!isGeneratingVoice) {
+        setIsGeneratingBroll(false);
+        setGenerationProgress(100);
+        setTimeout(() => {
+          console.log('[AIChat] No script, navigating to workspace');
+          router.push(`/create-video/workspace?projectId=${projectId}`);
+        }, 1000);
+      }
     }
   };
 
@@ -3475,7 +3890,7 @@ function AIChatPageContent() {
 
     try {
       // Map selectedOption to videoType (infer from avatar preference)
-      const videoType = avatarPreference === 'yes' ? 'WITH_AVATAR' : 'WITHOUT_AVATAR';
+      const videoType = (avatarPreference === 'library' || avatarPreference === 'generate') ? 'WITH_AVATAR' : 'WITHOUT_AVATAR';
       
       // Get selected style from state or sessionStorage
       const styleToUse = selectedVideoStyle || 
@@ -3538,10 +3953,10 @@ function AIChatPageContent() {
           // Skip avatar selection and go directly to voice selection
           setProceedConfirmed(true);
           setCurrentStep('voice-selection');
-          // Set avatar preference to 'no' since product-only doesn't use avatars
-          setAvatarPreference('no');
+          // Set avatar preference to 'skip' since product-only doesn't use avatars
+          setAvatarPreference('skip');
           if (typeof window !== 'undefined') {
-            sessionStorage.setItem('avatarPreference', 'no');
+            sessionStorage.setItem('avatarPreference', 'skip');
           }
         } else {
           // Normal flow: advance to avatar selection
@@ -3788,6 +4203,56 @@ function AIChatPageContent() {
       }
     } else {
       showToast('Please select an avatar first', 'warning');
+    }
+  };
+
+  // Handle generate avatar from text description (AI text-to-image)
+  const handleGenerateAvatarFromText = async () => {
+    if (!avatarDescription.trim()) {
+      showToast('Please describe your avatar first', 'warning');
+      return;
+    }
+    
+    setIsGeneratingAvatarFromText(true);
+    setAvatarGenerationError(null);
+    
+    try {
+      // Call the backend to generate avatar from text
+      const response = await apiClient.generateAvatarFromText({
+        prompt: avatarDescription.trim(),
+        projectId: projectId || undefined,
+      });
+      
+      if (response.success && response.avatarId) {
+        // Set the generated avatar as selected
+        setSelectedAvatarId(response.avatarId);
+        setSelectedAvatar({
+          id: response.avatarId,
+          name: 'AI Generated Avatar',
+          thumbnailUrl: response.thumbnailUrl,
+          avatarUrl: response.avatarUrl,
+          originalImageUrl: response.originalImageUrl,
+        });
+        setAvatarConfirmed(true);
+        setAvatarYesMessage(true);
+        
+        // Move to visual-style substep
+        setAvatarSubstep('visual-style');
+        
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('selectedAvatarId', response.avatarId);
+        }
+        
+        showToast('Avatar generated successfully!', 'success');
+      } else {
+        throw new Error(response.error || 'Failed to generate avatar');
+      }
+    } catch (error: any) {
+      console.error('Error generating avatar from text:', error);
+      setAvatarGenerationError(error.message || 'Failed to generate avatar. Please try again.');
+      showToast('Failed to generate avatar', 'error');
+    } finally {
+      setIsGeneratingAvatarFromText(false);
     }
   };
 
@@ -4125,7 +4590,7 @@ function AIChatPageContent() {
     
     switch (step) {
       case 'avatar-selection': {
-        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'visual-style', 'avatar-preview'];
+        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'text-generation', 'visual-style', 'avatar-preview'];
         const targetIndex = substepOrder.indexOf(substep as AvatarSubstep);
         const currentIndex = substepOrder.indexOf(avatarSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
@@ -4956,14 +5421,109 @@ function AIChatPageContent() {
                         </div>
 
                         {/* Formatted Script Box */}
-                        <div className="relative max-w-full sm:max-w-[637px] mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
+                        <div className="relative w-full sm:w-[637px] max-w-full mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
                           background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
                         }}>
-                          <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
-                            <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
-                              {formattedScript}
-                            </pre>
+                          <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full min-h-[200px]">
+                            {isEditingScript ? (
+                              <textarea
+                                value={editableScriptText}
+                                onChange={(e) => setEditableScriptText(e.target.value)}
+                                className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.25rem,2vh,20px)] text-[#000000] whitespace-pre-wrap break-words w-full h-full min-h-[400px] border-none outline-none resize-none bg-transparent"
+                                autoFocus
+                              />
+                            ) : (
+                              <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
+                                {formattedScript}
+                              </pre>
+                            )}
                           </div>
+                        </div>
+
+                        {/* Edit Script Button or Save/Cancel Buttons */}
+                        <div className="flex justify-end gap-2 mt-2 w-full sm:w-[637px] max-w-full">
+                          {isEditingScript ? (
+                            <>
+                              <button 
+                                onClick={() => {
+                                  setIsEditingScript(false);
+                                  setEditableScriptText('');
+                                }}
+                                className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 px-3 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                              >
+                                Cancel
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  // Update formattedScript with edited text
+                                  setFormattedScript(editableScriptText);
+                                  // Parse and update generatedScript if it's JSON-formatted
+                                  try {
+                                    // Rebuild the generatedScript from the edited formatted text
+                                    // Split by scene markers and rebuild
+                                    const lines = editableScriptText.split('\n');
+                                    const scenes: any[] = [];
+                                    let currentScene: any = null;
+                                    let currentField = '';
+                                    
+                                    for (const line of lines) {
+                                      const sceneMatch = line.match(/^Scene (\d+):/i);
+                                      if (sceneMatch) {
+                                        if (currentScene) scenes.push(currentScene);
+                                        currentScene = { scene_number: parseInt(sceneMatch[1]), voiceover: '', broll_prompt: '', stock_search_term: '' };
+                                        currentField = '';
+                                      } else if (currentScene) {
+                                        if (line.startsWith('Voiceover:')) {
+                                          currentField = 'voiceover';
+                                          currentScene.voiceover = line.replace('Voiceover:', '').trim();
+                                        } else if (line.startsWith('B-Roll:')) {
+                                          currentField = 'broll';
+                                          currentScene.broll_prompt = line.replace('B-Roll:', '').trim();
+                                        } else if (line.startsWith('Stock Search:')) {
+                                          currentField = 'stock';
+                                          currentScene.stock_search_term = line.replace('Stock Search:', '').trim();
+                                        } else if (line.trim() && currentField) {
+                                          // Append to current field
+                                          if (currentField === 'voiceover') currentScene.voiceover += ' ' + line.trim();
+                                          else if (currentField === 'broll') currentScene.broll_prompt += ' ' + line.trim();
+                                          else if (currentField === 'stock') currentScene.stock_search_term += ' ' + line.trim();
+                                        }
+                                      }
+                                    }
+                                    if (currentScene) scenes.push(currentScene);
+                                    
+                                    if (scenes.length > 0) {
+                                      setGeneratedScript({ ...generatedScript, scenes });
+                                    }
+                                  } catch (e) {
+                                    console.warn('Could not parse edited script into structured format');
+                                  }
+                                  setIsEditingScript(false);
+                                  setEditableScriptText('');
+                                }}
+                                className="flex items-center gap-1 text-sm text-white bg-[#E86412] hover:bg-[#d55a0f] px-3 py-1 rounded"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                Save Changes
+                              </button>
+                            </>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                setEditableScriptText(formattedScript || '');
+                                setIsEditingScript(true);
+                              }}
+                              className="flex items-center gap-1 text-sm text-gray-600 hover:text-[#E86412]"
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                              </svg>
+                              Edit Script
+                            </button>
+                          )}
                         </div>
 
                         {/* "Want me to regenerate?" Message */}
@@ -5031,14 +5591,14 @@ function AIChatPageContent() {
                   </div>
                 )}
 
-                {/* SUB-PART 2: Selection Substep - User "Yes" Message and Avatar Selection UI */}
-                {hasReachedSubstep('avatar-selection', 'selection') && (
+                {/* SUB-PART 2: Selection Substep - User "Choose from Library" Message and Avatar Selection UI */}
+                {hasReachedSubstep('avatar-selection', 'selection') && avatarPreference === 'library' && (
                   <>
-                    {/* User "Yes" Message - "Yes, I need an avatar in the video" */}
+                    {/* User "Choose from Library" Message */}
                     <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                       <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,293px)]">
                         <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                          Yes, I need an avatar in the video
+                          I'll choose from the library
                         </span>
                       </div>
                     </div>
@@ -5502,44 +6062,26 @@ Use a recent photo of yourself.`}
               </>
             )}
 
-            {/* Avatar Selection Buttons - Only show in question substep */}
+            {/* Avatar Selection Buttons - Only show in question substep (two options: Library or Generate with AI) */}
             {currentStep === 'avatar-selection' && avatarSubstep === 'question' && selectedVideoStyle !== 'product-only' && selectedVideoStyle !== 'broll-only' && (
-            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
-              {/* Yes, I need an avatar */}
+            <div className="flex flex-row flex-wrap items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+              {/* Choose from Library */}
               <button
-                onClick={() => handleAvatarSelection('yes')}
-                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+                onClick={() => handleAvatarSelection('library')}
+                className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
               >
-                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                  <Image
-                    src="/assets/u_thumbs-up.svg"
-                    alt="Yes"
-                    width={24}
-                    height={24}
-                    className="w-full h-full"
-                  />
-                </div>
                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                  Yes, I need an avatar in the video
+                  Choose from Library
                 </span>
               </button>
 
-              {/* No, I'd like to keep it simple */}
+              {/* Generate with AI */}
               <button
-                onClick={() => handleAvatarSelection('no')}
-                className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
+                onClick={() => handleAvatarSelection('generate')}
+                className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 w-auto"
               >
-                <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                  <Image
-                    src="/assets/u_thumbs-down.svg"
-                    alt="No"
-                    width={24}
-                    height={24}
-                    className="w-full h-full"
-                  />
-                </div>
                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                  No, I'd like to keep it simple
+                  Generate with AI
                 </span>
               </button>
             </div>
@@ -5566,6 +6108,148 @@ Use a recent photo of yourself.`}
                 </span>
               </button>
             </div>
+            )}
+
+            {/* Text Generation Substep - Show when user selects "Generate with AI" */}
+            {currentStep === 'avatar-selection' && avatarSubstep === 'text-generation' && avatarPreference === 'generate' && (
+            <>
+              {/* User "Generate with AI" Message */}
+              <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,293px)]">
+                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                    I want to generate an avatar with AI
+                  </span>
+                </div>
+              </div>
+
+              {/* AI Response - Describe your avatar (plain text, same as script step) */}
+              <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
+                  Describe the avatar you'd like to create. Include details about appearance, clothing, expression, and any other characteristics.
+                </p>
+              </div>
+
+              {/* Avatar Description Input - exact replica of script input bar (mic + visualizer, not cut off) */}
+              <div
+                className={cn(
+                  "rounded-[24px] w-full max-w-full min-h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-[clamp(0.5rem,0.98vh,10px)] transition-all box-border",
+                  avatarDescriptionFocused
+                    ? "p-[2px]"
+                    : "p-0 shadow-[0px_3px_19.5px_rgba(224,140,138,0.4)]"
+                )}
+                style={avatarDescriptionFocused ? {
+                  background: 'linear-gradient(278.75deg, rgba(254, 89, 191, 0.4) 13.19%, rgba(231, 76, 60, 0.4) 46.27%, rgba(254, 201, 89, 0.4) 74.45%, rgba(231, 57, 19, 0.4) 96.51%)'
+                } : {}}
+              >
+                <div
+                  onFocus={() => setAvatarDescriptionFocused(true)}
+                  onBlur={() => setAvatarDescriptionFocused(false)}
+                  className={cn(
+                    "flex flex-row items-end gap-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[24px] w-full h-full box-border min-w-0",
+                    "px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)]"
+                  )}
+                >
+                  {!avatarDescriptionRecording ? (
+                    <AIChatTagAwareInput
+                      value={avatarDescription}
+                      onChange={setAvatarDescription}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && avatarDescription.trim() && !isGeneratingAvatarFromText) {
+                          e.preventDefault();
+                          handleGenerateAvatarFromText();
+                        }
+                      }}
+                      placeholder="e.g., A professional woman in her 30s with dark hair, wearing a navy blue blazer, warm smile, confident posture..."
+                      disabled={isGeneratingAvatarFromText}
+                      className={cn(
+                        "flex-1 min-w-0 font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1.25rem,1.95vh,20px)] text-[#616161] outline-none px-[clamp(0.25rem,0.39vh,4px)] bg-transparent border-none focus:ring-0 self-center",
+                        isGeneratingAvatarFromText && "opacity-50 cursor-not-allowed"
+                      )}
+                    />
+                  ) : (
+                    <div
+                      ref={avatarVisualizerContainerRef}
+                      className="flex-1 flex flex-row items-center h-[clamp(2.25rem,3.51vh,36px)] min-w-0"
+                    >
+                      {(() => {
+                        const history = avatarDescriptionVisualizerLevels;
+                        const laneCount = AVATAR_VISUALIZER_HISTORY_LENGTH;
+                        const paddedHistory = Array.from({ length: laneCount }, (_, laneIndex) => {
+                          const emptySlots = laneCount - history.length;
+                          if (laneIndex < emptySlots) return null;
+                          const srcIndex = laneIndex - emptySlots;
+                          return srcIndex >= 0 && srcIndex < history.length ? history[srcIndex] : null;
+                        });
+                        return (
+                          <div className="flex flex-row items-center justify-between w-full min-w-0">
+                            {paddedHistory.map((level, index) => (
+                              <div key={index} className="flex items-center justify-center" style={{ width: 4 }}>
+                                {level !== null && (
+                                  <div
+                                    className="w-[4px] rounded-full bg-[#E86412] transition-[height] duration-75"
+                                    style={{
+                                      height: `${Math.max(4, 4 + Math.max(0, Math.min(1, level)) * 24)}px`,
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                  <button
+                    onClick={avatarDescriptionRecording ? handleCancelAvatarDescriptionRecording : handleStartAvatarDescriptionRecording}
+                    disabled={isGeneratingAvatarFromText}
+                    className={cn(
+                      "flex flex-row justify-center items-center w-[clamp(2rem,4.10vh,42px)] h-[clamp(2rem,4.10vh,42px)] rounded-full transition-all flex-shrink-0",
+                      avatarDescriptionRecording ? "bg-gray-100 hover:bg-gray-200 text-gray-600" : "bg-gray-100 hover:bg-gray-200 text-[#616161]",
+                      "disabled:opacity-50 disabled:cursor-not-allowed"
+                    )}
+                  >
+                    {avatarDescriptionRecording ? (
+                      <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-[18px] h-[18px]" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                      </svg>
+                    )}
+                  </button>
+                  <button
+                    onClick={avatarDescriptionRecording ? handleConfirmAvatarDescriptionRecording : () => avatarDescription.trim() && !isGeneratingAvatarFromText && handleGenerateAvatarFromText()}
+                    disabled={avatarDescriptionRecording ? false : (!avatarDescription.trim() || isGeneratingAvatarFromText)}
+                    className={cn(
+                      "flex flex-row justify-center items-center w-[clamp(2rem,4.10vh,42px)] h-[clamp(2rem,4.10vh,42px)] rounded-full transition-all flex-shrink-0",
+                      "bg-gradient-to-r from-[#E86412] to-[#F12A4C] text-white",
+                      "disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+                    )}
+                  >
+                    {isGeneratingAvatarFromText ? (
+                      <div className="w-[clamp(1rem,1.95vh,20px)] h-[clamp(1rem,1.95vh,20px)] border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : avatarDescriptionRecording ? (
+                      <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : (
+                      <Image
+                        src="/assets/fi_send.svg"
+                        alt="Generate Avatar"
+                        width={20}
+                        height={20}
+                        className="w-[clamp(1rem,1.95vh,20px)] h-[clamp(1rem,1.95vh,20px)]"
+                      />
+                    )}
+                  </button>
+                </div>
+              </div>
+              {avatarGenerationError && (
+                <div className="text-red-500 text-sm mt-2">{avatarGenerationError}</div>
+              )}
+            </>
             )}
 
             {/* Visual Style Substep - Show after avatar selection */}
@@ -7336,12 +8020,213 @@ Read everything on screen smoothly.`}
                   </div>
                 </div>
 
-                {/* AI Message - "Perfect! Your video is ready..." */}
-                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                    Perfect! Your video is ready to be created.
-                  </p>
-                </div>
+                {/* B-Roll Source Selection - Show after voice is confirmed, for non-avatar-only styles */}
+                {(() => {
+                  const styleToCheck = selectedVideoStyle || 
+                    (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+                  const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' || 
+                                             styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
+                  
+                  // For avatar-only styles, skip B-roll choice and show ready message
+                  if (isAvatarOnlyStyle) {
+                    return (
+                      <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                          Perfect! Your video is ready to be created.
+                        </p>
+                      </div>
+                    );
+                  }
+                  
+                  // For non-avatar-only styles, show B-roll source choice
+                  if (!brollSourceConfirmed) {
+                    return (
+                      <>
+                        {/* AI Message - B-roll source question */}
+                        <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                          <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                            How would you like to create your visuals?
+                          </p>
+                        </div>
+
+                        {/* B-Roll Source Selection Buttons - text only, centered */}
+                        {!brollSourcePreference && (
+                          <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full flex-wrap">
+                            {/* AI-Generated Option */}
+                            <button
+                              onClick={() => handleBrollSourceSelection('ai')}
+                              className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0"
+                            >
+                              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                                Use AI-generated visuals
+                              </span>
+                            </button>
+
+                            {/* Choose Own Option */}
+                            <button
+                              onClick={() => handleBrollSourceSelection('manual')}
+                              className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0"
+                            >
+                              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                                Choose my own visuals
+                              </span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Manual B-Roll Selection: Scene Cards Grid */}
+                        {brollSourcePreference === 'manual' && (
+                          <>
+                            {/* User "Choose my own visuals" Message */}
+                            <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                              <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                                  Choose my own visuals
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* AI Message - Instructions */}
+                            <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                              <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                                Select visuals for each scene below. You can choose from stock images/videos or upload your own. Scenes without selections will use AI-generated visuals.
+                              </p>
+                            </div>
+
+                            {/* Scene Cards Container - one row, up to 6; match video style cards */}
+                            <div className="relative w-full max-w-full sm:max-w-[850px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                              <div className="flex flex-row flex-wrap gap-[clamp(0.75rem,1.56vh,16px)] w-full">
+                                {generatedScript && (generatedScript.scenes || generatedScript.scene_plan || []).map((scene: any, index: number) => {
+                                  const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
+                                  const manualSelection = manualBrollByScene[sceneNumber];
+                                  const voiceoverText = scene.voiceover || scene.script || scene.text || '';
+                                  const truncatedVoiceover = voiceoverText.length > 60 
+                                    ? voiceoverText.substring(0, 60) + '...' 
+                                    : voiceoverText;
+                                  
+                                  return (
+                                    <div
+                                      key={sceneNumber}
+                                      className={cn(
+                                        "flex-none rounded-[12px] p-[2px] transition-all",
+                                        manualSelection && "bg-gradient-to-b from-[#E86412] to-[#F12A4C]"
+                                      )}
+                                      style={manualSelection ? undefined : { background: 'transparent' }}
+                                    >
+                                      <div className="flex flex-col gap-[clamp(0.375rem,0.59vh,6px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[12px] p-[clamp(0.5rem,0.78vh,8px)] w-[clamp(120px,11vw,152px)] min-w-0">
+                                        {/* Thumbnail - aspect 9/16 */}
+                                        <div 
+                                          className="relative w-full aspect-[9/16] bg-gray-100 rounded-[8px] overflow-hidden flex items-center justify-center cursor-pointer"
+                                          onClick={() => {
+                                            setBrollModalSceneNumber(sceneNumber);
+                                            setBrollModalOpen(true);
+                                          }}
+                                        >
+                                          {manualSelection ? (
+                                            manualSelection.type.includes('video') ? (
+                                              <video
+                                                src={manualSelection.url}
+                                                className="w-full h-full object-cover"
+                                                muted
+                                                loop
+                                                playsInline
+                                                onMouseEnter={(e) => (e.target as HTMLVideoElement).play()}
+                                                onMouseLeave={(e) => {
+                                                  const video = e.target as HTMLVideoElement;
+                                                  video.pause();
+                                                  video.currentTime = 0;
+                                                }}
+                                              />
+                                            ) : (
+                                              <img
+                                                src={manualSelection.thumbnailUrl || manualSelection.url}
+                                                alt={`Scene ${sceneNumber}`}
+                                                className="w-full h-full object-cover"
+                                              />
+                                            )
+                                          ) : (
+                                            <div className="flex flex-col items-center justify-center gap-1 text-gray-400">
+                                              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                                                <circle cx="8.5" cy="8.5" r="1.5"/>
+                                                <polyline points="21 15 16 10 5 21"/>
+                                              </svg>
+                                              <span className="text-[10px]">Select</span>
+                                            </div>
+                                          )}
+                                          {manualSelection && (
+                                            <div className="absolute top-1 right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+                                              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                                <polyline points="20 6 9 17 4 12"/>
+                                              </svg>
+                                            </div>
+                                          )}
+                                        </div>
+                                        <span className="font-heading text-[clamp(0.75rem,1.37vh,14px)] font-medium text-[#212121]">
+                                          Scene {sceneNumber}
+                                        </span>
+                                        <span className="font-heading text-[clamp(0.625rem,1.17vh,12px)] text-gray-500 line-clamp-1 min-w-0">
+                                          {truncatedVoiceover}
+                                        </span>
+                                        <button
+                                          onClick={() => {
+                                            setBrollModalSceneNumber(sceneNumber);
+                                            setBrollModalOpen(true);
+                                          }}
+                                          className="flex items-center justify-center gap-1 w-full py-1.5 px-2 bg-white border border-gray-200 rounded-[8px] hover:bg-gray-50 transition-colors text-[clamp(0.625rem,1.17vh,12px)] font-medium text-[#212121] font-heading"
+                                        >
+                                          {manualSelection ? 'Change' : 'Select'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Summary and Proceed - same position and style as other steps (no divider line) */}
+                              <div className="flex flex-row justify-between items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                                <div className="flex flex-col gap-0.5 min-w-0">
+                                  <span className="font-heading text-sm text-gray-500">
+                                    {Object.keys(manualBrollByScene).filter(k => manualBrollByScene[parseInt(k)]).length} of {(generatedScript?.scenes || generatedScript?.scene_plan || []).length} scenes selected
+                                  </span>
+                                  <span className="font-heading text-xs text-gray-400">
+                                    Unselected scenes will use AI-generated visuals
+                                  </span>
+                                </div>
+                                <button
+                                  onClick={handleProceedWithManualBroll}
+                                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                                >
+                                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                                    <Image
+                                      src="/assets/u_arrow-right.svg"
+                                      alt="Proceed"
+                                      width={12}
+                                      height={12}
+                                      className="w-fit"
+                                    />
+                                  </div>
+                                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                                    Proceed
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </>
+                    );
+                  }
+                  
+                  // B-roll source is confirmed, show ready message
+                  return (
+                    <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                        Perfect! Your video is ready to be created.
+                      </p>
+                    </div>
+                  );
+                })()}
               </>
             );
           })()}
@@ -8766,6 +9651,21 @@ Read everything on screen smoothly.`}
         isOpen={avatarPreviewModalOpen}
         onClose={() => setAvatarPreviewModalOpen(false)}
         alt="Avatar Preview"
+      />
+
+      {/* B-Roll Selection Modal - for manual B-roll selection */}
+      <BRollSelectionModal
+        isOpen={brollModalOpen}
+        onClose={() => setBrollModalOpen(false)}
+        onSelect={handleBrollSelection}
+        sceneNumber={brollModalSceneNumber}
+        defaultSearchTerm={
+          generatedScript?.scenes?.[brollModalSceneNumber - 1]?.stock_search_term ||
+          generatedScript?.scene_plan?.[brollModalSceneNumber - 1]?.stock_search_term ||
+          ''
+        }
+        allowedTabs={['images', 'videos', 'upload']}
+        targetAspectRatio="9:16"
       />
     </div>
   );

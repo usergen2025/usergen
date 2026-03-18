@@ -11,6 +11,7 @@ import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils/cn';
 import { DraggableResizableAvatar } from '@/components/create-video/DraggableResizableAvatar';
 import { DraggableResizableCaption } from '@/components/create-video/DraggableResizableCaption';
+import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
 
 interface Scene {
   scene_number?: number;
@@ -22,6 +23,7 @@ interface Scene {
   broll_image_prompt?: string;
   broll_prompt?: string;
   broll_visual_description?: string;
+  stock_search_term?: string;
 }
 
 interface BrollImage {
@@ -127,6 +129,10 @@ function WorkspacePageContent() {
   const [renderingStage, setRenderingStage] = useState<string>('pending');
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   const renderingPollingRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // B-roll selection modal state
+  const [brollModalOpen, setBrollModalOpen] = useState(false);
+  const [brollModalSceneNumber, setBrollModalSceneNumber] = useState<number>(1);
   
   // Derived state for backward compatibility
   const isVideoMode = workspaceMode === 'videos';
@@ -508,9 +514,9 @@ function WorkspacePageContent() {
     }
   };
 
-  // Handle image upload
+  // Handle image upload - opens B-roll selection modal for current scene
   const handleUpload = () => {
-    showToast('Upload functionality coming soon', 'info');
+    handleOpenBrollModal(currentSceneNumber);
   };
 
   // Save avatar overlay settings to project metadata (debounced)
@@ -933,6 +939,33 @@ function WorkspacePageContent() {
     setRenderingStage('pending');
 
     try {
+      // Save caption settings to project before rendering
+      if (captionsEnabled) {
+        const captionSettingsToSave = {
+          enabled: captionsEnabled,
+          displayMode: captionDisplayMode,
+          applyToAll: captionApplyToAll,
+          globalPosition: captionGlobalPosition,
+          perScenePositions: captionPerScenePositions,
+          style: {
+            fontFamily: captionStyle.fontFamily,
+            fontSize: captionStyle.fontSize,
+            fontWeight: captionStyle.fontWeight,
+            fontStyle: captionStyle.fontStyle,
+            textColor: captionStyle.textColor,
+            backgroundColor: captionStyle.backgroundColor,
+            borderColor: captionStyle.borderColor,
+            borderWidth: captionStyle.borderWidth,
+          },
+        };
+        
+        await apiClient.updateVideoProject(projectId, {
+          captionsEnabled: true,
+          captionSettings: captionSettingsToSave,
+        });
+        console.log('[Workspace] Caption settings saved before rendering');
+      }
+
       const response = await apiClient.startVideoRendering(projectId);
       
       if (!response.success) {
@@ -945,6 +978,96 @@ function WorkspacePageContent() {
       console.error('Failed to start rendering:', error);
       showToast(error.response?.data?.message || error.message || 'Failed to start rendering. Please try again.', 'error');
       setWorkspaceMode('videos');
+    }
+  };
+
+  // Handle opening B-roll selection modal
+  const handleOpenBrollModal = (sceneNumber: number) => {
+    setBrollModalSceneNumber(sceneNumber);
+    setBrollModalOpen(true);
+  };
+
+  // Handle B-roll selection from modal
+  const handleBrollSelection = async (selection: BRollSelection) => {
+    if (!projectId) return;
+
+    try {
+      let fileUrl = selection.url;
+
+      // For uploads: upload file first to get a URL, then process (avoids 413 from large base64 in JSON)
+      if (selection.source === 'upload' && selection.file) {
+        const formData = new FormData();
+        formData.append('file', selection.file);
+        const uploadRes = await fetch(`/api/video/${projectId}/upload-broll`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('authToken')}`,
+          },
+          body: formData,
+        });
+        const uploadData = await uploadRes.json();
+        if (!uploadRes.ok || !uploadData.success || !uploadData.data?.url) {
+          throw new Error(uploadData.message || 'Failed to upload file');
+        }
+        fileUrl = uploadData.data.url;
+      }
+
+      const response = await fetch(`/api/video/${projectId}/process-custom-broll`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('authToken')}`,
+        },
+        body: JSON.stringify({
+          sceneNumber: brollModalSceneNumber,
+          source: selection.source,
+          sourceId: selection.id,
+          fileUrl,
+          mediaType: selection.type.includes('image') ? 'image' : 'video',
+          targetAspectRatio: project?.style === 'HALF_N_HALF' || project?.style === 'ALTERNATE' ? '9:8' : '9:16',
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        showToast(`B-roll updated for scene ${brollModalSceneNumber}`, 'success');
+
+        if (selection.type.includes('image')) {
+          setBrollImages(prev => {
+            const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
+            const newEntry = {
+              sceneNumber: brollModalSceneNumber,
+              imageUrl: fileUrl,
+              localUrl: fileUrl,
+              customUpload: selection.source === 'upload',
+            };
+            if (exists) {
+              return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+            }
+            return [...prev, newEntry];
+          });
+        } else {
+          setBrollVideos(prev => {
+            const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
+            const newEntry = {
+              sceneNumber: brollModalSceneNumber,
+              videoUrl: fileUrl,
+              localUrl: fileUrl,
+              customUpload: selection.source === 'upload',
+            };
+            if (exists) {
+              return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+            }
+            return [...prev, newEntry];
+          });
+        }
+      } else {
+        throw new Error(data.message || 'Failed to process B-roll');
+      }
+    } catch (error: any) {
+      console.error('Failed to process B-roll:', error);
+      showToast(error.message || 'Failed to update B-roll', 'error');
     }
   };
 
@@ -1530,9 +1653,11 @@ function WorkspacePageContent() {
                           <span className="font-heading font-normal text-[clamp(12px,1.17vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-[#616161]">
                             {timeRange}
                           </span>
-                          <button className="w-[clamp(22px,2.73vh,28px)] h-[clamp(22px,2.73vh,28px)] flex items-center justify-center">
-                            <Edit className="w-full h-full text-[#212121]" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button className="w-[clamp(22px,2.73vh,28px)] h-[clamp(22px,2.73vh,28px)] flex items-center justify-center">
+                              <Edit className="w-full h-full text-[#212121]" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1922,6 +2047,17 @@ function WorkspacePageContent() {
         </div>
         </div>
       </div>
+
+      {/* B-Roll Selection Modal */}
+      <BRollSelectionModal
+        isOpen={brollModalOpen}
+        onClose={() => setBrollModalOpen(false)}
+        onSelect={handleBrollSelection}
+        sceneNumber={brollModalSceneNumber}
+        defaultSearchTerm={scenes[brollModalSceneNumber - 1]?.stock_search_term || ''}
+        allowedTabs={workspaceMode === 'images' ? ['images', 'upload'] : ['videos', 'upload']}
+        targetAspectRatio={project?.style === 'HALF_N_HALF' || project?.style === 'ALTERNATE' ? '9:8' : '9:16'}
+      />
     </div>
   );
 }

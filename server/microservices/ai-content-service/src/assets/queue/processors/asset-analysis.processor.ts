@@ -51,68 +51,70 @@ export class AssetAnalysisProcessor extends WorkerHost {
       // Update status to processing
       await this.updateAnalysisStatus(projectId, userId, 'processing', 0, assets.length);
 
-      // Analyze all assets (with error handling per asset)
-      this.logger.log(`[AssetAnalysisProcessor] Starting analysis of ${assets.length} assets...`, 'AssetAnalysisProcessor');
+      // Analyze all assets with URL type detection (routes HTML URLs to content extraction)
+      this.logger.log(`[AssetAnalysisProcessor] Starting analysis of ${assets.length} assets with URL type detection...`, 'AssetAnalysisProcessor');
       
-      const results = await Promise.allSettled(
-        assets.map((asset, index) => 
-          this.assetAnalysisService.analyzeAsset(asset.url, asset.userLabel)
-            .then(result => {
-              const progress = 10 + ((index + 1) / assets.length) * 80;
-              job.updateProgress(progress);
-              return {
-                ...result,
-                originalAsset: { ...result.originalAsset, id: asset.id },
-              };
-            })
-        )
-      );
+      // Use analyzeAssetsWithUrlDetection to properly handle both images and HTML URLs
+      const { analyzedAssets: detectedAnalyzedAssets, urlContents } = 
+        await this.assetAnalysisService.analyzeAssetsWithUrlDetection(assets);
+
+      await job.updateProgress(70);
+
+      // Log URL content extraction results
+      if (urlContents.length > 0) {
+        this.logger.log(
+          `[AssetAnalysisProcessor] Extracted content from ${urlContents.filter(u => !u.error).length} HTML URLs, ${urlContents.filter(u => u.error).length} failed`,
+          'AssetAnalysisProcessor'
+        );
+      }
 
       await job.updateProgress(90);
 
-      // Extract successful analyses
-      const analyzedAssets: AnalyzedAsset[] = [];
+      // Build final analyzed assets list with fallbacks for failed items
+      const analyzedAssets: AnalyzedAsset[] = [...detectedAnalyzedAssets];
       const failedAssets: Array<{ id: string; error: string }> = [];
 
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          analyzedAssets.push(result.value as AnalyzedAsset);
-        } else {
-          const asset = assets[index];
+      // Handle URL content that couldn't be analyzed as images (these are HTML pages)
+      // Store them as reference assets with extracted content in metadata
+      for (const urlContent of urlContents) {
+        if (urlContent.error) {
           failedAssets.push({
-            id: asset.id,
-            error: result.reason?.message || 'Unknown error',
+            id: urlContent.id,
+            error: urlContent.error,
           });
           this.logger.warn(
-            `[AssetAnalysisProcessor] Failed to analyze asset ${asset.id}: ${result.reason?.message}`,
+            `[AssetAnalysisProcessor] Failed to process URL ${urlContent.id}: ${urlContent.error}`,
             'AssetAnalysisProcessor'
           );
-          
-          // Create fallback analyzed asset with user label; store public URL so downstream can use it
-          const inputUrl = asset.url;
-          const fallbackPublicUrl =
-            inputUrl.startsWith('http://') || inputUrl.startsWith('https://')
-              ? inputUrl
-              : `${this.configService.get<string>('BACKEND_BASE_URL') || 'http://localhost:9001'}${inputUrl.startsWith('/') ? inputUrl : '/' + inputUrl}`;
+        }
+        
+        // Create a reference asset for HTML URLs (even if extraction failed, they're still reference URLs)
+        const asset = assets.find(a => a.id === urlContent.id);
+        if (asset) {
           analyzedAssets.push({
             id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             originalAsset: {
               id: asset.id,
-              url: fallbackPublicUrl,
-              originalUrl: inputUrl,
-              type: asset.type,
+              url: asset.url,
+              originalUrl: asset.url,
+              type: 'url',
               userLabel: asset.userLabel,
             },
-            category: this.inferCategoryFromUserLabel(asset.userLabel) || 'reference',
-            confidence: 0.5,
+            category: 'reference',
+            confidence: 0.7,
             analysisMetadata: {
-              model: 'fallback',
+              model: 'url-content-extraction',
               analyzedAt: new Date().toISOString(),
               processingTime: 0,
             },
-          });
+            // Store HTML URL metadata separately for downstream use
+            urlMetadata: {
+              isHtmlUrl: true,
+              extractedContent: urlContent.extractedContent,
+            },
+          } as AnalyzedAsset);
         }
-      });
+      }
 
       await job.updateProgress(95);
 

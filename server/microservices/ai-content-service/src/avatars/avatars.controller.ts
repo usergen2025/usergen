@@ -403,6 +403,67 @@ export class AvatarsController {
     return { success: true, data: result };
   }
 
+  @Post('generate-from-text')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Generate avatar from text description',
+    description: 'Generates an avatar image from a text prompt using AI text-to-image generation.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Text description of the avatar to generate' },
+        projectId: { type: 'string', description: 'Optional project ID to associate with' },
+        style: { type: 'string', description: 'Optional visual style preset' },
+      },
+      required: ['prompt'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Avatar generated successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        avatarId: { type: 'string' },
+        thumbnailUrl: { type: 'string' },
+        avatarUrl: { type: 'string' },
+        originalImageUrl: { type: 'string' },
+        error: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Missing prompt or invalid request' })
+  async generateFromText(
+    @Body() body: { prompt: string; projectId?: string; style?: string },
+    @Request() req: any,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, error: 'User ID required', code: 'MISSING_USER_ID' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    if (!body.prompt || !body.prompt.trim()) {
+      throw new HttpException(
+        { success: false, error: 'Prompt is required', code: 'MISSING_PROMPT' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    return await this.avatarsService.generateAvatarFromText({
+      prompt: body.prompt.trim(),
+      userId,
+      projectId: body.projectId,
+      style: body.style,
+    });
+  }
+
   @Get(':id')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get avatar details', description: 'Get specific avatar by ID' })

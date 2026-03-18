@@ -251,8 +251,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     }
 
     // Enhance prompt with product image context and asset context for reference image generation
-    // Add anti-grid instruction to prevent collage/grid layouts
-    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [Using product reference image to create variations: different angles, lighting, contexts, and compositions. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features and benefits. Generate ONE single image, not a collection or grid of images]`;
+    // Add anti-grid instruction to prevent collage/grid layouts and STRONG product consistency requirements
+    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product. Only change camera angle, lighting, or background. The product must look like the EXACT SAME physical item photographed from a different angle.] [Using product reference image to create variations: different angles, lighting, contexts. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features. Generate ONE single image, not a collection or grid of images]`;
     
     // Get scene-specific assets and enhance prompt
     const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'PRODUCT_ONLY') : [];
@@ -697,7 +697,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     }
 
     // Enhanced prompt for avatar-product generation with reference images and asset context
-    const baseEnhancedPrompt = `${prompt} [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]`;
+    // Include STRONG product consistency requirements
+    const baseEnhancedPrompt = `${prompt} [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the product reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product.] [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]`;
     
     // Get scene-specific assets and enhance prompt
     const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'AVATAR_PRODUCT') : [];
@@ -1021,7 +1022,10 @@ export class ImageGenerationProcessor extends WorkerHost {
       const hasLogo = analyzedAssets?.some(a => a.category === 'logo');
       const refInstructions: string[] = [];
       if (hasProduct) {
-        refInstructions.push('Use the product from the product reference image; only change camera angle, lighting, or background; do not alter product design, shape, or colors.');
+        refInstructions.push('CRITICAL PRODUCT CONSISTENCY: The product in this image MUST be IDENTICAL to the product in the reference image. DO NOT change, modify, redesign, or reimagine the product.');
+        refInstructions.push('Product aspects that MUST remain EXACTLY the same: shape, form, size, colors, materials, textures, labels, logos, branding, packaging, and ALL visual details.');
+        refInstructions.push('You may ONLY change: camera angle, lighting, background/environment, staging. The product MUST look like the EXACT SAME physical item.');
+        refInstructions.push('DO NOT: generate a similar product, create a styled version, add/remove features, change colors, alter packaging, or modify branding.');
       }
       if (hasLogo) {
         refInstructions.push('Use the logo from the logo reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third). Do not redraw or recreate the logo – use the exact logo from the logo reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');

@@ -138,8 +138,15 @@ export class AssetProcessorService {
         if (asset.productInfo?.features && asset.productInfo.features.length > 0) {
           enhancements.push(`Features: ${asset.productInfo.features.join(', ')}`);
         }
+        if (asset.productInfo?.colors && asset.productInfo.colors.length > 0) {
+          enhancements.push(`Product Colors (MUST MATCH EXACTLY): ${asset.productInfo.colors.join(', ')}`);
+        }
       });
-      enhancements.push('Same product as in the reference image(s); only change angle, lighting, or background; do not alter product design, shape, or colors.');
+      // Strong product consistency instructions
+      enhancements.push('CRITICAL PRODUCT CONSISTENCY REQUIREMENT: The product shown in this image MUST be IDENTICAL to the product in the reference image(s). DO NOT change, modify, redesign, or reimagine the product in ANY way.');
+      enhancements.push('Product characteristics that MUST remain EXACTLY the same: shape, form factor, size proportions, colors, materials, textures, labels, logos, branding, packaging, and all visual details.');
+      enhancements.push('You may ONLY change: camera angle, lighting conditions, background/environment, staging context, and surrounding props. The product itself must look like the exact same physical item photographed from a different angle or in a different setting.');
+      enhancements.push('DO NOT: generate a "similar" product, create a "styled" version, add or remove product features, change the color scheme, alter the packaging design, or modify any product branding.');
     }
 
     if (logoAsset) {

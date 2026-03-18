@@ -1941,7 +1941,29 @@ export class RenderingService {
     }
 
     // Final video already has all audio, no need to add stitched audio again
-    const finalVideoWithAudioPath = finalVideoPath;
+    let finalVideoWithAudioPath = finalVideoPath;
+
+    // Add captions if enabled
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] ALTERNATE: Adding captions to final video...`);
+        // Sort audio files by scene number for caption generation
+        const sortedAudioFilesForCaptions = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
+        const captionedVideoPath = await this.addCaptionsToFinalVideo(
+          finalVideoWithAudioPath,
+          userDir,
+          projectId,
+          sortedAudioFilesForCaptions,
+          project.captionSettings
+        );
+        if (captionedVideoPath) {
+          finalVideoWithAudioPath = captionedVideoPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] ALTERNATE: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] ALTERNATE: Proceeding without captions`);
+      }
+    }
 
     const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
 
@@ -2240,11 +2262,31 @@ export class RenderingService {
     await this.updateRenderingStatus(projectId, 'stitching', 70);
 
     // Add stitched audio to stitched video
-    const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+    let finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
     await this.videoCompositor.addAudioToVideo(stitchedBrollPath, stitchedAudioPath, finalVideoPath);
 
-    // Calculate total duration
+    // Calculate total duration and scene start times for captions
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    
+    // Add captions if enabled
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] PRODUCT_ONLY: Adding captions to final video...`);
+        const captionedVideoPath = await this.addCaptionsToFinalVideo(
+          finalVideoPath,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings
+        );
+        if (captionedVideoPath) {
+          finalVideoPath = captionedVideoPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] PRODUCT_ONLY: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] PRODUCT_ONLY: Proceeding without captions`);
+      }
+    }
 
     const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
 
@@ -2401,11 +2443,31 @@ export class RenderingService {
     await this.updateRenderingStatus(projectId, 'stitching', 70);
 
     // Stitch all scene videos together
-    const finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
+    let finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
     await this.videoCompositor.concatenateVideos(sceneVideoPaths, finalVideoPath);
 
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+
+    // Add captions if enabled (use existing sortedAudioFiles from earlier in the function)
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] AVATAR_PRODUCT: Adding captions to final video...`);
+        const captionedVideoPath = await this.addCaptionsToFinalVideo(
+          finalVideoPath,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings
+        );
+        if (captionedVideoPath) {
+          finalVideoPath = captionedVideoPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] AVATAR_PRODUCT: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] AVATAR_PRODUCT: Proceeding without captions`);
+      }
+    }
 
     const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
 
@@ -2447,6 +2509,83 @@ export class RenderingService {
   /**
    * Update rendering status and progress
    */
+  /**
+   * Add captions to the final video using word timestamps from audio files
+   */
+  private async addCaptionsToFinalVideo(
+    videoPath: string,
+    userDir: string,
+    projectId: string,
+    sortedAudioFiles: any[],
+    captionSettings: any
+  ): Promise<string | null> {
+    // Build caption data from audio timestamps
+    const captions: Array<{ text: string; startTime: number; endTime: number }> = [];
+    
+    let currentTime = 0;
+    for (const audioFile of sortedAudioFiles) {
+      // Check if audio file has word timestamps
+      if (audioFile.wordTimestamps && Array.isArray(audioFile.wordTimestamps)) {
+        for (const wordTs of audioFile.wordTimestamps) {
+          captions.push({
+            text: wordTs.word || wordTs.text || '',
+            startTime: currentTime + (wordTs.start || wordTs.startTime || 0),
+            endTime: currentTime + (wordTs.end || wordTs.endTime || 0),
+          });
+        }
+      } else if (audioFile.duration) {
+        // Fallback: If no word timestamps, create sentence-level caption for the scene
+        const sceneSentence = audioFile.text || audioFile.script || '';
+        if (sceneSentence) {
+          captions.push({
+            text: sceneSentence,
+            startTime: currentTime,
+            endTime: currentTime + audioFile.duration,
+          });
+        }
+      }
+      currentTime += audioFile.duration || 0;
+    }
+
+    if (captions.length === 0) {
+      console.log(`[RenderingService] No captions to add - no timestamps found`);
+      return null;
+    }
+
+    console.log(`[RenderingService] Adding ${captions.length} captions to video`);
+
+    // Parse caption style settings
+    const style = {
+      fontFamily: captionSettings.style?.fontFamily || 'Arial',
+      fontSize: captionSettings.style?.fontSize || 48,
+      fontWeight: (captionSettings.style?.fontWeight || 'bold') as 'normal' | 'bold',
+      fontStyle: (captionSettings.style?.fontStyle || 'normal') as 'normal' | 'italic',
+      textColor: captionSettings.style?.textColor || '#FFFFFF',
+      backgroundColor: captionSettings.style?.backgroundColor || 'rgba(0,0,0,0.5)',
+      borderColor: captionSettings.style?.borderColor || '#000000',
+      borderWidth: captionSettings.style?.borderWidth || 2,
+      position: captionSettings.globalPosition || { x: 50, y: 85 }, // Default bottom-center
+    };
+
+    // Create captioned video
+    const captionedVideoPath = path.join(userDir, `final_captioned_${projectId}_${Date.now()}.mp4`);
+    
+    await this.videoCompositor.addCaptionsToVideo(
+      videoPath,
+      captionedVideoPath,
+      captions,
+      style
+    );
+
+    // Verify output exists
+    if (fs.existsSync(captionedVideoPath)) {
+      console.log(`[RenderingService] ✅ Captions added successfully: ${captionedVideoPath}`);
+      return captionedVideoPath;
+    }
+
+    return null;
+  }
+
   private async updateRenderingStatus(
     projectId: string,
     status: string,

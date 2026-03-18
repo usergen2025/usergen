@@ -333,6 +333,42 @@ class ApiClient {
     return response.data;
   }
 
+  async generateAvatarFromText(data: {
+    prompt: string;
+    projectId?: string;
+    style?: string;
+  }): Promise<{
+    success: boolean;
+    avatarId?: string;
+    thumbnailUrl?: string;
+    avatarUrl?: string;
+    originalImageUrl?: string;
+    error?: string;
+  }> {
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<{
+      success: boolean;
+      avatarId?: string;
+      thumbnailUrl?: string;
+      avatarUrl?: string;
+      originalImageUrl?: string;
+      error?: string;
+    }>(
+      `${avatarServiceUrl}/avatars/generate-from-text`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Video Project endpoints
   async createVideoProject(data: {
     videoType: 'WITH_AVATAR' | 'WITHOUT_AVATAR';
@@ -456,6 +492,43 @@ class ApiClient {
     );
 
     return response.data;
+  }
+
+  async updateSceneBroll(projectId: string, sceneNumber: number, data: {
+    brollUrl: string;
+    brollType: 'image' | 'video';
+    source: 'freepik' | 'upload';
+  }): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    try {
+      const response = await axios.put<ApiResponse<any>>(
+        `${videoServiceUrl}/video-projects/${projectId}/scenes/${sceneNumber}/broll`,
+        data,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        }
+      );
+
+      return response.data;
+    } catch (error: any) {
+      console.error(`Failed to update scene ${sceneNumber} B-roll:`, error);
+      if (error.response) {
+        throw {
+          ...error,
+          response: {
+            ...error.response,
+            status: error.response.status,
+            data: error.response.data,
+          },
+        };
+      }
+      throw error;
+    }
   }
 
   async deleteVideoProject(projectId: string): Promise<ApiResponse<any>> {

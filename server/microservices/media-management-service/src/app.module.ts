@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MediaController } from './media/media.controller';
+import { StockModule } from './stock/stock.module';
 
 @Module({
   imports: [
@@ -11,6 +12,7 @@ import { MediaController } from './media/media.controller';
         '.env',
       ],
     }),
+    StockModule,
   ],
   controllers: [MediaController],
   providers: [],

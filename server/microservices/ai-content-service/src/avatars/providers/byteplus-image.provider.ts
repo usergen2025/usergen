@@ -138,6 +138,64 @@ export class BytePlusImageProvider {
 
     return Promise.all(promises);
   }
+
+  /**
+   * Generate image from text prompt (text-to-image) without reference image
+   * @param prompt Text prompt for image generation
+   * @param dimensions Target dimensions (e.g., "1080x1920" or "1080x960")
+   * @returns Generated image URL or Base64
+   */
+  async generateImageFromText(
+    prompt: string,
+    dimensions: string = '1080x1920'
+  ): Promise<{ imageUrl: string; imageBase64?: string }> {
+    try {
+      // Text-to-image request without reference image
+      const request = {
+        model: this.model,
+        prompt: prompt,
+        size: dimensions,
+        response_format: 'url',
+        watermark: false,
+        sequential_image_generation: 'disabled',
+      };
+
+      console.log(`[BytePlusImageProvider] Generating image from text: ${dimensions}`);
+      console.log(`[BytePlusImageProvider] Prompt: ${prompt.substring(0, 100)}...`);
+      
+      const response = await this.axiosInstance.post<BytePlusImageToImageResponse>(
+        '/images/generations',
+        request
+      );
+
+      if (response.data.error) {
+        throw new Error(`BytePlus image generation failed: ${response.data.error.message}`);
+      }
+
+      if (!response.data.data || !response.data.data[0]) {
+        throw new Error('BytePlus API did not return image data');
+      }
+
+      const imageData = response.data.data[0];
+      
+      if (imageData.error) {
+        throw new Error(`Image generation error: ${imageData.error.message}`);
+      }
+
+      if (!imageData.url) {
+        throw new Error('BytePlus API did not return image URL');
+      }
+
+      console.log(`[BytePlusImageProvider] Text-to-image generated successfully: ${imageData.url}`);
+      
+      return {
+        imageUrl: imageData.url,
+      };
+    } catch (error: any) {
+      console.error('[BytePlusImageProvider] Text-to-image generation error:', error.response?.data || error.message);
+      throw new Error(`Failed to generate image from text: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
 }
 
 

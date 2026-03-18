@@ -12,6 +12,7 @@ import { AssetsModule } from './assets/assets.module';
 // import { ConfigModule as AppConfigModule } from './config/config.module'; // TODO: Implement later
 import { DatabaseModule } from './common/database/database.module';
 import { LoggerModule } from './common/logger/logger.module';
+import { UrlProcessingModule } from './url-processing/url-processing.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { LoggerModule } from './common/logger/logger.module';
     ScriptsModule,
     AvatarsModule,
     AssetsModule,
+    UrlProcessingModule,
     // ContentModule, // TODO: Implement later
     // IntegrationsModule, // TODO: Implement later
   ],

@@ -813,6 +813,144 @@ export class AvatarsService {
   }
 
   /**
+   * Generate avatar from text description using BytePlus text-to-image
+   * Creates a new avatar record with the generated image
+   */
+  async generateAvatarFromText(params: {
+    prompt: string;
+    userId: string;
+    projectId?: string;
+    style?: string;
+  }): Promise<{
+    success: boolean;
+    avatarId?: string;
+    thumbnailUrl?: string;
+    avatarUrl?: string;
+    originalImageUrl?: string;
+    error?: string;
+  }> {
+    const { prompt, userId, projectId, style } = params;
+    
+    this.logger.log(
+      `Generating avatar from text for user ${userId}, prompt: ${prompt.substring(0, 50)}...`,
+      'AvatarsService',
+    );
+
+    try {
+      // Build a comprehensive prompt for realistic human avatar
+      const enhancedPrompt = `Professional portrait photograph of ${prompt}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
+      
+      // Generate image using BytePlus text-to-image
+      const generationResult = await this.bytePlusImageProvider.generateImageFromText(
+        enhancedPrompt,
+        '1080x1920', // 9:16 aspect ratio for avatar
+      );
+
+      if (!generationResult.imageUrl) {
+        throw new Error('Failed to generate image from text');
+      }
+
+      // Download the generated image
+      const imageResponse = await axios.get(generationResult.imageUrl, {
+        responseType: 'arraybuffer',
+      });
+      const imageBuffer = Buffer.from(imageResponse.data);
+
+      // Create thumbnail using sharp
+      const thumbnailBuffer = await sharp(imageBuffer)
+        .resize(200, 267, { fit: 'cover' })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+
+      // Save images locally
+      const timestamp = Date.now();
+      const userDir = path.join(process.cwd(), 'uploads', 'avatars', userId);
+      if (!fs.existsSync(userDir)) {
+        fs.mkdirSync(userDir, { recursive: true });
+      }
+
+      const originalFilename = `ai_generated_${timestamp}.jpg`;
+      const thumbnailFilename = `ai_generated_${timestamp}_thumb.jpg`;
+      const originalPath = path.join(userDir, originalFilename);
+      const thumbnailPath = path.join(userDir, thumbnailFilename);
+
+      fs.writeFileSync(originalPath, imageBuffer);
+      fs.writeFileSync(thumbnailPath, thumbnailBuffer);
+
+      // Upload to HeyGen to get image_key
+      const uploadResponse = await this.heygenProvider.uploadImage(
+        imageBuffer,
+        'image/jpeg',
+        originalFilename,
+      );
+
+      if (!uploadResponse.image_key) {
+        throw new Error('Failed to upload to HeyGen');
+      }
+
+      // Upload to public storage (GCS/local)
+      const subPath = `avatars/${userId}`;
+      const storageResult = await this.publicUrlService.uploadFromBuffer(
+        imageBuffer,
+        subPath,
+        originalFilename,
+        'image/jpeg',
+      );
+
+      const thumbnailStorageResult = await this.publicUrlService.uploadFromBuffer(
+        thumbnailBuffer,
+        subPath,
+        thumbnailFilename,
+        'image/jpeg',
+      );
+
+      // Create avatar record in database
+      const avatar = await this.databaseService.avatar.create({
+        data: {
+          userId,
+          name: `AI Generated - ${prompt.substring(0, 30)}...`,
+          imageKey: uploadResponse.image_key,
+          source: 'UPLOAD', // Treat as upload since user provided the prompt
+          generationStatus: 'COMPLETED', // Ready to use immediately
+          thumbnailUrl: thumbnailStorageResult.gcsUrl || thumbnailStorageResult.publicUrl || `/uploads/avatars/${userId}/${thumbnailFilename}`,
+          avatarUrl: storageResult.gcsUrl || storageResult.publicUrl || `/uploads/avatars/${userId}/${originalFilename}`,
+          originalImageUrl: `/uploads/avatars/${userId}/${originalFilename}`,
+          generationMetadata: {
+            generatedFromText: true,
+            originalPrompt: prompt,
+            enhancedPrompt,
+            projectId,
+            style,
+          },
+        },
+      });
+
+      this.logger.log(
+        `Avatar generated from text successfully: ${avatar.id}`,
+        'AvatarsService',
+      );
+
+      return {
+        success: true,
+        avatarId: avatar.id,
+        thumbnailUrl: avatar.thumbnailUrl,
+        avatarUrl: avatar.avatarUrl,
+        originalImageUrl: avatar.originalImageUrl,
+      };
+    } catch (error: any) {
+      this.logger.error(
+        `Failed to generate avatar from text: ${error.message}`,
+        error.stack,
+        'AvatarsService',
+      );
+      return {
+        success: false,
+        error: error.message || 'Failed to generate avatar from text',
+      };
+    }
+  }
+
+  /**
    * Background process to generate avatar via HeyGen
    * Flow: Create Group -> Train -> Generate Looks -> Add Motion
    */

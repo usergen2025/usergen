@@ -675,7 +675,7 @@ export class VoiceService {
         // Get duration using ffprobe
         let duration = 0;
         try {
-          duration = await this.getAudioDuration(filePath);
+          duration = this.getAudioDurationRobust(filePath);
         } catch (e) {
           console.warn(`[VoiceService] Could not get duration for ${filename}`);
         }

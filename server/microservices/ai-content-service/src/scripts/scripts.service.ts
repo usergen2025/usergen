@@ -37,6 +37,7 @@ export interface VideoScriptGenerationRequest {
     productInfo?: any;
     url: string;
   }>;
+  urlContentContext?: string; // Extracted content from URL assets for script context
 }
 
 export interface VideoScriptGenerationResponse {
@@ -259,7 +260,8 @@ export class ScriptsService {
         tags,
         request.productImageUrl,
         effectiveHasAvatar,
-        analyzedAssets
+        analyzedAssets,
+        request.urlContentContext
       );
       
       // Get duration from request, or extract from user prompt, or use default
@@ -895,7 +897,8 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     tags: string[] = [],
     productImageUrl?: string, // Deprecated - kept for backward compatibility, but not used for analysis
     hasAvatar?: boolean,
-    analyzedAssets?: Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }>
+    analyzedAssets?: Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }>,
+    urlContentContext?: string // Content extracted from URL assets
   ): string {
     // Language-specific descriptions
     const languageDescriptions = {
@@ -982,6 +985,12 @@ The visual_style_guide you create should be a synthesis of these tag preferences
       if (backgroundAssets && backgroundAssets.length > 0) {
         assetContext += `\nBACKGROUND/ENVIRONMENT CONTEXT:\n- ${backgroundAssets.length} background/environment asset(s) available for reference\n- Use these to inform scene settings and visual descriptions\n`;
       }
+    }
+
+    // Add URL content context if provided
+    let urlContext = '';
+    if (urlContentContext && urlContentContext.trim()) {
+      urlContext = `\n\nWEBSITE/URL CONTENT CONTEXT:\nThe following content was extracted from URLs provided by the user. Use this information to inform the script content, messaging, and context:\n\n${urlContentContext}\n\nIMPORTANT:\n- Reference specific information from the website content when relevant\n- Use company/product names, features, and messaging from the extracted content\n- Ensure the script aligns with the brand voice and information from the website\n- Do not fabricate information - stick to what is provided in the website content\n`;
     }
 
     // Avatar image prompt: when hasAvatar is true, script must output a single avatar_image_prompt string (no hardcoding; LLM decides framing, background, lighting per style)
@@ -1113,6 +1122,7 @@ Structure Your Output in This JSON Format:
       "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors and stalls]",
       "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors, people walking, stalls, dynamic movement]",
+      "stock_search_term": "indian street market vendors stalls",
       "avatar_action": "Explain how the Indian-looking avatar speaks and reacts.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'smile', 'gesture'"
     },
@@ -1123,6 +1133,7 @@ Structure Your Output in This JSON Format:
       "broll_visual_description": "Describe next Indian-context visuals",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description]",
       "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description with motion]",
+      "stock_search_term": "appropriate search keywords for stock footage",
       "avatar_action": "Explain avatar's reaction",
       "avatar_motion": "smile"
     }
@@ -1142,6 +1153,7 @@ CRITICAL PROMPT GENERATION RULES:
 8. Use the EXACT same wording for style parameters in every prompt to ensure AI image/video models generate consistent visuals
 9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
 10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+11. EVERY scene MUST include "stock_search_term": 3-5 keywords optimized for stock footage search based on the scene visual context (e.g., "city skyline sunset urban landscape", "chef cooking kitchen professional")
 
 Guidelines:
 - All visuals should reflect Indian context unless user explicitly asks otherwise.
@@ -1214,6 +1226,7 @@ Output Format:
       "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. REQUIRED for ALL scenes.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]. REQUIRED for ALL scenes (odd scenes = full 9:16, even scenes = 3:4 for top half).",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]. REQUIRED for ALL scenes.",
+      "stock_search_term": "keywords for stock footage search",
       "avatar_action": null,
       "avatar_motion": null
     },
@@ -1225,6 +1238,7 @@ Output Format:
       "broll_visual_description": "Describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
+      "stock_search_term": "keywords for stock footage search",
       "avatar_action": "Describe Indian avatar's expression and delivery for this half-n-half scene.",
       "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
     }
@@ -1314,6 +1328,7 @@ Output Format:
       "broll_visual_description": "Describe Indian environment — cafes, offices, markets, metro, festivals, streets, villages.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
+      "stock_search_term": "keywords for stock footage search",
       "avatar_cutout_position": "bottom-left" | "bottom-right" | "center" | etc.,
       "avatar_action": "Describe Indian avatar gestures, expressions, tone.",
       "avatar_motion": "Single word describing avatar's motion such as 'nod', 'raise-hand', 'smile'"
@@ -1325,6 +1340,7 @@ Output Format:
       "broll_visual_description": "Describe next Indian environment",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description with motion]",
+      "stock_search_term": "keywords for stock footage search",
       "avatar_cutout_position": "bottom-left",
       "avatar_action": "Describe avatar gestures",
       "avatar_motion": "smile"
@@ -1695,8 +1711,8 @@ Guidelines:
   const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
   const regionContext = this.getRegionContext(language);
 
-  // Append specificity rule, base prompt, asset context, optional avatar context, and region context
-  return SPECIFICITY_RULE + basePrompt + assetContext + avatarContext + regionContext;
+  // Append specificity rule, base prompt, asset context, URL context, optional avatar context, and region context
+  return SPECIFICITY_RULE + basePrompt + assetContext + urlContext + avatarContext + regionContext;
 }
 
   /**

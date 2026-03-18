@@ -5,6 +5,14 @@ import OpenAI from 'openai';
 import axios from 'axios';
 
 export type RecommendedUsage = 'reference_only' | 'direct_broll' | 'background';
+export type UrlContentType = 'image' | 'html' | 'unknown';
+
+export interface UrlTypeDetectionResult {
+  contentType: UrlContentType;
+  mimeType?: string;
+  isImage: boolean;
+  isHtml: boolean;
+}
 
 export interface AnalyzedAsset {
   id: string;
@@ -490,6 +498,134 @@ Return your analysis as a JSON object with the following structure:
       }
     }
     return false;
+  }
+
+  /**
+   * Detect if a URL points to an image or HTML page by checking Content-Type header
+   */
+  async detectUrlType(url: string): Promise<UrlTypeDetectionResult> {
+    try {
+      // Make a HEAD request to get the Content-Type without downloading the full content
+      const response = await axios.head(url, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'UserGen-AssetAnalysis/1.0',
+        },
+        validateStatus: () => true, // Accept any status to check content-type
+      });
+
+      const contentType = response.headers['content-type'] || '';
+      const mimeType = contentType.split(';')[0].trim().toLowerCase();
+
+      // Check if it's an image
+      const imageMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'];
+      const isImage = imageMimeTypes.some(type => mimeType.startsWith(type.split('/')[0]) && mimeType.includes(type.split('/')[1]));
+
+      // Check if it's HTML
+      const htmlMimeTypes = ['text/html', 'application/xhtml+xml'];
+      const isHtml = htmlMimeTypes.some(type => mimeType.includes(type));
+
+      let urlContentType: UrlContentType = 'unknown';
+      if (isImage) {
+        urlContentType = 'image';
+      } else if (isHtml) {
+        urlContentType = 'html';
+      }
+
+      this.logger.log(`URL type detection for ${url}: ${urlContentType} (mime: ${mimeType})`, 'AssetAnalysisService');
+
+      return {
+        contentType: urlContentType,
+        mimeType,
+        isImage,
+        isHtml,
+      };
+    } catch (error: any) {
+      this.logger.warn(`Failed to detect URL type for ${url}: ${error.message}`, 'AssetAnalysisService');
+      
+      // Fallback: check URL extension
+      const urlLower = url.toLowerCase();
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
+      const isImageByExtension = imageExtensions.some(ext => urlLower.includes(ext));
+      
+      if (isImageByExtension) {
+        return {
+          contentType: 'image',
+          isImage: true,
+          isHtml: false,
+        };
+      }
+
+      return {
+        contentType: 'unknown',
+        isImage: false,
+        isHtml: false,
+      };
+    }
+  }
+
+  /**
+   * Analyze assets with URL type detection
+   * Routes URLs to appropriate handler: images go to Vision API, HTML pages to content extraction
+   */
+  async analyzeAssetsWithUrlDetection(assets: Array<{ id: string; url: string; type: 'image' | 'url'; userLabel?: string }>): Promise<{
+    analyzedAssets: AnalyzedAsset[];
+    urlContents: Array<{ id: string; url: string; extractedContent?: string; error?: string }>;
+  }> {
+    const analyzedAssets: AnalyzedAsset[] = [];
+    const urlContents: Array<{ id: string; url: string; extractedContent?: string; error?: string }> = [];
+
+    // Separate images and URLs that need type detection
+    const imageAssets = assets.filter(a => a.type === 'image');
+    const urlAssets = assets.filter(a => a.type === 'url');
+
+    // Process image assets directly
+    if (imageAssets.length > 0) {
+      const imageResults = await this.analyzeMultipleAssets(imageAssets);
+      analyzedAssets.push(...imageResults);
+    }
+
+    // Detect types and route URLs appropriately
+    for (const asset of urlAssets) {
+      try {
+        const typeResult = await this.detectUrlType(asset.url);
+
+        if (typeResult.isImage) {
+          // Treat as image, analyze with Vision API
+          const result = await this.analyzeAsset(asset.url, asset.userLabel);
+          result.originalAsset.id = asset.id;
+          analyzedAssets.push(result);
+        } else if (typeResult.isHtml) {
+          // Mark for URL content extraction (handled by URL processing service)
+          urlContents.push({
+            id: asset.id,
+            url: asset.url,
+          });
+        } else {
+          // Unknown type - attempt image analysis with fallback
+          try {
+            const result = await this.analyzeAsset(asset.url, asset.userLabel);
+            result.originalAsset.id = asset.id;
+            analyzedAssets.push(result);
+          } catch {
+            urlContents.push({
+              id: asset.id,
+              url: asset.url,
+              error: 'Unable to analyze - unknown content type',
+            });
+          }
+        }
+      } catch (error: any) {
+        this.logger.error(`Failed to process URL asset ${asset.id}: ${error.message}`, error.stack, 'AssetAnalysisService');
+        urlContents.push({
+          id: asset.id,
+          url: asset.url,
+          error: error.message,
+        });
+      }
+    }
+
+    return { analyzedAssets, urlContents };
   }
 }
 
