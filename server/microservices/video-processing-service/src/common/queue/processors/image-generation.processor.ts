@@ -998,6 +998,19 @@ export class ImageGenerationProcessor extends WorkerHost {
     const provider = this.providerFactory.getProviderForModel(model.id);
 
     let finalPrompt = prompt;
+    // Safety net: prepend video topic context so every scene keeps global theme (e.g. work from home)
+    try {
+      const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+      const videoTopic = script?.video_topic || script?.theme_context;
+      if (videoTopic && typeof videoTopic === 'string' && videoTopic.trim()) {
+        const topic = videoTopic.trim();
+        if (!finalPrompt.includes('[Video topic:') && !finalPrompt.includes('[Video context:')) {
+          finalPrompt = `[Video context: ${topic}. ] ${finalPrompt}`;
+        }
+      }
+    } catch {
+      // ignore script parse errors
+    }
     // Prepend photorealism for b-roll images if not already present (safety net for script prompts that lack it)
     // Skip photorealism for topics that warrant stylized/artistic visuals (space, sci-fi, fantasy, abstract)
     const lowerPrompt = finalPrompt.toLowerCase();

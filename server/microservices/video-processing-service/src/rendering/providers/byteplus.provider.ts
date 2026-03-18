@@ -54,7 +54,9 @@ export interface BytePlusImageGenerationResponse {
 export interface BytePlusVideoGenerationRequest {
   model: string;
   prompt?: string; // Text prompt for video generation
-  image?: string; // Image URL or Base64 for image-to-video
+  image?: string; // Scene image URL (main image to animate)
+  /** When set, content array is built as [text, image_url(reference), image_url(scene)] for product consistency */
+  referenceImageUrl?: string;
   duration?: number; // Duration in seconds
   ratio?: string; // "9:16", "16:9", "adaptive", etc.
   resolution?: string; // "720p", "1080p"
@@ -414,36 +416,30 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
         });
       }
       
-      // Add image if provided (for image-to-video)
-      if (request.image) {
-        // Seedance expects a publicly accessible URL, not Base64
-        // If image is Base64 (starts with data:), we need to handle it differently
-        let imageUrl = request.image;
-        
-        if (imageUrl.startsWith('data:image/')) {
-          // Base64 image - Seedance might not support this directly
-          // For now, log warning and skip image
-          console.warn('[BytePlus] Base64 images not supported in Seedance content format. Use a publicly accessible URL.');
-          // Skip image if it's Base64
-        } else {
-          // Pre-warm the image URL before submitting to BytePlus
-          // This ensures GCS/CDN has the file cached and accessible
-          console.log(`[BytePlus] Pre-warming source image URL...`);
-          const warmed = await preWarmUrl(imageUrl, 3);
-          if (!warmed) {
-            console.warn(`[BytePlus] ⚠️ Image URL pre-warming failed, proceeding anyway...`);
-          }
-          // Small delay after pre-warming to ensure propagation
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          // Use URL directly (should be publicly accessible)
-          content.push({
-            type: 'image_url',
-            image_url: {
-              url: imageUrl,
-            },
-          });
+      // Add image(s): when referenceImageUrl is set (product reference), add it first, then scene image
+      const urlsToAdd: string[] = [];
+      if (request.referenceImageUrl && !request.referenceImageUrl.startsWith('data:image/')) {
+        urlsToAdd.push(request.referenceImageUrl);
+      }
+      if (request.image && !request.image.startsWith('data:image/')) {
+        urlsToAdd.push(request.image);
+      }
+      if (request.image?.startsWith('data:image/')) {
+        console.warn('[BytePlus] Base64 images not supported in Seedance content format. Use a publicly accessible URL.');
+      }
+
+      for (let i = 0; i < urlsToAdd.length; i++) {
+        const imageUrl = urlsToAdd[i];
+        console.log(`[BytePlus] Pre-warming image URL ${i + 1}/${urlsToAdd.length}...`);
+        const warmed = await preWarmUrl(imageUrl, 3);
+        if (!warmed) {
+          console.warn(`[BytePlus] ⚠️ Image URL pre-warming failed, proceeding anyway...`);
         }
+        await new Promise(resolve => setTimeout(resolve, 500));
+        content.push({
+          type: 'image_url',
+          image_url: { url: imageUrl },
+        });
       }
       
       // Build payload with content array format (Seedance requires content array)
@@ -647,11 +643,12 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
 
       onProgress?.(10);
 
-      // Create video generation task
+      // Create video generation task (referenceImageUrl = product reference, added first in content when present)
       const taskResponse = await this.createVideoGenerationTask({
         model: 'seedance-1-0-pro-250528',
         prompt: request.prompt,
         image: request.imageUrl,
+        referenceImageUrl: request.referenceImageUrl,
         duration,
         ratio,
         resolution,

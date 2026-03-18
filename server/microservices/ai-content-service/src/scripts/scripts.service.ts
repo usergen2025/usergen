@@ -1055,6 +1055,14 @@ CRITICAL PHYSICAL PLAUSIBILITY RULE:
 ${BROLL_TEXT_RULE}
 ${PHYSICAL_PLAUSIBILITY_RULE}`;
 
+  const VIDEO_TOPIC_RULE = `
+CRITICAL VIDEO TOPIC / GLOBAL CONTEXT RULE:
+- You MUST include a top-level field "video_topic": one short phrase capturing the overall video theme (e.g. "work from home benefits", "product launch features").
+- EVERY scene's broll_visual_description, broll_image_prompt, and broll_video_prompt must clearly tie to this topic so that no scene could be mistaken for a generic unrelated image.
+- Example: if the topic is "work from home", a scene about family should show "parent at home with family, home office or work-from-home context visible", NOT a generic "family in village".
+- The scene-specific part of each prompt must reference or imply the video topic so the global context is never lost.
+`;
+
   const SPECIFICITY_RULE = `
 CRITICAL CONTENT SPECIFICITY RULE:
 - Address EXACTLY what the user asks. Do NOT default to generic definitions.
@@ -1075,6 +1083,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1104,6 +1113,7 @@ Structure Your Output in This JSON Format:
 {
   "video_type": "Half-and-Half",
   "duration": "30 seconds",
+  "video_topic": "One short phrase for the overall video theme (e.g. work from home benefits, product launch features)",
   "visual_style_guide": {
     "color_palette": "Describe natural, realistic colors as in a documentary photo (e.g., 'Natural earth tones, realistic sky, authentic Indian environment')",
     "lighting": "Describe natural lighting (e.g., 'Natural daylight, soft overcast, or golden hour - documentary style')",
@@ -1154,6 +1164,7 @@ CRITICAL PROMPT GENERATION RULES:
 9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
 10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 11. EVERY scene MUST include "stock_search_term": 3-5 keywords optimized for stock footage search based on the scene visual context (e.g., "city skyline sunset urban landscape", "chef cooking kitchen professional")
+12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - All visuals should reflect Indian context unless user explicitly asks otherwise.
@@ -1179,6 +1190,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1207,6 +1219,7 @@ Output Format:
 {
   "video_type": "Alternating",
   "duration": "1 minute",
+  "video_topic": "One short phrase for the overall video theme (e.g. work from home benefits)",
   "visual_style_guide": {
     "color_palette": "Describe natural, realistic colors as in a documentary photo (e.g., 'Natural earth tones, realistic sky')",
     "lighting": "Describe natural lighting (e.g., 'Natural daylight, documentary style')",
@@ -1262,6 +1275,7 @@ CRITICAL PROMPT GENERATION RULES:
 9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
 10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 11. For avatar-type scenes, generate broll_image_prompt based on the voiceover context and visual style guide
+12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - Use ${lang.dialogue} voiceover across all scenes.
@@ -1283,6 +1297,7 @@ CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - EVERY broll_image_prompt and broll_video_prompt MUST include the visual style guide at the beginning
 - The visual style guide should specify: color palette, lighting style, mood/atmosphere, camera style, time of day, visual tone, and any recurring visual elements
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1310,6 +1325,7 @@ Output Format:
 {
   "video_type": "Cutout Overlay",
   "duration": "30 seconds",
+  "video_topic": "One short phrase for the overall video theme (e.g. work from home benefits)",
   "visual_style_guide": {
     "color_palette": "Describe natural, realistic colors as in a documentary photo for b-roll backgrounds",
     "lighting": "Describe natural lighting for b-roll backgrounds (e.g., 'Natural daylight, documentary style')",
@@ -1364,6 +1380,7 @@ CRITICAL PROMPT GENERATION RULES:
 7. Only the scene-specific part should vary between scenes
 8. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
 9. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+10. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - ${lang.instruction} - this is CRITICAL.
@@ -1494,6 +1511,7 @@ CRITICAL REQUIREMENTS:
 - Visual style must be consistent across all scenes
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1521,6 +1539,7 @@ Structure Your Output in This JSON Format:
 {
   "video_type": "Product Only",
   "duration": "30 seconds",
+  "video_topic": "One short phrase for the overall video theme (e.g. product launch, key features)",
   "product_focus": true,
   "visual_style_guide": {
     "color_palette": "Describe natural, realistic colors (e.g., 'Natural product photography, realistic background')",
@@ -1555,6 +1574,7 @@ CRITICAL PROMPT GENERATION RULES:
 9. The visual_style_guide MUST be consistent across ALL scenes
 10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
 11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
+12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - All visuals should focus on the product - ONE focused shot per scene
@@ -1571,6 +1591,7 @@ CRITICAL REQUIREMENTS:
 - Visual style must be consistent across all scenes
 - Product/background assets may be provided in asset context - use them when available
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1589,6 +1610,7 @@ Structure Your Output in This JSON Format:
 {
   "video_type": "B-roll Only",
   "duration": "30 seconds",
+  "video_topic": "One short phrase for the overall video theme (e.g. work from home benefits)",
   "visual_style_guide": {
     "color_palette": "Natural, realistic colors",
     "lighting": "Natural daylight or documentary style",
@@ -1616,6 +1638,7 @@ CRITICAL PROMPT GENERATION RULES:
 3. Create engaging b-roll visuals that illustrate the narration - ONE focused shot per scene
 4. Maintain visual consistency across all scenes
 5. FIRST, determine the visual_style_guide based on the user's topic/idea
+6. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - ${lang.instruction}
@@ -1636,6 +1659,7 @@ CRITICAL REQUIREMENTS:
 - Visual style must be consistent
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
 ${GLOBAL_BROLL_RULES}
+${VIDEO_TOPIC_RULE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1663,6 +1687,7 @@ Structure Your Output in This JSON Format:
 {
   "video_type": "Avatar with Product",
   "duration": "30 seconds",
+  "video_topic": "One short phrase for the overall video theme (e.g. product launch, key features)",
   "product_focus": true,
   "visual_style_guide": {
     "color_palette": "Describe natural, realistic colors (e.g., 'Natural product photography, realistic background')",
@@ -1700,6 +1725,7 @@ CRITICAL PROMPT GENERATION RULES:
 9. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
 10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
 11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
+12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - All visuals should feature product + presenter interaction - ONE focused shot per scene
@@ -1977,6 +2003,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
 
     const stylePrefix = this.buildStylePrefix(styleParams);
     const scenes = scriptData.scenes || scriptData.scene_plan || [];
+    const videoTopic = scriptData.video_topic || scriptData.theme_context || '';
 
     // Normalize each scene's prompts
     scenes.forEach((scene: any) => {
@@ -1996,6 +2023,9 @@ REGION CONTEXT (CRITICAL - Indian Default):
           const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
           scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
         }
+        if (videoTopic && videoTopic.trim() && !scene.broll_image_prompt.includes('[Video topic:')) {
+          scene.broll_image_prompt = `[Video topic: ${videoTopic.trim()}. ] ${scene.broll_image_prompt}`;
+        }
       }
 
       if (scene.broll_video_prompt) {
@@ -2005,6 +2035,9 @@ REGION CONTEXT (CRITICAL - Indian Default):
         } else {
           const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
           scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
+        }
+        if (videoTopic && videoTopic.trim() && !scene.broll_video_prompt.includes('[Video topic:')) {
+          scene.broll_video_prompt = `[Video topic: ${videoTopic.trim()}. ] ${scene.broll_video_prompt}`;
         }
       }
     });

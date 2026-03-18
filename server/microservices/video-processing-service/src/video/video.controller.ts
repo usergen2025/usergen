@@ -1562,6 +1562,35 @@ export class VideoController {
     const force = !!body.forceRegenerate;
     const sceneJobIdsToPersist: Record<number, string> = {};
 
+    // Resolve product image URL for PRODUCT_ONLY/AVATAR_PRODUCT (pass as reference for video generation)
+    let productImageUrlForVideo: string | null = null;
+    if (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
+      if (projectData.metadata?.productImageUrl) {
+        productImageUrlForVideo = projectData.metadata.productImageUrl;
+      } else {
+        let assets: any[] = [];
+        if (projectData.assets) {
+          assets = typeof projectData.assets === 'string' ? JSON.parse(projectData.assets) : projectData.assets;
+        }
+        if (assets.length === 0 && projectData.metadata?.assets) {
+          const metadataAssets = typeof projectData.metadata.assets === 'string'
+            ? JSON.parse(projectData.metadata.assets)
+            : projectData.metadata.assets;
+          assets = Array.isArray(metadataAssets) ? metadataAssets : [];
+        }
+        const productImage = assets.find((asset: any) => {
+          if (asset.type !== 'image') return false;
+          return asset.id?.startsWith('product-') ||
+            asset.name?.toLowerCase().includes('product') ||
+            (assets.filter((a: any) => a.type === 'image').length === 1);
+        });
+        productImageUrlForVideo = productImage?.url || productImage?.publicUrl || productImage?.imageUrl || null;
+      }
+      if (productImageUrlForVideo) {
+        console.log(`[VideoController] convertToVideos: using product image as reference for video generation`);
+      }
+    }
+
     for (let i = 0; i < scenes.length; i++) {
       const sceneNumber = scenes[i].scene_number ?? scenes[i].sceneNumber ?? i + 1;
       const hasImage = bRollImages.some((img: any) => img.sceneNumber === sceneNumber);
@@ -1608,6 +1637,7 @@ export class VideoController {
             modelId: 'video-model-1',
             videoStyle: style,
             sceneJobId,
+            ...(productImageUrlForVideo && { referenceImageUrl: productImageUrlForVideo }),
           });
         }
         await this.queueManager.addAvatarVideoGenerationJob({
@@ -1629,6 +1659,7 @@ export class VideoController {
           duration: videoDuration,
           modelId: 'video-model-1',
           videoStyle: style,
+          ...(productImageUrlForVideo && { referenceImageUrl: productImageUrlForVideo }),
         });
         jobs.push({ sceneNumber, jobId, type: 'broll' });
       }

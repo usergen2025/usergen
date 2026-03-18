@@ -5,12 +5,14 @@
 
 export interface VideoGenerationRequest {
   prompt: string;
-  imageUrl: string; // Public URL of the image
+  imageUrl: string; // Public URL of the scene image (main image to animate)
   modelId: string; // e.g., "video-model-1" (BytePlus) or "video-model-2" (FAL)
   aspectRatio?: string; // "16:9", "9:16"
   duration?: number; // Duration in seconds (will be mapped to enum for FAL)
   resolution?: string; // "720p", "1080p"
   generateAudio?: boolean; // For FAL models
+  /** Optional reference image (e.g. product image for PRODUCT_ONLY/AVATAR_PRODUCT). BytePlus: added as first image in content array. */
+  referenceImageUrl?: string;
   additionalParams?: Record<string, any>; // Provider-specific
 }
 

@@ -27,6 +27,8 @@ export interface VideoGenerationJobData {
   heygenImageKey?: string; // HeyGen image_key for Avatar IV (AVATAR_PRODUCT style)
   videoStyle?: string; // Video style to determine generation method
   sceneJobId?: string; // For ALTERNATE even: client subscribes to this; scene-composite emits with it
+  /** Original product image URL for PRODUCT_ONLY/AVATAR_PRODUCT; BytePlus uses as first image in content array */
+  referenceImageUrl?: string;
 }
 
 @Processor('video-generation', {
@@ -519,17 +521,24 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(15);
 
+    // For PRODUCT_ONLY/AVATAR_PRODUCT with reference image: explicit prompt so model keeps product consistent
+    const referenceImageUrl = job.data.referenceImageUrl;
+    const finalPrompt = referenceImageUrl
+      ? `The first image is the actual product for reference. The second image is the scene to animate. Generate video from the scene image while keeping the product appearance identical to the reference. ${videoPrompt}`
+      : videoPrompt;
+
     // Generate video using unified interface
     let videoResponse;
     try {
       videoResponse = await provider.generateVideo({
-        prompt: videoPrompt,
+        prompt: finalPrompt,
         imageUrl: imageUrl,
         modelId: selectedModelId,
         aspectRatio: videoRatio,
         resolution: videoResolution,
         duration: finalDuration,
         generateAudio: model.defaultConfig.generateAudio,
+        ...(referenceImageUrl && { referenceImageUrl }),
       }, (progress) => {
         // Map provider progress (0-100) to job progress (15-80)
         const mappedProgress = 15 + (progress * 0.65); // 15% to 80%
