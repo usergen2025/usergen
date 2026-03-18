@@ -1644,14 +1644,16 @@ export class AvatarsService {
    * Remove background from image using Python script
    */
   private async removeImageBackground(inputPath: string, outputPath: string): Promise<void> {
-    const scriptPath = path.join(process.cwd(), 'scripts', 'remove_image_background.py');
+    // Resolve paths from service root (works regardless of process cwd / PM2)
+    const serviceRoot = path.resolve(__dirname, '..', '..');
+    const scriptPath = path.join(serviceRoot, 'scripts', 'remove_image_background.py');
     
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Background removal script not found: ${scriptPath}`);
     }
 
     // Try to use venv Python if available, otherwise fall back to system python3
-    const venvPython = path.join(process.cwd(), 'venv', 'bin', 'python3');
+    const venvPython = path.join(serviceRoot, 'venv', 'bin', 'python3');
     const pythonCommand = fs.existsSync(venvPython) ? venvPython : 'python3';
     
     const command = `${pythonCommand} "${scriptPath}" "${inputPath}" "${outputPath}" "u2net_human_seg"`;
@@ -1671,8 +1673,8 @@ export class AvatarsService {
       
       // Provide helpful error message if rembg is not installed
       if (error.message && error.message.includes('No module named \'rembg\'')) {
-        const venvPath = path.join(process.cwd(), 'venv');
-        const requirementsPath = path.join(process.cwd(), 'scripts', 'requirements.txt');
+        const venvPath = path.join(serviceRoot, 'venv');
+        const requirementsPath = path.join(serviceRoot, 'scripts', 'requirements.txt');
         throw new Error(
           `rembg module not found. Please install Python dependencies:\n` +
           `1. Create virtual environment: python3 -m venv venv\n` +

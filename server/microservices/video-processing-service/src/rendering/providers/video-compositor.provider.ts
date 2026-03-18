@@ -442,14 +442,16 @@ export class VideoCompositorProvider {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
+    // Resolve paths from service root (works regardless of process cwd / PM2)
+    const serviceRoot = path.resolve(__dirname, '..', '..', '..');
     // Check if Python script exists
-    const scriptPath = path.join(process.cwd(), 'scripts', 'remove_background.py');
+    const scriptPath = path.join(serviceRoot, 'scripts', 'remove_background.py');
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Background removal script not found: ${scriptPath}`);
     }
 
     // Try to use venv Python if available, otherwise fall back to system python3
-    const venvPython = path.join(process.cwd(), 'venv', 'bin', 'python3');
+    const venvPython = path.join(serviceRoot, 'venv', 'bin', 'python3');
     const pythonCommand = fs.existsSync(venvPython) ? venvPython : 'python3';
 
     console.log(`[VideoCompositor] Removing background using AI model: ${modelName}`);
