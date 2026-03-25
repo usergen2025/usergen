@@ -443,10 +443,9 @@ export class VideoCompositorProvider {
     }
 
     // Resolve paths from service root (works regardless of process cwd / PM2)
-    // Compiled JS lives under dist/** matching src/**, so __dirname is typically:
-    //   <serviceRoot>/dist/rendering/providers
-    // Walk up to <serviceRoot>.
-    const serviceRoot = path.resolve(__dirname, '..', '..', '..', '..');
+    // This service builds with webpack into dist/main.js, so __dirname is
+    // typically <serviceRoot>/dist at runtime. Walk up one level.
+    const serviceRoot = path.resolve(__dirname, '..');
     // Check if Python script exists
     const scriptPath = path.join(serviceRoot, 'scripts', 'remove_background.py');
     if (!fs.existsSync(scriptPath)) {

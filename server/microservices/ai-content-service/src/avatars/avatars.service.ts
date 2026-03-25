@@ -1645,10 +1645,9 @@ export class AvatarsService {
    */
   private async removeImageBackground(inputPath: string, outputPath: string): Promise<void> {
     // Resolve paths from service root (works regardless of process cwd / PM2)
-    // Compiled JS lives under dist/** matching src/**, so __dirname is typically:
-    //   <serviceRoot>/dist/avatars
-    // Walk up to <serviceRoot>.
-    const serviceRoot = path.resolve(__dirname, '..', '..', '..');
+    // This service builds with webpack into dist/main.js, so __dirname is
+    // typically <serviceRoot>/dist at runtime. Walk up one level.
+    const serviceRoot = path.resolve(__dirname, '..');
     const scriptPath = path.join(serviceRoot, 'scripts', 'remove_image_background.py');
     
     if (!fs.existsSync(scriptPath)) {

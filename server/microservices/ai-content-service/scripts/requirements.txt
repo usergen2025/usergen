@@ -4,7 +4,7 @@
 
 rembg>=2.0.50
 # onnxruntime is a dependency of rembg, but may need to be installed separately on some systems
-# If installation fails, rembg will attempt to install it automatically
+onnxruntime>=1.15.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 numpy>=1.24.0
