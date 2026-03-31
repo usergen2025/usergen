@@ -911,6 +911,8 @@ export class ImageGenerationProcessor extends WorkerHost {
           productInfo: asset.productInfo,
           url: asset.originalAsset?.publicUrl || asset.originalAsset?.url || asset.url,
           originalAsset: asset.originalAsset,
+          visualScriptContext:
+            typeof asset.visualScriptContext === 'string' ? asset.visualScriptContext : undefined,
         }));
       }
       
@@ -975,8 +977,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     } else if (project.style === 'AVATAR_CUTOUT') {
       finalAspectRatio = '9:16';
     } else if (project.style === 'ALTERNATE') {
-      // For ALTERNATE style: odd scenes use 9:16 (full b-roll), even scenes use 3:4 (top half for half-n-half)
-      finalAspectRatio = (sceneNumber % 2 === 1) ? '9:16' : '3:4';
+      // For ALTERNATE style: odd scenes use 3:4 (top half for half-n-half), even scenes use 9:16 (full b-roll)
+      finalAspectRatio = (sceneNumber % 2 === 1) ? '3:4' : '9:16';
       console.log(`[ImageGenerationProcessor] ALTERNATE style: Scene ${sceneNumber} is ${sceneNumber % 2 === 1 ? 'odd' : 'even'}, using aspect ratio ${finalAspectRatio}`);
     }
 
@@ -1032,23 +1034,38 @@ export class ImageGenerationProcessor extends WorkerHost {
     // When using reference images, add semantic instructions (by role: product/logo reference image) so the model finds the right ref
     if (hasReferenceAssets) {
       const hasProduct = analyzedAssets?.some(a => a.category === 'product');
+      const hasReferenceCategory = analyzedAssets?.some(a => a.category === 'reference');
       const hasLogo = analyzedAssets?.some(a => a.category === 'logo');
       const refInstructions: string[] = [];
+      refInstructions.push(
+        'REFERENCE HERO IDENTITY: Any main product, garment, or wearable in the scene MUST be the SAME physical item as in the primary reference image(s). Do not replace it with a different design, color, cut, or style described only in marketing text — follow the reference pixels.',
+      );
       if (hasProduct) {
         refInstructions.push('CRITICAL PRODUCT CONSISTENCY: The product in this image MUST be IDENTICAL to the product in the reference image. DO NOT change, modify, redesign, or reimagine the product.');
         refInstructions.push('Product aspects that MUST remain EXACTLY the same: shape, form, size, colors, materials, textures, labels, logos, branding, packaging, and ALL visual details.');
         refInstructions.push('You may ONLY change: camera angle, lighting, background/environment, staging. The product MUST look like the EXACT SAME physical item.');
         refInstructions.push('DO NOT: generate a similar product, create a styled version, add/remove features, change colors, alter packaging, or modify branding.');
+      } else if (hasReferenceCategory) {
+        refInstructions.push(
+          'The hero object or outfit in the reference image (e.g. apparel on model) must stay visually identical; you may only change environment, pose within reason, lighting, and camera — not a different garment or product.',
+        );
+      } else {
+        refInstructions.push(
+          'Match the subject, product, and style from the reference image(s) where applicable; only change angle, lighting, or background as needed.',
+        );
       }
       if (hasLogo) {
         refInstructions.push('Use the logo from the logo reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third). Do not redraw or recreate the logo – use the exact logo from the logo reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
       }
-      if (refInstructions.length === 0) {
-        refInstructions.push('Match the product and style from the reference image(s); only change angle, lighting, or background as needed.');
-      }
       if (refInstructions.length > 0) {
         finalPrompt = `${finalPrompt}\n\n${refInstructions.join(' ')}`;
       }
+    }
+
+    if (hasReferenceAssets) {
+      console.log(
+        `[ImageGenerationProcessor] scene ${sceneNumber} finalBrollPrompt len=${finalPrompt.length} preview=${JSON.stringify(finalPrompt.slice(0, 420))}…`,
+      );
     }
 
     const request: ImageGenerationRequest = {

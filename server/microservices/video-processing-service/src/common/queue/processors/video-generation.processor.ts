@@ -26,7 +26,7 @@ export interface VideoGenerationJobData {
   modelId?: string; // Video model selection
   heygenImageKey?: string; // HeyGen image_key for Avatar IV (AVATAR_PRODUCT style)
   videoStyle?: string; // Video style to determine generation method
-  sceneJobId?: string; // For ALTERNATE even: client subscribes to this; scene-composite emits with it
+  sceneJobId?: string; // For ALTERNATE odd (half-n-half): client subscribes to this; scene-composite emits with it
   /** Original product image URL for PRODUCT_ONLY/AVATAR_PRODUCT; BytePlus uses as first image in content array */
   referenceImageUrl?: string;
 }
@@ -493,8 +493,8 @@ export class VideoGenerationProcessor extends WorkerHost {
       videoRatio = '9:16';
       videoResolution = '1080p'; // Results in 1080x1920
     } else if (project.style === 'ALTERNATE') {
-      // For ALTERNATE: odd scenes = 9:16, even scenes = 3:4
-      videoRatio = (sceneNumber % 2 === 1) ? '9:16' : '3:4';
+      // For ALTERNATE: odd scenes = 3:4 (half-n-half top), even scenes = 9:16 (full b-roll)
+      videoRatio = (sceneNumber % 2 === 1) ? '3:4' : '9:16';
       videoResolution = '1080p';
       
       // For FAL, 3:4 needs special handling
@@ -508,8 +508,8 @@ export class VideoGenerationProcessor extends WorkerHost {
       if (videoRatio === '3:4' || videoRatio === 'adaptive') {
         if (project.style === 'HALF_N_HALF') {
           videoRatio = '1:1';
-        } else if (project.style === 'ALTERNATE' && sceneNumber % 2 === 0) {
-          // Already handled above, but ensure it's 1:1
+        } else if (project.style === 'ALTERNATE' && sceneNumber % 2 === 1) {
+          // ALTERNATE odd = 3:4 path uses 1:1 from FAL, scaled to 1080x960
           videoRatio = '1:1';
         } else if (project.style !== 'HALF_N_HALF') {
           videoRatio = '9:16';
@@ -603,11 +603,11 @@ export class VideoGenerationProcessor extends WorkerHost {
       }
     }
 
-    // For ALTERNATE style, even scenes need 1080x960 (3:4)
-    if (project.style === 'ALTERNATE' && sceneNumber % 2 === 0) {
+    // For ALTERNATE style, odd scenes need 1080x960 (3:4 top half)
+    if (project.style === 'ALTERNATE' && sceneNumber % 2 === 1) {
       const videoRes = await this.videoCompositor.getVideoResolution(videoPath);
       if (videoRes && (videoRes.width !== 1080 || videoRes.height !== 960)) {
-        console.log(`[VideoGenerationProcessor] ALTERNATE: Scaling even scene video from ${videoRes.width}x${videoRes.height} to 1080x960`);
+        console.log(`[VideoGenerationProcessor] ALTERNATE: Scaling odd (composite) scene video from ${videoRes.width}x${videoRes.height} to 1080x960`);
         const scaledPath = videoPath.replace('.mp4', '_scaled.mp4');
         await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 960);
         // Replace original with scaled version
@@ -689,11 +689,11 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(100);
 
-    const isAlternateEven = project.style === 'ALTERNATE' && sceneNumber % 2 === 0;
+    const isAlternateCompositeScene = project.style === 'ALTERNATE' && sceneNumber % 2 === 1;
     const sceneJobId = (job.data as any).sceneJobId;
 
-    if (isAlternateEven) {
-      // ALTERNATE even scene: emit progress only; scene-composite will emit completion
+    if (isAlternateCompositeScene) {
+      // ALTERNATE odd scene (half-n-half): emit progress only; scene-composite will emit completion
       const emitJobId = sceneJobId || job.id!;
       await this.jobStatusGateway.notifyJobStatus(userId, {
         jobId: emitJobId,

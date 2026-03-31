@@ -15,17 +15,33 @@ export type BRollSource = 'skip' | 'ai-generated' | 'upload' | 'stock';
 
 export type VideoStyle = 'half-n-half' | 'alternate' | 'avatar-cutout' | 'avatar-only' | 'product-only' | 'avatar-product' | 'animated-avatar' | 'broll-only';
 
+/** Flat shape (style page). Workspace / export use nested `style` + displayMode, positions, etc. */
 export interface CaptionSettings {
   enabled: boolean;
-  text: string;
-  fontFamily: string;
-  fontSize: number;
-  textColor: string;
-  backgroundColor: string;
-  borderColor: string;
-  isBold: boolean;
-  isItalic: boolean;
-  isUnderline: boolean;
+  text?: string;
+  fontFamily?: string;
+  fontSize?: number;
+  textColor?: string;
+  backgroundColor?: string;
+  borderColor?: string;
+  isBold?: boolean;
+  isItalic?: boolean;
+  isUnderline?: boolean;
+  displayMode?: 'word-by-word' | 'full-sentence';
+  applyToAll?: boolean;
+  globalPosition?: { x: number; y: number; scale?: number; widthScale?: number };
+  perScenePositions?: Record<number, { x: number; y: number; scale: number; widthScale: number }>;
+  style?: {
+    fontFamily?: string;
+    fontSize?: number;
+    fontWeight?: string;
+    fontStyle?: string;
+    textDecoration?: string;
+    textColor?: string;
+    backgroundColor?: string;
+    borderColor?: string;
+    borderWidth?: number;
+  };
 }
 
 export interface VideoCreationState {

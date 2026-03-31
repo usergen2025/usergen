@@ -3,6 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { LoggerService } from '../common/logger/logger.service';
 import OpenAI from 'openai';
 import axios from 'axios';
+import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
+import { httpImageToOpenAIDataUrl } from '../common/openai/openai-vision-image.util';
+import { extractAssistantText, formatCompletionDiagnostics } from '../common/openai/openai-completion.util';
 
 export type RecommendedUsage = 'reference_only' | 'direct_broll' | 'background';
 export type UrlContentType = 'image' | 'html' | 'unknown';
@@ -44,6 +47,8 @@ export interface AnalyzedAsset {
   recommendedUsage?: RecommendedUsage;
   /** For background/environment: suitable to use as background layer */
   suitableAsBackground?: boolean;
+  /** Neutral factual visual inventory for script/B-roll; from vision JSON; no real-person identification */
+  visualScriptContext?: string;
   analysisMetadata: {
     model: string;
     analyzedAt: string;
@@ -53,6 +58,8 @@ export interface AnalyzedAsset {
 
 @Injectable()
 export class AssetAnalysisService {
+  private static readonly MAX_VISUAL_SCRIPT_CONTEXT_CHARS = 2000;
+
   private openai: OpenAI;
 
   constructor(
@@ -60,10 +67,9 @@ export class AssetAnalysisService {
     private readonly logger: LoggerService,
   ) {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    const openAiBaseUrl = this.configService.get<string>('OPENAI_BASE_URL');
     if (apiKey) {
-      this.openai = new OpenAI({
-        apiKey: apiKey,
-      });
+      this.openai = createConfiguredOpenAI(apiKey, openAiBaseUrl);
     }
   }
 
@@ -90,9 +96,6 @@ export class AssetAnalysisService {
       }
     }
 
-    // Pre-warm URL to ensure it's accessible
-    await this.preWarmUrl(publicUrl);
-
     // Build analysis prompt based on user label or general categorization
     const analysisPrompt = this.buildAnalysisPrompt(userLabel);
 
@@ -118,6 +121,7 @@ export class AssetAnalysisService {
       const canUseAsDirectBroll = (category === 'product' || category === 'background' || category === 'environment') ? this.extractCanUseAsDirectBroll(analysis) : undefined;
       const recommendedUsage = (category === 'product' || category === 'background' || category === 'environment') ? this.extractRecommendedUsage(analysis, category) : undefined;
       const suitableAsBackground = (category === 'background' || category === 'environment') ? this.extractSuitableAsBackground(analysis) : undefined;
+      const visualScriptContext = this.extractVisualScriptContext(analysis);
 
       return {
         id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -136,6 +140,7 @@ export class AssetAnalysisService {
         canUseAsDirectBroll,
         recommendedUsage,
         suitableAsBackground,
+        visualScriptContext,
         analysisMetadata: {
           model: 'gpt-4o',
           analyzedAt: new Date().toISOString(),
@@ -191,6 +196,7 @@ export class AssetAnalysisService {
           },
           category: this.inferCategoryFromUserLabel(assets[index].userLabel) || 'reference',
           confidence: 0.5,
+          visualScriptContext: '',
           analysisMetadata: {
             model: 'fallback',
             analyzedAt: new Date().toISOString(),
@@ -215,6 +221,7 @@ export class AssetAnalysisService {
 4. What colors are used in the logo?
 5. What is the design style? (modern, classic, minimalist, etc.)
 6. Is the logo on a clean or solid/transparent background suitable for use as a reference overlay in image generation (e.g. logo on white/black/transparent)? Set suitableForReferenceOverlay true only if the logo can be cleanly used as a reference image.
+7. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual description of the full frame (composition, background, colors, how the logo appears, lighting). Suitable for marketing copy and video scripts. Treat as a staged commercial/catalog asset. Do NOT identify or name real individuals.
 
 Return your analysis as a JSON object with the following structure:
 {
@@ -224,7 +231,8 @@ Return your analysis as a JSON object with the following structure:
   "brandName": "primary brand name",
   "colors": ["color1", "color2"],
   "designStyle": "style description",
-  "suitableForReferenceOverlay": true/false
+  "suitableForReferenceOverlay": true/false,
+  "visualScriptContext": "multi-sentence neutral visual description as specified above"
 }`;
     } else if (userLabel?.toLowerCase() === 'product' || userLabel?.toLowerCase().includes('product')) {
       return `Analyze this product image and extract:
@@ -235,6 +243,7 @@ Return your analysis as a JSON object with the following structure:
 5. Use cases and contexts where this product would be used
 6. Target audience based on product appearance
 7. Can this image be used directly as B-roll footage as-is (e.g. full frame with no change)? Consider: is the background busy, stylized, or distracting? If background is busy or the scene is too specific, set canUseAsDirectBroll false and recommendedUsage "reference_only". If the image is clean and generic enough to use as a clip, set canUseAsDirectBroll true and recommendedUsage "direct_broll".
+8. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual visual inventory—setting, lighting, composition, product/apparel/object types, colors, materials, notable accessories, mood—for marketing copy and B-roll briefs. Staged commercial/catalog style. Do NOT identify or name real individuals.
 
 Return your analysis as a JSON object with the following structure:
 {
@@ -245,7 +254,8 @@ Return your analysis as a JSON object with the following structure:
   "useCases": ["use case 1", "use case 2"],
   "targetAudience": "target audience description",
   "canUseAsDirectBroll": true/false,
-  "recommendedUsage": "reference_only" or "direct_broll"
+  "recommendedUsage": "reference_only" or "direct_broll",
+  "visualScriptContext": "multi-sentence neutral visual description as specified above"
 }`;
     } else {
       // General categorization
@@ -263,6 +273,7 @@ Analyze the image and determine:
 3. If it's a logo, extract all visible text and set suitableForReferenceOverlay (true if clean/solid background)
 4. If it's a product, extract product name, type, key features, and set canUseAsDirectBroll (false if background busy/stylized) and recommendedUsage ("reference_only" or "direct_broll")
 5. If it's a background/environment, describe the setting and set suitableAsBackground (true if usable as background layer)
+6. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual visual inventory—setting, lighting, composition, apparel/objects, colors, materials, mood—for marketing copy and B-roll briefs. Staged commercial/catalog style. Do NOT identify or name real individuals.
 
 Return your analysis as a JSON object with the following structure:
 {
@@ -270,7 +281,8 @@ Return your analysis as a JSON object with the following structure:
   "confidence": 0.0-1.0,
   "extractedText": "text if logo, null otherwise",
   "productInfo": { "name": "...", "type": "...", "features": [] } or null,
-  "description": "brief description of the image",
+  "description": "brief one-line summary of the image",
+  "visualScriptContext": "multi-sentence neutral visual description as specified above",
   "suitableForReferenceOverlay": true/false (for logo),
   "canUseAsDirectBroll": true/false (for product/background),
   "recommendedUsage": "reference_only" or "direct_broll" or "background",
@@ -280,37 +292,49 @@ Return your analysis as a JSON object with the following structure:
   }
 
   /**
-   * Call OpenAI Vision API to analyze image
+   * Call OpenAI Vision API to analyze image (prefers resized JPEG data URL so OpenAI does not time out on large GCS URLs).
    */
   private async callOpenAIVisionAPI(imageUrl: string, prompt: string, retryCount: number = 0): Promise<any> {
-    const MAX_RETRIES = 2; // Maximum 2 retries (3 total attempts)
-    
+    const MAX_RETRIES = 2;
+
     if (!this.openai) {
       throw new Error('OpenAI API key is not configured');
     }
 
-    // Validate URL before attempting
     if (!imageUrl || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://'))) {
       throw new Error(`Invalid image URL: ${imageUrl}. URL must be a valid HTTP(S) URL.`);
     }
 
-    // Check for placeholder/invalid URLs
     if (imageUrl.includes('example.com') || imageUrl.includes('placeholder') || imageUrl === 'x.png') {
       throw new Error(`Invalid placeholder URL detected: ${imageUrl}. Please provide a valid image URL.`);
+    }
+
+    const dataUrl = await httpImageToOpenAIDataUrl(imageUrl);
+    const visionUrl = dataUrl ?? imageUrl;
+    const detail: 'low' | 'auto' = dataUrl ? 'auto' : 'low';
+
+    if (dataUrl) {
+      this.logger.log(
+        `Asset analysis vision: inline JPEG (~${Math.round(dataUrl.length / 1024)} KB base64)`,
+        'AssetAnalysisService',
+      );
+    } else {
+      this.logger.warn(
+        `Asset analysis vision: could not inline; remote URL detail=low (${imageUrl.substring(0, 80)}...)`,
+        'AssetAnalysisService',
+      );
     }
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       {
         role: 'user',
         content: [
-          {
-            type: 'text',
-            text: prompt,
-          },
+          { type: 'text', text: prompt },
           {
             type: 'image_url',
             image_url: {
-              url: imageUrl,
+              url: visionUrl,
+              detail,
             },
           },
         ],
@@ -322,30 +346,55 @@ Return your analysis as a JSON object with the following structure:
         model: 'gpt-4o',
         messages,
         response_format: { type: 'json_object' },
-        temperature: 0.3, // Lower temperature for more consistent analysis
+        temperature: 0.3,
         max_tokens: 2000,
       });
 
-      const responseContent = completion.choices[0]?.message?.content;
-      if (!responseContent) {
+      const extracted = extractAssistantText(completion.choices[0]?.message);
+      if (extracted.ok === true) {
+        try {
+          return JSON.parse(extracted.text);
+        } catch (parseErr: any) {
+          this.logger.warn(
+            `${formatCompletionDiagnostics(completion, 'Vision JSON parse failed')}: ${parseErr?.message}`,
+            'AssetAnalysisService',
+          );
+          throw new Error(
+            `OpenAI vision returned non-JSON: ${parseErr?.message}. Snippet: ${extracted.text.slice(0, 300)}`,
+          );
+        }
+      } else if (extracted.reason === 'refusal') {
+        throw new Error(
+          `OpenAI declined image analysis: ${extracted.refusal?.slice(0, 200) || 'refusal'}`,
+        );
+      } else {
+        this.logger.warn(
+          formatCompletionDiagnostics(completion, 'Empty vision assistant content'),
+          'AssetAnalysisService',
+        );
         throw new Error('Empty response from OpenAI Vision API');
       }
-
-      return JSON.parse(responseContent);
     } catch (error: any) {
-      // Handle image timeout/invalid URL errors with retry limit
-      if ((error.code === 'invalid_image_url' || (error.message && error.message.includes('Timeout'))) && retryCount < MAX_RETRIES) {
-        this.logger.warn(`Image fetch timeout for ${imageUrl}, retrying (attempt ${retryCount + 1}/${MAX_RETRIES})...`, 'AssetAnalysisService');
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      const isImageTimeoutError =
+        error.code === 'invalid_image_url' ||
+        (error.message && String(error.message).includes('Timeout while downloading'));
+
+      if (isImageTimeoutError && retryCount < MAX_RETRIES) {
+        this.logger.warn(
+          `Image / vision request failed for ${imageUrl}, retrying (attempt ${retryCount + 1}/${MAX_RETRIES})...`,
+          'AssetAnalysisService',
+        );
+        await new Promise((r) => setTimeout(r, 2000 * (retryCount + 1)));
         return this.callOpenAIVisionAPI(imageUrl, prompt, retryCount + 1);
       }
-      
-      // If max retries reached or other error, throw with descriptive message
-      if (retryCount >= MAX_RETRIES) {
+
+      if (retryCount >= MAX_RETRIES && isImageTimeoutError) {
         this.logger.error(`Image fetch failed after ${MAX_RETRIES + 1} attempts for ${imageUrl}`, 'AssetAnalysisService');
-        throw new Error(`Failed to fetch image after ${MAX_RETRIES + 1} attempts: ${imageUrl}. The URL may be invalid or inaccessible.`);
+        throw new Error(
+          `Failed to fetch image after ${MAX_RETRIES + 1} attempts: ${imageUrl}. The URL may be invalid or inaccessible.`,
+        );
       }
-      
+
       throw error;
     }
   }
@@ -416,6 +465,22 @@ Return your analysis as a JSON object with the following structure:
   }
 
   /**
+   * Long-form neutral visual text for script generation; prefers visualScriptContext, else legacy description.
+   */
+  private extractVisualScriptContext(analysis: any): string | undefined {
+    const fromField =
+      typeof analysis?.visualScriptContext === 'string' ? analysis.visualScriptContext.trim() : '';
+    const fromDesc =
+      typeof analysis?.description === 'string' ? analysis.description.trim() : '';
+    const raw = fromField || fromDesc;
+    if (!raw) {
+      return undefined;
+    }
+    const max = AssetAnalysisService.MAX_VISUAL_SCRIPT_CONTEXT_CHARS;
+    return raw.length > max ? raw.slice(0, max) : raw;
+  }
+
+  /**
    * Extract confidence score from analysis
    */
   private extractConfidence(analysis: any): number {
@@ -475,29 +540,6 @@ Return your analysis as a JSON object with the following structure:
     if (normalized.includes('environment') || normalized.includes('setting')) return 'environment';
     
     return undefined;
-  }
-
-  /**
-   * Pre-warm URL to ensure it's accessible
-   */
-  private async preWarmUrl(url: string, maxAttempts = 2): Promise<boolean> {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        await axios.get(url, {
-          timeout: 5000,
-          responseType: 'arraybuffer',
-          headers: {
-            'User-Agent': 'UserGen-AssetAnalysis/1.0',
-          },
-        });
-        return true;
-      } catch (error: any) {
-        if (attempt < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        }
-      }
-    }
-    return false;
   }
 
   /**

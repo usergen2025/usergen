@@ -36,6 +36,15 @@ interface BrollImage {
   prompt?: string;
 }
 
+interface WordTimestamp {
+  word?: string;
+  text?: string;
+  start?: number;
+  startTime?: number;
+  end?: number;
+  endTime?: number;
+}
+
 interface AudioFile {
   sceneNumber: number;
   filePath?: string;
@@ -44,6 +53,36 @@ interface AudioFile {
   duration?: number;
   gcsUrl?: string;      // GCS public URL
   publicUrl?: string;   // Preferred public URL (GCS if available, fallback to backend)
+  wordTimestamps?: WordTimestamp[];
+}
+
+function captionTextForVideoPreview(
+  mode: 'word-by-word' | 'full-sentence',
+  sceneText: string,
+  currentTime: number,
+  wordTimestamps: WordTimestamp[] | undefined,
+  sceneDuration?: number
+): string {
+  if (mode === 'full-sentence') return sceneText;
+  if (!wordTimestamps?.length) return sceneText;
+  const words = wordTimestamps
+    .map((w) => ({
+      t: (w.word ?? w.text ?? '').trim(),
+      start: w.start ?? w.startTime ?? 0,
+      end: w.end ?? w.endTime ?? w.start ?? w.startTime ?? 0,
+    }))
+    .filter((w) => w.t);
+  if (!words.length) return sceneText;
+  const dur =
+    sceneDuration && sceneDuration > 0
+      ? sceneDuration
+      : Math.max(words[words.length - 1].end, currentTime);
+  if (currentTime < words[0].start) return '';
+  for (let i = 0; i < words.length; i++) {
+    const nextStart = i + 1 < words.length ? words[i + 1].start : dur;
+    if (currentTime >= words[i].start && currentTime < nextStart) return words[i].t;
+  }
+  return words[words.length - 1].t;
 }
 
 // Workspace mode type for better state management
@@ -103,7 +142,7 @@ function WorkspacePageContent() {
     borderColor: 'transparent',
     borderWidth: 0,
   });
-  const [captionStylePreset, setCaptionStylePreset] = useState<'light' | 'dark' | 'custom'>('dark');
+  const [captionStylePreset, setCaptionStylePreset] = useState<'light' | 'dark' | 'transparent' | 'custom'>('dark');
   
   // Avatar overlay state (AVATAR_CUTOUT style only)
   const [avatarOverlayEnabled, setAvatarOverlayEnabled] = useState(true);
@@ -123,7 +162,8 @@ function WorkspacePageContent() {
   const [playingVideo, setPlayingVideo] = useState<number | null>(null);
   // Use ref instead of state to avoid infinite re-renders when setting video elements
   const videoElementsRef = useRef<Record<number, HTMLVideoElement>>({});
-  
+  const [previewPlaybackTime, setPreviewPlaybackTime] = useState(0);
+
   // Rendering state
   const [renderingProgress, setRenderingProgress] = useState(0);
   const [renderingStage, setRenderingStage] = useState<string>('pending');
@@ -327,6 +367,47 @@ function WorkspacePageContent() {
           }
 
           setProject(projectData);
+
+          if (projectData.captionsEnabled && projectData.captionSettings) {
+            const caps = projectData.captionSettings as Record<string, unknown>;
+            setCaptionsEnabled(true);
+            if (caps.displayMode === 'full-sentence' || caps.displayMode === 'word-by-word') {
+              setCaptionDisplayMode(caps.displayMode);
+            }
+            if (caps.applyToAll === false) setCaptionApplyToAll(false);
+            const gp = caps.globalPosition as Record<string, unknown> | undefined;
+            if (gp && typeof gp.x === 'number') {
+              setCaptionGlobalPosition({
+                x: gp.x,
+                y: typeof gp.y === 'number' ? gp.y : 0.9,
+                scale: typeof gp.scale === 'number' ? gp.scale : 0.1,
+                widthScale: typeof gp.widthScale === 'number' ? gp.widthScale : 0.8,
+              });
+            }
+            const psp = caps.perScenePositions as Record<number, { x: number; y: number; scale: number; widthScale: number }> | undefined;
+            if (psp && typeof psp === 'object') {
+              setCaptionPerScenePositions(psp);
+            }
+            const st = (caps.style && typeof caps.style === 'object' ? caps.style : caps) as Record<string, unknown>;
+            if (st.fontFamily || st.textColor || st.backgroundColor) {
+              const bg = String(st.backgroundColor ?? '').toLowerCase();
+              setCaptionStyle({
+                fontFamily: (st.fontFamily as string) || 'Inter',
+                fontSize: typeof st.fontSize === 'number' ? st.fontSize : 16,
+                fontWeight: st.fontWeight === 'normal' ? 'normal' : 'bold',
+                fontStyle: st.fontStyle === 'italic' ? 'italic' : 'normal',
+                textDecoration: st.textDecoration === 'underline' ? 'underline' : 'none',
+                textColor: (st.textColor as string) || '#FFFFFF',
+                backgroundColor: (st.backgroundColor as string) || '#000000',
+                borderColor: (st.borderColor as string) || 'transparent',
+                borderWidth: typeof st.borderWidth === 'number' ? st.borderWidth : 0,
+              });
+              if (bg === 'transparent') setCaptionStylePreset('transparent');
+              else if (st.textColor === '#000000' && st.backgroundColor === '#FFFFFF') setCaptionStylePreset('light');
+              else if (st.textColor === '#FFFFFF' && st.backgroundColor === '#000000') setCaptionStylePreset('dark');
+              else setCaptionStylePreset('custom');
+            }
+          }
 
           // Parse script to get scenes
           if (projectData.script) {
@@ -675,7 +756,7 @@ function WorkspacePageContent() {
   }, [captionApplyToAll, captionGlobalPosition, captionPerScenePositions, scenes, selectedSceneIndex]);
 
   // Apply caption style preset
-  const applyCaptionPreset = useCallback((preset: 'light' | 'dark') => {
+  const applyCaptionPreset = useCallback((preset: 'light' | 'dark' | 'transparent') => {
     setCaptionStylePreset(preset);
     if (preset === 'light') {
       setCaptionStyle({
@@ -686,6 +767,18 @@ function WorkspacePageContent() {
         textDecoration: 'none',
         textColor: '#000000',
         backgroundColor: '#FFFFFF',
+        borderColor: 'transparent',
+        borderWidth: 0,
+      });
+    } else if (preset === 'transparent') {
+      setCaptionStyle({
+        fontFamily: 'Inter',
+        fontSize: 16,
+        fontWeight: 'bold',
+        fontStyle: 'normal',
+        textDecoration: 'none',
+        textColor: '#FFFFFF',
+        backgroundColor: 'transparent',
         borderColor: 'transparent',
         borderWidth: 0,
       });
@@ -718,9 +811,9 @@ function WorkspacePageContent() {
     // So we need to check multiple fields and handle missing prompts
     let prompt = currentScene.broll_image_prompt || currentScene.broll_prompt || currentScene.broll_visual_description || '';
     
-    // For ALTERNATE style, if prompt is empty and it's an even scene, 
+    // For ALTERNATE style, if prompt is empty and it's an odd (half-n-half) scene,
     // we still need a b-roll image for the top half
-    if (!prompt && project?.style === 'ALTERNATE' && sceneNumber % 2 === 0) {
+    if (!prompt && project?.style === 'ALTERNATE' && sceneNumber % 2 === 1) {
       // Try to use broll_visual_description or generate a fallback
       prompt = currentScene.broll_visual_description || `Scene ${sceneNumber} b-roll for half-n-half composition`;
     }
@@ -947,6 +1040,8 @@ function WorkspacePageContent() {
           applyToAll: captionApplyToAll,
           globalPosition: captionGlobalPosition,
           perScenePositions: captionPerScenePositions,
+          previewContainerHeight: previewDimensions.height,
+          previewContainerWidth: previewDimensions.width,
           style: {
             fontFamily: captionStyle.fontFamily,
             fontSize: captionStyle.fontSize,
@@ -1024,7 +1119,12 @@ function WorkspacePageContent() {
           sourceId: selection.id,
           fileUrl,
           mediaType: selection.type.includes('image') ? 'image' : 'video',
-          targetAspectRatio: project?.style === 'HALF_N_HALF' || project?.style === 'ALTERNATE' ? '9:8' : '9:16',
+          targetAspectRatio:
+            project?.style === 'HALF_N_HALF'
+              ? '9:8'
+              : project?.style === 'ALTERNATE' && brollModalSceneNumber % 2 === 1
+                ? '9:8'
+                : '9:16',
         }),
       });
 
@@ -1097,7 +1197,7 @@ function WorkspacePageContent() {
     const sceneNum = update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber;
 
     if (update.state === 'progress' && isComposite && sceneNum) {
-      // Progress events for ALTERNATE even scenes (broll_complete, avatar_complete, compositing)
+      // Progress events for ALTERNATE odd / half-n-half scenes (broll_complete, avatar_complete, compositing)
       // Optionally update per-scene progress UI; for now we just log
       console.log('[Workspace] Scene progress:', sceneNum, update.metadata?.stage);
       return;
@@ -1306,6 +1406,46 @@ function WorkspacePageContent() {
     setFailedGenerations(new Set());
   }, []);
 
+  // Preview/caption: keep hooks above any early return (Rules of Hooks)
+  const currentScene = scenes[selectedSceneIndex];
+  const currentSceneNumber = currentScene?.scene_number || currentScene?.sceneNumber || (selectedSceneIndex + 1);
+  const currentImageUrl = getImageUrl(currentSceneNumber);
+  const currentSceneText = currentScene ? getSceneText(currentScene) : '';
+  const currentBrollVideoUrl =
+    workspaceMode === 'videos' ? getVideoUrl(currentSceneNumber) : null;
+  const hasPreviewMedia = Boolean(currentImageUrl || currentBrollVideoUrl);
+  const currentAudioForScene = audioFiles.find((af) => af.sceneNumber === currentSceneNumber);
+
+  useEffect(() => {
+    setPreviewPlaybackTime(0);
+  }, [currentSceneNumber]);
+
+  const previewCaptionText = useMemo(() => {
+    const base =
+      (currentSceneText || currentAudioForScene?.voiceover || '').trim() || 'Sample caption text';
+    if (!currentBrollVideoUrl) return base;
+    if (captionDisplayMode === 'full-sentence') return base;
+    const sceneDur =
+      currentAudioForScene?.duration && isFinite(currentAudioForScene.duration) && currentAudioForScene.duration > 0
+        ? currentAudioForScene.duration
+        : undefined;
+    return (
+      captionTextForVideoPreview(
+        'word-by-word',
+        base === 'Sample caption text' ? '' : base,
+        previewPlaybackTime,
+        currentAudioForScene?.wordTimestamps,
+        sceneDur
+      ).trim() || base
+    );
+  }, [
+    currentBrollVideoUrl,
+    captionDisplayMode,
+    currentSceneText,
+    currentAudioForScene,
+    previewPlaybackTime,
+  ]);
+
   if (loading || authLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#FFFCF8]">
@@ -1313,11 +1453,6 @@ function WorkspacePageContent() {
       </div>
     );
   }
-
-  const currentScene = scenes[selectedSceneIndex];
-  const currentSceneNumber = currentScene?.scene_number || currentScene?.sceneNumber || (selectedSceneIndex + 1);
-  const currentImageUrl = getImageUrl(currentSceneNumber);
-  const currentSceneText = currentScene ? getSceneText(currentScene) : '';
 
   return (
     <div className="relative h-full bg-[#FFFCF8] overflow-hidden flex flex-col">
@@ -1714,6 +1849,7 @@ function WorkspacePageContent() {
                   }}
                   src={getVideoUrl(currentSceneNumber) || undefined}
                   className="w-full h-full object-cover"
+                  onTimeUpdate={(e) => setPreviewPlaybackTime(e.currentTarget.currentTime)}
                   onError={(e) => {
                     console.error('Video failed to load:', getVideoUrl(currentSceneNumber));
                     const target = e.target as HTMLVideoElement;
@@ -1752,7 +1888,7 @@ function WorkspacePageContent() {
               )}
               
               {/* Avatar Overlay - Only for AVATAR_CUTOUT style when enabled, hidden during rendering/converting */}
-              {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && currentImageUrl && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+              {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && hasPreviewMedia && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
                 <DraggableResizableAvatar
                   avatarImageUrl={avatarImageUrl}
                   position={getCurrentAvatarPosition()}
@@ -1764,9 +1900,9 @@ function WorkspacePageContent() {
               )}
               
               {/* Caption Overlay - For all styles when captions enabled, hidden during rendering/converting */}
-              {captionsEnabled && currentImageUrl && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+              {captionsEnabled && hasPreviewMedia && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
                 <DraggableResizableCaption
-                  captionText={currentSceneText || 'Sample caption text'}
+                  captionText={previewCaptionText}
                   position={getCurrentCaptionPosition()}
                   style={captionStyle}
                   onPositionChange={handleCaptionPositionChange}
@@ -1982,7 +2118,7 @@ function WorkspacePageContent() {
                       {/* Style Presets */}
                       <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full">
                         <span className="text-[clamp(11px,1.27vh,13px)] font-medium text-gray-600">Style Preset</span>
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => applyCaptionPreset('light')}
                             className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
@@ -1995,7 +2131,6 @@ function WorkspacePageContent() {
                               <span className="text-[8px] font-bold text-black">Aa</span>
                             </div>
                             <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Light</span>
-                            {captionStylePreset === 'light' && <Check className="w-3 h-3 text-[#E86412]" />}
                           </button>
                           <button
                             onClick={() => applyCaptionPreset('dark')}
@@ -2009,7 +2144,19 @@ function WorkspacePageContent() {
                               <span className="text-[8px] font-bold text-white">Aa</span>
                             </div>
                             <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Dark</span>
-                            {captionStylePreset === 'dark' && <Check className="w-3 h-3 text-[#E86412]" />}
+                          </button>
+                          <button
+                            onClick={() => applyCaptionPreset('transparent')}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
+                              captionStylePreset === 'transparent'
+                                ? 'border-[#E86412] bg-orange-50'
+                                : 'border-gray-200 hover:border-gray-300'
+                            }`}
+                          >
+                            <div className="w-5 h-5 rounded flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200">
+                              <span className="text-[8px] font-bold text-gray-800 drop-shadow-sm">Aa</span>
+                            </div>
+                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Transparent</span>
                           </button>
                         </div>
                         {captionStylePreset === 'custom' && (
@@ -2056,7 +2203,13 @@ function WorkspacePageContent() {
         sceneNumber={brollModalSceneNumber}
         defaultSearchTerm={scenes[brollModalSceneNumber - 1]?.stock_search_term || ''}
         allowedTabs={workspaceMode === 'images' ? ['images', 'upload'] : ['videos', 'upload']}
-        targetAspectRatio={project?.style === 'HALF_N_HALF' || project?.style === 'ALTERNATE' ? '9:8' : '9:16'}
+        targetAspectRatio={
+          project?.style === 'HALF_N_HALF'
+            ? '9:8'
+            : project?.style === 'ALTERNATE' && brollModalSceneNumber % 2 === 1
+              ? '9:8'
+              : '9:16'
+        }
       />
     </div>
   );

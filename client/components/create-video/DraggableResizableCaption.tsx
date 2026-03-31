@@ -484,6 +484,9 @@ export function DraggableResizableCaption({
             border: style.borderWidth > 0 && style.borderColor !== 'transparent' 
               ? `${style.borderWidth}px solid ${style.borderColor}` 
               : 'none',
+            ...(style.backgroundColor === 'transparent'
+              ? { textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.6)' }
+              : {}),
           }}
         >
           <span className="text-center leading-tight">

@@ -4,6 +4,9 @@ import { LoggerService } from '../common/logger/logger.service';
 import OpenAI from 'openai';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
+import { httpImageToOpenAIDataUrl } from '../common/openai/openai-vision-image.util';
+import { extractAssistantText, formatCompletionDiagnostics } from '../common/openai/openai-completion.util';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -20,6 +23,15 @@ export interface ScriptGenerationResponse {
   model: string;
 }
 
+export type VideoScriptAnalyzedAsset = {
+  id: string;
+  category: string;
+  extractedText?: string;
+  productInfo?: any;
+  url: string;
+  visualScriptContext?: string;
+};
+
 export interface VideoScriptGenerationRequest {
   userPrompt: string;
   videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR';
@@ -30,13 +42,7 @@ export interface VideoScriptGenerationRequest {
   productImageUrl?: string; // URL of the product image uploaded by user
   hasAvatar?: boolean; // Whether an avatar is being used
   avatarId?: string; // ID of the selected avatar (if any)
-  analyzedAssets?: Array<{ // Analyzed assets from project metadata (optional, will be fetched if projectId provided)
-    id: string;
-    category: string;
-    extractedText?: string;
-    productInfo?: any;
-    url: string;
-  }>;
+  analyzedAssets?: VideoScriptAnalyzedAsset[];
   urlContentContext?: string; // Extracted content from URL assets for script context
 }
 
@@ -68,6 +74,14 @@ export interface SceneRegenerationResponse {
 /** Video styles that use an avatar and require avatar_image_prompt in the script. */
 const AVATAR_VIDEO_STYLES: readonly string[] = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'];
 
+/** Thrown when the chat model refuses script generation (caller may retry text-only without images). */
+export class OpenAIScriptRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenAIScriptRefusalError';
+  }
+}
+
 @Injectable()
 export class ScriptsService {
   private openai: OpenAI;
@@ -81,10 +95,9 @@ export class ScriptsService {
     private readonly logger: LoggerService,
   ) {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    const openAiBaseUrl = this.configService.get<string>('OPENAI_BASE_URL');
     if (apiKey) {
-      this.openai = new OpenAI({
-        apiKey: apiKey,
-      });
+      this.openai = createConfiguredOpenAI(apiKey, openAiBaseUrl);
     }
     this.videoProcessingServiceUrl = 
       this.configService.get<string>('VIDEO_PROCESSING_SERVICE_URL') || 
@@ -98,47 +111,36 @@ export class ScriptsService {
   }
 
   /**
-   * Pre-warm a URL by making a GET request to ensure it's accessible and cached
-   * This helps with CDN caching and ensures the file is propagated before OpenAI tries to fetch it
+   * Prefer inline JPEG data URLs so OpenAI does not fetch large/slow GCS objects (short server-side timeout).
    */
-  private async preWarmUrl(url: string, maxAttempts = 3): Promise<boolean> {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const response = await axios.get(url, {
-          timeout: 10000, // 10 second timeout
-          responseType: 'arraybuffer', // Download the full file to warm cache
-          headers: {
-            'User-Agent': 'UserGen-PreWarm/1.0',
-          },
-        });
-        
-        if (response.status === 200) {
-          const contentLength = response.headers['content-length'] || response.data?.length || 0;
-          this.logger.log(`URL pre-warmed successfully (${contentLength} bytes): ${url.substring(0, 60)}...`, 'ScriptsService');
-          return true;
-        }
-      } catch (error: any) {
-        this.logger.warn(`URL pre-warm attempt ${attempt}/${maxAttempts} failed: ${error.message}`, 'ScriptsService');
-        if (attempt < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Wait 1s, 2s, 3s
-        }
-      }
+  private async resolveImageUrlForOpenAIVision(httpUrl: string): Promise<{ url: string; detail?: 'low' | 'auto' }> {
+    const dataUrl = await httpImageToOpenAIDataUrl(httpUrl);
+    if (dataUrl) {
+      const approxKb = Math.round(dataUrl.length / 1024);
+      this.logger.log(
+        `Vision input: inline JPEG (~${approxKb} KB base64) for ${httpUrl.substring(0, 72)}...`,
+        'ScriptsService',
+      );
+      return { url: dataUrl, detail: 'auto' };
     }
-    return false;
+    this.logger.warn(
+      `Vision input: could not inline image; using remote URL with detail=low (${httpUrl.substring(0, 80)}...)`,
+      'ScriptsService',
+    );
+    return { url: httpUrl, detail: 'low' };
   }
 
   /**
-   * Call OpenAI with retry logic specifically for vision API image fetch timeouts
-   * OpenAI has an internal ~3 second timeout when fetching external images
+   * Call OpenAI with retries for image URL timeouts, rate limits, and transient server errors.
    */
   private async callOpenAIWithRetry(
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     model: string,
     useVisionAPI: boolean,
-    maxRetries = 3
+    maxRetries = 5
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     let lastError: any;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const completion = await this.openai.chat.completions.create({
@@ -148,36 +150,244 @@ export class ScriptsService {
           temperature: 0.7,
           max_tokens: useVisionAPI ? 4000 : 3000,
         });
-        
+
         if (attempt > 1) {
           this.logger.log(`OpenAI call succeeded on attempt ${attempt}`, 'ScriptsService');
         }
-        
+
         return completion;
       } catch (error: any) {
         lastError = error;
-        
-        // Check if it's an image timeout error - only retry for these
-        const isImageTimeoutError = 
-          error.code === 'invalid_image_url' || 
-          (error.message && error.message.includes('Timeout while downloading'));
-        
+
+        const isImageTimeoutError =
+          error.code === 'invalid_image_url' ||
+          (error.message && String(error.message).includes('Timeout while downloading'));
+
+        const status = error.status ?? error.response?.status;
+        const isRateLimited = status === 429;
+        const isServerError = status === 503 || status === 502;
+
+        let delayMs = 0;
         if (isImageTimeoutError && attempt < maxRetries) {
-          const delay = Math.min(2000 * attempt, 6000); // 2s, 4s, 6s max
+          delayMs = Math.min(2000 * attempt, 8000);
+        } else if (isRateLimited && attempt < maxRetries) {
+          const ra =
+            error.headers?.['retry-after'] ??
+            error.response?.headers?.['retry-after'];
+          const sec = ra != null ? parseInt(String(ra), 10) : NaN;
+          delayMs =
+            !Number.isNaN(sec) && sec > 0
+              ? Math.min(sec * 1000, 60000)
+              : Math.min(3000 * attempt, 15000);
+        } else if (isServerError && attempt < maxRetries) {
+          delayMs = Math.min(1500 * attempt, 8000);
+        }
+
+        if (delayMs > 0) {
           this.logger.warn(
-            `OpenAI image fetch timeout (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`,
-            'ScriptsService'
+            `OpenAI retry (attempt ${attempt}/${maxRetries}): ${error.message}. Waiting ${delayMs}ms...`,
+            'ScriptsService',
           );
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((r) => setTimeout(r, delayMs));
           continue;
         }
-        
-        // For non-timeout errors or last attempt, throw
+
         throw error;
       }
     }
-    
+
     throw lastError;
+  }
+
+  /**
+   * Run chat completion and require non-empty JSON string content (with retries on empty assistant messages).
+   */
+  private async completeChatWithJsonContent(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    model: string,
+    useVisionAPI: boolean,
+    logLabel: string,
+  ): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; text: string }> {
+    const maxEmptyRetries = 3;
+    let lastCompletion: OpenAI.Chat.Completions.ChatCompletion | undefined;
+
+    for (let emptyAttempt = 1; emptyAttempt <= maxEmptyRetries; emptyAttempt++) {
+      const completion = await this.callOpenAIWithRetry(messages, model, useVisionAPI, 5);
+      lastCompletion = completion;
+      const extracted = extractAssistantText(completion.choices[0]?.message);
+
+      if (extracted.ok === true) {
+        return { completion, text: extracted.text };
+      } else if (extracted.reason === 'refusal') {
+        this.logger.warn(
+          `${logLabel}: model refusal — ${extracted.refusal?.slice(0, 500)}`,
+          'ScriptsService',
+        );
+        throw new OpenAIScriptRefusalError(
+          `OpenAI declined to generate this script. Try a different prompt or video style. (${extracted.refusal?.slice(0, 200) || 'refusal'})`,
+        );
+      } else {
+        this.logger.warn(
+          `${formatCompletionDiagnostics(completion, `${logLabel} empty assistant content`)} (emptyAttempt ${emptyAttempt}/${maxEmptyRetries})`,
+          'ScriptsService',
+        );
+
+        if (emptyAttempt < maxEmptyRetries) {
+          await new Promise((r) => setTimeout(r, 1200 * emptyAttempt));
+        }
+      }
+    }
+
+    throw new Error(
+      `Empty response from OpenAI after ${maxEmptyRetries} attempts. ${lastCompletion ? formatCompletionDiagnostics(lastCompletion, 'lastCompletion') : ''}`,
+    );
+  }
+
+  private buildVideoScriptRichUserText(
+    request: VideoScriptGenerationRequest,
+    analyzedAssets: VideoScriptAnalyzedAsset[],
+    duration: string,
+    durationSeconds: number,
+    expectedScenes: { min: number; max: number; target: number },
+    hasAnalyzedAssets: boolean,
+  ): string {
+    let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
+
+CRITICAL DURATION REQUIREMENTS:
+- Total video duration: ${duration} (${durationSeconds} seconds)
+- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
+- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
+- The total of all scene durations MUST equal ${durationSeconds} seconds
+- DO NOT generate fewer scenes than required - this is a strict requirement`;
+
+    if (hasAnalyzedAssets) {
+      const logoAssets = analyzedAssets.filter((a) => a.category === 'logo');
+      const productAssets = analyzedAssets.filter((a) => a.category === 'product');
+
+      if (logoAssets.length > 0) {
+        const logoAsset = logoAssets[0];
+        const brandName = logoAsset.extractedText || (logoAsset as any).brandName;
+
+        if (brandName) {
+          textPrompt += `\n\nCRITICAL BRAND INFORMATION:
+- Brand name: "${brandName}"
+- You MUST mention "${brandName}" naturally in the voiceover multiple times throughout the script
+- Use "${brandName}" when referring to the product, service, or company
+- Do NOT use generic terms like "our product" or "the company" - use "${brandName}" instead
+- Emphasize "${brandName}" in key moments and call-to-action scenes
+- Use the logo image(s) provided as visual reference for brand identity and style`;
+        } else {
+          textPrompt += `\n\nBRAND CONTEXT:
+- Use the logo image(s) provided as visual reference for brand identity
+- Extract brand name from the logo and incorporate it naturally into the script
+- Use brand colors and style elements when describing visuals`;
+        }
+      }
+
+      if (productAssets.length > 0) {
+        textPrompt += `\n\nPRODUCT CONTEXT:
+- Product information has been pre-analyzed and is included in the system prompt
+- Use the product image(s) provided as visual reference to understand product appearance
+- Reference specific product features and characteristics from the pre-analyzed information
+- Ensure visual descriptions match the actual product appearance in the images`;
+      }
+    }
+
+    textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
+    return textPrompt;
+  }
+
+  private async buildVideoScriptUserMessage(
+    request: VideoScriptGenerationRequest,
+    analyzedAssets: VideoScriptAnalyzedAsset[] | undefined,
+    duration: string,
+    durationSeconds: number,
+    expectedScenes: { min: number; max: number; target: number },
+    opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean },
+  ): Promise<OpenAI.Chat.Completions.ChatCompletionUserMessageParam> {
+    const list = analyzedAssets ?? [];
+    const hasAnalyzedAssets = list.length > 0;
+    const useVisionEligible =
+      hasAnalyzedAssets &&
+      list.some((a) => a.url && (a.url.startsWith('http://') || a.url.startsWith('https://')));
+
+    if (opts.attachVisionImages && useVisionEligible) {
+      const content: Array<{
+        type: 'text' | 'image_url';
+        text?: string;
+        image_url?: { url: string; detail?: 'low' | 'high' | 'auto' };
+      }> = [];
+
+      const textPrompt = this.buildVideoScriptRichUserText(
+        request,
+        list,
+        duration,
+        durationSeconds,
+        expectedScenes,
+        hasAnalyzedAssets,
+      );
+      content.push({ type: 'text', text: textPrompt });
+
+      for (const asset of list) {
+        if (!asset.url) continue;
+
+        let assetUrl = asset.url;
+        if (!assetUrl.startsWith('http://') && !assetUrl.startsWith('https://')) {
+          const backendBaseUrl =
+            this.configService.get<string>('BACKEND_BASE_URL') ||
+            this.configService.get<string>('NEXT_PUBLIC_WS_URL') ||
+            'http://localhost:9001';
+          if (assetUrl.startsWith('/uploads')) {
+            assetUrl = `${backendBaseUrl}${assetUrl}`;
+          } else {
+            continue;
+          }
+        }
+
+        if (!assetUrl.startsWith('http://') && !assetUrl.startsWith('https://')) {
+          continue;
+        }
+
+        const resolved = await this.resolveImageUrlForOpenAIVision(assetUrl);
+        content.push({
+          type: 'image_url',
+          image_url: resolved.detail
+            ? { url: resolved.url, detail: resolved.detail }
+            : { url: resolved.url },
+        });
+      }
+
+      return { role: 'user', content: content as any };
+    }
+
+    if (useVisionEligible && !opts.attachVisionImages) {
+      let text = this.buildVideoScriptRichUserText(
+        request,
+        list,
+        duration,
+        durationSeconds,
+        expectedScenes,
+        hasAnalyzedAssets,
+      );
+      if (opts.textOnlyRetryNote) {
+        text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
+      }
+      return { role: 'user', content: text };
+    }
+
+    return {
+      role: 'user',
+      content: `Create a video script for the following topic/idea: "${request.userPrompt}".
+
+CRITICAL DURATION REQUIREMENTS:
+- Total video duration: ${duration} (${durationSeconds} seconds)
+- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
+- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
+- The total of all scene durations MUST equal ${durationSeconds} seconds
+- DO NOT generate fewer scenes than required - this is a strict requirement
+
+Return the response as a JSON object.`,
+    };
   }
 
   async generateScript(request: ScriptGenerationRequest): Promise<ScriptGenerationResponse> {
@@ -264,18 +474,18 @@ export class ScriptsService {
         request.urlContentContext
       );
       
-      // Get duration from request, or extract from user prompt, or use default
+      // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
       let duration = request.duration;
       if (!duration) {
-        // Try to extract duration from user prompt
-        const extractedDuration = this.extractDurationFromPrompt(request.userPrompt);
-        if (extractedDuration) {
-          duration = extractedDuration;
-          console.log(`[ScriptsService] Using duration extracted from user prompt: ${duration}`);
-        } else {
-          duration = '30 seconds';
-          console.log(`[ScriptsService] Using default duration: ${duration}`);
-        }
+        // [TEMP DISABLED] extractDurationFromPrompt(request.userPrompt) — duration comes from AI chat sub-step selection.
+        // const extractedDuration = this.extractDurationFromPrompt(request.userPrompt);
+        // if (extractedDuration) {
+        //   duration = extractedDuration;
+        //   console.log(`[ScriptsService] Using duration extracted from user prompt: ${duration}`);
+        // } else {
+        duration = '30 seconds';
+        console.log(`[ScriptsService] Using default duration: ${duration}`);
+        // }
       } else {
         console.log(`[ScriptsService] Using duration from request: ${duration}`);
       }
@@ -291,149 +501,66 @@ export class ScriptsService {
       const useVisionAPI: boolean = hasAnalyzedAssets && analyzedAssets.some(a => 
         a.url && (a.url.startsWith('http://') || a.url.startsWith('https://'))
       );
-      
-      // Build messages array
-      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-      
-      // Add system message
-      messages.push({ role: 'system', content: systemPrompt });
 
-      if (useVisionAPI) {
-        // Build content array with text and images (for visual reference only, not for analysis)
-        const content: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }> = [];
-        
-        // Add text prompt with strong scene count enforcement
-        let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
+      const textModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
+      const buildMessages = async (attachVision: boolean, textOnlyRetryNote?: boolean) => {
+        const userMsg = await this.buildVideoScriptUserMessage(
+          request,
+          hasAnalyzedAssets ? analyzedAssets : undefined,
+          duration,
+          durationSeconds,
+          expectedScenes,
+          { attachVisionImages: attachVision, textOnlyRetryNote },
+        );
+        return [
+          { role: 'system' as const, content: systemPrompt },
+          userMsg,
+        ] as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+      };
 
-CRITICAL DURATION REQUIREMENTS:
-- Total video duration: ${duration} (${durationSeconds} seconds)
-- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
-- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
-- The total of all scene durations MUST equal ${durationSeconds} seconds
-- DO NOT generate fewer scenes than required - this is a strict requirement`;
-        
-        // Add context from analyzed assets (product info, brand info already in system prompt)
-        if (hasAnalyzedAssets) {
-          const logoAssets = analyzedAssets.filter(a => a.category === 'logo');
-          const productAssets = analyzedAssets.filter(a => a.category === 'product');
-          
-          if (logoAssets.length > 0) {
-            // Get brand name from analyzed assets if available
-            const logoAsset = logoAssets[0];
-            const brandName = logoAsset.extractedText || (logoAsset as any).brandName;
-            
-            if (brandName) {
-              textPrompt += `\n\nCRITICAL BRAND INFORMATION:
-- Brand name: "${brandName}"
-- You MUST mention "${brandName}" naturally in the voiceover multiple times throughout the script
-- Use "${brandName}" when referring to the product, service, or company
-- Do NOT use generic terms like "our product" or "the company" - use "${brandName}" instead
-- Emphasize "${brandName}" in key moments and call-to-action scenes
-- Use the logo image(s) provided as visual reference for brand identity and style`;
-            } else {
-              textPrompt += `\n\nBRAND CONTEXT:
-- Use the logo image(s) provided as visual reference for brand identity
-- Extract brand name from the logo and incorporate it naturally into the script
-- Use brand colors and style elements when describing visuals`;
-            }
-          }
-          
-          if (productAssets.length > 0) {
-            textPrompt += `\n\nPRODUCT CONTEXT:
-- Product information has been pre-analyzed and is included in the system prompt
-- Use the product image(s) provided as visual reference to understand product appearance
-- Reference specific product features and characteristics from the pre-analyzed information
-- Ensure visual descriptions match the actual product appearance in the images`;
-          }
-        }
-        
-        textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
-        
-        content.push({ type: 'text', text: textPrompt });
-        
-        // Add analyzed asset images (logo, product, etc.) for visual reference only
-        // These are NOT for analysis - analysis was already done asynchronously
-        if (hasAnalyzedAssets) {
-          for (const asset of analyzedAssets) {
-            // Only include image assets with public URLs
-            if (asset.url && (asset.url.startsWith('http://') || asset.url.startsWith('https://'))) {
-              // Ensure URL is public
-              let assetUrl = asset.url;
-              if (!assetUrl.startsWith('http://') && !assetUrl.startsWith('https://')) {
-                const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
-                                      this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
-                                      'http://localhost:9001';
-                if (assetUrl.startsWith('/uploads')) {
-                  assetUrl = `${backendBaseUrl}${assetUrl}`;
-                } else {
-                  continue; // Skip if not a valid URL
-                }
-              }
-              
-              content.push({
-                type: 'image_url',
-                image_url: { url: assetUrl }
-              });
-            }
-          }
-        }
-        
-        messages.push({
-          role: 'user',
-          content: content as any,
-        });
-      } else {
-        // Standard text-only prompt with strong scene count enforcement
-        messages.push({
-          role: 'user',
-          content: `Create a video script for the following topic/idea: "${request.userPrompt}".
+      let messages = await buildMessages(useVisionAPI);
+      let model = useVisionAPI ? 'gpt-4o' : textModel;
+      let visionFlag = useVisionAPI;
 
-CRITICAL DURATION REQUIREMENTS:
-- Total video duration: ${duration} (${durationSeconds} seconds)
-- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
-- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
-- The total of all scene durations MUST equal ${durationSeconds} seconds
-- DO NOT generate fewer scenes than required - this is a strict requirement
+      let completion: OpenAI.Chat.Completions.ChatCompletion;
+      let responseContent: string;
 
-Return the response as a JSON object.`
-        });
-      }
-
-      // Use GPT-4o or gpt-4-turbo for vision, otherwise use configured model
-      const model = useVisionAPI 
-        ? 'gpt-4o' // GPT-4o has better vision capabilities
-        : this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
-
-      // Pre-warm analyzed asset image URLs before calling OpenAI (for vision API only)
-      // This helps ensure the images are cached and accessible when OpenAI tries to fetch them
-      // Note: Product images are NOT analyzed here - they were already analyzed asynchronously
-      if (useVisionAPI && analyzedAssets) {
-        const urlsToWarm: string[] = [];
-        analyzedAssets.forEach(asset => {
-          if (asset.url && (asset.url.startsWith('http://') || asset.url.startsWith('https://'))) {
-            urlsToWarm.push(asset.url);
-          }
-        });
-        
-        if (urlsToWarm.length > 0) {
-          this.logger.log(`Pre-warming ${urlsToWarm.length} analyzed asset image URL(s) for visual reference before OpenAI call...`, 'ScriptsService');
-          await Promise.all(urlsToWarm.map(url => this.preWarmUrl(url)));
-          // Small delay after pre-warming to ensure propagation
-          await new Promise(resolve => setTimeout(resolve, 500));
+      try {
+        const first = await this.completeChatWithJsonContent(
+          messages,
+          model,
+          visionFlag,
+          'generateVideoScript',
+        );
+        completion = first.completion;
+        responseContent = first.text;
+      } catch (firstErr: unknown) {
+        if (firstErr instanceof OpenAIScriptRefusalError && useVisionAPI) {
+          this.logger.warn('script generation: retrying text-only after model refusal', 'ScriptsService');
+          messages = await buildMessages(false, true);
+          model = textModel;
+          visionFlag = false;
+          const second = await this.completeChatWithJsonContent(
+            messages,
+            model,
+            visionFlag,
+            'generateVideoScript',
+          );
+          completion = second.completion;
+          responseContent = second.text;
+        } else {
+          throw firstErr;
         }
       }
 
-      // Call OpenAI API with retry logic for vision timeouts
-      // Note: response_format: json_object requires gpt-4-turbo, gpt-4o, or gpt-3.5-turbo
-      const completion = await this.callOpenAIWithRetry(messages, model, useVisionAPI, 3);
-
-      const responseContent = completion.choices[0]?.message?.content;
-      if (!responseContent) {
-        throw new Error('Empty response from OpenAI');
+      let scriptData: any;
+      try {
+        scriptData = JSON.parse(responseContent);
+      } catch (parseErr: any) {
+        throw new Error(
+          `OpenAI returned invalid JSON: ${parseErr?.message || parseErr}. First 500 chars: ${responseContent.slice(0, 500)}`,
+        );
       }
-
-      // Parse JSON response
-      let scriptData = JSON.parse(responseContent);
 
       // Validate scene count matches duration
       const sceneCountValidation = this.validateSceneCountForDuration(scriptData, duration);
@@ -443,7 +570,9 @@ Return the response as a JSON object.`
       }
 
       // Normalize prompts to ensure visual consistency (region-aware fallback)
-      scriptData = this.normalizePrompts(scriptData, language);
+      scriptData = this.normalizePrompts(scriptData, language, {
+        injectReferenceIdentityHint: this.analyzedAssetsSupplyHeroReferenceForI2I(analyzedAssets),
+      });
 
       // Validate prompt consistency
       const validation = this.validatePromptConsistency(scriptData);
@@ -506,6 +635,8 @@ Return the response as a JSON object.`
         }
       ];
       
+      const brollIdentitySpatial = `CRITICAL (b-roll): If the video uses reference images for I2I, phrase any hero product or garment as the SAME item as in the reference image(s); do not substitute a different design. Each broll_image_prompt = one frozen documentary still; desk/chair/laptop/person layout must be spatially consistent (no contradictory left-right). broll_video_prompt = one continuous plausible shot with natural motion.`;
+
       // Build the user's request based on operation type
       let userRequest: string;
       if (request.operation === 'edit' && request.newVoiceover) {
@@ -515,7 +646,7 @@ Return the response as a JSON object.`
           ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
-        userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
+        userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
       } else {
         // Regenerate operation
         // Extract visual style guide from existing script to maintain consistency
@@ -524,26 +655,27 @@ Return the response as a JSON object.`
           ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
-        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${styleGuidance} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
+        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
       }
       
       messages.push({ role: 'user', content: userRequest });
-      
-      // Call OpenAI with conversation history
-      const completion = await this.openai.chat.completions.create({
-        model: this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo'),
-        messages,
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-      });
 
-      const responseContent = completion.choices[0]?.message?.content;
-      if (!responseContent) {
-        throw new Error('Empty response from OpenAI');
+      const sceneModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
+      const { completion, text: responseContent } = await this.completeChatWithJsonContent(
+        messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+        sceneModel,
+        false,
+        'regenerateOrEditScene',
+      );
+
+      let responseData: any;
+      try {
+        responseData = JSON.parse(responseContent);
+      } catch (parseErr: any) {
+        throw new Error(
+          `OpenAI returned invalid JSON for scene: ${parseErr?.message || parseErr}. First 400 chars: ${responseContent.slice(0, 400)}`,
+        );
       }
-
-      // Parse the scene response
-      const responseData = JSON.parse(responseContent);
       
       // Extract scene from response (could be direct scene object or wrapped)
       let sceneData: any;
@@ -579,11 +711,17 @@ Return the response as a JSON object.`
             // Normalize image prompt
             if (sceneData.broll_image_prompt) {
               if (!this.hasStyleParameters(sceneData.broll_image_prompt)) {
-                const sceneSpecific = this.extractSceneSpecific(sceneData.broll_image_prompt) || sceneData.broll_visual_description || 'Indian context scene';
+                let sceneSpecific = this.extractSceneSpecific(sceneData.broll_image_prompt) || sceneData.broll_visual_description || 'Indian context scene';
+                if (this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)) {
+                  sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+                }
                 sceneData.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
               } else {
                 // Ensure style parameters match the guide
-                const sceneSpecific = this.extractSceneSpecific(sceneData.broll_image_prompt) || sceneData.broll_visual_description || 'Indian context scene';
+                let sceneSpecific = this.extractSceneSpecific(sceneData.broll_image_prompt) || sceneData.broll_visual_description || 'Indian context scene';
+                if (this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)) {
+                  sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+                }
                 sceneData.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
               }
             }
@@ -591,11 +729,17 @@ Return the response as a JSON object.`
             // Normalize video prompt
             if (sceneData.broll_video_prompt) {
               if (!this.hasStyleParameters(sceneData.broll_video_prompt)) {
-                const sceneSpecific = this.extractSceneSpecific(sceneData.broll_video_prompt) || sceneData.broll_visual_description || 'Indian context scene with motion';
+                let sceneSpecific = this.extractSceneSpecific(sceneData.broll_video_prompt) || sceneData.broll_visual_description || 'Indian context scene with motion';
+                if (this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)) {
+                  sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+                }
                 sceneData.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
               } else {
                 // Ensure style parameters match the guide
-                const sceneSpecific = this.extractSceneSpecific(sceneData.broll_video_prompt) || sceneData.broll_visual_description || 'Indian context scene with motion';
+                let sceneSpecific = this.extractSceneSpecific(sceneData.broll_video_prompt) || sceneData.broll_visual_description || 'Indian context scene with motion';
+                if (this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)) {
+                  sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+                }
                 sceneData.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
               }
             }
@@ -897,7 +1041,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     tags: string[] = [],
     productImageUrl?: string, // Deprecated - kept for backward compatibility, but not used for analysis
     hasAvatar?: boolean,
-    analyzedAssets?: Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }>,
+    analyzedAssets?: VideoScriptAnalyzedAsset[],
     urlContentContext?: string // Content extracted from URL assets
   ): string {
     // Language-specific descriptions
@@ -930,6 +1074,17 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     // Build asset context section
     let assetContext = '';
     if (analyzedAssets && analyzedAssets.length > 0) {
+      const withVisualContext = analyzedAssets.filter(
+        (a) => typeof a.visualScriptContext === 'string' && a.visualScriptContext.trim().length > 0,
+      );
+      if (withVisualContext.length > 0) {
+        assetContext += `\n\nVISUAL CONTEXT (from pre-analysis; authoritative for what appears in reference imagery and scenes):\n`;
+        withVisualContext.forEach((asset) => {
+          assetContext += `- ${asset.category} (id: ${asset.id}): ${asset.visualScriptContext!.trim()}\n`;
+        });
+        assetContext += `Align voiceover and b-roll descriptions with this context. Do not invent details that contradict it.\n`;
+      }
+
       const logoAsset = analyzedAssets.find(a => a.category === 'logo');
       const productAssets = analyzedAssets.filter(a => a.category === 'product');
       const backgroundAssets = analyzedAssets.filter(a => a.category === 'background' || a.category === 'environment');
@@ -1043,17 +1198,29 @@ CRITICAL B-ROLL TEXT RULE:
 `;
 
   const PHYSICAL_PLAUSIBILITY_RULE = `
-CRITICAL PHYSICAL PLAUSIBILITY RULE:
+CRITICAL PHYSICAL PLAUSIBILITY AND SPATIAL COHERENCE RULE:
 - All scene descriptions and b-roll prompts must be physically plausible in the real world.
 - People must be in normal positions relative to objects (e.g., standing next to a desk, sitting at a table), never inside solid objects or merged with furniture.
 - Do NOT describe impossible compositions such as "person inside the table", "person inside the desk", or body parts intersecting with solid objects.
 - Avoid impossible camera perspectives that would break realism (e.g., multiple conflicting viewpoints in a single shot).
-- When in doubt, choose grounded, realistic compositions that could be filmed with a normal camera.
+- SINGLE FROZEN MOMENT: Each broll_image_prompt describes ONE still photograph. Do NOT chain multiple story beats in one image (e.g. walking in, sitting down, and typing). Pick one plausible instant (e.g. "person already seated, hands on keyboard") that could be captured in a single shutter click.
+- ONE CAMERA / ONE LAYOUT: Fix left-right and depth consistently. If a laptop is on the table facing the seated person, the person must be at that chair, not reaching from the opposite side. Props and actor placement must agree; describe where the person is relative to desk, chair, and screen explicitly when desks/tables appear.
+- When in doubt, choose grounded, realistic compositions that could be filmed with a normal camera, like unstaged documentary B-roll.
+`;
+
+  const referenceAlignedI2IRule = this.buildReferenceAlignedBrollRuleBlock(analyzedAssets);
+
+  const BROLL_VIDEO_MOTION_RULE = `
+CRITICAL B-ROLL VIDEO PROMPT RULE (broll_video_prompt):
+- Describe ONE continuous shot with plausible, natural motion; avoid impossible physics, teleporting subjects, or contradictory movement.
+- When reference images are used for the hero product or garment, use the same identity language as broll_image_prompt: the same item as in the reference image(s), not a redesigned or generic substitute.
 `;
 
   const GLOBAL_BROLL_RULES = `${PHOTOREALISM_RULE}
 ${BROLL_TEXT_RULE}
-${PHYSICAL_PLAUSIBILITY_RULE}`;
+${PHYSICAL_PLAUSIBILITY_RULE}
+${BROLL_VIDEO_MOTION_RULE}
+${referenceAlignedI2IRule}`;
 
   const VIDEO_TOPIC_RULE = `
 CRITICAL VIDEO TOPIC / GLOBAL CONTEXT RULE:
@@ -1129,8 +1296,8 @@ Structure Your Output in This JSON Format:
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
-      "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors and stalls]",
+      "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals. If reference images define a hero product or garment, say it is the same item as in the reference image(s).",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: documentary photograph, bustling Indian street market with vendors and stalls — one frozen moment, single camera angle]",
       "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors, people walking, stalls, dynamic movement]",
       "stock_search_term": "indian street market vendors stalls",
       "avatar_action": "Explain how the Indian-looking avatar speaks and reacts.",
@@ -1180,8 +1347,8 @@ Your task is to script a balanced, engaging alternating-scene video with smooth 
 
 CRITICAL RENDERING REQUIREMENTS (MUST READ):
 - ALL scenes require b-roll images to be generated
-- Odd-numbered scenes (1, 3, 5, ...): Use full-screen 9:16 b-roll images (type: "b-roll")
-- Even-numbered scenes (2, 4, 6, ...): Use 3:4 b-roll images for the top half (type: "half-n-half")
+- Odd-numbered scenes (1, 3, 5, ...): Use 3:4 b-roll images for the top half (type: "half-n-half")
+- Even-numbered scenes (2, 4, 6, ...): Use full-screen 9:16 b-roll images (type: "b-roll")
 - Therefore, EVERY scene MUST have a broll_image_prompt, regardless of type
 
 CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
@@ -1233,27 +1400,27 @@ Output Format:
   "scene_plan": [
     {
       "scene_number": 1,
-      "type": "b-roll",
+      "type": "half-n-half",
       "time_range": "0-7s",
       "voiceover": "${lang.alternate}",
-      "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. REQUIRED for ALL scenes.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]. REQUIRED for ALL scenes (odd scenes = full 9:16, even scenes = 3:4 for top half).",
+      "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. REQUIRED for ALL scenes. If reference images show a hero garment or product, state it is the same item as in the reference image(s), not a newly invented design.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: one plausible still — e.g. Indian woman in upscale boutique wearing the same dress as in the reference image(s), natural light, single viewpoint]. REQUIRED for ALL scenes (odd scenes = 3:4 for top half, even scenes = full 9:16).",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]. REQUIRED for ALL scenes.",
       "stock_search_term": "keywords for stock footage search",
-      "avatar_action": null,
-      "avatar_motion": null
+      "avatar_action": "Describe Indian avatar's expression and delivery for this half-n-half scene.",
+      "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
     },
     {
       "scene_number": 2,
-      "type": "half-n-half",
+      "type": "b-roll",
       "time_range": "7-14s",
       "voiceover": "${lang.alternate}",
       "broll_visual_description": "Describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
       "stock_search_term": "keywords for stock footage search",
-      "avatar_action": "Describe Indian avatar's expression and delivery for this half-n-half scene.",
-      "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
+      "avatar_action": null,
+      "avatar_motion": null
     }
   ],
   "notes": {
@@ -1554,8 +1721,8 @@ Structure Your Output in This JSON Format:
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
-      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]",
+      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person. Reference I2I: describe the same physical product as in the reference image(s), new angle or setting only.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference image(s) on neutral surface, documentary product shot, one angle] [CRITICAL: NO human, NO avatar, NO person in image]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
     }
   ],
@@ -1763,7 +1930,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
     projectId: string,
     userId?: string,
     timeoutMs?: number
-  ): Promise<Array<{ id: string; category: string; extractedText?: string; productInfo?: any; url: string }> | undefined> {
+  ): Promise<VideoScriptAnalyzedAsset[] | undefined> {
     const effectiveTimeout = timeoutMs ?? this.assetAnalysisTimeoutMs;
     const startTime = Date.now();
     const checkInterval = 1000; // Check every second
@@ -1799,6 +1966,8 @@ REGION CONTEXT (CRITICAL - Indian Default):
               extractedText: asset.extractedText,
               productInfo: asset.productInfo,
               url: asset.originalAsset?.url || asset.url,
+              visualScriptContext:
+                typeof asset.visualScriptContext === 'string' ? asset.visualScriptContext : undefined,
             }));
           }
           return undefined;
@@ -1981,11 +2150,71 @@ REGION CONTEXT (CRITICAL - Indian Default):
     return cleaned;
   }
 
+  /** HTTP(S) image assets whose category typically carries hero identity for image-to-image b-roll. */
+  private analyzedAssetsSupplyHeroReferenceForI2I(assets?: VideoScriptAnalyzedAsset[]): boolean {
+    if (!assets?.length) return false;
+    return assets.some((a) => {
+      const u = (a.url || '').trim();
+      if (!u.startsWith('http://') && !u.startsWith('https://')) return false;
+      return (
+        a.category === 'product' ||
+        a.category === 'reference' ||
+        a.category === 'branding'
+      );
+    });
+  }
+
+  private buildReferenceAlignedBrollRuleBlock(assets?: VideoScriptAnalyzedAsset[]): string {
+    if (!this.analyzedAssetsSupplyHeroReferenceForI2I(assets)) return '';
+    return `
+REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
+- Reference image(s) will be used to generate b-roll. In broll_visual_description and in the [Scene-specific: ...] parts of broll_image_prompt and broll_video_prompt, emphasize setting, lighting, camera angle, and action.
+- For any hero product, garment, or key object shown in the user's reference uploads: do NOT invent a different design. Explicitly tie identity to references, e.g. "the same dress/garment/product as shown in the reference image(s)" or "wearing the garment from the reference image", not standalone generic marketing phrases alone (e.g. "elegant evening dress" without tying to the reference).
+- Do NOT add new colors, cuts, embellishments, or packaging for that hero item beyond VISUAL CONTEXT / pre-analysis and what the reference implies.
+- Voiceover may stay marketing-friendly; visual prompts for hero items must stay reference-faithful.
+`;
+  }
+
+  private promptAlreadyMentionsReferenceIdentity(text: string): boolean {
+    const t = (text || '').toLowerCase();
+    return (
+      t.includes('reference image') ||
+      t.includes('same garment') ||
+      t.includes('same dress') ||
+      t.includes('same product') ||
+      t.includes('from the reference') ||
+      t.includes('as in the reference') ||
+      t.includes('as shown in the reference') ||
+      t.includes('garment from the reference')
+    );
+  }
+
+  /** Heuristic: marketing-only garment wording without reference tie-in — worth appending a safety clause. */
+  private sceneSpecificSuggestsGenericGarmentWithoutRef(text: string): boolean {
+    const t = text || '';
+    if (this.promptAlreadyMentionsReferenceIdentity(t)) return false;
+    return /\b(elegant\s+(evening\s+)?dress|evening\s+dress|luxurious\s+(wrap|gown|dress)|stylish\s+outfit|beautiful\s+gown|designer\s+dress)\b/i.test(
+      t,
+    );
+  }
+
+  private appendReferenceIdentityHintToSceneText(sceneText: string): string {
+    const base = (sceneText || '').trim();
+    const hint =
+      ' Reference identity: use the same hero product or garment as in the reference image(s); do not change design, colors, cut, or embellishments unless the user explicitly requested a different variant.';
+    if (!base) return hint.trim();
+    return base.endsWith('.') ? `${base}${hint}` : `${base}.${hint}`;
+  }
+
   /**
    * Normalize prompts to ensure they all have consistent style parameters.
    * Indian context fallback for all languages.
    */
-  private normalizePrompts(scriptData: any, _language: 'english' | 'hindi' | 'hinglish' = 'hinglish'): any {
+  private normalizePrompts(
+    scriptData: any,
+    _language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
+    opts?: { injectReferenceIdentityHint?: boolean },
+  ): any {
     if (!scriptData) return scriptData;
 
     const sceneFallback = 'Indian context scene';
@@ -2017,10 +2246,22 @@ REGION CONTEXT (CRITICAL - Indian Default):
 
       if (scene.broll_image_prompt) {
         if (!this.hasStyleParameters(scene.broll_image_prompt)) {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
+          let sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
+          if (
+            opts?.injectReferenceIdentityHint &&
+            this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)
+          ) {
+            sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+          }
           scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
         } else {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
+          let sceneSpecific = this.extractSceneSpecific(scene.broll_image_prompt) || scene.broll_visual_description || sceneFallback;
+          if (
+            opts?.injectReferenceIdentityHint &&
+            this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)
+          ) {
+            sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+          }
           scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
         }
         if (videoTopic && videoTopic.trim() && !scene.broll_image_prompt.includes('[Video topic:')) {
@@ -2030,10 +2271,22 @@ REGION CONTEXT (CRITICAL - Indian Default):
 
       if (scene.broll_video_prompt) {
         if (!this.hasStyleParameters(scene.broll_video_prompt)) {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
+          let sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
+          if (
+            opts?.injectReferenceIdentityHint &&
+            this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)
+          ) {
+            sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+          }
           scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
         } else {
-          const sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
+          let sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
+          if (
+            opts?.injectReferenceIdentityHint &&
+            this.sceneSpecificSuggestsGenericGarmentWithoutRef(sceneSpecific)
+          ) {
+            sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
+          }
           scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
         }
         if (videoTopic && videoTopic.trim() && !scene.broll_video_prompt.includes('[Video topic:')) {
@@ -2207,7 +2460,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
     const videoType = (scriptData.video_type || '').toLowerCase();
     const firstScene = scenes.find((s: any) => {
       if (videoType === 'alternating') {
-        // For ALTERNATE style, check both "b-roll" (odd) and "half-n-half" (even) scenes
+        // For ALTERNATE style, check both "half-n-half" (odd) and "b-roll" (even) scenes
         return (s.type === 'b-roll' || s.type === 'half-n-half') && (s.broll_image_prompt || s.broll_video_prompt);
       }
       return s.broll_image_prompt || s.broll_video_prompt;
@@ -2223,7 +2476,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
 
     // Check all b-roll scenes
     scenes.forEach((scene: any, index: number) => {
-      // For ALTERNATE style, process both "b-roll" (odd scenes) and "half-n-half" (even scenes)
+      // For ALTERNATE style, process both "half-n-half" (odd scenes) and "b-roll" (even scenes)
       // Skip only if type is explicitly "avatar" (old format)
       if (videoType === 'alternating' && scene.type === 'avatar') {
         return;

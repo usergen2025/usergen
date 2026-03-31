@@ -14,6 +14,8 @@ import * as crypto from 'crypto';
 export class VideoService {
   private readonly aiContentServiceUrl: string;
   private readonly jwtSecret: string;
+  /** Dedupe concurrent ensureProjectAvatarImage calls per project */
+  private readonly ensureAvatarImageInFlight = new Map<string, Promise<void>>();
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -334,60 +336,83 @@ export class VideoService {
    * If script has avatar_image_prompt and cache is missing or script changed, calls ai-content-service to generate and stores in metadata.
    */
   async ensureProjectAvatarImage(projectId: string, userId: string, authToken?: string): Promise<void> {
-    try {
-      const project = await this.databaseService.videoProject.findFirst({
-        where: { id: projectId, userId },
-      });
-      if (!project || !project.avatarId || !project.script) return;
-      const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
-      const preset = (project.metadata as Record<string, unknown>)?.avatarVisualStylePreset as string | undefined;
-      // Original preset needs no script; Random needs avatar_image_prompt; named presets use visual_style_guide (with fallback)
-      if (!preset || preset === 'random') {
-        if (!script?.avatar_image_prompt) return;
-      }
-      const scriptHash = crypto.createHash('sha256').update(JSON.stringify(project.script)).digest('hex');
-      const meta = (project.metadata as Record<string, unknown>) || {};
-      if (meta.generatedAvatarImageKey && meta.avatarImageScriptHash === scriptHash) return;
+    const existing = this.ensureAvatarImageInFlight.get(projectId);
+    if (existing) return existing;
 
-      const token = authToken?.replace(/^Bearer\s+/i, '') ?? jwt.sign(
-        { sub: userId, userId, id: userId, type: 'service' },
-        this.jwtSecret,
-        { expiresIn: '1h' },
-      );
-      const res = await axios.post<{ success: boolean; data: { imageKey: string } }>(
-        `${this.aiContentServiceUrl}/api/avatars/generate-for-project`,
-        {
-          projectId,
-          avatarId: project.avatarId,
-          userId,
-          script,
-          style: project.style ?? undefined,
-          avatarVisualStylePreset: preset,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          timeout: 120000,
-        },
-      );
-      if (!res.data?.success || !res.data?.data?.imageKey) return;
-      const existingMeta = (project.metadata as Record<string, unknown>) || {};
-      await this.databaseService.videoProject.update({
-        where: { id: projectId },
-        data: {
-          metadata: {
-            ...existingMeta,
-            generatedAvatarImageKey: res.data.data.imageKey,
-            avatarImageScriptHash: scriptHash,
-          },
-        },
-      });
-      console.log(`[VideoService] Stored generated avatar image key for project ${projectId}`);
-    } catch (error: any) {
-      console.warn(`[VideoService] ensureProjectAvatarImage failed for project ${projectId}:`, error.message);
+    const run = (async () => {
+      try {
+        await this.runEnsureProjectAvatarImage(projectId, userId, authToken);
+      } catch (error: any) {
+        console.warn(`[VideoService] ensureProjectAvatarImage failed for project ${projectId}:`, error.message);
+      }
+    })().finally(() => {
+      this.ensureAvatarImageInFlight.delete(projectId);
+    });
+
+    this.ensureAvatarImageInFlight.set(projectId, run);
+    return run;
+  }
+
+  private async runEnsureProjectAvatarImage(projectId: string, userId: string, authToken?: string): Promise<void> {
+    const project = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId, userId },
+    });
+    if (!project || !project.avatarId || !project.script) return;
+    const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+    const preset = (project.metadata as Record<string, unknown>)?.avatarVisualStylePreset as string | undefined;
+    if (!preset || preset === 'random') {
+      if (!script?.avatar_image_prompt) return;
     }
+    const scriptHash = crypto.createHash('sha256').update(JSON.stringify(project.script)).digest('hex');
+    const meta = (project.metadata as Record<string, unknown>) || {};
+    if (meta.generatedAvatarImageKey && meta.avatarImageScriptHash === scriptHash) return;
+
+    // AI Chat: preview exists but user has not finalized HeyGen upload yet — do not duplicate BytePlus/HeyGen here
+    const previewUrl = meta.avatarPreviewUrl;
+    if (
+      typeof previewUrl === 'string' &&
+      previewUrl.length > 0 &&
+      !meta.generatedAvatarImageKey
+    ) {
+      return;
+    }
+
+    const token = authToken?.replace(/^Bearer\s+/i, '') ?? jwt.sign(
+      { sub: userId, userId, id: userId, type: 'service' },
+      this.jwtSecret,
+      { expiresIn: '1h' },
+    );
+    const res = await axios.post<{ success: boolean; data: { imageKey: string } }>(
+      `${this.aiContentServiceUrl}/api/avatars/generate-for-project`,
+      {
+        projectId,
+        avatarId: project.avatarId,
+        userId,
+        script,
+        style: project.style ?? undefined,
+        avatarVisualStylePreset: preset,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 120000,
+      },
+    );
+    if (!res.data?.success || !res.data?.data?.imageKey) return;
+    const existingMeta = (project.metadata as Record<string, unknown>) || {};
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        metadata: {
+          ...existingMeta,
+          generatedAvatarImageKey: res.data.data.imageKey,
+          avatarImageScriptHash: scriptHash,
+        },
+      },
+    });
+    console.log(`[VideoService] Stored generated avatar image key for project ${projectId}`);
   }
 
   /**

@@ -1203,17 +1203,17 @@ export class VideoController {
     const scenes = script.scenes || script.scene_plan || [];
     const scene = scenes.find((s: any) => (s.scene_number || s.sceneNumber) === sceneNum);
     
-    // For ALTERNATE style, ALL scenes need b-roll images (odd: full, even: top half)
+    // For ALTERNATE style, ALL scenes need b-roll images (odd: 3:4 top half, even: full 9:16)
     // So we need to handle cases where avatar-type scenes might not have explicit broll_image_prompt
     let prompt = body.prompt || scene?.broll_image_prompt || scene?.broll_prompt || scene?.broll_visual_description;
     
     // For ALTERNATE style, handle both odd and even scenes
     if (!prompt && normalizedStyle === 'ALTERNATE') {
-      if (sceneNum % 2 === 0) {
-        // Even scene: 3:4 b-roll for top half
+      if (sceneNum % 2 === 1) {
+        // Odd scene: 3:4 b-roll for top half (half-n-half)
         prompt = scene?.broll_visual_description || `Scene ${sceneNum} b-roll for half-n-half composition`;
       } else {
-        // Odd scene: Full 9:16 b-roll
+        // Even scene: full 9:16 b-roll
         prompt = scene?.broll_visual_description || `Scene ${sceneNum} full-screen b-roll for ALTERNATE style`;
       }
     }
@@ -1465,9 +1465,9 @@ export class VideoController {
 
     const authToken = req.headers?.authorization;
 
-    const isAlternateEven = style === 'ALTERNATE' && sceneNum % 2 === 0;
+    const isAlternateCompositeScene = style === 'ALTERNATE' && sceneNum % 2 === 1;
 
-    if (isAlternateEven) {
+    if (isAlternateCompositeScene) {
       const sceneJobId = `scene-${projectId}-${sceneNum}-${Date.now()}`;
 
       await this.queueManager.addVideoGenerationJob({
@@ -1500,7 +1500,7 @@ export class VideoController {
       return {
         success: true,
         data: { jobId: sceneJobId, type: 'scene' },
-        message: 'Video and avatar generation queued for ALTERNATE even scene',
+        message: 'Video and avatar generation queued for ALTERNATE half-n-half (odd) scene',
       };
     }
 
@@ -1597,8 +1597,8 @@ export class VideoController {
       const hasImage = bRollImages.some((img: any) => img.sceneNumber === sceneNumber);
       const videoEntry = bRollVideoTasks.find((vid: any) => vid.sceneNumber === sceneNumber && (vid.localUrl || vid.localPath || vid.videoUrl));
       const hasVideo = !!videoEntry;
-      const isAlternateEven = style === 'ALTERNATE' && sceneNumber % 2 === 0;
-      const hasCompleteVideo = hasVideo && (!isAlternateEven || (videoEntry as any)?.isComposite === true);
+      const isAlternateCompositeScene = style === 'ALTERNATE' && sceneNumber % 2 === 1;
+      const hasCompleteVideo = hasVideo && (!isAlternateCompositeScene || (videoEntry as any)?.isComposite === true);
       if (!hasImage || (hasCompleteVideo && !force)) continue;
 
       const image = bRollImages.find((img: any) => img.sceneNumber === sceneNumber);
@@ -1623,9 +1623,9 @@ export class VideoController {
       }
 
       const videoDuration = Math.ceil(audioFile.duration);
-      const hasBrollOnly = isAlternateEven && hasVideo && !(videoEntry as any)?.isComposite;
+      const hasBrollOnly = isAlternateCompositeScene && hasVideo && !(videoEntry as any)?.isComposite;
 
-      if (isAlternateEven) {
+      if (isAlternateCompositeScene) {
         const sceneJobId = `scene-${projectId}-${sceneNumber}-${Date.now()}`;
         if (!hasBrollOnly) {
           await this.queueManager.addVideoGenerationJob({
@@ -1685,7 +1685,7 @@ export class VideoController {
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
   @ApiParam({ name: 'sceneNumber', description: 'Scene number' })
-  @ApiOperation({ summary: 'Retry avatar generation only', description: 'Retry avatar for an ALTERNATE even scene when avatar failed but b-roll succeeded' })
+  @ApiOperation({ summary: 'Retry avatar generation only', description: 'Retry avatar for an ALTERNATE half-n-half (odd) scene when avatar failed but b-roll succeeded' })
   @ApiResponse({ status: 200, description: 'Avatar retry queued' })
   async retryAvatar(
     @Request() req: any,
@@ -1702,8 +1702,8 @@ export class VideoController {
     if (!project.success) throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
 
     const projectData = project.data as any;
-    if (projectData.style !== 'ALTERNATE' || sceneNum % 2 !== 0) {
-      throw new HttpException('Retry avatar is only for ALTERNATE even scenes', HttpStatus.BAD_REQUEST);
+    if (projectData.style !== 'ALTERNATE' || sceneNum % 2 !== 1) {
+      throw new HttpException('Retry avatar is only for ALTERNATE half-n-half (odd) scenes', HttpStatus.BAD_REQUEST);
     }
 
     const bRollVideoTasks = (projectData.bRollVideoTasks as any[]) || [];

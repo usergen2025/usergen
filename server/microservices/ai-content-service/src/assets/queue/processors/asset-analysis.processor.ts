@@ -91,6 +91,7 @@ export class AssetAnalysisProcessor extends WorkerHost {
         // Create a reference asset for HTML URLs (even if extraction failed, they're still reference URLs)
         const asset = assets.find(a => a.id === urlContent.id);
         if (asset) {
+          const extracted = urlContent.extractedContent?.trim();
           analyzedAssets.push({
             id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             originalAsset: {
@@ -102,6 +103,9 @@ export class AssetAnalysisProcessor extends WorkerHost {
             },
             category: 'reference',
             confidence: 0.7,
+            visualScriptContext: extracted
+              ? extracted.slice(0, 2000)
+              : undefined,
             analysisMetadata: {
               model: 'url-content-extraction',
               analyzedAt: new Date().toISOString(),

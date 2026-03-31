@@ -39,10 +39,24 @@ type VoiceMode = 'AI' | 'MANUAL' | null;
 type ChatStep = 'welcome' | 'option-selected' | 'style-selection' | 'asset-upload' | 'assets-attached' | 'script-input' | 'script-generated' | 'avatar-selection' | 'voice-selection' | 'audio-image-generation' | 'workspace';
 
 // Define substeps for multi-stage steps
-type AvatarSubstep = 'question' | 'selection' | 'text-generation' | 'visual-style' | 'avatar-preview';
+type AvatarSubstep =
+  | 'question'
+  | 'selection'
+  | 'generate-visual-style'
+  | 'text-generation'
+  | 'visual-style'
+  | 'avatar-preview';
 type VoiceSubstep = 'question' | 'selection' | 'manual' | 'voice-transform' | 'scene-review' | 'confirmed';
 type StyleSubstep = 'selection' | 'confirmed';
-type ScriptSubstep = 'language' | 'input';
+type VideoDurationChoice = '30 seconds' | '45 seconds' | '1 minute' | '90 seconds';
+type ScriptSubstep = 'language' | 'duration' | 'input';
+
+const VIDEO_DURATION_OPTIONS: { value: VideoDurationChoice; label: string }[] = [
+  { value: '30 seconds', label: '30 seconds' },
+  { value: '45 seconds', label: '45 seconds' },
+  { value: '1 minute', label: '1 minute' },
+  { value: '90 seconds', label: '1 min 30 sec' },
+];
 
 function AIChatPageContent() {
   const router = useRouter();
@@ -137,6 +151,7 @@ function AIChatPageContent() {
   const [pendingVoicePreview, setPendingVoicePreview] = useState<string | null>(null);
   const [pendingVoiceName, setPendingVoiceName] = useState<string>('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatBottomSentinelRef = useRef<HTMLDivElement>(null);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
   const productImagesInputRef = useRef<HTMLInputElement>(null);
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
@@ -269,6 +284,7 @@ function AIChatPageContent() {
   const [styleSubstep, setStyleSubstep] = useState<StyleSubstep>('selection');
   // Script/Language selection state
   const [selectedLanguage, setSelectedLanguage] = useState<'english' | 'hindi' | 'hinglish' | null>(null);
+  const [selectedVideoDuration, setSelectedVideoDuration] = useState<VideoDurationChoice>('30 seconds');
   const [scriptSubstep, setScriptSubstep] = useState<ScriptSubstep>('language');
   const [extractedTags, setExtractedTags] = useState<string[]>([]);
   // Generation tracking state
@@ -513,6 +529,18 @@ function AIChatPageContent() {
             if (project.metadata?.aiChatAvatarSubstep) {
               setAvatarSubstep(project.metadata.aiChatAvatarSubstep as AvatarSubstep);
             }
+            if (project.metadata?.aiChatAvatarPreference) {
+              setAvatarPreference(
+                project.metadata.aiChatAvatarPreference as 'library' | 'generate' | 'skip',
+              );
+            } else if (
+              project.metadata?.aiChatAvatarSubstep &&
+              ['generate-visual-style', 'text-generation', 'avatar-preview'].includes(
+                project.metadata.aiChatAvatarSubstep as string,
+              )
+            ) {
+              setAvatarPreference('generate');
+            }
             if (project.metadata?.avatarVisualStylePreset) {
               setSelectedAvatarVisualStyle(project.metadata.avatarVisualStylePreset as AvatarVisualStylePresetId);
             }
@@ -566,10 +594,19 @@ function AIChatPageContent() {
             // Restore language selection
             if (project.metadata?.selectedLanguage) {
               setSelectedLanguage(project.metadata.selectedLanguage as 'english' | 'hindi' | 'hinglish');
-              // If language was selected, script substep should be 'input'
               if (!project.metadata?.aiChatScriptSubstep) {
                 setScriptSubstep('input');
               }
+            }
+
+            const savedDur = project.metadata?.selectedVideoDuration as string | undefined;
+            if (
+              savedDur === '30 seconds' ||
+              savedDur === '45 seconds' ||
+              savedDur === '1 minute' ||
+              savedDur === '90 seconds'
+            ) {
+              setSelectedVideoDuration(savedDur as VideoDurationChoice);
             }
             
             // Restore extracted tags
@@ -636,18 +673,63 @@ function AIChatPageContent() {
 
   // Auto-scroll to bottom when content changes (new messages/steps)
   useEffect(() => {
-    if (chatContainerRef.current) {
-      // Use setTimeout to ensure DOM is updated before scrolling
-      setTimeout(() => {
-        if (chatContainerRef.current) {
-          chatContainerRef.current.scrollTo({
-            top: chatContainerRef.current.scrollHeight,
-            behavior: 'smooth'
+    const t = setTimeout(() => {
+      const sentinel = chatBottomSentinelRef.current;
+      if (sentinel) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            sentinel.scrollIntoView({ block: 'end', behavior: 'smooth' });
           });
-        }
-      }, 150);
-    }
-  }, [currentStep, selectedOption, attachedAssets, pendingAssets, generatedScript, formattedScript, proceedConfirmed, avatarYesMessage, avatars, selectedAvatarId, selectedAvatar, avatarConfirmed, avatarSubstep, selectedAvatarVisualStyle, avatarPreviewUrl, isGeneratingAvatarPreview, voiceYesMessage, voices, selectedVoiceId, voiceConfirmed, voiceSubstep, selectedVideoStyle, styleSubstep, transformActionMessage, stsVoices, selectedStsVoiceId, isTransformingVoice, manualAudioByScene, transformedAudioByScene]);
+        });
+        return;
+      }
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTo({
+          top: chatContainerRef.current.scrollHeight,
+          behavior: 'smooth',
+        });
+      }
+    }, 120);
+    return () => clearTimeout(t);
+  }, [
+    currentStep,
+    selectedOption,
+    attachedAssets,
+    pendingAssets,
+    generatedScript,
+    formattedScript,
+    proceedConfirmed,
+    avatarYesMessage,
+    avatars,
+    selectedAvatarId,
+    selectedAvatar,
+    avatarConfirmed,
+    avatarSubstep,
+    selectedAvatarVisualStyle,
+    avatarPreviewUrl,
+    isGeneratingAvatarPreview,
+    voiceYesMessage,
+    voices,
+    selectedVoiceId,
+    voiceConfirmed,
+    voiceSubstep,
+    selectedVideoStyle,
+    styleSubstep,
+    transformActionMessage,
+    stsVoices,
+    selectedStsVoiceId,
+    isTransformingVoice,
+    manualAudioByScene,
+    transformedAudioByScene,
+    scriptSubstep,
+    selectedLanguage,
+    selectedVideoDuration,
+    userScriptMessage,
+    scriptError,
+    isGeneratingScript,
+    avatarDescription,
+    isGeneratingAvatarFromText,
+  ]);
 
   // WebSocket effect for tracking generation progress
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
@@ -1273,15 +1355,16 @@ function AIChatPageContent() {
     setCurrentStep('script-input');
     
     try {
-      // Extract duration from input if present, otherwise default to 30 seconds
-      let duration = '30 seconds';
-      const durationMatch = userMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
-      if (durationMatch) {
-        const num = parseInt(durationMatch[1]);
-        const unit = durationMatch[2].toLowerCase().startsWith('min') ? 'minutes' : 'seconds';
-        duration = `${num} ${unit}`;
-      }
-      
+      // Duration from AI chat sub-step (temporarily disabled: parsing from user message)
+      // let duration = '30 seconds';
+      // const durationMatch = userMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
+      // if (durationMatch) {
+      //   const num = parseInt(durationMatch[1]);
+      //   const unit = durationMatch[2].toLowerCase().startsWith('min') ? 'minutes' : 'seconds';
+      //   duration = `${num} ${unit}`;
+      // }
+      const duration = selectedVideoDuration || '30 seconds';
+
       // Get selected style from state or sessionStorage
       const styleToUse = selectedVideoStyle || 
         (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
@@ -1525,15 +1608,12 @@ function AIChatPageContent() {
     setScriptError(null);
     
     try {
-      // Extract duration from original message
-      let duration = '30 seconds';
-      const durationMatch = userScriptMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
-      if (durationMatch) {
-        const num = parseInt(durationMatch[1]);
-        const unit = durationMatch[2].toLowerCase().startsWith('min') ? 'minutes' : 'seconds';
-        duration = `${num} ${unit}`;
-      }
-      
+      // Duration from AI chat sub-step (temporarily disabled: parsing from user message)
+      // let duration = '30 seconds';
+      // const durationMatch = userScriptMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
+      // if (durationMatch) { ... }
+      const duration = selectedVideoDuration || '30 seconds';
+
       // Get selected style from state or sessionStorage
       const styleToUse = selectedVideoStyle || 
         (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
@@ -1696,15 +1776,14 @@ function AIChatPageContent() {
     }
     
     if (preference === 'library') {
-      // Move to selection substep - Choose from Library
+      setSelectedAvatarVisualStyle(null);
       setAvatarYesMessage(true);
       setAvatarSubstep('selection');
-      // Load avatars for the active tab
       loadAvatars(activeAvatarTab);
     } else if (preference === 'generate') {
-      // Move to text-generation substep - Generate with AI
+      setSelectedAvatarVisualStyle(null);
       setAvatarYesMessage(true);
-      setAvatarSubstep('text-generation');
+      setAvatarSubstep('generate-visual-style');
     }
     // Skip option removed from UI; product-only/broll-only still set avatarPreference to 'skip' for metadata
   };
@@ -3422,11 +3501,11 @@ function AIChatPageContent() {
             if (sceneNumber % 2 === 1) {
               prompt = scene.broll_visual_description || 
                        (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
+                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
             } else {
               prompt = scene.broll_visual_description || 
                        (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
+                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
             }
           }
           
@@ -3547,7 +3626,7 @@ function AIChatPageContent() {
         const promises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number || (index + 1);
           
-          // For ALTERNATE style, ALL scenes need b-roll images (odd: full 9:16, even: 3:4 for top half)
+          // For ALTERNATE style, ALL scenes need b-roll images (odd: 3:4 top half, even: full 9:16)
           // So we need to handle cases where avatar-type scenes might not have broll_image_prompt
           let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
           
@@ -3560,16 +3639,15 @@ function AIChatPageContent() {
           // For ALTERNATE style, if prompt is empty, generate fallback based on scene number
           if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
             if (sceneNumber % 2 === 1) {
-              // Odd scene: Full 9:16 b-roll image
-              // Use broll_visual_description, voiceover context, or generate fallback
-              prompt = scene.broll_visual_description || 
-                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
-            } else {
-              // Even scene: 3:4 b-roll image for top half (half-n-half composition)
+              // Odd scene: 3:4 b-roll for top half (half-n-half)
               prompt = scene.broll_visual_description || 
                        (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
                        `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
+            } else {
+              // Even scene: full 9:16 b-roll
+              prompt = scene.broll_visual_description || 
+                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
             }
           }
           
@@ -3839,11 +3917,11 @@ function AIChatPageContent() {
             if (sceneNumber % 2 === 1) {
               prompt = scene.broll_visual_description ||
                 (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
+                `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
             } else {
               prompt = scene.broll_visual_description ||
                 (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
+                `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
             }
           }
           if (!prompt) return;
@@ -3999,12 +4077,16 @@ function AIChatPageContent() {
   // Handle language selection
   const handleLanguageSelection = (language: 'english' | 'hindi' | 'hinglish') => {
     setSelectedLanguage(language);
-    setScriptSubstep('input');
-    
-    // Store language in sessionStorage
+    setScriptSubstep('duration');
+
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('selectedScriptLanguage', language);
     }
+  };
+
+  const handleDurationSelection = (duration: VideoDurationChoice) => {
+    setSelectedVideoDuration(duration);
+    setScriptSubstep('input');
   };
 
   // Auto-save current step and substeps to project metadata (including assets-attached and script-input so reload restores correctly)
@@ -4019,6 +4101,9 @@ function AIChatPageContent() {
         metadataUpdate.aiChatAvatarSubstep = avatarSubstep;
         if (selectedAvatarVisualStyle) {
           metadataUpdate.avatarVisualStylePreset = selectedAvatarVisualStyle;
+        }
+        if (avatarPreference) {
+          metadataUpdate.aiChatAvatarPreference = avatarPreference;
         }
       }
       if (currentStep === 'voice-selection') {
@@ -4050,20 +4135,34 @@ function AIChatPageContent() {
         metadata: metadataUpdate,
       }).catch(err => console.error('Failed to save step progress:', err));
     }
-  }, [projectId, currentStep, avatarSubstep, voiceSubstep, styleSubstep, selectedAvatarVisualStyle, voiceMode, transformedAudioByScene, selectedStsVoiceId, voiceTransformSettings, transformActionMessage]);
+  }, [
+    projectId,
+    currentStep,
+    avatarSubstep,
+    voiceSubstep,
+    styleSubstep,
+    selectedAvatarVisualStyle,
+    avatarPreference,
+    voiceMode,
+    transformedAudioByScene,
+    selectedStsVoiceId,
+    voiceTransformSettings,
+    transformActionMessage,
+  ]);
 
-  // Auto-save language and tags selection to project metadata
+  // Auto-save language, duration, and tags selection to project metadata
   useEffect(() => {
     if (projectId && selectedLanguage) {
       apiClient.updateVideoProject(projectId, {
         metadata: {
           selectedLanguage: selectedLanguage,
+          selectedVideoDuration,
           aiChatScriptSubstep: scriptSubstep,
           extractedTags: extractedTags,
         },
       }).catch(err => console.error('Failed to save language/tags:', err));
     }
-  }, [projectId, selectedLanguage, scriptSubstep, extractedTags]);
+  }, [projectId, selectedLanguage, selectedVideoDuration, scriptSubstep, extractedTags]);
 
   // Auto-save avatar selection to project
   useEffect(() => {
@@ -4206,25 +4305,111 @@ function AIChatPageContent() {
     }
   };
 
-  // Handle generate avatar from text description (AI text-to-image)
+  /** Shared preview pipeline for library (after visual-style) and generate-with-AI (after text-to-image). */
+  const runAvatarPreviewFlow = async (
+    rollbackSubstep: AvatarSubstep,
+    options?: { avatarId?: string },
+  ) => {
+    const avatarIdForPreview = options?.avatarId ?? selectedAvatarId;
+    if (!selectedAvatarVisualStyle) {
+      showToast('Please select a visual style first', 'warning');
+      return;
+    }
+    if (!projectId) {
+      showToast('Project not found. Please try again.', 'error');
+      return;
+    }
+    if (!avatarIdForPreview) {
+      showToast('No avatar selected. Please select an avatar.', 'error');
+      return;
+    }
+    try {
+      await apiClient.updateVideoProject(projectId, {
+        metadata: {
+          aiChatStep: 'avatar-selection',
+          aiChatAvatarSubstep: 'avatar-preview',
+          avatarVisualStylePreset: selectedAvatarVisualStyle,
+        },
+      });
+
+      setIsGeneratingAvatarPreview(true);
+      setAvatarSubstep('avatar-preview');
+      setAvatarPreviewUrl(null);
+      setAvatarPreviewImageKey(null);
+
+      const previewResult = await apiClient.generateAvatarPreview({
+        projectId,
+        avatarId: avatarIdForPreview,
+        script: generatedScript,
+        style: selectedVideoStyle || undefined,
+        avatarVisualStylePreset: selectedAvatarVisualStyle,
+      });
+
+      if (previewResult.success && previewResult.data) {
+        setAvatarPreviewUrl(previewResult.data.publicUrl);
+        setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
+
+        await apiClient.updateVideoProject(projectId, {
+          metadata: {
+            aiChatStep: 'avatar-selection',
+            aiChatAvatarSubstep: 'avatar-preview',
+            avatarVisualStylePreset: selectedAvatarVisualStyle,
+            generatedAvatarImageKey: null,
+            avatarImageScriptHash: null,
+            avatarPreviewUrl: previewResult.data.publicUrl,
+          },
+        });
+      } else {
+        throw new Error(previewResult.message || 'Failed to generate avatar preview');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to generate avatar preview', 'error');
+      setAvatarSubstep(rollbackSubstep);
+    } finally {
+      setIsGeneratingAvatarPreview(false);
+    }
+  };
+
+  const handleProceedFromGenerateVisualStyle = () => {
+    if (!selectedAvatarVisualStyle) {
+      showToast('Please select a visual style first', 'warning');
+      return;
+    }
+    setAvatarSubstep('text-generation');
+  };
+
+  // Handle generate avatar from text description (AI text-to-image), then go straight to preview
   const handleGenerateAvatarFromText = async () => {
     if (!avatarDescription.trim()) {
       showToast('Please describe your avatar first', 'warning');
       return;
     }
-    
+    if (!selectedAvatarVisualStyle) {
+      showToast('Please select a visual style first', 'warning');
+      return;
+    }
+
     setIsGeneratingAvatarFromText(true);
     setAvatarGenerationError(null);
-    
+
     try {
-      // Call the backend to generate avatar from text
+      const scriptPayload =
+        generatedScript && typeof generatedScript === 'object'
+          ? {
+              avatar_image_prompt: generatedScript.avatar_image_prompt,
+              visual_style_guide: generatedScript.visual_style_guide,
+            }
+          : undefined;
+
       const response = await apiClient.generateAvatarFromText({
         prompt: avatarDescription.trim(),
         projectId: projectId || undefined,
+        style: selectedVideoStyle || undefined,
+        avatarVisualStylePreset: selectedAvatarVisualStyle,
+        script: scriptPayload,
       });
-      
+
       if (response.success && response.avatarId) {
-        // Set the generated avatar as selected
         setSelectedAvatarId(response.avatarId);
         setSelectedAvatar({
           id: response.avatarId,
@@ -4235,15 +4420,13 @@ function AIChatPageContent() {
         });
         setAvatarConfirmed(true);
         setAvatarYesMessage(true);
-        
-        // Move to visual-style substep
-        setAvatarSubstep('visual-style');
-        
+
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('selectedAvatarId', response.avatarId);
         }
-        
+
         showToast('Avatar generated successfully!', 'success');
+        await runAvatarPreviewFlow('text-generation', { avatarId: response.avatarId });
       } else {
         throw new Error(response.error || 'Failed to generate avatar');
       }
@@ -4258,67 +4441,7 @@ function AIChatPageContent() {
 
   // Handle proceed with visual style - generate avatar preview and show preview substep
   const handleProceedWithVisualStyle = async () => {
-    if (!selectedAvatarVisualStyle) {
-      showToast('Please select a visual style first', 'warning');
-      return;
-    }
-    if (!projectId) {
-      showToast('Project not found. Please try again.', 'error');
-      return;
-    }
-    if (!selectedAvatarId) {
-      showToast('No avatar selected. Please select an avatar.', 'error');
-      return;
-    }
-    try {
-      // Save visual style, step, and substep to ensure proper restoration on page reload
-      await apiClient.updateVideoProject(projectId, {
-        metadata: {
-          aiChatStep: 'avatar-selection',
-          aiChatAvatarSubstep: 'avatar-preview',
-          avatarVisualStylePreset: selectedAvatarVisualStyle,
-        },
-      });
-      
-      // Start generating avatar preview
-      setIsGeneratingAvatarPreview(true);
-      setAvatarSubstep('avatar-preview');
-      setAvatarPreviewUrl(null);
-      setAvatarPreviewImageKey(null);
-      
-      // Call the avatar preview generation API
-      const previewResult = await apiClient.generateAvatarPreview({
-        projectId,
-        avatarId: selectedAvatarId,
-        script: generatedScript,
-        style: selectedVideoStyle || undefined,
-        avatarVisualStylePreset: selectedAvatarVisualStyle,
-      });
-      
-      if (previewResult.success && previewResult.data) {
-        setAvatarPreviewUrl(previewResult.data.publicUrl);
-        setAvatarPreviewImageKey(previewResult.data.imageKey);
-        
-        // Save all avatar preview state in a single consolidated update for reliable restoration
-        await apiClient.updateVideoProject(projectId, {
-          metadata: {
-            aiChatStep: 'avatar-selection',
-            aiChatAvatarSubstep: 'avatar-preview',
-            avatarVisualStylePreset: selectedAvatarVisualStyle,
-            generatedAvatarImageKey: previewResult.data.imageKey,
-            avatarPreviewUrl: previewResult.data.publicUrl,
-          },
-        });
-      } else {
-        throw new Error(previewResult.message || 'Failed to generate avatar preview');
-      }
-    } catch (err: any) {
-      showToast(err.message || 'Failed to generate avatar preview', 'error');
-      // Stay on visual-style substep on error
-      setAvatarSubstep('visual-style');
-    } finally {
-      setIsGeneratingAvatarPreview(false);
-    }
+    await runAvatarPreviewFlow('visual-style');
   };
 
   // Handle regenerate avatar preview
@@ -4342,15 +4465,15 @@ function AIChatPageContent() {
       
       if (previewResult.success && previewResult.data) {
         setAvatarPreviewUrl(previewResult.data.publicUrl);
-        setAvatarPreviewImageKey(previewResult.data.imageKey);
-        
-        // Save all avatar preview state in a single consolidated update for reliable restoration
+        setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
+
         await apiClient.updateVideoProject(projectId, {
           metadata: {
             aiChatStep: 'avatar-selection',
             aiChatAvatarSubstep: 'avatar-preview',
             avatarVisualStylePreset: selectedAvatarVisualStyle,
-            generatedAvatarImageKey: previewResult.data.imageKey,
+            generatedAvatarImageKey: null,
+            avatarImageScriptHash: null,
             avatarPreviewUrl: previewResult.data.publicUrl,
           },
         });
@@ -4370,13 +4493,41 @@ function AIChatPageContent() {
       showToast('Project not found. Please try again.', 'error');
       return;
     }
+    if (!selectedAvatarId || !avatarPreviewUrl) {
+      showToast('Avatar preview is not ready. Please wait or regenerate.', 'error');
+      return;
+    }
     try {
-      // Update to voice-selection step with proper metadata for restoration
+      const finalizeRes = await apiClient.finalizeAvatarPreview({
+        avatarId: selectedAvatarId,
+        previewImageUrl: avatarPreviewUrl,
+      });
+      if (!finalizeRes.success || !finalizeRes.data?.imageKey) {
+        throw new Error(
+          finalizeRes.message || finalizeRes.error || 'Failed to finalize avatar for HeyGen',
+        );
+      }
+      const imageKey = finalizeRes.data.imageKey;
+      setAvatarPreviewImageKey(imageKey);
+
+      // Match video-processing-service: sha256(JSON.stringify(project.script)) where script is a JSON string column
+      let avatarImageScriptHash: string | undefined;
+      if (generatedScript != null) {
+        const inner = JSON.stringify(generatedScript);
+        const forHash = JSON.stringify(inner);
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(forHash));
+        avatarImageScriptHash = Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      }
+
       await apiClient.updateVideoProject(projectId, {
         metadata: {
           aiChatStep: 'voice-selection',
           aiChatAvatarSubstep: 'avatar-preview',
           aiChatVoiceSubstep: 'question',
+          generatedAvatarImageKey: imageKey,
+          ...(avatarImageScriptHash ? { avatarImageScriptHash } : {}),
         },
       });
       setCurrentStep('voice-selection');
@@ -4409,12 +4560,30 @@ function AIChatPageContent() {
     } else if (currentStep === 'avatar-selection') {
       // Navigate back through substeps
       if (avatarSubstep === 'avatar-preview') {
-        // Go back to visual-style substep
-        setAvatarSubstep('visual-style');
         setAvatarPreviewUrl(null);
         setAvatarPreviewImageKey(null);
+        if (avatarPreference === 'generate') {
+          setAvatarSubstep('text-generation');
+        } else {
+          setAvatarSubstep('visual-style');
+        }
       } else if (avatarSubstep === 'visual-style') {
         setAvatarSubstep('selection');
+        setSelectedAvatarVisualStyle(null);
+      } else if (avatarSubstep === 'text-generation') {
+        setAvatarSubstep('generate-visual-style');
+        setSelectedAvatarId(null);
+        setSelectedAvatar(null);
+        setAvatarConfirmed(false);
+        setAvatarPreviewUrl(null);
+        setAvatarPreviewImageKey(null);
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem('selectedAvatarId');
+        }
+      } else if (avatarSubstep === 'generate-visual-style') {
+        setAvatarSubstep('question');
+        setAvatarYesMessage(false);
+        setAvatarPreference(null);
         setSelectedAvatarVisualStyle(null);
       } else if (avatarSubstep === 'selection') {
         setAvatarConfirmed(false);
@@ -4515,20 +4684,37 @@ function AIChatPageContent() {
         unsubscribeFromJob(jobId);
       });
       imageJobIdsRef.current.clear();
-    } else if (currentStep === 'assets-attached' || currentStep === 'script-input' || currentStep === 'script-generated') {
-      // Clear attached assets and script data, go back to asset-upload
-      attachedAssets.forEach(asset => {
-        if (asset.preview) {
-          URL.revokeObjectURL(asset.preview);
-        }
-      });
-      setAttachedAssets([]);
-      setGeneratedScript(null);
-      setFormattedScript(null);
+    } else if (currentStep === 'script-generated') {
+      setCurrentStep('script-input');
+    } else if (currentStep === 'script-input') {
+      setCurrentStep('assets-attached');
+      setScriptSubstep('input');
       setUserScriptMessage(null);
       setScriptError(null);
       setScriptInput('');
-      setCurrentStep('asset-upload');
+    } else if (currentStep === 'assets-attached') {
+      if (scriptSubstep === 'input') {
+        setScriptSubstep('duration');
+        setScriptInput('');
+        setScriptError(null);
+      } else if (scriptSubstep === 'duration') {
+        setScriptSubstep('language');
+        setSelectedLanguage(null);
+        setSelectedVideoDuration('30 seconds');
+      } else if (scriptSubstep === 'language') {
+        attachedAssets.forEach(asset => {
+          if (asset.preview) {
+            URL.revokeObjectURL(asset.preview);
+          }
+        });
+        setAttachedAssets([]);
+        setGeneratedScript(null);
+        setFormattedScript(null);
+        setUserScriptMessage(null);
+        setScriptError(null);
+        setScriptInput('');
+        setCurrentStep('asset-upload');
+      }
     }
   };
 
@@ -4590,7 +4776,14 @@ function AIChatPageContent() {
     
     switch (step) {
       case 'avatar-selection': {
-        const substepOrder: AvatarSubstep[] = ['question', 'selection', 'text-generation', 'visual-style', 'avatar-preview'];
+        const substepOrder: AvatarSubstep[] = [
+          'question',
+          'selection',
+          'generate-visual-style',
+          'text-generation',
+          'visual-style',
+          'avatar-preview',
+        ];
         const targetIndex = substepOrder.indexOf(substep as AvatarSubstep);
         const currentIndex = substepOrder.indexOf(avatarSubstep);
         return targetIndex !== -1 && currentIndex >= targetIndex;
@@ -5290,16 +5483,22 @@ function AIChatPageContent() {
                       </div>
                     )}
                     
-                    {/* AI Response - Language selection prompt after assets attached */}
-                    {currentStep === 'assets-attached' && !hasReachedStep('script-input') && scriptSubstep === 'language' && (
+                    {/* AI Response - Language selection prompt after assets attached (stays in history; disabled after choice) */}
+                    {currentStep === 'assets-attached' && !hasReachedStep('script-input') && (
                       <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                         <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
                           Perfect! Before we shape your script, what language would you like your video to be in?
                         </p>
                         
                         {/* Language Selection Buttons */}
-                        <div className="flex flex-row flex-wrap gap-[clamp(0.5rem,0.98vh,10px)] mt-[clamp(0.25rem,0.5vh,6px)]">
+                        <div
+                          className={cn(
+                            'flex flex-row flex-wrap gap-[clamp(0.5rem,0.98vh,10px)] mt-[clamp(0.25rem,0.5vh,6px)]',
+                            scriptSubstep !== 'language' && 'opacity-60 pointer-events-none',
+                          )}
+                        >
                           <button
+                            type="button"
                             onClick={() => handleLanguageSelection('english')}
                             className={cn(
                               "flex flex-row justify-center items-center px-[clamp(1rem,2vh,24px)] py-[clamp(0.5rem,1vh,12px)] rounded-[20px] transition-all duration-200",
@@ -5311,6 +5510,7 @@ function AIChatPageContent() {
                             <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">🇬🇧 English</span>
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleLanguageSelection('hindi')}
                             className={cn(
                               "flex flex-row justify-center items-center px-[clamp(1rem,2vh,24px)] py-[clamp(0.5rem,1vh,12px)] rounded-[20px] transition-all duration-200",
@@ -5322,6 +5522,7 @@ function AIChatPageContent() {
                             <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">🇮🇳 Hindi</span>
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleLanguageSelection('hinglish')}
                             className={cn(
                               "flex flex-row justify-center items-center px-[clamp(1rem,2vh,24px)] py-[clamp(0.5rem,1vh,12px)] rounded-[20px] transition-all duration-200",
@@ -5336,8 +5537,11 @@ function AIChatPageContent() {
                       </div>
                     )}
 
-                    {/* User language selection response */}
-                    {currentStep === 'assets-attached' && scriptSubstep === 'input' && selectedLanguage && !hasReachedStep('script-input') && (
+                    {/* User language selection response (shown during duration + script input substeps) */}
+                    {currentStep === 'assets-attached' &&
+                      (scriptSubstep === 'duration' || scriptSubstep === 'input') &&
+                      selectedLanguage &&
+                      !hasReachedStep('script-input') && (
                       <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                         <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px]">
                           <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right">
@@ -5347,7 +5551,33 @@ function AIChatPageContent() {
                       </div>
                     )}
 
-                    {/* AI Response - Script prompt after language selected */}
+                    {/* Duration selection prompt (options moved to bottom bar while on duration substep) */}
+                    {currentStep === 'assets-attached' &&
+                      !hasReachedStep('script-input') &&
+                      selectedLanguage &&
+                      (scriptSubstep === 'duration' || scriptSubstep === 'input') && (
+                      <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
+                          How long should your video be?
+                        </p>
+                      </div>
+                    )}
+
+                    {/* User duration chip */}
+                    {currentStep === 'assets-attached' &&
+                      scriptSubstep === 'input' &&
+                      selectedLanguage &&
+                      !hasReachedStep('script-input') && (
+                      <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px]">
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right">
+                            {VIDEO_DURATION_OPTIONS.find((o) => o.value === selectedVideoDuration)?.label ?? selectedVideoDuration}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Response - Script prompt after duration selected */}
                     {currentStep === 'assets-attached' && scriptSubstep === 'input' && !hasReachedStep('script-input') && (
                       <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                         <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
@@ -6110,10 +6340,8 @@ Use a recent photo of yourself.`}
             </div>
             )}
 
-            {/* Text Generation Substep - Show when user selects "Generate with AI" */}
-            {currentStep === 'avatar-selection' && avatarSubstep === 'text-generation' && avatarPreference === 'generate' && (
-            <>
-              {/* User "Generate with AI" Message */}
+            {/* Generate with AI — cumulative user choice (stays visible like normal chat) */}
+            {hasReachedSubstep('avatar-selection', 'generate-visual-style') && avatarPreference === 'generate' && (
               <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                 <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,293px)]">
                   <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
@@ -6121,7 +6349,110 @@ Use a recent photo of yourself.`}
                   </span>
                 </div>
               </div>
+            )}
 
+            {/* Generate with AI — pick visual style before describing the avatar */}
+            {hasReachedSubstep('avatar-selection', 'generate-visual-style') && avatarPreference === 'generate' && (
+              <div
+                className={cn(
+                  hasReachedSubstep('avatar-selection', 'text-generation') && 'opacity-50 pointer-events-none',
+                )}
+              >
+                {currentStep === 'avatar-selection' && avatarSubstep === 'generate-visual-style' && (
+                  <>
+                    <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                      <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                        First, how should your AI avatar appear in the video? Choose a visual style:
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)]">
+                      {AVATAR_VISUAL_STYLE_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => setSelectedAvatarVisualStyle(preset.id)}
+                          className={cn(
+                            'flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left',
+                            selectedAvatarVisualStyle === preset.id && 'ring-2 ring-[#E86412]',
+                          )}
+                        >
+                          {'previewImage' in preset && preset.previewImage ? (
+                            <div className="h-[72px] w-auto flex-shrink-0 rounded-[8px] overflow-hidden bg-gray-100">
+                              <Image
+                                src={preset.previewImage}
+                                alt={preset.label}
+                                width={72}
+                                height={128}
+                                className="h-full w-auto object-contain"
+                              />
+                            </div>
+                          ) : (
+                            <div className="h-[72px] w-[40px] flex-shrink-0 rounded-[8px] bg-gray-100 flex items-center justify-center overflow-hidden">
+                              {'icon' in preset && preset.icon === 'original' ? (
+                                <ImageIcon className="w-5 h-5 text-gray-500" />
+                              ) : 'icon' in preset && preset.icon === 'random' ? (
+                                <Sparkles className="w-5 h-5 text-gray-500" />
+                              ) : (
+                                <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-400">Preview</span>
+                              )}
+                            </div>
+                          )}
+                          <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] flex-1 min-w-0">
+                            <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-tight text-[#212121]">
+                              {preset.label}
+                            </span>
+                            <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal leading-tight text-gray-600">
+                              {preset.description}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {selectedAvatarVisualStyle && (
+                      <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+                        <button
+                          type="button"
+                          onClick={handleProceedFromGenerateVisualStyle}
+                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                        >
+                          <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                            <Image
+                              src="/assets/u_arrow-right.svg"
+                              alt="Proceed"
+                              width={12}
+                              height={12}
+                              className="w-fit"
+                            />
+                          </div>
+                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                            Proceed
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Selected visual style (generate path) — stays visible in chat history */}
+            {hasReachedSubstep('avatar-selection', 'text-generation') &&
+              avatarPreference === 'generate' &&
+              selectedAvatarVisualStyle && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,420px)]">
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                      Visual style:{' '}
+                      {AVATAR_VISUAL_STYLE_PRESETS.find((p) => p.id === selectedAvatarVisualStyle)?.label ||
+                        selectedAvatarVisualStyle}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+            {/* Text generation — describe the avatar (after style is chosen) */}
+            {currentStep === 'avatar-selection' && avatarSubstep === 'text-generation' && avatarPreference === 'generate' && (
+            <>
               {/* AI Response - Describe your avatar (plain text, same as script step) */}
               <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                 <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
@@ -6252,8 +6583,10 @@ Use a recent photo of yourself.`}
             </>
             )}
 
-            {/* Visual Style Substep - Show after avatar selection */}
-            {hasReachedSubstep('avatar-selection', 'visual-style') && (selectedAvatar || avatarUploadSuccess) && (
+            {/* Visual Style Substep — library / upload only (generate-with-AI picks style earlier) */}
+            {hasReachedSubstep('avatar-selection', 'visual-style') &&
+              avatarPreference === 'library' &&
+              (selectedAvatar || avatarUploadSuccess) && (
             <>
               {/* Selected Avatar Preview (for library selection) */}
               {selectedAvatar && (
@@ -6378,110 +6711,123 @@ Use a recent photo of yourself.`}
                   </button>
                 </div>
               )}
-
-              {/* Avatar Preview Substep - Show generated avatar image with regenerate/proceed options */}
-              {hasReachedSubstep('avatar-selection', 'avatar-preview') && (
-                <>
-                  {/* AI Message - Preview intro */}
-                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
-                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                      {isGeneratingAvatarPreview 
-                        ? "Hold on while I generate a preview of your avatar..."
-                        : "Here's a preview of how your avatar will appear in the video. Take a look and let me know if you'd like to try a different variation or proceed to voice selection."
-                      }
-                    </p>
-                  </div>
-
-                  {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
-                  <div 
-                    className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
-                    style={{
-                      background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
-                        'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
-                        'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
-                    }}
-                  >
-                    <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
-                      {isGeneratingAvatarPreview ? (
-                        <div className="flex flex-col items-center justify-center gap-3">
-                          <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
-                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
-                            Generating preview...
-                          </span>
-                        </div>
-                      ) : avatarPreviewUrl ? (
-                        <img
-                          src={avatarPreviewUrl}
-                          alt="Avatar Preview"
-                          className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                          onClick={() => {
-                            setAvatarPreviewModalOpen(true);
-                          }}
-                        />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center gap-3 h-[236px] min-h-[236px]">
-                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
-                            Preview not available
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Style Label */}
-                  {!isGeneratingAvatarPreview && avatarPreviewUrl && selectedAvatarVisualStyle && (
-                    <div className="flex flex-col items-start gap-[clamp(0.25rem,0.39vh,4px)] mt-[clamp(0.25rem,0.49vh,5px)]">
-                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal text-gray-600">
-                        Style: {AVATAR_VISUAL_STYLE_PRESETS.find(p => p.id === selectedAvatarVisualStyle)?.label || selectedAvatarVisualStyle}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Regenerate and Proceed Buttons */}
-                  {!isGeneratingAvatarPreview && avatarPreviewUrl && (
-                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
-                      {/* Regenerate Button */}
-                      <button
-                        onClick={handleRegenerateAvatarPreview}
-                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                      >
-                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                          <Image
-                            src="/assets/u_redo.svg"
-                            alt="Regenerate"
-                            width={16}
-                            height={16}
-                            className="w-fit"
-                          />
-                        </div>
-                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                          Regenerate
-                        </span>
-                      </button>
-
-                      {/* Proceed Button */}
-                      <button
-                        onClick={handleProceedFromAvatarPreview}
-                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                      >
-                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                          <Image
-                            src="/assets/u_arrow-right.svg"
-                            alt="Proceed"
-                            width={16}
-                            height={16}
-                            className="w-fit"
-                          />
-                        </div>
-                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                          Proceed
-                        </span>
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
             </>
+            )}
+
+            {/* Generate path: user description stays visible before preview */}
+            {hasReachedSubstep('avatar-selection', 'avatar-preview') &&
+              avatarPreference === 'generate' &&
+              avatarDescription.trim() && (
+                <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,70vw,568px)]">
+                    <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                      {avatarDescription.trim()}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+            {/* Avatar Preview Substep — library + generate paths */}
+            {hasReachedSubstep('avatar-selection', 'avatar-preview') && (
+              <>
+                {/* AI Message - Preview intro */}
+                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                    {isGeneratingAvatarPreview
+                      ? 'Hold on while I generate a preview of your avatar...'
+                      : "Here's a preview of how your avatar will appear in the video. Take a look and let me know if you'd like to try a different variation or proceed to voice selection."}
+                  </p>
+                </div>
+
+                {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
+                <div
+                  className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
+                  style={{
+                    background:
+                      'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
+                      'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                      'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                  }}
+                >
+                  <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
+                    {isGeneratingAvatarPreview ? (
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
+                        <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                          Generating preview...
+                        </span>
+                      </div>
+                    ) : avatarPreviewUrl ? (
+                      <img
+                        src={avatarPreviewUrl}
+                        alt="Avatar Preview"
+                        className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                        onClick={() => {
+                          setAvatarPreviewModalOpen(true);
+                        }}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center gap-3 h-[236px] min-h-[236px]">
+                        <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                          Preview not available
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Style Label */}
+                {!isGeneratingAvatarPreview && avatarPreviewUrl && selectedAvatarVisualStyle && (
+                  <div className="flex flex-col items-start gap-[clamp(0.25rem,0.39vh,4px)] mt-[clamp(0.25rem,0.49vh,5px)]">
+                    <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal text-gray-600">
+                      Style:{' '}
+                      {AVATAR_VISUAL_STYLE_PRESETS.find((p) => p.id === selectedAvatarVisualStyle)?.label ||
+                        selectedAvatarVisualStyle}
+                    </span>
+                  </div>
+                )}
+
+                {/* Regenerate and Proceed Buttons */}
+                {!isGeneratingAvatarPreview && avatarPreviewUrl && (
+                  <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
+                    <button
+                      onClick={handleRegenerateAvatarPreview}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <Image
+                          src="/assets/u_redo.svg"
+                          alt="Regenerate"
+                          width={16}
+                          height={16}
+                          className="w-fit"
+                        />
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Regenerate
+                      </span>
+                    </button>
+
+                    <button
+                      onClick={handleProceedFromAvatarPreview}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    >
+                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                        <Image
+                          src="/assets/u_arrow-right.svg"
+                          alt="Proceed"
+                          width={16}
+                          height={16}
+                          className="w-fit"
+                        />
+                      </div>
+                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                        Proceed
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </>
             )}
 
             {/* Voice Selection Step - Only show NEW voice-specific content */}
@@ -8369,6 +8715,8 @@ Read everything on screen smoothly.`}
             </>
           )}
 
+            <div ref={chatBottomSentinelRef} className="h-px w-full shrink-0" aria-hidden />
+
           </div>
 
           {/* Regenerate and Proceed Buttons - Outside scrollable container to ensure visibility */}
@@ -8657,6 +9005,25 @@ Read everything on screen smoothly.`}
               </button>
             </div>
           )}
+
+          {/* Script duration options — bottom row (RTL), white pills; shown only while duration substep is active */}
+          {currentStep === 'assets-attached' &&
+            scriptSubstep === 'duration' &&
+            !hasReachedStep('script-input') &&
+            selectedLanguage && (
+              <div className="flex flex-row-reverse flex-wrap justify-end items-center gap-x-[clamp(0.5rem,0.98vh,10px)] gap-y-2 w-full flex-shrink-0 mt-auto mb-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.17vh,12px)]">
+                {VIDEO_DURATION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => handleDurationSelection(opt.value)}
+                    className="flex flex-row justify-center items-center px-[clamp(1rem,2vh,24px)] py-[clamp(0.5rem,1vh,12px)] rounded-[20px] transition-all duration-200 bg-white border border-[#E0E0E0] text-[#212121] hover:border-[#E86412] hover:text-[#E86412]"
+                  >
+                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
 
           {/* Script Input Bar - Show when language is selected and assets are attached or script-input step */}
           {((currentStep === 'assets-attached' && scriptSubstep === 'input') || currentStep === 'script-input') && (

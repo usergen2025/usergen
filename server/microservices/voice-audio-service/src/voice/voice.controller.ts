@@ -442,6 +442,7 @@ export class VoiceController {
       model_id?: string;
       output_format?: string;
       language?: 'english' | 'hindi' | 'hinglish';
+      includeWordTimestamps?: boolean;
     },
     @Request() req: any,
   ) {
@@ -459,22 +460,28 @@ export class VoiceController {
       );
     }
 
-    const audioFiles = await this.voiceService.generateScriptAudio(
-      body.voiceId,
-      body.scenes,
-      userId,
-      body.projectId,
-      {
-        model_id: body.model_id,
-        output_format: body.output_format,
-        language: body.language,
-      }
-    );
+    const opts = {
+      model_id: body.model_id,
+      output_format: body.output_format,
+      language: body.language,
+    };
+
+    const audioFiles = body.includeWordTimestamps
+      ? await this.voiceService.generateScriptAudioWithTimestamps(
+          body.voiceId,
+          body.scenes,
+          userId,
+          body.projectId,
+          opts,
+        )
+      : await this.voiceService.generateScriptAudio(body.voiceId, body.scenes, userId, body.projectId, opts);
 
     return {
       success: true,
       data: audioFiles,
-      message: 'Audio files generated successfully',
+      message: body.includeWordTimestamps
+        ? 'Audio files generated successfully with word timestamps'
+        : 'Audio files generated successfully',
       timestamp: new Date().toISOString(),
     };
   }

@@ -595,9 +595,21 @@ export class VoiceService {
     return audioFiles;
   }
 
+  private clampWordTimestampsToDuration(
+    words: Array<{ word: string; startTime: number; endTime: number }>,
+    maxSeconds: number,
+  ): Array<{ word: string; startTime: number; endTime: number }> {
+    if (maxSeconds <= 0 || words.length === 0) return words;
+    return words.map((w) => ({
+      ...w,
+      startTime: Math.min(w.startTime, maxSeconds),
+      endTime: Math.min(w.endTime, maxSeconds),
+    }));
+  }
+
   /**
    * Generate audio with word-level timestamps for captions
-   * Uses ElevenLabs with-timestamps API for accurate timing
+   * Uses ElevenLabs with-timestamps API; applies the same padding / last-scene fade-out as generateScriptAudio
    */
   async generateScriptAudioWithTimestamps(
     voiceId: string,
@@ -615,6 +627,10 @@ export class VoiceService {
         use_speaker_boost?: boolean;
         speed?: number;
       };
+      applyPaddingToLastScene?: boolean;
+      paddingSeconds?: number;
+      applyFadeOutToLastScene?: boolean;
+      fadeOutDuration?: number;
     }
   ): Promise<Array<{
     sceneNumber: number;
@@ -637,9 +653,18 @@ export class VoiceService {
       wordTimestamps?: Array<{ word: string; startTime: number; endTime: number }>;
     }> = [];
 
+    if (scenes.length === 0) {
+      return [];
+    }
+
     console.log(`[VoiceService] Generating audio WITH TIMESTAMPS for ${scenes.length} scenes for project ${projectId}`);
 
-    // Get language-specific settings
+    const lastSceneNumber = Math.max(...scenes.map((s) => s.sceneNumber));
+    const applyPadding = options?.applyPaddingToLastScene !== false;
+    const paddingSeconds = options?.paddingSeconds ?? 1.0;
+    const applyFadeOut = options?.applyFadeOutToLastScene !== false;
+    const fadeOutDuration = options?.fadeOutDuration ?? 1.0;
+
     const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
     const mergedSettings = {
       ...languageSettings,
@@ -648,18 +673,18 @@ export class VoiceService {
 
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
-      console.log(`[VoiceService] Generating audio with timestamps for scene ${scene.sceneNumber} (${i + 1}/${scenes.length})`);
+      const isLastScene = scene.sceneNumber === lastSceneNumber;
+      console.log(
+        `[VoiceService] Generating audio with timestamps for scene ${scene.sceneNumber} (${i + 1}/${scenes.length})${isLastScene ? ' [LAST SCENE - padding/fade like generateScriptAudio]' : ''}`,
+      );
 
       const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
       const userDir = path.join(this.uploadsDir, 'audio', userId);
-
-      // Ensure directory exists
       if (!fs.existsSync(userDir)) {
         fs.mkdirSync(userDir, { recursive: true });
       }
 
       try {
-        // Generate speech with timestamps
         const result = await this.elevenLabsProvider.generateSpeechWithTimestamps({
           voice_id: voiceId,
           text: scene.voiceover,
@@ -668,70 +693,118 @@ export class VoiceService {
           voice_settings: mergedSettings,
         });
 
-        // Save audio file
         const filePath = path.join(userDir, filename);
         fs.writeFileSync(filePath, result.audio);
 
-        // Get duration using ffprobe
-        let duration = 0;
-        try {
-          duration = this.getAudioDurationRobust(filePath);
-        } catch (e) {
-          console.warn(`[VoiceService] Could not get duration for ${filename}`);
-        }
-
-        // Convert character timestamps to word timestamps
-        const wordTimestamps = this.elevenLabsProvider.convertCharacterTimestampsToWords(
+        let wordTimestamps = this.elevenLabsProvider.convertCharacterTimestampsToWords(
           scene.voiceover,
-          result.alignment
+          result.alignment,
         );
 
-        // Save timestamps to a JSON file alongside audio
-        const timestampsFilename = `scene_${scene.sceneNumber}_${projectId}_timestamps.json`;
-        const timestampsPath = path.join(userDir, timestampsFilename);
-        fs.writeFileSync(timestampsPath, JSON.stringify({
-          sceneNumber: scene.sceneNumber,
-          voiceover: scene.voiceover,
-          duration,
-          wordTimestamps,
-          characterAlignment: result.alignment,
-        }, null, 2));
+        let finalFilePath = filePath;
+        let finalLocalUrl = `/uploads/audio/${userId}/${filename}`;
+        let finalDuration = this.getAudioDurationRobust(filePath);
+        let finalGcsUrl: string | undefined;
+        let finalPublicUrl = finalLocalUrl;
 
-        // Upload to GCS
-        let gcsUrl: string | undefined;
-        let publicUrl: string = `/uploads/audio/${userId}/${filename}`;
+        let processedAudioPath = filePath;
+
+        if (applyPadding) {
+          const scenePaddingSeconds = isLastScene ? paddingSeconds : 0.0;
+          const paddedFilename = `scene_${scene.sceneNumber}_${projectId}_padded_${Date.now()}.mp3`;
+          const paddedPath = path.join(path.dirname(filePath), paddedFilename);
+          finalDuration = await this.processAudioWithPadding(
+            processedAudioPath,
+            paddedPath,
+            scenePaddingSeconds,
+            true,
+            0.7,
+          );
+          processedAudioPath = paddedPath;
+          if (processedAudioPath !== filePath && fs.existsSync(filePath)) {
+            try {
+              fs.unlinkSync(filePath);
+            } catch (e) {
+              console.warn(`[VoiceService] Failed to cleanup raw timestamp audio: ${e}`);
+            }
+          }
+          wordTimestamps = this.clampWordTimestampsToDuration(wordTimestamps, finalDuration);
+        }
+
+        if (isLastScene && applyFadeOut) {
+          const fadedFilename = `scene_${scene.sceneNumber}_${projectId}_faded_${Date.now()}.mp3`;
+          const fadedPath = path.join(path.dirname(processedAudioPath), fadedFilename);
+          await this.applyAudioFadeOut(processedAudioPath, fadedPath, fadeOutDuration);
+          if (fadedPath !== processedAudioPath && fs.existsSync(processedAudioPath)) {
+            try {
+              fs.unlinkSync(processedAudioPath);
+            } catch (e) {
+              console.warn(`[VoiceService] Failed to cleanup padded audio before fade: ${e}`);
+            }
+          }
+          finalFilePath = fadedPath;
+          finalLocalUrl = `/uploads/audio/${userId}/${fadedFilename}`;
+          try {
+            finalDuration = this.getAudioDurationRobust(fadedPath);
+          } catch {
+            /* keep previous */
+          }
+          wordTimestamps = this.clampWordTimestampsToDuration(wordTimestamps, finalDuration);
+        } else if (applyPadding && processedAudioPath !== filePath) {
+          const paddedFilename = path.basename(processedAudioPath);
+          finalFilePath = processedAudioPath;
+          finalLocalUrl = `/uploads/audio/${userId}/${paddedFilename}`;
+        }
 
         try {
           const storageResult = await this.publicUrlService.uploadFromPath(
-            filePath,
+            finalFilePath,
             `audio/${userId}`,
-            filename,
-            'audio/mpeg'
+            path.basename(finalFilePath),
+            'audio/mpeg',
           );
-          gcsUrl = storageResult.gcsUrl;
-          publicUrl = storageResult.publicUrl;
+          finalGcsUrl = storageResult.gcsUrl;
+          finalPublicUrl = storageResult.publicUrl;
+        } catch (error: any) {
+          console.warn(`[VoiceService] GCS upload failed: ${error.message}`);
+          finalPublicUrl = finalLocalUrl;
+        }
 
-          // Also upload timestamps JSON
+        const timestampsFilename = `scene_${scene.sceneNumber}_${projectId}_timestamps.json`;
+        const timestampsPath = path.join(userDir, timestampsFilename);
+        fs.writeFileSync(
+          timestampsPath,
+          JSON.stringify(
+            {
+              sceneNumber: scene.sceneNumber,
+              voiceover: scene.voiceover,
+              duration: finalDuration,
+              wordTimestamps,
+              characterAlignment: result.alignment,
+            },
+            null,
+            2,
+          ),
+        );
+        try {
           await this.publicUrlService.uploadFromPath(
             timestampsPath,
             `audio/${userId}`,
             timestampsFilename,
-            'application/json'
+            'application/json',
           );
         } catch (error: any) {
-          console.warn(`[VoiceService] GCS upload failed: ${error.message}`);
+          console.warn(`[VoiceService] Timestamps JSON upload failed: ${error.message}`);
         }
-
-        console.log(`[VoiceService] Audio with timestamps generated for scene ${scene.sceneNumber}: ${wordTimestamps.length} words`);
 
         audioFiles.push({
           sceneNumber: scene.sceneNumber,
-          filePath,
-          localUrl: `/uploads/audio/${userId}/${filename}`,
+          filePath: finalFilePath,
+          localUrl: finalLocalUrl,
           voiceover: scene.voiceover,
-          duration,
-          gcsUrl,
-          publicUrl,
+          duration: finalDuration,
+          gcsUrl: finalGcsUrl,
+          publicUrl: finalPublicUrl,
           wordTimestamps,
         });
       } catch (error: any) {

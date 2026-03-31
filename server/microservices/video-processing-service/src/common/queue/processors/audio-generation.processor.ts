@@ -79,6 +79,7 @@ export class AudioGenerationProcessor extends WorkerHost {
           model_id: 'eleven_multilingual_v2',
           output_format: 'mp3_44100_128',
           language: scriptLanguage, // Pass language for voice settings optimization
+          includeWordTimestamps: true,
         },
         {
           headers: {

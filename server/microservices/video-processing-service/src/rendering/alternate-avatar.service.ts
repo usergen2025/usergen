@@ -27,7 +27,7 @@ export class AlternateAvatarService {
   }
 
   /**
-   * Generate a per-scene avatar video for ALTERNATE style (even scenes)
+   * Generate a per-scene avatar video for ALTERNATE style (odd / half-n-half scenes)
    * Returns the local file path of the generated avatar video
    */
   async generateAlternateSceneAvatarVideo(

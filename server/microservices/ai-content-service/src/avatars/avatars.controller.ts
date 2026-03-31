@@ -347,7 +347,8 @@ export class AvatarsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Generate avatar preview image',
-    description: 'Generates an avatar preview image for immediate display. Returns both imageKey for HeyGen and a publicUrl for frontend preview.',
+    description:
+      'Generates an avatar preview for display (BytePlus + storage). Does not upload to HeyGen; call finalize-preview when the user proceeds.',
   })
   @ApiBody({
     schema: {
@@ -373,8 +374,8 @@ export class AvatarsController {
         data: {
           type: 'object',
           properties: {
-            imageKey: { type: 'string' },
             publicUrl: { type: 'string' },
+            imageKey: { type: 'string', description: 'Optional; set only if legacy' },
           },
         },
       },
@@ -399,6 +400,43 @@ export class AvatarsController {
       script: body.script,
       style: body.style,
       avatarVisualStylePreset: body.avatarVisualStylePreset,
+    });
+    return { success: true, data: result };
+  }
+
+  @Post('finalize-preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Finalize avatar preview (HeyGen upload)',
+    description:
+      'Uploads the preview image to HeyGen once when the user confirms the avatar. Updates avatar.imageKey.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        avatarId: { type: 'string' },
+        previewImageUrl: { type: 'string', description: 'Public URL of the preview image (same as metadata.avatarPreviewUrl)' },
+      },
+      required: ['avatarId', 'previewImageUrl'],
+    },
+  })
+  async finalizePreview(
+    @Body() body: { avatarId: string; previewImageUrl: string },
+    @Request() req: any,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException(
+        { success: false, error: 'Authentication failed. Please login again.', code: 'UNAUTHORIZED' },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const result = await this.avatarsService.finalizeAvatarPreview({
+      userId,
+      avatarId: body.avatarId,
+      previewImageUrl: body.previewImageUrl,
     });
     return { success: true, data: result };
   }
@@ -438,7 +476,14 @@ export class AvatarsController {
   })
   @ApiResponse({ status: 400, description: 'Missing prompt or invalid request' })
   async generateFromText(
-    @Body() body: { prompt: string; projectId?: string; style?: string },
+    @Body()
+    body: {
+      prompt: string;
+      projectId?: string;
+      style?: string;
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    },
     @Request() req: any,
   ) {
     const userId = this.extractUserIdFromToken(req);
@@ -461,6 +506,8 @@ export class AvatarsController {
       userId,
       projectId: body.projectId,
       style: body.style,
+      avatarVisualStylePreset: body.avatarVisualStylePreset,
+      script: body.script,
     });
   }
 

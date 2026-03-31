@@ -369,6 +369,51 @@ export class AvatarsService {
   }
 
   /**
+   * Build BytePlus text-to-image prompt from appearance description + visual style preset (AI Chat).
+   * Library originals stay the resized JPEG from this output — not preview composites or cutouts.
+   */
+  private buildEnhancedPromptForTextToImage(params: {
+    appearancePrompt: string;
+    avatarVisualStylePreset?: string | null;
+    script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    videoStyle?: string;
+  }): string {
+    const { appearancePrompt, avatarVisualStylePreset, script, videoStyle } = params;
+    let base = `Professional portrait photograph of ${appearancePrompt}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
+
+    const preset = avatarVisualStylePreset || 'original';
+    if (preset === 'original') {
+      // Keep base portrait; video framing handled in preview pipeline
+    } else if (preset === 'random') {
+      const fromScript =
+        script?.avatar_image_prompt && typeof script.avatar_image_prompt === 'string'
+          ? script.avatar_image_prompt.trim()
+          : '';
+      if (fromScript) {
+        base = `${base} ${fromScript}`;
+      } else {
+        base = `${base} Natural varied professional framing and composition.`;
+      }
+    } else if (PRESET_POSE_PROMPTS[preset]) {
+      const presetPose = PRESET_POSE_PROMPTS[preset];
+      const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
+      base = `${base} ${presetPose}, ${theme}.`;
+    }
+
+    const norm = normalizeStyleToBackend(videoStyle);
+    if (norm === 'AVATAR_CUTOUT') {
+      base +=
+        ' solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
+    }
+    if (norm === 'HALF_N_HALF' || norm === 'ALTERNATE') {
+      base +=
+        ' Person faces the camera directly, front-facing, looking straight ahead.';
+    }
+
+    return base;
+  }
+
+  /**
    * Generate avatar image for a project from the avatar's original image.
    * Preset types: original (Sharp only), random (script prompt), named preset (hybrid: preset pose + script theme).
    */
@@ -574,7 +619,7 @@ export class AvatarsService {
     script: { avatar_image_prompt?: string; visual_style_guide?: any };
     style?: string;
     avatarVisualStylePreset?: string | null;
-  }): Promise<{ imageKey: string; publicUrl: string }> {
+  }): Promise<{ publicUrl: string; imageKey?: string }> {
     const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset } = params;
     
     // Normalize style to backend format (handles both 'avatar-cutout' and 'AVATAR_CUTOUT')
@@ -783,15 +828,6 @@ export class AvatarsService {
       }
     }
 
-    const uploadResponse = await this.heygenProvider.uploadImage(
-      finalImageBuffer,
-      mimeType,
-      `project_${projectId}_avatar_preview.${fileExtension}`,
-    );
-    if (!uploadResponse.image_key) {
-      throw new Error('HeyGen upload did not return image_key');
-    }
-
     const timestamp = Date.now();
     const previewFilename = `avatar_preview_${timestamp}.${fileExtension}`;
     const subPath = `avatars/previews/${projectId}`;
@@ -805,11 +841,64 @@ export class AvatarsService {
     const publicUrl = storageResult.gcsUrl || storageResult.publicUrl || `${storageResult.localUrl}`;
 
     this.logger.log(
-      `Avatar preview for project ${projectId} generated, image_key: ${uploadResponse.image_key}, publicUrl: ${publicUrl}`,
+      `Avatar preview for project ${projectId} generated (GCS only; HeyGen on finalize), publicUrl: ${publicUrl}`,
       'AvatarsService',
     );
 
-    return { imageKey: uploadResponse.image_key, publicUrl };
+    return { publicUrl };
+  }
+
+  /**
+   * Upload the chosen preview image to HeyGen once when the user proceeds past avatar preview (AI Chat).
+   */
+  async finalizeAvatarPreview(params: {
+    userId: string;
+    avatarId: string;
+    previewImageUrl: string;
+  }): Promise<{ imageKey: string }> {
+    const { userId, avatarId, previewImageUrl } = params;
+
+    const avatar = await this.databaseService.avatar.findFirst({
+      where: { id: avatarId, userId },
+    });
+    if (!avatar) {
+      throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
+    }
+
+    if (!previewImageUrl || (!previewImageUrl.startsWith('http://') && !previewImageUrl.startsWith('https://'))) {
+      throw new BadRequestException('previewImageUrl must be a valid http(s) URL');
+    }
+
+    const imageResponse = await axios.get(previewImageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 120000,
+      maxContentLength: 50 * 1024 * 1024,
+      maxBodyLength: 50 * 1024 * 1024,
+    });
+    const imageBuffer = Buffer.from(imageResponse.data);
+    const ct = (imageResponse.headers['content-type'] || '').toLowerCase();
+    const mimeType: 'image/jpeg' | 'image/png' = ct.includes('png') ? 'image/png' : 'image/jpeg';
+    const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+
+    const uploadResponse = await this.heygenProvider.uploadImage(
+      imageBuffer,
+      mimeType,
+      `avatar_finalize_${avatarId}.${ext}`,
+    );
+    if (!uploadResponse.image_key) {
+      throw new Error('HeyGen upload did not return image_key');
+    }
+
+    await this.databaseService.avatar.update({
+      where: { id: avatarId },
+      data: {
+        imageKey: uploadResponse.image_key,
+        generationStatus: 'COMPLETED',
+      },
+    });
+
+    this.logger.log(`Avatar ${avatarId} finalized with HeyGen image_key`, 'AvatarsService');
+    return { imageKey: uploadResponse.image_key };
   }
 
   /**
@@ -821,6 +910,8 @@ export class AvatarsService {
     userId: string;
     projectId?: string;
     style?: string;
+    avatarVisualStylePreset?: string | null;
+    script?: { avatar_image_prompt?: string; visual_style_guide?: any };
   }): Promise<{
     success: boolean;
     avatarId?: string;
@@ -829,32 +920,77 @@ export class AvatarsService {
     originalImageUrl?: string;
     error?: string;
   }> {
-    const { prompt, userId, projectId, style } = params;
-    
+    const { prompt, userId, projectId, style, avatarVisualStylePreset, script } = params;
+
     this.logger.log(
-      `Generating avatar from text for user ${userId}, prompt: ${prompt.substring(0, 50)}...`,
+      `Generating avatar from text for user ${userId}, preset: ${avatarVisualStylePreset ?? 'default'}, prompt: ${prompt.substring(0, 50)}...`,
       'AvatarsService',
     );
 
     try {
-      // Build a comprehensive prompt for realistic human avatar
-      const enhancedPrompt = `Professional portrait photograph of ${prompt}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
-      
-      // Generate image using BytePlus text-to-image
-      const generationResult = await this.bytePlusImageProvider.generateImageFromText(
-        enhancedPrompt,
-        '1080x1920', // 9:16 aspect ratio for avatar
-      );
-
-      if (!generationResult.imageUrl) {
-        throw new Error('Failed to generate image from text');
-      }
-
-      // Download the generated image
-      const imageResponse = await axios.get(generationResult.imageUrl, {
-        responseType: 'arraybuffer',
+      const enhancedPrompt = this.buildEnhancedPromptForTextToImage({
+        appearancePrompt: prompt,
+        avatarVisualStylePreset,
+        script,
+        videoStyle: style,
       });
-      const imageBuffer = Buffer.from(imageResponse.data);
+
+      const backendStyle = normalizeStyleToBackend(style);
+      const useBottomHalfFraming = backendStyle === 'HALF_N_HALF' || backendStyle === 'ALTERNATE';
+
+      let imageBuffer: Buffer;
+
+      if (useBottomHalfFraming) {
+        const generationResult = await this.bytePlusImageProvider.generateImageFromText(
+          enhancedPrompt,
+          '2304x2048',
+        );
+        if (!generationResult.imageUrl) {
+          throw new Error('Failed to generate image from text');
+        }
+        const imageResponse = await axios.get(generationResult.imageUrl, {
+          responseType: 'arraybuffer',
+        });
+        let halfBuffer = Buffer.from(imageResponse.data);
+        halfBuffer = await sharp(halfBuffer)
+          .resize(1080, 960, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+        const whiteHeight = 960;
+        const whiteTop = await sharp({
+          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .jpeg()
+          .toBuffer();
+        imageBuffer = await sharp({
+          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+        })
+          .composite([
+            { input: whiteTop, top: 0, left: 0 },
+            { input: halfBuffer, top: whiteHeight, left: 0 },
+          ])
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      } else {
+        // BytePlus requires min ~3.69M pixels; generate large then resize to 1080x1920 (same as image-to-image path)
+        const generationResult = await this.bytePlusImageProvider.generateImageFromText(
+          enhancedPrompt,
+          '1440x2560',
+        );
+
+        if (!generationResult.imageUrl) {
+          throw new Error('Failed to generate image from text');
+        }
+
+        const imageResponse = await axios.get(generationResult.imageUrl, {
+          responseType: 'arraybuffer',
+        });
+        imageBuffer = Buffer.from(imageResponse.data);
+        imageBuffer = await sharp(imageBuffer)
+          .resize(1080, 1920, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      }
 
       // Create thumbnail using sharp
       const thumbnailBuffer = await sharp(imageBuffer)
@@ -877,16 +1013,7 @@ export class AvatarsService {
       fs.writeFileSync(originalPath, imageBuffer);
       fs.writeFileSync(thumbnailPath, thumbnailBuffer);
 
-      // Upload to HeyGen to get image_key
-      const uploadResponse = await this.heygenProvider.uploadImage(
-        imageBuffer,
-        'image/jpeg',
-        originalFilename,
-      );
-
-      if (!uploadResponse.image_key) {
-        throw new Error('Failed to upload to HeyGen');
-      }
+      // HeyGen upload deferred until user confirms avatar preview (finalize-preview)
 
       // Upload to public storage (GCS/local)
       const subPath = `avatars/${userId}`;
@@ -909,9 +1036,9 @@ export class AvatarsService {
         data: {
           userId,
           name: `AI Generated - ${prompt.substring(0, 30)}...`,
-          imageKey: uploadResponse.image_key,
+          imageKey: null,
           source: 'UPLOAD', // Treat as upload since user provided the prompt
-          generationStatus: 'COMPLETED', // Ready to use immediately
+          generationStatus: 'COMPLETED',
           thumbnailUrl: thumbnailStorageResult.gcsUrl || thumbnailStorageResult.publicUrl || `/uploads/avatars/${userId}/${thumbnailFilename}`,
           avatarUrl: storageResult.gcsUrl || storageResult.publicUrl || `/uploads/avatars/${userId}/${originalFilename}`,
           originalImageUrl: `/uploads/avatars/${userId}/${originalFilename}`,
@@ -921,6 +1048,7 @@ export class AvatarsService {
             enhancedPrompt,
             projectId,
             style,
+            avatarVisualStylePreset: avatarVisualStylePreset ?? undefined,
           },
         },
       });

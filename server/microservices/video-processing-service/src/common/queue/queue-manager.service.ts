@@ -138,7 +138,7 @@ export class QueueManagerService {
   }
 
   /**
-   * Add avatar video generation job to queue (for ALTERNATE even scenes)
+   * Add avatar video generation job to queue (for ALTERNATE odd / half-n-half scenes)
    */
   async addAvatarVideoGenerationJob(data: JobData): Promise<string> {
     const job = await this.avatarVideoQueue.add(
@@ -156,7 +156,7 @@ export class QueueManagerService {
   }
 
   /**
-   * Add scene composite job to queue (b-roll + avatar for ALTERNATE even scenes)
+   * Add scene composite job to queue (b-roll + avatar for ALTERNATE odd / half-n-half scenes)
    */
   async addSceneCompositeJob(data: JobData): Promise<string> {
     const jobId = `composite-${data.projectId}-${data.sceneNumber}`;

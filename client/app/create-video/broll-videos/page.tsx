@@ -556,7 +556,7 @@ function BrollVideosPageContent() {
   const handleRetryAvatar = async (sceneNumber: number) => {
     if (!projectId) return;
     const style = (project as any)?.style;
-    if (style !== 'ALTERNATE' || sceneNumber % 2 !== 0) return;
+    if (style !== 'ALTERNATE' || sceneNumber % 2 !== 1) return;
 
     setRetryingAvatar(prev => ({ ...prev, [sceneNumber]: true }));
     try {
@@ -894,7 +894,7 @@ function BrollVideosPageContent() {
                       )}
                       
                       {(project as any)?.style === 'ALTERNATE' &&
-                       sceneNumber % 2 === 0 &&
+                       sceneNumber % 2 === 1 &&
                        failedAvatarScenes.includes(sceneNumber) &&
                        video && (
                         <Button

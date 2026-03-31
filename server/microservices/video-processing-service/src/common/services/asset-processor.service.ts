@@ -22,6 +22,8 @@ export interface AnalyzedAsset {
     type: string;
     userLabel?: string;
   };
+  /** Neutral visual inventory from ai-content vision analysis; enriches image-gen prompts */
+  visualScriptContext?: string;
 }
 
 @Injectable()
@@ -158,6 +160,20 @@ export class AssetProcessorService {
       enhancements.push(`Background style: Reference provided background assets`);
     }
 
+    for (const asset of assets) {
+      const v = asset.visualScriptContext?.trim();
+      if (v) {
+        enhancements.push(`Visual reference intent (${asset.category}): ${v}`);
+      }
+    }
+
+    const hasVisualContext = assets.some((a) => (a.visualScriptContext || '').trim().length > 0);
+    if (hasVisualContext && productAssets.length === 0) {
+      enhancements.push(
+        'Primary reference: keep the hero object or outfit identical to the reference image(s); change only setting, lighting, and camera unless the prompt explicitly requires otherwise.',
+      );
+    }
+
     if (enhancements.length > 0) {
       return `${prompt}\n\nContext: ${enhancements.join(' | ')}`;
     }
@@ -248,19 +264,19 @@ export class AssetProcessorService {
   }
 
   /**
-   * ALTERNATE: Rotate assets between odd/even scenes
+   * ALTERNATE: Rotate assets between odd/even scenes (odd = half-n-half top b-roll, even = full 9:16 b-roll)
    */
   private getAssetsForAlternate(assets: AnalyzedAsset[], sceneNumber: number): AnalyzedAsset[] {
     const relevantAssets: AnalyzedAsset[] = [];
     
     if (sceneNumber % 2 === 1) {
-      // Odd scenes: product + logo
+      // Odd scenes: background for top-half b-roll in composite
+      relevantAssets.push(...this.getBackgroundAssets(assets));
+    } else {
+      // Even scenes: product + logo for full-frame b-roll
       relevantAssets.push(...this.getProductAssets(assets));
       const logo = this.getLogoAsset(assets);
       if (logo) relevantAssets.push(logo);
-    } else {
-      // Even scenes: background
-      relevantAssets.push(...this.getBackgroundAssets(assets));
     }
     
     return relevantAssets;

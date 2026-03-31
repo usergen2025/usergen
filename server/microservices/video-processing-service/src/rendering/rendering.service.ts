@@ -990,16 +990,36 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
+    let pathForUpload = finalVideoWithAudioPath;
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] HALF_N_HALF: Adding captions to final video...`);
+        const captionedPath = await this.addCaptionsToFinalVideo(
+          pathForUpload,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings,
+        );
+        if (captionedPath) {
+          pathForUpload = captionedPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] HALF_N_HALF: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] HALF_N_HALF: Proceeding without captions`);
+      }
+    }
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUpload)}`;
 
     // Upload to GCS if available
     let gcsUrl: string | undefined;
     let publicUrl: string = localVideoUrl;
     try {
       const storageResult = await this.publicUrlService.uploadFromPath(
-        finalVideoWithAudioPath,
+        pathForUpload,
         `videos/${userId}`,
-        path.basename(finalVideoWithAudioPath),
+        path.basename(pathForUpload),
         'video/mp4'
       );
       gcsUrl = storageResult.gcsUrl;
@@ -1671,16 +1691,37 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
+    let pathForUploadCutout = finalVideoPath;
+    const sortedAudioForCutout = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] CUTOUT: Adding captions to final video...`);
+        const captionedPath = await this.addCaptionsToFinalVideo(
+          pathForUploadCutout,
+          userDir,
+          projectId,
+          sortedAudioForCutout,
+          project.captionSettings,
+        );
+        if (captionedPath) {
+          pathForUploadCutout = captionedPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] CUTOUT: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] CUTOUT: Proceeding without captions`);
+      }
+    }
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUploadCutout)}`;
 
     // Upload to GCS if available
     let gcsUrl: string | undefined;
     let publicUrl: string = localVideoUrl;
     try {
       const storageResult = await this.publicUrlService.uploadFromPath(
-        finalVideoPath,
+        pathForUploadCutout,
         `videos/${userId}`,
-        path.basename(finalVideoPath),
+        path.basename(pathForUploadCutout),
         'video/mp4'
       );
       gcsUrl = storageResult.gcsUrl;
@@ -1709,7 +1750,7 @@ export class RenderingService {
   }
 
   /**
-   * Generate a per-scene avatar video for ALTERNATE style (even scenes)
+   * Generate a per-scene avatar video for ALTERNATE style (odd / half-n-half scenes)
    * Avatar IV only: uses project.metadata.generatedAvatarImageKey
    */
   private async generateAlternateSceneAvatarVideo(
@@ -1794,8 +1835,8 @@ export class RenderingService {
 
   /**
    * Process ALTERNATE style (simplified - avatar and compositing done during Convert to Videos):
-   * - Odd scenes: b-roll from bRollVideoTasks, add audio
-   * - Even scenes: pre-composed (b-roll+avatar) from bRollVideoTasks, already has audio
+   * - Odd scenes: pre-composed (b-roll+avatar) from bRollVideoTasks, already has audio (isComposite)
+   * - Even scenes: b-roll from bRollVideoTasks, add audio (full 9:16)
    * - Stitch all scene videos together
    */
   private async processAlternate(
@@ -1843,7 +1884,6 @@ export class RenderingService {
 
     for (const scene of sortedScenes) {
       const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
-      const isOdd = sceneNumber % 2 === 1;
       const videoEntry = bRollVideos.find((v: any) => v.sceneNumber === sceneNumber);
       const audioFile = audioFiles.find((af: any) => af.sceneNumber === sceneNumber);
 
@@ -1866,12 +1906,12 @@ export class RenderingService {
       const isComposite = !!(videoEntry as any).isComposite;
 
       if (isComposite) {
-        // Even scene: pre-composed (already has audio)
+        // Odd scene: pre-composed half-n-half (already has audio)
         sceneVideoPaths.push(path.resolve(videoPath));
         sceneDurations.push(audioFile?.duration || 0);
         console.log(`[RenderingService] ALTERNATE: Using pre-composed scene ${sceneNumber}`);
       } else {
-        // Odd scene: add audio to b-roll
+        // Even scene: add audio to full 9:16 b-roll
         if (!audioFile) throw new Error(`Missing audio for scene ${sceneNumber}`);
         const audioPath = resolveAudioPath(audioFile);
         if (!audioPath || !fs.existsSync(audioPath)) {
@@ -1887,7 +1927,7 @@ export class RenderingService {
         await this.videoCompositor.addAudioToVideo(videoPath, audioPath, completePath);
         sceneVideoPaths.push(path.resolve(completePath));
         sceneDurations.push(audioFile.duration || 0);
-        console.log(`[RenderingService] ALTERNATE: Processed odd scene ${sceneNumber} with audio`);
+        console.log(`[RenderingService] ALTERNATE: Processed even (full b-roll) scene ${sceneNumber} with audio`);
       }
     }
 
@@ -2121,16 +2161,36 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(avatarVideoPath)}`;
+    let pathForUploadAvatarOnly = avatarVideoPath;
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] AVATAR_ONLY: Adding captions to final video...`);
+        const captionedPath = await this.addCaptionsToFinalVideo(
+          pathForUploadAvatarOnly,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings,
+        );
+        if (captionedPath) {
+          pathForUploadAvatarOnly = captionedPath;
+        }
+      } catch (captionError: any) {
+        console.error(`[RenderingService] AVATAR_ONLY: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] AVATAR_ONLY: Proceeding without captions`);
+      }
+    }
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUploadAvatarOnly)}`;
 
     // Upload to GCS if available
     let gcsUrl: string | undefined;
     let publicUrl: string = localVideoUrl;
     try {
       const storageResult = await this.publicUrlService.uploadFromPath(
-        avatarVideoPath,
+        pathForUploadAvatarOnly,
         `videos/${userId}`,
-        path.basename(avatarVideoPath),
+        path.basename(pathForUploadAvatarOnly),
         'video/mp4'
       );
       gcsUrl = storageResult.gcsUrl;
@@ -2510,6 +2570,117 @@ export class RenderingService {
    * Update rendering status and progress
    */
   /**
+   * Merge workspace nested `style` with legacy flat captionSettings (e.g. style page) for ASS burn-in.
+   */
+  private resolveCaptionStyleForBurnIn(captionSettings: any): {
+    fontFamily: string;
+    fontSize: number;
+    fontWeight: 'normal' | 'bold';
+    fontStyle: 'normal' | 'italic';
+    textColor: string;
+    backgroundColor: string;
+    borderColor: string;
+    borderWidth: number;
+  } {
+    const cs = captionSettings || {};
+    const nested = cs.style && typeof cs.style === 'object' ? cs.style : {};
+
+    const fontFamily = nested.fontFamily ?? cs.fontFamily ?? 'Arial';
+    const rawSize = nested.fontSize ?? cs.fontSize;
+    const fontSize =
+      typeof rawSize === 'number' && rawSize > 0 ? rawSize : 48;
+
+    let fontWeight: 'normal' | 'bold' = 'bold';
+    if (nested.fontWeight === 'normal' || nested.fontWeight === 'bold') {
+      fontWeight = nested.fontWeight;
+    } else if (cs.isBold === false) {
+      fontWeight = 'normal';
+    }
+
+    let fontStyle: 'normal' | 'italic' = 'normal';
+    if (nested.fontStyle === 'italic' || nested.fontStyle === 'normal') {
+      fontStyle = nested.fontStyle;
+    } else if (cs.isItalic === true) {
+      fontStyle = 'italic';
+    }
+
+    const textColor =
+      nested.textColor ?? cs.textColor ?? '#FFFFFF';
+    const backgroundColor =
+      nested.backgroundColor ?? cs.backgroundColor ?? 'rgba(0,0,0,0.5)';
+    const borderColor =
+      nested.borderColor ?? cs.borderColor ?? '#000000';
+    const borderWidth =
+      typeof nested.borderWidth === 'number'
+        ? nested.borderWidth
+        : typeof cs.borderWidth === 'number'
+          ? cs.borderWidth
+          : 2;
+
+    return {
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      textColor,
+      backgroundColor,
+      borderColor,
+      borderWidth,
+    };
+  }
+
+  /**
+   * Match workspace preview: CSS fontSize is relative to a small preview container; scale to output video height.
+   * Optional captionSettings.previewContainerHeight from client (workspace preview box height in px).
+   */
+  private computeAssFontSizeForBurnIn(captionSettings: any, videoHeight: number): number {
+    const resolved = this.resolveCaptionStyleForBurnIn(captionSettings);
+    const base = resolved.fontSize;
+    const cs = captionSettings || {};
+    const previewH =
+      typeof cs.previewContainerHeight === 'number' && cs.previewContainerHeight > 0
+        ? cs.previewContainerHeight
+        : 480;
+    const scaled = base * (videoHeight / previewH);
+    return Math.round(Math.max(24, Math.min(200, scaled)));
+  }
+
+  /**
+   * Word i visible until next word starts (hold previous during gaps). Last word until scene end.
+   */
+  private buildWordCaptionSegmentsForScene(
+    wordTimestamps: any[],
+    sceneOffset: number,
+    sceneDuration: number,
+  ): Array<{ text: string; startTime: number; endTime: number }> {
+    const words = wordTimestamps
+      .map((w: any) => ({
+        text: (w.word ?? w.text ?? '').trim(),
+        start: Number(w.start ?? w.startTime ?? 0),
+        end: Number(w.end ?? w.endTime ?? w.start ?? w.startTime ?? 0),
+      }))
+      .filter((w) => w.text.length > 0);
+    if (!words.length) return [];
+
+    const sceneEnd = sceneOffset + Math.max(0, sceneDuration);
+    const segments: Array<{ text: string; startTime: number; endTime: number }> = [];
+
+    for (let i = 0; i < words.length; i++) {
+      const startTime = sceneOffset + words[i].start;
+      const endTime =
+        i + 1 < words.length
+          ? sceneOffset + words[i + 1].start
+          : sceneDuration > 0
+            ? sceneEnd
+            : sceneOffset + Math.max(words[i].end, words[i].start);
+      if (endTime > startTime) {
+        segments.push({ text: words[i].text, startTime, endTime });
+      }
+    }
+    return segments;
+  }
+
+  /**
    * Add captions to the final video using word timestamps from audio files
    */
   private async addCaptionsToFinalVideo(
@@ -2519,65 +2690,99 @@ export class RenderingService {
     sortedAudioFiles: any[],
     captionSettings: any
   ): Promise<string | null> {
-    // Build caption data from audio timestamps
+    const displayMode: 'word-by-word' | 'full-sentence' =
+      captionSettings.displayMode === 'full-sentence' ? 'full-sentence' : 'word-by-word';
+
     const captions: Array<{ text: string; startTime: number; endTime: number }> = [];
-    
     let currentTime = 0;
+    let filesWithWordTs = 0;
+
     for (const audioFile of sortedAudioFiles) {
-      // Check if audio file has word timestamps
-      if (audioFile.wordTimestamps && Array.isArray(audioFile.wordTimestamps)) {
-        for (const wordTs of audioFile.wordTimestamps) {
+      const dur = audioFile.duration || 0;
+      const sceneText =
+        audioFile.voiceover || audioFile.text || audioFile.script || '';
+
+      if (displayMode === 'full-sentence') {
+        if (sceneText && dur > 0) {
           captions.push({
-            text: wordTs.word || wordTs.text || '',
-            startTime: currentTime + (wordTs.start || wordTs.startTime || 0),
-            endTime: currentTime + (wordTs.end || wordTs.endTime || 0),
-          });
-        }
-      } else if (audioFile.duration) {
-        // Fallback: If no word timestamps, create sentence-level caption for the scene
-        const sceneSentence = audioFile.text || audioFile.script || '';
-        if (sceneSentence) {
-          captions.push({
-            text: sceneSentence,
+            text: sceneText,
             startTime: currentTime,
-            endTime: currentTime + audioFile.duration,
+            endTime: currentTime + dur,
           });
         }
+        currentTime += dur;
+        continue;
       }
-      currentTime += audioFile.duration || 0;
+
+      if (audioFile.wordTimestamps && Array.isArray(audioFile.wordTimestamps) && audioFile.wordTimestamps.length > 0) {
+        filesWithWordTs += 1;
+        const wordSegments = this.buildWordCaptionSegmentsForScene(
+          audioFile.wordTimestamps,
+          currentTime,
+          dur,
+        );
+        captions.push(...wordSegments);
+      } else if (dur > 0 && sceneText) {
+        captions.push({
+          text: sceneText,
+          startTime: currentTime,
+          endTime: currentTime + dur,
+        });
+      }
+      currentTime += dur;
     }
 
     if (captions.length === 0) {
-      console.log(`[RenderingService] No captions to add - no timestamps found`);
+      console.warn(
+        `[RenderingService] CAPTIONS SKIPPED: built 0 caption events from ${sortedAudioFiles.length} audio file(s). ` +
+          `displayMode=${displayMode}, scenesWithWordTimestamps=${filesWithWordTs}. ` +
+          `Ensure audioFiles include voiceover/text and duration, or wordTimestamps for word-by-word.`,
+      );
       return null;
     }
 
-    console.log(`[RenderingService] Adding ${captions.length} captions to video`);
-
-    // Parse caption style settings
-    const style = {
-      fontFamily: captionSettings.style?.fontFamily || 'Arial',
-      fontSize: captionSettings.style?.fontSize || 48,
-      fontWeight: (captionSettings.style?.fontWeight || 'bold') as 'normal' | 'bold',
-      fontStyle: (captionSettings.style?.fontStyle || 'normal') as 'normal' | 'italic',
-      textColor: captionSettings.style?.textColor || '#FFFFFF',
-      backgroundColor: captionSettings.style?.backgroundColor || 'rgba(0,0,0,0.5)',
-      borderColor: captionSettings.style?.borderColor || '#000000',
-      borderWidth: captionSettings.style?.borderWidth || 2,
-      position: captionSettings.globalPosition || { x: 50, y: 85 }, // Default bottom-center
-    };
-
-    // Create captioned video
-    const captionedVideoPath = path.join(userDir, `final_captioned_${projectId}_${Date.now()}.mp4`);
-    
-    await this.videoCompositor.addCaptionsToVideo(
-      videoPath,
-      captionedVideoPath,
-      captions,
-      style
+    console.log(
+      `[RenderingService] Adding ${captions.length} caption segment(s) to video (displayMode=${displayMode}, scenesWithWordTs=${filesWithWordTs})`,
     );
 
-    // Verify output exists
+    const gp = captionSettings.globalPosition || {};
+    let posX = typeof gp.x === 'number' ? gp.x : 0.5;
+    let posY = typeof gp.y === 'number' ? gp.y : 0.85;
+    if (posX > 1) {
+      posX = posX / 100;
+    }
+    if (posY > 1) {
+      posY = posY / 100;
+    }
+    posX = Math.max(0, Math.min(1, posX));
+    posY = Math.max(0, Math.min(1, posY));
+
+    const resolved = this.resolveCaptionStyleForBurnIn(captionSettings);
+    let videoHeight = 1920;
+    try {
+      const res = await this.videoCompositor.getVideoResolution(videoPath);
+      if (res?.height) videoHeight = res.height;
+    } catch {
+      /* keep default */
+    }
+    const fontSize = this.computeAssFontSizeForBurnIn(captionSettings, videoHeight);
+
+    const style = {
+      fontFamily: resolved.fontFamily,
+      fontSize,
+      fontWeight: resolved.fontWeight,
+      fontStyle: resolved.fontStyle,
+      textColor: resolved.textColor,
+      backgroundColor: resolved.backgroundColor,
+      borderColor: resolved.borderColor,
+      borderWidth: resolved.borderWidth,
+      position: { x: posX, y: posY },
+    };
+
+    const captionedVideoPath = path.join(userDir, `final_captioned_${projectId}_${Date.now()}.mp4`);
+
+    await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
+
     if (fs.existsSync(captionedVideoPath)) {
       console.log(`[RenderingService] ✅ Captions added successfully: ${captionedVideoPath}`);
       return captionedVideoPath;

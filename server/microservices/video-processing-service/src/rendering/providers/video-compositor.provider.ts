@@ -1395,29 +1395,28 @@ export class VideoCompositorProvider {
     videoHeight: number,
     position: { x: number; y: number }
   ): string {
-    // Convert hex colors to ASS format (BGR with alpha)
-    const hexToAssBgr = (hex: string): string => {
-      if (hex === 'transparent') return '&H00000000'; // Transparent
-      const clean = hex.replace('#', '');
-      const r = clean.substring(0, 2);
-      const g = clean.substring(2, 4);
-      const b = clean.substring(4, 6);
-      return `&H00${b}${g}${r}`; // ASS uses BGR format
-    };
-
-    // Calculate position
-    // ASS uses bottom-left origin, MarginV is distance from bottom
+    const py = Math.max(0, Math.min(1, position.y));
     const marginL = Math.floor(videoWidth * 0.05);
     const marginR = Math.floor(videoWidth * 0.05);
-    const marginV = Math.floor(videoHeight * (1 - position.y));
+    const marginV = Math.floor(videoHeight * (1 - py));
 
-    const primaryColor = hexToAssBgr(style.textColor);
-    const backColor = style.backgroundColor === 'transparent' 
-      ? '&H00000000' 
-      : hexToAssBgr(style.backgroundColor).replace('&H00', '&H80'); // 50% opacity
-    const outlineColor = style.borderColor === 'transparent'
-      ? '&H00000000'
-      : hexToAssBgr(style.borderColor);
+    const primaryColor = this.cssColorToAssOpaque(style.textColor, '&H00FFFFFF');
+    const outlineColor =
+      !style.borderColor || style.borderColor === 'transparent'
+        ? '&H00000000'
+        : this.cssColorToAssOpaque(style.borderColor, '&H00000000');
+    const bgTransparent =
+      !style.backgroundColor || style.backgroundColor.trim().toLowerCase() === 'transparent';
+    const backColor = bgTransparent
+      ? '&HFF000000'
+      : this.cssColorToAssWithAlpha(style.backgroundColor, '&H80000000');
+    const borderStyle = bgTransparent ? 1 : 3;
+    const outlineAss = bgTransparent
+      ? Math.max(2, style.borderWidth || 0)
+      : typeof style.borderWidth === 'number'
+        ? style.borderWidth
+        : 2;
+    const shadowAss = bgTransparent ? 1 : 0;
 
     const bold = style.fontWeight === 'bold' ? -1 : 0;
     const italic = style.fontStyle === 'italic' ? -1 : 0;
@@ -1432,7 +1431,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,${style.fontFamily},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${style.backgroundColor === 'transparent' ? 1 : 3},${style.borderWidth},0,2,${marginL},${marginR},${marginV},1
+Style: Default,${style.fontFamily},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${borderStyle},${outlineAss},${shadowAss},2,${marginL},${marginR},${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1456,6 +1455,65 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     console.log(`[VideoCompositor] Generated ASS subtitle file: ${outputPath} with ${captions.length} captions`);
     
     return outputPath;
+  }
+
+  /** Parse #rgb, #rrggbb, rgb(), rgba() — alpha 0–1 (default 1). */
+  private parseCssColor(input: string): { r: number; g: number; b: number; a: number } | null {
+    const c = (input || '').trim();
+    if (!c) return null;
+    const hex6 = c.match(/^#([0-9a-f]{6})$/i);
+    if (hex6) {
+      const h = hex6[1];
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+        a: 1,
+      };
+    }
+    const hex3 = c.match(/^#([0-9a-f]{3})$/i);
+    if (hex3) {
+      const h = hex3[1];
+      return {
+        r: parseInt(h[0] + h[0], 16),
+        g: parseInt(h[1] + h[1], 16),
+        b: parseInt(h[2] + h[2], 16),
+        a: 1,
+      };
+    }
+    const m = c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)$/i);
+    if (m) {
+      return {
+        r: Math.min(255, Math.max(0, parseInt(m[1], 10))),
+        g: Math.min(255, Math.max(0, parseInt(m[2], 10))),
+        b: Math.min(255, Math.max(0, parseInt(m[3], 10))),
+        a: m[4] !== undefined ? Math.min(1, Math.max(0, parseFloat(m[4]))) : 1,
+      };
+    }
+    return null;
+  }
+
+  /** ASS &HAABBGGRR with AA=00 (opaque). */
+  private assBgraFromRgb(r: number, g: number, b: number, alphaByte: string): string {
+    const bb = b.toString(16).padStart(2, '0').toUpperCase();
+    const gg = g.toString(16).padStart(2, '0').toUpperCase();
+    const rr = r.toString(16).padStart(2, '0').toUpperCase();
+    return `&H${alphaByte}${bb}${gg}${rr}`;
+  }
+
+  private cssColorToAssOpaque(color: string, fallback: string): string {
+    const p = this.parseCssColor(color);
+    if (!p) return fallback;
+    return this.assBgraFromRgb(p.r, p.g, p.b, '00');
+  }
+
+  /** Background: honor rgba alpha; ASS alpha byte = round((1 - opacity) * 255). */
+  private cssColorToAssWithAlpha(color: string, fallback: string): string {
+    const p = this.parseCssColor(color);
+    if (!p) return fallback;
+    const transparency = Math.round((1 - p.a) * 255);
+    const AA = Math.min(255, Math.max(0, transparency)).toString(16).padStart(2, '0').toUpperCase();
+    return this.assBgraFromRgb(p.r, p.g, p.b, AA);
   }
 
   /**

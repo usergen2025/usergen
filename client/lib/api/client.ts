@@ -315,12 +315,33 @@ class ApiClient {
     script: { avatar_image_prompt?: string; visual_style_guide?: any };
     style?: string;
     avatarVisualStylePreset?: string;
-  }): Promise<ApiResponse<{ imageKey: string; publicUrl: string }>> {
+  }): Promise<ApiResponse<{ publicUrl: string; imageKey?: string }>> {
     const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
-    const response = await axios.post<ApiResponse<{ imageKey: string; publicUrl: string }>>(
+    const response = await axios.post<ApiResponse<{ publicUrl: string; imageKey?: string }>>(
       `${avatarServiceUrl}/avatars/generate-preview`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async finalizeAvatarPreview(data: {
+    avatarId: string;
+    previewImageUrl: string;
+  }): Promise<ApiResponse<{ imageKey: string }>> {
+    const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ imageKey: string }>>(
+      `${avatarServiceUrl}/avatars/finalize-preview`,
       data,
       {
         headers: {
@@ -337,6 +358,8 @@ class ApiClient {
     prompt: string;
     projectId?: string;
     style?: string;
+    avatarVisualStylePreset?: string | null;
+    script?: { avatar_image_prompt?: string; visual_style_guide?: unknown };
   }): Promise<{
     success: boolean;
     avatarId?: string;
