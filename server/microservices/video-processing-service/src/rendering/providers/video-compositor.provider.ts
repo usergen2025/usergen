@@ -1413,9 +1413,12 @@ export class VideoCompositorProvider {
     const borderStyle = bgTransparent ? 1 : 3;
     const outlineAss = bgTransparent
       ? Math.max(2, style.borderWidth || 0)
-      : typeof style.borderWidth === 'number'
-        ? style.borderWidth
-        : 2;
+      : Math.max(
+          1,
+          typeof style.borderWidth === 'number'
+            ? style.borderWidth
+            : 2,
+        );
     const shadowAss = bgTransparent ? 1 : 0;
 
     const bold = style.fontWeight === 'bold' ? -1 : 0;
@@ -1436,6 +1439,9 @@ Style: Default,${style.fontFamily},${style.fontSize},${primaryColor},${primaryCo
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
+    console.log(
+      `[VideoCompositor] ASS style computed: borderStyle=${borderStyle}, outline=${outlineAss}, shadow=${shadowAss}, bgTransparent=${bgTransparent}, backColor=${backColor}, outlineColor=${outlineColor}`,
+    );
 
     // Add caption events
     for (const caption of captions) {

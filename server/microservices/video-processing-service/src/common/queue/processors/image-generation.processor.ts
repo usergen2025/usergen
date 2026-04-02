@@ -13,7 +13,9 @@ import { AssetProcessorService, AnalyzedAsset } from '../../services/asset-proce
 import { preWarmUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import axios from 'axios';
+import sharp from 'sharp';
 import FormData from 'form-data';
 
 export interface ImageGenerationJobData {
@@ -252,7 +254,7 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     // Enhance prompt with product image context and asset context for reference image generation
     // Add anti-grid instruction to prevent collage/grid layouts and STRONG product consistency requirements
-    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product. Only change camera angle, lighting, or background. The product must look like the EXACT SAME physical item photographed from a different angle.] [Using product reference image to create variations: different angles, lighting, contexts. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features. Generate ONE single image, not a collection or grid of images]`;
+    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product. Only change camera angle, lighting, or background. The product must look like the EXACT SAME physical item photographed from a different angle.] [Using product reference image to create variations: different angles, lighting, contexts. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features. Generate ONE single image, not a collection or grid of images]${this.fullProductFramingPromptSuffix()}`;
     
     // Get scene-specific assets and enhance prompt
     const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'PRODUCT_ONLY') : [];
@@ -346,6 +348,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     const imageFilename = `scene_${sceneNumber}_${project.id}_${Date.now()}.jpg`;
     const imagePath = path.join(userDir, imageFilename);
     await this.downloadImage(imageUrl, imagePath);
+
+    await job.updateProgress(92);
+    await this.maybeApplyLogoCornerOverlay(imagePath, analyzedAssets);
 
     await job.updateProgress(93);
 
@@ -698,7 +703,7 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     // Enhanced prompt for avatar-product generation with reference images and asset context
     // Include STRONG product consistency requirements
-    const baseEnhancedPrompt = `${prompt} [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the product reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product.] [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]`;
+    const baseEnhancedPrompt = `${prompt} [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the product reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product.] [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions]${this.fullProductFramingPromptSuffix()}`;
     
     // Get scene-specific assets and enhance prompt
     const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'AVATAR_PRODUCT') : [];
@@ -801,6 +806,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     const imagePath = path.join(userDir, imageFilename);
     await this.downloadImage(imageUrl, imagePath);
 
+    await job.updateProgress(82);
+    await this.maybeApplyLogoCornerOverlay(imagePath, analyzedAssets);
+
     await job.updateProgress(85);
 
     const localUrl = `/uploads/images/${userId}/${imageFilename}`;
@@ -895,6 +903,147 @@ export class ImageGenerationProcessor extends WorkerHost {
     return imageData;
   }
 
+  private fullProductFramingPromptSuffix(): string {
+    return ` [FULL PRODUCT IN FRAME: Entire physical product visible in the composition (full pack or object; primary label readable). Do NOT default to a tight crop of partial product. Do NOT invent occluded packaging, sides, or label text not present in the reference.]`;
+  }
+
+  private logoEligibleForCornerOverlay(logo: AnalyzedAsset | null | undefined): boolean {
+    if (!logo || logo.category !== 'logo') return false;
+    if (logo.suitableForTopRightBug === false) return false;
+    if (logo.suitableForTopRightBug === true) return true;
+    return logo.suitableForReferenceOverlay === true;
+  }
+
+  private async resolveAssetUrlForDownload(rawUrl: string): Promise<string | null> {
+    if (!rawUrl) return null;
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) return rawUrl;
+    const localUrl = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+    const relativePath = localUrl.replace(/^\/uploads\/?/, '');
+    const localPath = path.join(this.uploadsDir, relativePath);
+    try {
+      if (fs.existsSync(localPath)) {
+        return await this.publicUrlService.getPublicUrl(localPath, localUrl);
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  private async imageBufferHasUsefulAlpha(buf: Buffer): Promise<boolean> {
+    try {
+      const meta = await sharp(buf).metadata();
+      return meta.hasAlpha === true && (meta.format === 'png' || meta.format === 'webp');
+    } catch {
+      return false;
+    }
+  }
+
+  private runLogoRembg(inputPath: string, outputPath: string): boolean {
+    const scriptPath = path.join(process.cwd(), 'scripts', 'remove_image_background.py');
+    if (!fs.existsSync(scriptPath)) {
+      console.warn(`[ImageGenerationProcessor] remove_image_background.py not found at ${scriptPath}`);
+      return false;
+    }
+    try {
+      execSync(`python3 "${scriptPath}" "${inputPath}" "${outputPath}" u2net`, {
+        stdio: 'pipe',
+        maxBuffer: 25 * 1024 * 1024,
+        timeout: 120000,
+      });
+      return fs.existsSync(outputPath);
+    } catch (e: any) {
+      console.warn(`[ImageGenerationProcessor] Logo rembg failed: ${e?.message || e}`);
+      return false;
+    }
+  }
+
+  /**
+   * Optional top-right logo overlay when analysis says the mark is suitable and alpha can be obtained.
+   */
+  private async maybeApplyLogoCornerOverlay(
+    imagePath: string,
+    analyzedAssets: AnalyzedAsset[] | undefined,
+  ): Promise<void> {
+    if (!analyzedAssets?.length) return;
+    const logo = this.assetProcessor.getLogoAsset(analyzedAssets);
+    if (!this.logoEligibleForCornerOverlay(logo)) return;
+
+    const rawUrl = logo!.originalAsset?.publicUrl ?? logo!.url ?? logo!.originalAsset?.url;
+    if (!rawUrl) return;
+
+    const fetchUrl = await this.resolveAssetUrlForDownload(rawUrl);
+    if (!fetchUrl) return;
+
+    let logoBuf: Buffer;
+    try {
+      const res = await axios.get(fetchUrl, {
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        maxContentLength: 15 * 1024 * 1024,
+      });
+      logoBuf = Buffer.from(res.data);
+    } catch (e: any) {
+      console.warn(`[ImageGenerationProcessor] Logo download failed: ${e?.message}`);
+      return;
+    }
+
+    const tmpDir = path.join(this.uploadsDir, 'temp');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const ts = Date.now();
+    const tmpIn = path.join(tmpDir, `logo_corner_in_${ts}.bin`);
+    const tmpOut = path.join(tmpDir, `logo_corner_out_${ts}.png`);
+
+    try {
+      let logoPngBuf: Buffer | null = null;
+      const hasAlpha = await this.imageBufferHasUsefulAlpha(logoBuf);
+      if (hasAlpha) {
+        logoPngBuf = await sharp(logoBuf).png().toBuffer();
+      } else {
+        fs.writeFileSync(tmpIn, logoBuf);
+        const ok = this.runLogoRembg(tmpIn, tmpOut);
+        if (ok) {
+          logoPngBuf = fs.readFileSync(tmpOut);
+        }
+      }
+      if (!logoPngBuf || logoPngBuf.length < 32) return;
+
+      const baseMeta = await sharp(imagePath).metadata();
+      const W = baseMeta.width || 1080;
+      const H = baseMeta.height || 1920;
+      const maxW = Math.max(48, Math.round(W * 0.11));
+      const margin = Math.max(8, Math.round(W * 0.025));
+
+      const resizedLogo = await sharp(logoPngBuf)
+        .resize({ width: maxW, height: Math.round(maxW * 2.5), fit: 'inside' })
+        .png()
+        .toBuffer();
+      const lm = await sharp(resizedLogo).metadata();
+      const lw = lm.width || maxW;
+      const lh = lm.height || maxW;
+      const left = W - lw - margin;
+      const top = margin;
+      if (left < 0 || top < 0 || lw > W || lh > H) return;
+
+      const outBuf = await sharp(imagePath)
+        .composite([{ input: resizedLogo, left, top }])
+        .jpeg({ quality: 95 })
+        .toBuffer();
+      fs.writeFileSync(imagePath, outBuf);
+      console.log(`[ImageGenerationProcessor] Applied gated corner logo overlay`);
+    } catch (e: any) {
+      console.warn(`[ImageGenerationProcessor] Logo corner overlay skipped: ${e?.message}`);
+    } finally {
+      for (const p of [tmpIn, tmpOut]) {
+        try {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   /**
    * Extract analyzed assets from project metadata
    */
@@ -913,6 +1062,10 @@ export class ImageGenerationProcessor extends WorkerHost {
           originalAsset: asset.originalAsset,
           visualScriptContext:
             typeof asset.visualScriptContext === 'string' ? asset.visualScriptContext : undefined,
+          suitableForReferenceOverlay:
+            typeof asset.suitableForReferenceOverlay === 'boolean' ? asset.suitableForReferenceOverlay : undefined,
+          suitableForTopRightBug:
+            typeof asset.suitableForTopRightBug === 'boolean' ? asset.suitableForTopRightBug : undefined,
         }));
       }
       

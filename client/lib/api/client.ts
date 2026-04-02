@@ -312,9 +312,11 @@ class ApiClient {
     projectId: string;
     avatarId: string;
     userId?: string;
-    script: { avatar_image_prompt?: string; visual_style_guide?: any };
+    script: { avatar_image_prompt?: string; visual_style_guide?: any; scenes?: unknown[]; scene_plan?: unknown[] };
     style?: string;
     avatarVisualStylePreset?: string;
+    productImageUrl?: string;
+    previewSceneIndex?: number;
   }): Promise<ApiResponse<{ publicUrl: string; imageKey?: string }>> {
     const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();

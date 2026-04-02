@@ -24,6 +24,10 @@ export interface AnalyzedAsset {
   };
   /** Neutral visual inventory from ai-content vision analysis; enriches image-gen prompts */
   visualScriptContext?: string;
+  /** Logo: clean background / reference suitability (from ai-content analysis) */
+  suitableForReferenceOverlay?: boolean;
+  /** Logo: compact mark suitable for small top-right overlay */
+  suitableForTopRightBug?: boolean;
 }
 
 @Injectable()

@@ -368,6 +368,94 @@ export class AvatarsService {
     return parts.join(', ');
   }
 
+  private buildAvatarProductPreviewSceneHint(script: any, previewSceneIndex: number): string {
+    const scenes = script?.scenes || script?.scene_plan || [];
+    if (!Array.isArray(scenes) || scenes.length === 0) return '';
+    const idx = Math.min(Math.max(0, previewSceneIndex), scenes.length - 1);
+    const s = scenes[idx];
+    if (!s || typeof s !== 'object') return '';
+    const raw =
+      (typeof s.broll_image_prompt === 'string' && s.broll_image_prompt) ||
+      (typeof s.broll_visual_description === 'string' && s.broll_visual_description) ||
+      '';
+    const t = raw.trim();
+    if (!t) return '';
+    const clipped = t.length > 700 ? `${t.slice(0, 700)}…` : t;
+    return ` Align with this scene intent: ${clipped}`;
+  }
+
+  private async downloadImageBufferForPreview(url: string): Promise<Buffer | null> {
+    try {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        const res = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 90000,
+          maxContentLength: 25 * 1024 * 1024,
+        });
+        return Buffer.from(res.data);
+      }
+      const clean = url.startsWith('/') ? url.slice(1) : url;
+      const candidates = [
+        path.join(process.cwd(), clean),
+        path.join(process.cwd(), 'microservices', 'ai-content-service', clean),
+        path.join(process.cwd(), 'uploads', clean.replace(/^uploads\/?/, '')),
+      ];
+      for (const p of candidates) {
+        if (fs.existsSync(p)) {
+          return fs.readFileSync(p);
+        }
+      }
+      const base =
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace(/\/ws$/, '') ||
+        '';
+      if (base && url.startsWith('/')) {
+        const res = await axios.get(`${base.replace(/\/$/, '')}${url}`, {
+          responseType: 'arraybuffer',
+          timeout: 90000,
+          maxContentLength: 25 * 1024 * 1024,
+        });
+        return Buffer.from(res.data);
+      }
+    } catch (e: any) {
+      this.logger.warn(`downloadImageBufferForPreview failed: ${e?.message}`, 'AvatarsService');
+    }
+    return null;
+  }
+
+  /**
+   * Rough avatar+product layout as a single JPEG reference for BytePlus (avatar-product preview).
+   */
+  private async buildAvatarProductPreviewComposite(
+    avatarBuffer: Buffer,
+    productBuffer: Buffer,
+  ): Promise<Buffer | null> {
+    try {
+      const W = 1080;
+      const H = 1920;
+      const bg = await sharp(productBuffer)
+        .resize(W, H, { fit: 'cover', position: 'center' })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      const fg = await sharp(avatarBuffer)
+        .resize(Math.round(W * 0.88), Math.round(H * 0.58), { fit: 'cover', position: 'north' })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      const fgMeta = await sharp(fg).metadata();
+      const fw = fgMeta.width || W;
+      const fh = fgMeta.height || 900;
+      const left = Math.max(0, Math.floor((W - fw) / 2));
+      const top = Math.max(72, Math.floor(H * 0.1));
+      return await sharp(bg)
+        .composite([{ input: fg, left, top }])
+        .jpeg({ quality: 93 })
+        .toBuffer();
+    } catch (e: any) {
+      this.logger.warn(`buildAvatarProductPreviewComposite failed: ${e?.message}`, 'AvatarsService');
+      return null;
+    }
+  }
+
   /**
    * Build BytePlus text-to-image prompt from appearance description + visual style preset (AI Chat).
    * Library originals stay the resized JPEG from this output — not preview composites or cutouts.
@@ -616,11 +704,14 @@ export class AvatarsService {
     projectId: string;
     avatarId: string;
     userId: string;
-    script: { avatar_image_prompt?: string; visual_style_guide?: any };
+    script: { avatar_image_prompt?: string; visual_style_guide?: any; scenes?: any[]; scene_plan?: any[] };
     style?: string;
     avatarVisualStylePreset?: string | null;
+    /** Public or absolute URL to product image (avatar-product preview composite). */
+    productImageUrl?: string;
+    previewSceneIndex?: number;
   }): Promise<{ publicUrl: string; imageKey?: string }> {
-    const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset } = params;
+    const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset, productImageUrl, previewSceneIndex } = params;
     
     // Normalize style to backend format (handles both 'avatar-cutout' and 'AVATAR_CUTOUT')
     const style = normalizeStyleToBackend(rawStyle);
@@ -660,7 +751,22 @@ export class AvatarsService {
       throw new BadRequestException(`Avatar original image not found at: ${originalImageUrl}`);
     }
 
-    const imageBuffer = fs.readFileSync(imagePath);
+    let imageBuffer = fs.readFileSync(imagePath);
+
+    if (style === 'AVATAR_PRODUCT' && productImageUrl?.trim()) {
+      const productBuf = await this.downloadImageBufferForPreview(productImageUrl.trim());
+      if (productBuf) {
+        const composite = await this.buildAvatarProductPreviewComposite(imageBuffer, productBuf);
+        if (composite) {
+          imageBuffer = Buffer.from(composite);
+          this.logger.log(
+            `Avatar preview: using avatar+product composite as BytePlus reference (${imageBuffer.length} bytes)`,
+            'AvatarsService',
+          );
+        }
+      }
+    }
+
     const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
 
     let resultImageBuffer: Buffer;
@@ -721,11 +827,19 @@ export class AvatarsService {
         const frontFacingSuffix = useBottomHalfFraming
           ? ' Person faces the camera directly, front-facing, looking straight ahead.'
           : '';
-        effectivePrompt = avatarImagePrompt + frontFacingSuffix;
+        const sceneHint =
+          style === 'AVATAR_PRODUCT'
+            ? this.buildAvatarProductPreviewSceneHint(script, previewSceneIndex ?? 0)
+            : '';
+        effectivePrompt = avatarImagePrompt + frontFacingSuffix + sceneHint;
       } else {
         const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
         const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-        effectivePrompt = `${presetPose}, ${theme}`;
+        const sceneHint =
+          style === 'AVATAR_PRODUCT'
+            ? this.buildAvatarProductPreviewSceneHint(script, previewSceneIndex ?? 0)
+            : '';
+        effectivePrompt = `${presetPose}, ${theme}${sceneHint}`;
       }
 
       // Non-animated styles: enforce photorealistic output; only ANIMATED_AVATAR gets 3D/animated treatment
@@ -736,6 +850,11 @@ export class AvatarsService {
       // For AVATAR_CUTOUT style, request a plain/simple background to make background removal easier
       if (style === 'AVATAR_CUTOUT') {
         effectivePrompt += ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
+      }
+
+      if (style === 'AVATAR_PRODUCT' && productImageUrl?.trim()) {
+        effectivePrompt +=
+          ' The reference image is a rough composite: presenter with product. Refine into a polished photorealistic product-demo frame; keep the same person identity and the same product; natural interaction; full product visible in frame.';
       }
 
       const imageBase64 = imageBuffer.toString('base64');

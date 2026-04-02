@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Suspense, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check } from 'lucide-react';
+import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check, Pencil } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { apiClient, User } from '@/lib/api/client';
@@ -80,8 +80,12 @@ function AIChatPageContent() {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [generatedScript, setGeneratedScript] = useState<any | null>(null);
   const [formattedScript, setFormattedScript] = useState<string | null>(null);
-  const [isEditingScript, setIsEditingScript] = useState<boolean>(false);
-  const [editableScriptText, setEditableScriptText] = useState<string>('');
+  const [activeSceneEditNumber, setActiveSceneEditNumber] = useState<number | null>(null);
+  const [sceneDraftByNumber, setSceneDraftByNumber] = useState<
+    Record<number, { voiceover: string; brollPrompt: string }>
+  >({});
+  const [scriptSceneSaveError, setScriptSceneSaveError] = useState<string | null>(null);
+  const [isSavingScriptScene, setIsSavingScriptScene] = useState(false);
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [userScriptMessage, setUserScriptMessage] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -1324,6 +1328,152 @@ function AIChatPageContent() {
     });
 
     return formatted;
+  };
+
+  const getSceneArrayFromScript = (scriptData: any): any[] => {
+    if (!scriptData || typeof scriptData !== 'object') return [];
+    const scenes = scriptData.scenes || scriptData.scene_plan || [];
+    return Array.isArray(scenes) ? scenes : [];
+  };
+
+  const getSceneNumber = (scene: any, index: number): number => {
+    const value = scene?.scene_number ?? scene?.sceneNumber ?? index + 1;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : index + 1;
+  };
+
+  const getSceneVoiceover = (scene: any): string => String(scene?.voiceover ?? '');
+
+  const getSceneBrollPrompt = (scene: any): string =>
+    String(scene?.broll_visual_description ?? scene?.broll_prompt ?? scene?.broll_image_prompt ?? '');
+
+  const normalizedSceneList = getSceneArrayFromScript(generatedScript).map((scene, index) => ({
+    sceneNumber: getSceneNumber(scene, index),
+    voiceover: getSceneVoiceover(scene),
+    brollPrompt: getSceneBrollPrompt(scene),
+  }));
+
+  const applyEditableFieldsToScript = (
+    scriptData: any,
+    sceneNumber: number,
+    patch: { voiceover: string; brollPrompt: string },
+  ) => {
+    if (!scriptData || typeof scriptData !== 'object') return scriptData;
+
+    const key = Array.isArray(scriptData.scenes) ? 'scenes' : Array.isArray(scriptData.scene_plan) ? 'scene_plan' : null;
+    if (!key) return scriptData;
+
+    const clonedScript = { ...scriptData };
+    const originalScenes = Array.isArray(clonedScript[key]) ? clonedScript[key] : [];
+    clonedScript[key] = originalScenes.map((scene: any, index: number) => {
+      if (getSceneNumber(scene, index) !== sceneNumber) return scene;
+
+      const updatedScene = { ...scene };
+      updatedScene.voiceover = patch.voiceover;
+
+      if (Object.prototype.hasOwnProperty.call(updatedScene, 'broll_visual_description')) {
+        updatedScene.broll_visual_description = patch.brollPrompt;
+      } else if (Object.prototype.hasOwnProperty.call(updatedScene, 'broll_prompt')) {
+        updatedScene.broll_prompt = patch.brollPrompt;
+      } else if (Object.prototype.hasOwnProperty.call(updatedScene, 'broll_image_prompt')) {
+        updatedScene.broll_image_prompt = patch.brollPrompt;
+      } else {
+        updatedScene.broll_visual_description = patch.brollPrompt;
+      }
+
+      return updatedScene;
+    });
+
+    return clonedScript;
+  };
+
+  const handleStartSceneEdit = (sceneNumber: number) => {
+    const scene = normalizedSceneList.find((item) => item.sceneNumber === sceneNumber);
+    if (!scene) return;
+
+    setScriptSceneSaveError(null);
+    setSceneDraftByNumber((prev) => ({
+      ...prev,
+      [sceneNumber]: {
+        voiceover: scene.voiceover,
+        brollPrompt: scene.brollPrompt,
+      },
+    }));
+    setActiveSceneEditNumber(sceneNumber);
+  };
+
+  const handleSceneDraftChange = (
+    sceneNumber: number,
+    field: 'voiceover' | 'brollPrompt',
+    value: string,
+  ) => {
+    setSceneDraftByNumber((prev) => ({
+      ...prev,
+      [sceneNumber]: {
+        ...(prev[sceneNumber] || { voiceover: '', brollPrompt: '' }),
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleCancelSceneEdit = (sceneNumber: number) => {
+    setScriptSceneSaveError(null);
+    setSceneDraftByNumber((prev) => {
+      const next = { ...prev };
+      delete next[sceneNumber];
+      return next;
+    });
+    setActiveSceneEditNumber((prev) => (prev === sceneNumber ? null : prev));
+  };
+
+  const handleSaveSceneEdit = async (sceneNumber: number) => {
+    const draft = sceneDraftByNumber[sceneNumber];
+    if (!draft || !generatedScript) return;
+
+    if (!projectId) {
+      setScriptSceneSaveError('Project is not ready yet. Please try again in a moment.');
+      return;
+    }
+    if (!draft.voiceover.trim()) {
+      setScriptSceneSaveError('Voiceover is required.');
+      return;
+    }
+    if (draft.voiceover.length > 1200) {
+      setScriptSceneSaveError('Voiceover is too long. Please keep it under 1200 characters.');
+      return;
+    }
+    if (draft.brollPrompt.length > 1200) {
+      setScriptSceneSaveError('B-roll prompt is too long. Please keep it under 1200 characters.');
+      return;
+    }
+    try {
+      setIsSavingScriptScene(true);
+      setScriptSceneSaveError(null);
+      const cleanedDraft = {
+        voiceover: draft.voiceover.trim(),
+        brollPrompt: draft.brollPrompt.trim(),
+      };
+      const updatedScript = applyEditableFieldsToScript(generatedScript, sceneNumber, cleanedDraft);
+      setGeneratedScript(updatedScript);
+      setFormattedScript(formatScriptForDisplay(updatedScript));
+
+      await apiClient.updateVideoProject(projectId, {
+        script: JSON.stringify(updatedScript),
+      });
+
+      setSceneDraftByNumber((prev) => {
+        const next = { ...prev };
+        delete next[sceneNumber];
+        return next;
+      });
+      setActiveSceneEditNumber(null);
+      showToast(`Scene ${sceneNumber} updated`, 'success');
+    } catch (error: any) {
+      console.error('Failed to save scene edits:', error);
+      setScriptSceneSaveError(error?.message || 'Failed to save scene edits');
+    } finally {
+      setIsSavingScriptScene(false);
+    }
   };
 
   // Extract tags from input (e.g., @technology @professional)
@@ -4305,6 +4455,21 @@ function AIChatPageContent() {
     }
   };
 
+  /** Absolute product image URL for avatar-product preview composite (server must fetch). */
+  const resolveProductImageUrlForAvatarPreview = (): string | undefined => {
+    if (selectedVideoStyle !== 'avatar-product') return undefined;
+    const productAsset = attachedAssets.find(
+      (a) => a.type === 'image' && a.id.startsWith('product-'),
+    );
+    const u = productAsset?.url;
+    if (!u) return undefined;
+    if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('blob:')) return u;
+    if (typeof window !== 'undefined') {
+      return u.startsWith('/') ? `${window.location.origin}${u}` : `${window.location.origin}/${u}`;
+    }
+    return u;
+  };
+
   /** Shared preview pipeline for library (after visual-style) and generate-with-AI (after text-to-image). */
   const runAvatarPreviewFlow = async (
     rollbackSubstep: AvatarSubstep,
@@ -4343,6 +4508,8 @@ function AIChatPageContent() {
         script: generatedScript,
         style: selectedVideoStyle || undefined,
         avatarVisualStylePreset: selectedAvatarVisualStyle,
+        productImageUrl: resolveProductImageUrlForAvatarPreview(),
+        previewSceneIndex: 0,
       });
 
       if (previewResult.success && previewResult.data) {
@@ -4461,6 +4628,8 @@ function AIChatPageContent() {
         script: generatedScript,
         style: selectedVideoStyle || undefined,
         avatarVisualStylePreset: selectedAvatarVisualStyle || undefined,
+        productImageUrl: resolveProductImageUrlForAvatarPreview(),
+        previewSceneIndex: 0,
       });
       
       if (previewResult.success && previewResult.data) {
@@ -5484,7 +5653,7 @@ function AIChatPageContent() {
                     )}
                     
                     {/* AI Response - Language selection prompt after assets attached (stays in history; disabled after choice) */}
-                    {currentStep === 'assets-attached' && !hasReachedStep('script-input') && (
+                    {hasReachedStep('assets-attached') && (
                       <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                         <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[852px]">
                           Perfect! Before we shape your script, what language would you like your video to be in?
@@ -5538,10 +5707,7 @@ function AIChatPageContent() {
                     )}
 
                     {/* User language selection response (shown during duration + script input substeps) */}
-                    {currentStep === 'assets-attached' &&
-                      (scriptSubstep === 'duration' || scriptSubstep === 'input') &&
-                      selectedLanguage &&
-                      !hasReachedStep('script-input') && (
+                    {hasReachedStep('assets-attached') && selectedLanguage && (
                       <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                         <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px]">
                           <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(0.875rem,1.76vh,18px)] text-black text-right">
@@ -5641,7 +5807,7 @@ function AIChatPageContent() {
                     )}
 
                     {/* Script Generated Section */}
-                    {hasReachedStep('script-generated') && formattedScript && (
+                    {hasReachedStep('script-generated') && normalizedSceneList.length > 0 && (
                       <>
                         {/* AI Response - "Here's your script!" */}
                         <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -5650,110 +5816,101 @@ function AIChatPageContent() {
                           </p>
                         </div>
 
-                        {/* Formatted Script Box */}
-                        <div className="relative w-full sm:w-[637px] max-w-full mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
+                        {/* Script Scene Review Box */}
+                        <div className="relative w-full sm:w-[760px] max-w-full mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.5rem,0.75vh,12px)] rounded-[8px]" style={{
                           background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
                         }}>
                           <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full min-h-[200px]">
-                            {isEditingScript ? (
-                              <textarea
-                                value={editableScriptText}
-                                onChange={(e) => setEditableScriptText(e.target.value)}
-                                className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1.25rem,2vh,20px)] text-[#000000] whitespace-pre-wrap break-words w-full h-full min-h-[400px] border-none outline-none resize-none bg-transparent"
-                                autoFocus
-                              />
-                            ) : (
-                              <pre className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#000000] whitespace-pre-wrap break-words">
-                                {formattedScript}
-                              </pre>
+                            <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)]">
+                              {normalizedSceneList.map((scene) => {
+                                const draft = sceneDraftByNumber[scene.sceneNumber] || scene;
+                                const isEditing = activeSceneEditNumber === scene.sceneNumber;
+                                const isDirty =
+                                  draft.voiceover !== scene.voiceover ||
+                                  draft.brollPrompt !== scene.brollPrompt;
+                                return (
+                                  <div
+                                    key={scene.sceneNumber}
+                                    className="border border-[#F0E0D8] rounded-[14px] p-[clamp(0.5rem,0.98vh,12px)]"
+                                  >
+                                    <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,12px)]">
+                                      <div className="flex items-center justify-center w-[34px] h-[34px] rounded-full bg-[#FFF3EB] border border-[#F4C6AE] text-[#C64D0D] font-heading text-sm font-medium flex-shrink-0">
+                                        {scene.sceneNumber}
+                                      </div>
+                                      <div className="flex-1 min-w-0 flex flex-col gap-3">
+                                        <div>
+                                          <p className="text-[12px] text-[#7A7A7A] mb-1">Voiceover</p>
+                                          {isEditing ? (
+                                            <textarea
+                                              value={draft.voiceover}
+                                              onChange={(e) => handleSceneDraftChange(scene.sceneNumber, 'voiceover', e.target.value)}
+                                              rows={3}
+                                              className="w-full rounded-[10px] border border-[#E0E0E0] px-3 py-2 text-[14px] text-[#212121] outline-none resize-y focus:border-[#E86412]"
+                                            />
+                                          ) : (
+                                            <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#212121] whitespace-pre-wrap">{scene.voiceover || '-'}</p>
+                                          )}
+                                        </div>
+                                        <div>
+                                          <p className="text-[12px] text-[#7A7A7A] mb-1">Visuals</p>
+                                          {isEditing ? (
+                                            <textarea
+                                              value={draft.brollPrompt}
+                                              onChange={(e) => handleSceneDraftChange(scene.sceneNumber, 'brollPrompt', e.target.value)}
+                                              rows={2}
+                                              className="w-full rounded-[10px] border border-[#E0E0E0] px-3 py-2 text-[14px] text-[#212121] outline-none resize-y focus:border-[#E86412]"
+                                            />
+                                          ) : (
+                                            <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#212121] whitespace-pre-wrap">{scene.brollPrompt || '-'}</p>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex flex-col gap-2 flex-shrink-0">
+                                        {isEditing ? (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleSaveSceneEdit(scene.sceneNumber)}
+                                              disabled={isSavingScriptScene || !isDirty}
+                                              className={cn(
+                                                'px-3 py-1.5 rounded-full text-[13px] bg-[#E86412] text-white',
+                                                (isSavingScriptScene || !isDirty) && 'opacity-50 cursor-not-allowed',
+                                              )}
+                                            >
+                                              Save
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleCancelSceneEdit(scene.sceneNumber)}
+                                              disabled={isSavingScriptScene}
+                                              className={cn(
+                                                'px-3 py-1.5 rounded-full text-[13px] border border-[#E0E0E0] text-[#424242] bg-white',
+                                                isSavingScriptScene && 'opacity-50 cursor-not-allowed',
+                                              )}
+                                            >
+                                              Cancel
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleStartSceneEdit(scene.sceneNumber)}
+                                            className="w-8 h-8 rounded-full border border-[#E0E0E0] text-[#424242] bg-white hover:border-[#E86412] hover:text-[#E86412] inline-flex items-center justify-center"
+                                            aria-label={`Edit scene ${scene.sceneNumber}`}
+                                          >
+                                            <Pencil className="w-4 h-4" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {scriptSceneSaveError && (
+                              <p className="mt-3 text-sm text-red-600">{scriptSceneSaveError}</p>
                             )}
                           </div>
-                        </div>
-
-                        {/* Edit Script Button or Save/Cancel Buttons */}
-                        <div className="flex justify-end gap-2 mt-2 w-full sm:w-[637px] max-w-full">
-                          {isEditingScript ? (
-                            <>
-                              <button 
-                                onClick={() => {
-                                  setIsEditingScript(false);
-                                  setEditableScriptText('');
-                                }}
-                                className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 px-3 py-1 rounded border border-gray-300 hover:bg-gray-50"
-                              >
-                                Cancel
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  // Update formattedScript with edited text
-                                  setFormattedScript(editableScriptText);
-                                  // Parse and update generatedScript if it's JSON-formatted
-                                  try {
-                                    // Rebuild the generatedScript from the edited formatted text
-                                    // Split by scene markers and rebuild
-                                    const lines = editableScriptText.split('\n');
-                                    const scenes: any[] = [];
-                                    let currentScene: any = null;
-                                    let currentField = '';
-                                    
-                                    for (const line of lines) {
-                                      const sceneMatch = line.match(/^Scene (\d+):/i);
-                                      if (sceneMatch) {
-                                        if (currentScene) scenes.push(currentScene);
-                                        currentScene = { scene_number: parseInt(sceneMatch[1]), voiceover: '', broll_prompt: '', stock_search_term: '' };
-                                        currentField = '';
-                                      } else if (currentScene) {
-                                        if (line.startsWith('Voiceover:')) {
-                                          currentField = 'voiceover';
-                                          currentScene.voiceover = line.replace('Voiceover:', '').trim();
-                                        } else if (line.startsWith('B-Roll:')) {
-                                          currentField = 'broll';
-                                          currentScene.broll_prompt = line.replace('B-Roll:', '').trim();
-                                        } else if (line.startsWith('Stock Search:')) {
-                                          currentField = 'stock';
-                                          currentScene.stock_search_term = line.replace('Stock Search:', '').trim();
-                                        } else if (line.trim() && currentField) {
-                                          // Append to current field
-                                          if (currentField === 'voiceover') currentScene.voiceover += ' ' + line.trim();
-                                          else if (currentField === 'broll') currentScene.broll_prompt += ' ' + line.trim();
-                                          else if (currentField === 'stock') currentScene.stock_search_term += ' ' + line.trim();
-                                        }
-                                      }
-                                    }
-                                    if (currentScene) scenes.push(currentScene);
-                                    
-                                    if (scenes.length > 0) {
-                                      setGeneratedScript({ ...generatedScript, scenes });
-                                    }
-                                  } catch (e) {
-                                    console.warn('Could not parse edited script into structured format');
-                                  }
-                                  setIsEditingScript(false);
-                                  setEditableScriptText('');
-                                }}
-                                className="flex items-center gap-1 text-sm text-white bg-[#E86412] hover:bg-[#d55a0f] px-3 py-1 rounded"
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12" />
-                                </svg>
-                                Save Changes
-                              </button>
-                            </>
-                          ) : (
-                            <button 
-                              onClick={() => {
-                                setEditableScriptText(formattedScript || '');
-                                setIsEditingScript(true);
-                              }}
-                              className="flex items-center gap-1 text-sm text-gray-600 hover:text-[#E86412]"
-                            >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                              </svg>
-                              Edit Script
-                            </button>
-                          )}
                         </div>
 
                         {/* "Want me to regenerate?" Message */}
@@ -5763,6 +5920,13 @@ function AIChatPageContent() {
                           </p>
                         </div>
                       </>
+                    )}
+                    {hasReachedStep('script-generated') && normalizedSceneList.length === 0 && formattedScript && (
+                      <div className="relative w-full sm:w-[637px] max-w-full mt-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1vh,14px)] rounded-[8px] bg-white border border-[#F0E0D8]">
+                        <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#616161]">
+                          Script scenes are not available in a structured format yet. Please regenerate once to review scene-wise content.
+                        </p>
+                      </div>
                     )}
                   </>
                 )}
@@ -8720,7 +8884,7 @@ Read everything on screen smoothly.`}
           </div>
 
           {/* Regenerate and Proceed Buttons - Outside scrollable container to ensure visibility */}
-          {currentStep === 'script-generated' && formattedScript && !proceedConfirmed && (
+          {currentStep === 'script-generated' && normalizedSceneList.length > 0 && !proceedConfirmed && (
             <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] w-full flex-shrink-0 mt-auto">
               <div className="flex flex-row justify-end items-center gap-[clamp(0.625rem,0.98vh,10px)] w-full">
                 {/* Regenerate Button */}

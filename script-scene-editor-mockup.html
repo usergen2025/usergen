@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Script Scene Editor Mockup</title>
+  <style>
+    :root {
+      --orange: #e86412;
+      --pink: #f12a4c;
+      --text: #212121;
+      --muted: #7a7a7a;
+      --border: #e9e0db;
+      --bg: #fffcf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at top left, #fff3e7 0%, #fff 48%, #fffaf7 100%);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .frame {
+      width: 1280px;
+      height: 720px;
+      border-radius: 24px;
+      background: var(--bg);
+      box-shadow: 0 20px 60px rgba(80, 40, 20, 0.12);
+      padding: 28px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .title {
+      font-size: 28px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .helper {
+      color: #6f6f6f;
+      font-size: 14px;
+      margin-top: 6px;
+    }
+    .panel {
+      border-radius: 18px;
+      padding: 2px;
+      background: linear-gradient(120deg, rgba(232,100,18,.45), rgba(241,42,76,.32), rgba(254,201,89,.42));
+      overflow: hidden;
+    }
+    .panel-inner {
+      background: #fff;
+      border-radius: 16px;
+      height: 100%;
+      padding: 16px;
+      overflow: hidden;
+    }
+    .cards {
+      display: grid;
+      gap: 12px;
+      max-height: 500px;
+      overflow: hidden;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      gap: 12px;
+      background: #fff;
+    }
+    .badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      border: 1px solid #f4c6ae;
+      background: #fff3eb;
+      color: #c64d0d;
+      font-weight: 600;
+      display: grid;
+      place-items: center;
+      margin-top: 2px;
+    }
+    .fields {
+      display: grid;
+      gap: 8px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+    .value {
+      font-size: 14px;
+      line-height: 1.35;
+    }
+    .input, .textarea {
+      border: 1px solid #dfdfdf;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 14px;
+      width: 100%;
+      color: var(--text);
+      background: #fff;
+    }
+    .textarea { min-height: 62px; resize: none; }
+    .actions {
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+    .pill {
+      border-radius: 999px;
+      border: 1px solid #e0e0e0;
+      background: #fff;
+      color: #454545;
+      font-size: 13px;
+      padding: 7px 14px;
+      min-width: 78px;
+      text-align: center;
+    }
+    .pill.primary {
+      border: none;
+      background: var(--orange);
+      color: #fff;
+    }
+    .footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .footer .pill {
+      font-size: 15px;
+      padding: 11px 18px;
+      box-shadow: 0 1px 7px rgba(87,73,119,.23);
+    }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <header class="header">
+      <div>
+        <h1 class="title">Here&rsquo;s your script!</h1>
+        <p class="helper">Only scene label, voiceover and b-roll prompt are editable.</p>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="cards">
+          <article class="card">
+            <div class="badge">1</div>
+            <div class="fields">
+              <div><div class="label">Scene Label</div><div class="value">Introduction: Brand Promise</div></div>
+              <div><div class="label">Voiceover</div><div class="value">Welcome to NovaSkin, where every routine starts with confidence and clarity.</div></div>
+              <div><div class="label">B-roll Prompt</div><div class="value">Close-up of skincare products on marble shelf with morning window light.</div></div>
+            </div>
+            <div class="actions"><div class="pill">Edit</div></div>
+          </article>
+
+          <article class="card">
+            <div class="badge">2</div>
+            <div class="fields">
+              <div><div class="label">Scene Label</div><input class="input" value="Problem + Insight" /></div>
+              <div><div class="label">Voiceover</div><textarea class="textarea">Most people switch products too often. Keep it simple and let one routine do the work.</textarea></div>
+              <div><div class="label">B-roll Prompt</div><textarea class="textarea">Young professional in mirror applying serum, soft neutral background, realistic lighting.</textarea></div>
+            </div>
+            <div class="actions">
+              <div class="pill primary">Save</div>
+              <div class="pill">Cancel</div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="badge">3</div>
+            <div class="fields">
+              <div><div class="label">Scene Label</div><div class="value">Call to Action</div></div>
+              <div><div class="label">Voiceover</div><div class="value">Try NovaSkin today and feel the difference in just seven days.</div></div>
+              <div><div class="label">B-roll Prompt</div><div class="value">Happy customer holding product with clean studio backdrop and subtle movement.</div></div>
+            </div>
+            <div class="actions"><div class="pill">Edit</div></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="pill">Regenerate</div>
+      <div class="pill">Proceed</div>
+    </footer>
+  </main>
+</body>
+</html>

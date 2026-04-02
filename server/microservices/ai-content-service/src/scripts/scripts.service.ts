@@ -243,6 +243,31 @@ export class ScriptsService {
     );
   }
 
+  /** User-message language enforcement (vision path is English-heavy without this). */
+  private buildCriticalLanguageUserBlock(
+    language: 'english' | 'hindi' | 'hinglish',
+  ): string {
+    if (language === 'hindi') {
+      return `
+
+CRITICAL LANGUAGE (OVERRIDES ANY ENGLISH INSTRUCTIONS ABOVE FOR DIALOGUE):
+- Every "voiceover" string in the JSON must be natural, conversational Hindi written in Devanagari script.
+- Do not write voiceover in English. Proper nouns and brand names may stay in Latin script when needed.
+- broll_visual_description and prompts may use English technical camera terms if needed, but voiceover must remain Hindi (Devanagari).`;
+    }
+    if (language === 'hinglish') {
+      return `
+
+CRITICAL LANGUAGE (OVERRIDES ANY CONFLICTING INSTRUCTIONS FOR DIALOGUE):
+- Every "voiceover" string must be natural Hinglish (mix of Hindi and English) as Indians speak it in ads and social video.
+- Do not use pure English-only or pure Hindi-only unless the user asked for that.`;
+    }
+    return `
+
+CRITICAL LANGUAGE (OVERRIDES ANY CONFLICTING INSTRUCTIONS FOR DIALOGUE):
+- Every "voiceover" string must be natural, conversational English.`;
+  }
+
   private buildVideoScriptRichUserText(
     request: VideoScriptGenerationRequest,
     analyzedAssets: VideoScriptAnalyzedAsset[],
@@ -250,6 +275,7 @@ export class ScriptsService {
     durationSeconds: number,
     expectedScenes: { min: number; max: number; target: number },
     hasAnalyzedAssets: boolean,
+    language: 'english' | 'hindi' | 'hinglish',
   ): string {
     let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
 
@@ -293,6 +319,7 @@ CRITICAL DURATION REQUIREMENTS:
       }
     }
 
+    textPrompt += this.buildCriticalLanguageUserBlock(language);
     textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
     return textPrompt;
   }
@@ -304,6 +331,7 @@ CRITICAL DURATION REQUIREMENTS:
     durationSeconds: number,
     expectedScenes: { min: number; max: number; target: number },
     opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean },
+    language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
   ): Promise<OpenAI.Chat.Completions.ChatCompletionUserMessageParam> {
     const list = analyzedAssets ?? [];
     const hasAnalyzedAssets = list.length > 0;
@@ -325,6 +353,7 @@ CRITICAL DURATION REQUIREMENTS:
         durationSeconds,
         expectedScenes,
         hasAnalyzedAssets,
+        language,
       );
       content.push({ type: 'text', text: textPrompt });
 
@@ -368,6 +397,7 @@ CRITICAL DURATION REQUIREMENTS:
         durationSeconds,
         expectedScenes,
         hasAnalyzedAssets,
+        language,
       );
       if (opts.textOnlyRetryNote) {
         text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
@@ -385,6 +415,7 @@ CRITICAL DURATION REQUIREMENTS:
 - Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
 - The total of all scene durations MUST equal ${durationSeconds} seconds
 - DO NOT generate fewer scenes than required - this is a strict requirement
+${this.buildCriticalLanguageUserBlock(language)}
 
 Return the response as a JSON object.`,
     };
@@ -511,6 +542,7 @@ Return the response as a JSON object.`,
           durationSeconds,
           expectedScenes,
           { attachVisionImages: attachVision, textOnlyRetryNote },
+          language,
         );
         return [
           { role: 'system' as const, content: systemPrompt },
@@ -1680,6 +1712,10 @@ CRITICAL REQUIREMENTS:
 ${GLOBAL_BROLL_RULES}
 ${VIDEO_TOPIC_RULE}
 
+FULL PRODUCT FRAMING (CRITICAL — avoids video distortion):
+- Every broll_image_prompt must show the COMPLETE physical product in frame (full pack or full object; primary label readable). Do NOT default to tight crops that show only part of the product.
+- If a scene uses a close-up macro, the broll_video_prompt must describe ONLY in-frame motion (e.g. slow push-in on a detail already fully visible). NEVER zoom-out, pull-back, or pan to reveal new product areas that were not visible in the still.
+
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
 - Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
@@ -1721,9 +1757,9 @@ Structure Your Output in This JSON Format:
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
-      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person. Reference I2I: describe the same physical product as in the reference image(s), new angle or setting only.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference image(s) on neutral surface, documentary product shot, one angle] [CRITICAL: NO human, NO avatar, NO person in image]",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase with motion] [CRITICAL: NO human, NO avatar, NO person in video]"
+      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person. Reference I2I: describe the same physical product as in the reference image(s), new angle or setting only; FULL product visible in frame.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference image(s); ENTIRE product in frame, primary label readable; documentary product shot, one angle] [CRITICAL: NO human, NO avatar, NO person in image] [CRITICAL: no tight crop of packaging edges]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas] [CRITICAL: NO human, NO avatar, NO person in video]"
     }
   ],
   "notes": "Product showcase video - no avatar or human elements"
@@ -1742,6 +1778,7 @@ CRITICAL PROMPT GENERATION RULES:
 10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
 11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
 12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
+13. FULL PRODUCT: Default shots show the entire product in frame; broll_video_prompt must not describe motion that invents occluded packaging or pulls back to show missing product parts
 
 Guidelines:
 - All visuals should focus on the product - ONE focused shot per scene
@@ -1825,8 +1862,13 @@ CRITICAL REQUIREMENTS:
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+- Every scene "voiceover" must be written entirely in the selected output language (see CRITICAL LANGUAGE in the user message).
 ${GLOBAL_BROLL_RULES}
 ${VIDEO_TOPIC_RULE}
+
+FULL PRODUCT FRAMING (CRITICAL — avoids video distortion):
+- Every broll_image_prompt must show the COMPLETE physical product in frame (full pack or full object; primary label readable). Do NOT default to tight crops that show only part of the product.
+- If a scene uses a close-up macro, the broll_video_prompt must describe ONLY in-frame motion (e.g. slow push-in on a detail already fully visible). NEVER zoom-out, pull-back, or pan to reveal new product areas that were not visible in the still.
 
 CRITICAL IMAGE COMPOSITION RULES:
 - Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
@@ -1871,8 +1913,8 @@ Structure Your Output in This JSON Format:
       "time_range": "0-5s",
       "voiceover": "${lang.example}",
       "broll_visual_description": "Presenter (avatar or person) showcasing/using the product",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product]",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product with motion]",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product; FULL product visible in frame with presenter] [CRITICAL: no tight crop of product packaging edges]",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas]",
       "avatar_action": "Presenter showcasing the product...",
       "avatar_motion": "point", "hold", "demonstrate", etc.
     }
@@ -1893,6 +1935,7 @@ CRITICAL PROMPT GENERATION RULES:
 10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
 11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
 12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
+13. FULL PRODUCT: Default shots show the entire product in frame; broll_video_prompt must not describe motion that invents occluded packaging or pulls back to show missing product parts
 
 Guidelines:
 - All visuals should feature product + presenter interaction - ONE focused shot per scene

@@ -360,6 +360,8 @@ export class AvatarsController {
         script: { type: 'object', properties: { avatar_image_prompt: { type: 'string' }, visual_style_guide: { type: 'object' } } },
         style: { type: 'string', enum: ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'] },
         avatarVisualStylePreset: { type: 'string', description: 'original, random, or preset id' },
+        productImageUrl: { type: 'string', description: 'Optional product image URL for AVATAR_PRODUCT composite preview' },
+        previewSceneIndex: { type: 'number', description: 'Which script scene to align preview hints with (default 0)' },
       },
       required: ['projectId', 'avatarId', 'script'],
     },
@@ -383,7 +385,17 @@ export class AvatarsController {
   })
   @ApiResponse({ status: 400, description: 'Missing avatar_image_prompt or invalid request' })
   async generatePreview(
-    @Body() body: { projectId: string; avatarId: string; userId?: string; script: any; style?: string; avatarVisualStylePreset?: string },
+    @Body()
+    body: {
+      projectId: string;
+      avatarId: string;
+      userId?: string;
+      script: any;
+      style?: string;
+      avatarVisualStylePreset?: string;
+      productImageUrl?: string;
+      previewSceneIndex?: number;
+    },
     @Request() req: any,
   ) {
     const userId = body.userId ?? this.extractUserIdFromToken(req);
@@ -400,6 +412,8 @@ export class AvatarsController {
       script: body.script,
       style: body.style,
       avatarVisualStylePreset: body.avatarVisualStylePreset,
+      productImageUrl: body.productImageUrl,
+      previewSceneIndex: body.previewSceneIndex,
     });
     return { success: true, data: result };
   }

@@ -433,6 +433,10 @@ export class VideoGenerationProcessor extends WorkerHost {
       }
     }
 
+    if (project.style === 'PRODUCT_ONLY' || project.style === 'AVATAR_PRODUCT') {
+      videoPrompt += ` [CRITICAL MOTION: Use only subtle in-frame motion — slow push-in, gentle drift, or slight parallax within existing pixels. Do NOT zoom out, pull back, dolly out, or pan to reveal new areas of the product or packaging that are not already fully visible in the source image. Do NOT invent or complete cropped-off labels or product geometry.]`;
+    }
+
     await job.updateProgress(10);
 
     // Get selected model or use default

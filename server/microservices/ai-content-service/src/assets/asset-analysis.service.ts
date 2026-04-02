@@ -41,6 +41,8 @@ export interface AnalyzedAsset {
   confidence: number;
   /** For logos: true if clean/solid background, suitable to pass as reference image for overlay in generation */
   suitableForReferenceOverlay?: boolean;
+  /** For logos: true if mark is compact/readable at small size for optional top-right corner overlay (not a wide banner) */
+  suitableForTopRightBug?: boolean;
   /** For product/background: false if background is busy or stylized and image cannot be used as-is as B-roll */
   canUseAsDirectBroll?: boolean;
   /** Recommended usage: reference_only (use in image-to-image), direct_broll (use as clip), background */
@@ -118,6 +120,7 @@ export class AssetAnalysisService {
 
       // Usability fields for B-roll and reference image flow
       const suitableForReferenceOverlay = category === 'logo' ? this.extractSuitableForReferenceOverlay(analysis) : undefined;
+      const suitableForTopRightBug = category === 'logo' ? this.extractSuitableForTopRightBug(analysis) : undefined;
       const canUseAsDirectBroll = (category === 'product' || category === 'background' || category === 'environment') ? this.extractCanUseAsDirectBroll(analysis) : undefined;
       const recommendedUsage = (category === 'product' || category === 'background' || category === 'environment') ? this.extractRecommendedUsage(analysis, category) : undefined;
       const suitableAsBackground = (category === 'background' || category === 'environment') ? this.extractSuitableAsBackground(analysis) : undefined;
@@ -137,6 +140,7 @@ export class AssetAnalysisService {
         productInfo,
         confidence,
         suitableForReferenceOverlay,
+        suitableForTopRightBug,
         canUseAsDirectBroll,
         recommendedUsage,
         suitableAsBackground,
@@ -221,7 +225,8 @@ export class AssetAnalysisService {
 4. What colors are used in the logo?
 5. What is the design style? (modern, classic, minimalist, etc.)
 6. Is the logo on a clean or solid/transparent background suitable for use as a reference overlay in image generation (e.g. logo on white/black/transparent)? Set suitableForReferenceOverlay true only if the logo can be cleanly used as a reference image.
-7. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual description of the full frame (composition, background, colors, how the logo appears, lighting). Suitable for marketing copy and video scripts. Treat as a staged commercial/catalog asset. Do NOT identify or name real individuals.
+7. suitableForTopRightBug: true only if the logo is a compact mark (not a full-width banner), would stay readable when scaled to ~10% of frame width, and is suitable for a small fixed corner placement. False for busy full-bleed wordmarks or illegible-at-small-size designs.
+8. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual description of the full frame (composition, background, colors, how the logo appears, lighting). Suitable for marketing copy and video scripts. Treat as a staged commercial/catalog asset. Do NOT identify or name real individuals.
 
 Return your analysis as a JSON object with the following structure:
 {
@@ -232,6 +237,7 @@ Return your analysis as a JSON object with the following structure:
   "colors": ["color1", "color2"],
   "designStyle": "style description",
   "suitableForReferenceOverlay": true/false,
+  "suitableForTopRightBug": true/false,
   "visualScriptContext": "multi-sentence neutral visual description as specified above"
 }`;
     } else if (userLabel?.toLowerCase() === 'product' || userLabel?.toLowerCase().includes('product')) {
@@ -270,7 +276,7 @@ Return your analysis as a JSON object with the following structure:
 Analyze the image and determine:
 1. The most appropriate category
 2. Confidence score (0.0-1.0)
-3. If it's a logo, extract all visible text and set suitableForReferenceOverlay (true if clean/solid background)
+3. If it's a logo, extract all visible text, set suitableForReferenceOverlay (true if clean/solid background), and suitableForTopRightBug (true only if compact mark readable at small corner size, false for wide banners)
 4. If it's a product, extract product name, type, key features, and set canUseAsDirectBroll (false if background busy/stylized) and recommendedUsage ("reference_only" or "direct_broll")
 5. If it's a background/environment, describe the setting and set suitableAsBackground (true if usable as background layer)
 6. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual visual inventory—setting, lighting, composition, apparel/objects, colors, materials, mood—for marketing copy and B-roll briefs. Staged commercial/catalog style. Do NOT identify or name real individuals.
@@ -284,6 +290,7 @@ Return your analysis as a JSON object with the following structure:
   "description": "brief one-line summary of the image",
   "visualScriptContext": "multi-sentence neutral visual description as specified above",
   "suitableForReferenceOverlay": true/false (for logo),
+  "suitableForTopRightBug": true/false (for logo, optional compact corner suitability),
   "canUseAsDirectBroll": true/false (for product/background),
   "recommendedUsage": "reference_only" or "direct_broll" or "background",
   "suitableAsBackground": true/false (for background/environment)
@@ -499,6 +506,13 @@ Return your analysis as a JSON object with the following structure:
       return analysis.suitableForReferenceOverlay;
     }
     return true;
+  }
+
+  private extractSuitableForTopRightBug(analysis: any): boolean | undefined {
+    if (typeof analysis.suitableForTopRightBug === 'boolean') {
+      return analysis.suitableForTopRightBug;
+    }
+    return undefined;
   }
 
   private extractCanUseAsDirectBroll(analysis: any): boolean {
