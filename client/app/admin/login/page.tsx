@@ -51,8 +51,8 @@ export default function AdminLoginPage() {
         localStorage.setItem('refreshToken', tokens.refreshToken);
         localStorage.setItem('user', JSON.stringify(userData));
         
-        // Use the login function from useAuth to update state
-        login(tokens.accessToken, userData);
+        // useAuth.login(token, useSession, userData) — second arg is session flag, not user
+        login(tokens.accessToken, false, userData);
         
         // Redirect to admin dashboard
         router.push('/admin');
