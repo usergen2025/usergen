@@ -12,6 +12,8 @@ export interface StockDownloadJobData {
   searchTerm: string;
   userId: string;
   authToken?: string;
+  videoStyle?: string; // Video style to determine aspect ratio (HALF_N_HALF, ALTERNATE, etc.)
+  targetDuration?: number; // Target duration in seconds for the video
 }
 
 export interface StockDownloadResult {
@@ -39,9 +41,9 @@ export class StockDownloadProcessor extends WorkerHost {
   }
 
   async process(job: Job<StockDownloadJobData>): Promise<StockDownloadResult> {
-    const { projectId, sceneNumber, searchTerm, userId, authToken } = job.data;
+    const { projectId, sceneNumber, searchTerm, userId, authToken, videoStyle, targetDuration } = job.data;
 
-    console.log(`[StockDownloadProcessor] Processing job ${job.id} for project ${projectId}, scene ${sceneNumber}`);
+    console.log(`[StockDownloadProcessor] Processing job ${job.id} for project ${projectId}, scene ${sceneNumber}, style: ${videoStyle || 'default'}`);
 
     try {
       // Get media-management-service URL
@@ -49,18 +51,45 @@ export class StockDownloadProcessor extends WorkerHost {
       
       await job.updateProgress(10);
 
-      // Step 1: Search for stock video
+      // Determine aspect ratio based on video style
+      // HALF_N_HALF: All scenes need 1080x960 (9:8) -> use 1:1 stock videos
+      // ALTERNATE: Odd scenes need 1080x960 (9:8) -> use 1:1, Even scenes need 9:16
+      // Others: Use 9:16
+      let aspectRatio: '9:16' | '1:1' = '9:16';
+      let targetWidth: number | undefined;
+      let targetHeight: number | undefined;
+      
+      const normalizedStyle = videoStyle?.toUpperCase().replace(/-/g, '_');
+      
+      if (normalizedStyle === 'HALF_N_HALF') {
+        aspectRatio = '1:1';
+        targetWidth = 1080;
+        targetHeight = 960;
+      } else if (normalizedStyle === 'ALTERNATE' && sceneNumber % 2 === 1) {
+        // Odd scenes in ALTERNATE style use 1:1 (half-n-half composition)
+        aspectRatio = '1:1';
+        targetWidth = 1080;
+        targetHeight = 960;
+      }
+      
+      console.log(`[StockDownloadProcessor] Using aspect ratio: ${aspectRatio}, target dimensions: ${targetWidth || 'none'}x${targetHeight || 'none'}`);
+
+      // Step 1: Search for stock video with correct aspect ratio and duration
+      const searchParams: Record<string, any> = {
+        term: searchTerm,
+        type: 'video',
+        page: 1,
+        limit: 5,
+        aspectRatio,
+      };
+      
+      if (targetDuration && targetDuration > 0) {
+        searchParams.targetDuration = targetDuration;
+      }
+      
       const searchResponse = await axios.get(
         `${mediaServiceUrl}/stock/search`,
-        {
-          params: {
-            term: searchTerm,
-            type: 'video',
-            page: 1,
-            limit: 1,
-            aspectRatio: '9:16',
-          },
-        }
+        { params: searchParams }
       );
 
       if (!searchResponse.data.success || !searchResponse.data.data?.results?.[0]) {
@@ -94,15 +123,24 @@ export class StockDownloadProcessor extends WorkerHost {
 
       await job.updateProgress(40);
 
-      // Step 2: Download the stock video
+      // Step 2: Download the stock video with optional processing
+      const downloadParams: Record<string, any> = {
+        type: 'video',
+        projectId,
+      };
+      
+      if (targetDuration && targetDuration > 0) {
+        downloadParams.targetDuration = targetDuration;
+      }
+      
+      if (targetWidth && targetHeight) {
+        downloadParams.targetWidth = targetWidth;
+        downloadParams.targetHeight = targetHeight;
+      }
+      
       const downloadResponse = await axios.get(
         `${mediaServiceUrl}/stock/${stockResult.id}/download`,
-        {
-          params: {
-            type: 'video',
-            projectId,
-          },
-        }
+        { params: downloadParams }
       );
 
       await job.updateProgress(80);

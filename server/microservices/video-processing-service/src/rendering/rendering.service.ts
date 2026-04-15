@@ -570,36 +570,62 @@ export class RenderingService {
       }))
     );
     
-    const brollVideoPaths = sortedBrollVideos
-      .map(v => {
-        // Try localPath first, then derive from localUrl if needed
-        let videoPath: string | null = null;
+    // Helper to resolve video paths, supporting both regular and stock video paths
+    const resolveVideoPath = (v: any, sceneLabel: string): string | null => {
+      let videoPath: string | null = null;
+      
+      if (v.localPath) {
+        // Convert to absolute path if relative
+        videoPath = path.isAbsolute(v.localPath) 
+          ? v.localPath 
+          : path.resolve(v.localPath);
+      } else if (v.localUrl) {
+        // If no localPath, try to derive from localUrl
+        const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
         
-        if (v.localPath) {
-          // Convert to absolute path if relative
-          videoPath = path.isAbsolute(v.localPath) 
-            ? v.localPath 
-            : path.resolve(v.localPath);
-        } else if (v.localUrl) {
-          // If no localPath, try to derive from localUrl
-          // localUrl format: /uploads/videos/{userId}/{filename}
-          const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
+        // Handle different localUrl formats:
+        // - /uploads/videos/{userId}/{filename} (AI-generated)
+        // - /uploads/stock/{projectId}/{filename} (stock videos)
+        if (urlPath.includes('/uploads/stock/')) {
+          // Stock video path - resolve relative to media-management-service
+          const serverRoot = path.join(process.cwd(), '..', '..');
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          videoPath = path.join(mediaServiceDir, urlPath);
+        } else {
+          // Regular video path
           const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
           videoPath = path.join(userDir, relativePath);
         }
-        
-        if (!videoPath) {
-          console.warn(`[RenderingService] HALF_N_HALF: Scene ${v.sceneNumber} has no localPath or localUrl`);
-          return null;
-        }
-        
-        if (!fs.existsSync(videoPath)) {
-          console.warn(`[RenderingService] HALF_N_HALF: Video file not found for scene ${v.sceneNumber}: ${videoPath}`);
-          return null;
-        }
-        
+      }
+      
+      if (!videoPath) {
+        console.warn(`[RenderingService] ${sceneLabel}: Scene ${v.sceneNumber} has no localPath or localUrl`);
+        return null;
+      }
+      
+      // Check if file exists at primary path
+      if (fs.existsSync(videoPath)) {
         return videoPath;
-      })
+      }
+      
+      // Fallback: Try stock path if localPath was absolute but file doesn't exist
+      // This handles the case where media-management-service stored the file
+      if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
+        const serverRoot = path.join(process.cwd(), '..', '..');
+        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+        const stockPath = path.join(mediaServiceDir, v.localUrl);
+        if (fs.existsSync(stockPath)) {
+          console.log(`[RenderingService] ${sceneLabel}: Found stock video at fallback path: ${stockPath}`);
+          return stockPath;
+        }
+      }
+      
+      console.warn(`[RenderingService] ${sceneLabel}: Video file not found for scene ${v.sceneNumber}: ${videoPath}`);
+      return null;
+    };
+    
+    const brollVideoPaths = sortedBrollVideos
+      .map(v => resolveVideoPath(v, 'HALF_N_HALF'))
       .filter((p): p is string => p !== null);
     
     if (brollVideoPaths.length === 0) {
@@ -1476,37 +1502,60 @@ export class RenderingService {
       }))
     );
     
-    // Convert paths to absolute paths before concatenation
-    const brollVideoPaths = sortedBrollVideos
-      .map(v => {
-        // Try localPath first, then derive from localUrl if needed
-        let videoPath: string | null = null;
+    // Helper to resolve video paths, supporting both regular and stock video paths
+    const resolveVideoPathCutout = (v: any, sceneLabel: string): string | null => {
+      let videoPath: string | null = null;
+      
+      if (v.localPath) {
+        // Convert to absolute path if relative
+        videoPath = path.isAbsolute(v.localPath) 
+          ? v.localPath 
+          : path.resolve(v.localPath);
+      } else if (v.localUrl) {
+        // If no localPath, try to derive from localUrl
+        const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
         
-        if (v.localPath) {
-          // Convert to absolute path if relative
-          videoPath = path.isAbsolute(v.localPath) 
-            ? v.localPath 
-            : path.resolve(v.localPath);
-        } else if (v.localUrl) {
-          // If no localPath, try to derive from localUrl
-          // localUrl format: /uploads/videos/{userId}/{filename}
-          const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
+        // Handle different localUrl formats:
+        // - /uploads/videos/{userId}/{filename} (AI-generated)
+        // - /uploads/stock/{projectId}/{filename} (stock videos)
+        if (urlPath.includes('/uploads/stock/')) {
+          // Stock video path - resolve relative to media-management-service
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          videoPath = path.join(mediaServiceDir, urlPath);
+        } else {
+          // Regular video path
           const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
           videoPath = path.join(userDir, relativePath);
         }
-        
-        if (!videoPath) {
-          console.warn(`[RenderingService] CUTOUT: Scene ${v.sceneNumber} has no localPath or localUrl`);
-          return null;
-        }
-        
-        if (!fs.existsSync(videoPath)) {
-          console.warn(`[RenderingService] CUTOUT: Video file not found for scene ${v.sceneNumber}: ${videoPath}`);
-          return null;
-        }
-        
+      }
+      
+      if (!videoPath) {
+        console.warn(`[RenderingService] ${sceneLabel}: Scene ${v.sceneNumber} has no localPath or localUrl`);
+        return null;
+      }
+      
+      // Check if file exists at primary path
+      if (fs.existsSync(videoPath)) {
         return videoPath;
-      })
+      }
+      
+      // Fallback: Try stock path if localPath was absolute but file doesn't exist
+      if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
+        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+        const stockPath = path.join(mediaServiceDir, v.localUrl);
+        if (fs.existsSync(stockPath)) {
+          console.log(`[RenderingService] ${sceneLabel}: Found stock video at fallback path: ${stockPath}`);
+          return stockPath;
+        }
+      }
+      
+      console.warn(`[RenderingService] ${sceneLabel}: Video file not found for scene ${v.sceneNumber}: ${videoPath}`);
+      return null;
+    };
+    
+    // Convert paths to absolute paths before concatenation
+    const brollVideoPaths = sortedBrollVideos
+      .map(v => resolveVideoPathCutout(v, 'CUTOUT'))
       .filter((p): p is string => p !== null);
     
     if (brollVideoPaths.length === 0) {
@@ -1607,7 +1656,7 @@ export class RenderingService {
           continue;
         }
         
-        // Get b-roll video path
+        // Get b-roll video path (supports both regular and stock videos)
         let brollPath: string | null = null;
         if (brollVideo.localPath) {
           brollPath = path.isAbsolute(brollVideo.localPath) 
@@ -1615,8 +1664,27 @@ export class RenderingService {
             : path.resolve(brollVideo.localPath);
         } else if (brollVideo.localUrl) {
           const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
-          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-          brollPath = path.join(userDir, relativePath);
+          
+          // Handle different localUrl formats
+          if (urlPath.includes('/uploads/stock/')) {
+            const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+            brollPath = path.join(mediaServiceDir, urlPath);
+          } else {
+            const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+            brollPath = path.join(userDir, relativePath);
+          }
+        }
+        
+        // Check primary path, then try stock fallback
+        if (!brollPath || !fs.existsSync(brollPath)) {
+          if (brollVideo.localUrl && brollVideo.localUrl.includes('/uploads/stock/')) {
+            const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+            const stockPath = path.join(mediaServiceDir, brollVideo.localUrl);
+            if (fs.existsSync(stockPath)) {
+              console.log(`[RenderingService] CUTOUT: Found stock video at fallback path: ${stockPath}`);
+              brollPath = stockPath;
+            }
+          }
         }
         
         if (!brollPath || !fs.existsSync(brollPath)) {
@@ -1891,14 +1959,35 @@ export class RenderingService {
         throw new Error(`Missing video for scene ${sceneNumber}`);
       }
 
+      // Resolve video path (supports both regular and stock videos)
       let videoPath: string | null = null;
-      if (videoEntry.localPath && fs.existsSync(videoEntry.localPath)) {
+      if (videoEntry.localPath) {
         videoPath = path.isAbsolute(videoEntry.localPath) ? videoEntry.localPath : path.resolve(videoEntry.localPath);
       } else if (videoEntry.localUrl) {
-        const rel = (videoEntry.localUrl as string).replace(/^\/uploads\/videos\/[^/]+\//, '');
-        const full = path.join(userDir, rel);
-        if (fs.existsSync(full)) videoPath = full;
+        const urlPath = (videoEntry.localUrl as string).startsWith('/uploads') ? videoEntry.localUrl : videoEntry.localUrl;
+        
+        // Handle different localUrl formats
+        if (urlPath.includes('/uploads/stock/')) {
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          videoPath = path.join(mediaServiceDir, urlPath);
+        } else {
+          const rel = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+          videoPath = path.join(userDir, rel);
+        }
       }
+      
+      // Check primary path, then try stock fallback
+      if (!videoPath || !fs.existsSync(videoPath)) {
+        if (videoEntry.localUrl && videoEntry.localUrl.includes('/uploads/stock/')) {
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          const stockPath = path.join(mediaServiceDir, videoEntry.localUrl);
+          if (fs.existsSync(stockPath)) {
+            console.log(`[RenderingService] ALTERNATE: Found stock video at fallback path: ${stockPath}`);
+            videoPath = stockPath;
+          }
+        }
+      }
+      
       if (!videoPath || !fs.existsSync(videoPath)) {
         throw new Error(`Video file not found for scene ${sceneNumber}`);
       }
@@ -2291,24 +2380,48 @@ export class RenderingService {
 
     await this.updateRenderingStatus(projectId, 'stitching_broll', 40);
 
-    // Resolve b-roll video paths
-    const videoPaths = sortedBrollVideos.map(v => {
+    // Helper to resolve video paths, supporting both regular and stock video paths
+    const resolveVideoPathProductOnly = (v: any): string | null => {
       let videoPath: string | null = null;
       
       if (v.localPath) {
         videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
       } else if (v.localUrl) {
         const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
-        const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-        videoPath = path.join(userDir, relativePath);
+        
+        // Handle different localUrl formats:
+        // - /uploads/videos/{userId}/{filename} (AI-generated)
+        // - /uploads/stock/{projectId}/{filename} (stock videos)
+        if (urlPath.includes('/uploads/stock/')) {
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          videoPath = path.join(mediaServiceDir, urlPath);
+        } else {
+          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+          videoPath = path.join(userDir, relativePath);
+        }
       }
       
-      if (!videoPath || !fs.existsSync(videoPath)) {
-        console.warn(`[RenderingService] B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`);
-        return null;
+      // Check primary path
+      if (videoPath && fs.existsSync(videoPath)) {
+        return videoPath;
       }
-      return videoPath;
-    }).filter(p => p !== null) as string[];
+      
+      // Fallback: Try stock path
+      if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
+        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+        const stockPath = path.join(mediaServiceDir, v.localUrl);
+        if (fs.existsSync(stockPath)) {
+          console.log(`[RenderingService] PRODUCT_ONLY: Found stock video at fallback path: ${stockPath}`);
+          return stockPath;
+        }
+      }
+      
+      console.warn(`[RenderingService] PRODUCT_ONLY: B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`);
+      return null;
+    };
+    
+    // Resolve b-roll video paths
+    const videoPaths = sortedBrollVideos.map(v => resolveVideoPathProductOnly(v)).filter(p => p !== null) as string[];
 
     if (videoPaths.length === 0) {
       throw new Error('No valid b-roll video paths found for stitching');
@@ -2442,22 +2555,43 @@ export class RenderingService {
         continue;
       }
 
-      // Resolve b-roll video path
+      // Resolve b-roll video path (supports both regular and stock videos)
       let brollVideoPath: string | null = null;
-        if (brollVideo.localPath) {
-          brollVideoPath = path.isAbsolute(brollVideo.localPath) 
-            ? brollVideo.localPath 
-            : path.resolve(brollVideo.localPath);
-        } else if (brollVideo.localUrl) {
-          const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
+      if (brollVideo.localPath) {
+        brollVideoPath = path.isAbsolute(brollVideo.localPath) 
+          ? brollVideo.localPath 
+          : path.resolve(brollVideo.localPath);
+      } else if (brollVideo.localUrl) {
+        const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
+        
+        // Handle different localUrl formats:
+        // - /uploads/videos/{userId}/{filename} (AI-generated)
+        // - /uploads/stock/{projectId}/{filename} (stock videos)
+        if (urlPath.includes('/uploads/stock/')) {
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          brollVideoPath = path.join(mediaServiceDir, urlPath);
+        } else {
           const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
           brollVideoPath = path.join(userDir, relativePath);
         }
-        
-        if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
-        console.warn(`[RenderingService] AVATAR_PRODUCT: B-roll video not found for scene ${sceneNumber}`);
-          continue;
+      }
+      
+      // Check primary path, then try stock fallback
+      if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
+        if (brollVideo.localUrl && brollVideo.localUrl.includes('/uploads/stock/')) {
+          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+          const stockPath = path.join(mediaServiceDir, brollVideo.localUrl);
+          if (fs.existsSync(stockPath)) {
+            console.log(`[RenderingService] AVATAR_PRODUCT: Found stock video at fallback path: ${stockPath}`);
+            brollVideoPath = stockPath;
+          }
         }
+      }
+      
+      if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
+        console.warn(`[RenderingService] AVATAR_PRODUCT: B-roll video not found for scene ${sceneNumber}`);
+        continue;
+      }
         
       // Resolve audio path
         const audioFilePathFromHelper = this.getAudioFilePath(audioFile);

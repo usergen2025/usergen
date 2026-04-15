@@ -10,7 +10,7 @@ import {
   GCSConfig,
   getContentType,
 } from '@shared/storage';
-import { processStockVideo, cleanupProcessedFiles } from './utils/video-processor.util';
+import { processStockVideo, cleanupProcessedFiles, TargetDimensions as ProcessorTargetDimensions } from './utils/video-processor.util';
 
 export interface StockSearchResult {
   id: string;
@@ -60,7 +60,14 @@ export interface StockDownloadResult {
   originalSizeMB?: number;
   finalSizeMB?: number;
   trimmed?: boolean;
+  extended?: boolean;
   compressed?: boolean;
+  scaled?: boolean;
+}
+
+export interface TargetDimensions {
+  width: number;
+  height: number;
 }
 
 @Injectable()
@@ -309,7 +316,7 @@ export class StockService {
 
   /**
    * Download stock item and upload to GCS
-   * For videos, optionally trim to target duration and compress if too large
+   * For videos, optionally trim to target duration, scale to target dimensions, and compress if too large
    */
   async downloadStockItem(
     stockId: string,
@@ -317,6 +324,7 @@ export class StockService {
     projectId?: string,
     targetDuration?: number,
     maxSizeMB: number = 100,
+    targetDimensions?: TargetDimensions,
   ): Promise<StockDownloadResult> {
     // Parse the stock ID to get the Freepik ID
     const freepikId = parseInt(stockId.replace(`freepik-${type}-`, ''), 10);
@@ -352,7 +360,7 @@ export class StockService {
 
     console.log(`[StockService] Downloaded stock ${type} to local: ${originalLocalPath}`);
 
-    // For videos, process (trim and compress) if needed
+    // For videos, process (trim, scale, and compress) if needed
     let finalLocalPath = originalLocalPath;
     let finalFilename = originalFilename;
     let processingResult: {
@@ -361,14 +369,29 @@ export class StockService {
       originalSizeMB?: number;
       finalSizeMB?: number;
       trimmed?: boolean;
+      extended?: boolean;
       compressed?: boolean;
+      scaled?: boolean;
     } = {};
 
-    if (type === 'video' && targetDuration && targetDuration > 0) {
-      console.log(`[StockService] Processing video: target duration ${targetDuration}s, max size ${maxSizeMB} MB`);
+    // Process video if we have either targetDuration or targetDimensions
+    const needsProcessing = type === 'video' && (
+      (targetDuration && targetDuration > 0) || 
+      (targetDimensions && targetDimensions.width > 0 && targetDimensions.height > 0)
+    );
+
+    if (needsProcessing) {
+      const durationForProcessing = targetDuration && targetDuration > 0 ? targetDuration : Infinity;
+      const dimensionsLog = targetDimensions ? `${targetDimensions.width}x${targetDimensions.height}` : 'none';
+      console.log(`[StockService] Processing video: target duration ${durationForProcessing}s, target dimensions ${dimensionsLog}, max size ${maxSizeMB} MB`);
       
       try {
-        const result = await processStockVideo(originalLocalPath, targetDuration, maxSizeMB);
+        // Convert to the format expected by processStockVideo
+        const processorDimensions: ProcessorTargetDimensions | undefined = targetDimensions 
+          ? { width: targetDimensions.width, height: targetDimensions.height }
+          : undefined;
+        
+        const result = await processStockVideo(originalLocalPath, durationForProcessing, maxSizeMB, processorDimensions);
         
         processingResult = {
           originalDuration: result.originalDuration,
@@ -376,7 +399,9 @@ export class StockService {
           originalSizeMB: result.originalSize,
           finalSizeMB: result.finalSize,
           trimmed: result.trimmed,
+          extended: result.extended,
           compressed: result.compressed,
+          scaled: result.scaled,
         };
 
         if (result.outputPath !== originalLocalPath) {
@@ -392,7 +417,7 @@ export class StockService {
           }
         }
 
-        console.log(`[StockService] Video processing complete: ${processingResult.originalDuration?.toFixed(2)}s -> ${processingResult.finalDuration?.toFixed(2)}s, ${processingResult.originalSizeMB?.toFixed(2)} MB -> ${processingResult.finalSizeMB?.toFixed(2)} MB`);
+        console.log(`[StockService] Video processing complete: ${processingResult.originalDuration?.toFixed(2)}s -> ${processingResult.finalDuration?.toFixed(2)}s, ${processingResult.originalSizeMB?.toFixed(2)} MB -> ${processingResult.finalSizeMB?.toFixed(2)} MB, scaled: ${processingResult.scaled}`);
       } catch (processError: any) {
         console.warn(`[StockService] Video processing failed, using original: ${processError.message}`);
       }

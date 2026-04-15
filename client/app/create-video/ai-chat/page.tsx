@@ -3586,7 +3586,7 @@ function AIChatPageContent() {
         await startBrollGeneration();
       }, 500);
     } else if (source === 'stock-auto') {
-      // User chose auto stock visuals - fetch, download, and save stock videos, then navigate to workspace
+      // User chose auto stock visuals - generate audio first, then download stock videos using audio durations
       setIsAutoSelectingStock(true);
       setStockDownloadProgress(0);
       stockJobsCompleteRef.current = false;
@@ -3597,8 +3597,9 @@ function AIChatPageContent() {
         return;
       }
       
-      // Start audio generation first (in parallel with stock downloads)
-      let audioStarted = false;
+      // Start audio generation first and WAIT for it to complete before downloading stock videos
+      // This ensures we have accurate audio durations for matching stock video lengths
+      let audioFiles: { sceneNumber: number; duration: number }[] = [];
       try {
         setIsGeneratingVoice(true);
         setBrollSourceConfirmed(true);
@@ -3610,11 +3611,54 @@ function AIChatPageContent() {
           audioJobIdRef.current = audioResponse.data.jobId;
           console.log('[AIChat] Started audio generation for stock-auto, jobId:', audioResponse.data.jobId);
           subscribeToJob(audioResponse.data.jobId, 'audio-generation');
-          audioStarted = true;
+          
+          // Wait for audio generation to complete by polling the project
+          // This ensures we have actual audio durations before downloading stock videos
+          console.log('[AIChat] Waiting for audio generation to complete before downloading stock videos...');
+          const maxWaitTime = 300000; // 5 minutes max
+          const pollInterval = 2000; // Poll every 2 seconds
+          const startTime = Date.now();
+          
+          while (Date.now() - startTime < maxWaitTime) {
+            const projectResponse = await apiClient.getVideoProject(projectId);
+            if (projectResponse.success && projectResponse.data) {
+              const projectAudioFiles = projectResponse.data.audioFiles;
+              const script = projectResponse.data.script;
+              const parsedScript = typeof script === 'string' ? JSON.parse(script) : script;
+              const expectedSceneCount = parsedScript?.scenes?.length || parsedScript?.scene_plan?.length || 0;
+              
+              if (projectAudioFiles && Array.isArray(projectAudioFiles) && projectAudioFiles.length >= expectedSceneCount) {
+                audioFiles = projectAudioFiles.map((af: any) => ({
+                  sceneNumber: af.sceneNumber,
+                  duration: af.duration,
+                }));
+                console.log(`[AIChat] Audio generation complete! Got ${audioFiles.length} audio files with durations:`, 
+                  audioFiles.map(af => `Scene ${af.sceneNumber}: ${af.duration?.toFixed(2)}s`).join(', '));
+                setIsGeneratingVoice(false);
+                setGenerationProgress(50);
+                break;
+              }
+            }
+            // Wait before next poll
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+          }
+          
+          if (audioFiles.length === 0) {
+            console.warn('[AIChat] Timed out waiting for audio generation. Using script time_range as fallback.');
+          }
         } else if (audioResponse.success && audioResponse.data?.existing) {
+          // Audio already exists - fetch from project
+          console.log('[AIChat] Audio already exists, fetching durations from project...');
+          const projectResponse = await apiClient.getVideoProject(projectId);
+          if (projectResponse.success && projectResponse.data?.audioFiles) {
+            audioFiles = projectResponse.data.audioFiles.map((af: any) => ({
+              sceneNumber: af.sceneNumber,
+              duration: af.duration,
+            }));
+            console.log(`[AIChat] Got existing ${audioFiles.length} audio files with durations`);
+          }
           setIsGeneratingVoice(false);
           setGenerationProgress(50);
-          audioStarted = true;
         } else {
           throw new Error('Failed to start voice generation');
         }
@@ -3632,7 +3676,7 @@ function AIChatPageContent() {
         
         let completedCount = 0;
         
-        // Helper function to parse time_range to duration in seconds
+        // Helper function to parse time_range to duration in seconds (used as fallback)
         const parseTimeRangeToDuration = (timeRange: string | undefined): number | undefined => {
           if (!timeRange) return undefined;
           // Parse formats like "0-5sec", "5-10 sec", "10-15sec"
@@ -3671,8 +3715,20 @@ function AIChatPageContent() {
           const sceneNumber = scene.scene_number || (index + 1);
           const searchTerm = scene.stock_search_term || scene.broll_visual_description?.substring(0, 50) || 'professional video background';
           
-          // Get scene duration from time_range (script) or default to 5 seconds
-          const sceneDuration = parseTimeRangeToDuration(scene.time_range) || 5;
+          // CRITICAL FIX: Use audio duration instead of script time_range
+          // Find the audio file for this scene and use Math.ceil() to match AI video generation behavior
+          const audioFile = audioFiles.find(af => af.sceneNumber === sceneNumber);
+          const audioDuration = audioFile?.duration;
+          
+          // Use audio duration with Math.ceil() (matches AI video generation), fallback to time_range
+          let sceneDuration: number;
+          if (audioDuration && audioDuration > 0) {
+            sceneDuration = Math.ceil(audioDuration);
+            console.log(`[AIChat] Scene ${sceneNumber}: Using audio duration ${audioDuration.toFixed(2)}s → target ${sceneDuration}s`);
+          } else {
+            sceneDuration = parseTimeRangeToDuration(scene.time_range) || 5;
+            console.log(`[AIChat] Scene ${sceneNumber}: No audio duration, falling back to time_range → ${sceneDuration}s`);
+          }
           
           // Determine correct aspect ratio based on video style and scene number
           const aspectRatio = getStockAspectRatio(sceneNumber);
@@ -3711,11 +3767,14 @@ function AIChatPageContent() {
             console.log(`[AIChat] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id}, duration: ${stockResult.durationSeconds}s)`);
             
             // Step 2: Download the stock video with trimming to target duration
+            // For 1:1 aspect ratio videos (HALF_N_HALF or ALTERNATE odd), scale to 1080x960
+            const needsScaling = aspectRatio === '1:1';
             const downloadParams = new URLSearchParams({
               type: 'video',
               projectId: projectId!,
               targetDuration: sceneDuration.toString(),
               maxSizeMB: '100',
+              ...(needsScaling && { targetWidth: '1080', targetHeight: '960' }),
             });
             
             const downloadResponse = await fetch(`/api/stock/${stockResult.id}/download?${downloadParams.toString()}`);
@@ -3746,10 +3805,10 @@ function AIChatPageContent() {
               return { sceneNumber, success: true, fallback: true };
             }
             
-            const { localPath, gcsUrl, publicUrl, trimmed, compressed, originalDuration, finalDuration, originalSizeMB, finalSizeMB } = downloadData.data;
+            const { localPath, gcsUrl, publicUrl, trimmed, extended, compressed, originalDuration, finalDuration, originalSizeMB, finalSizeMB } = downloadData.data;
             console.log(`[AIChat] Downloaded stock video for scene ${sceneNumber}: localPath=${localPath}, gcsUrl=${gcsUrl}`);
-            if (trimmed || compressed) {
-              console.log(`[AIChat] Video processed: trimmed=${trimmed} (${originalDuration?.toFixed(1)}s -> ${finalDuration?.toFixed(1)}s), compressed=${compressed} (${originalSizeMB?.toFixed(1)}MB -> ${finalSizeMB?.toFixed(1)}MB)`);
+            if (trimmed || extended || compressed) {
+              console.log(`[AIChat] Video processed: trimmed=${trimmed}, extended=${extended} (${originalDuration?.toFixed(1)}s -> ${finalDuration?.toFixed(1)}s), compressed=${compressed} (${originalSizeMB?.toFixed(1)}MB -> ${finalSizeMB?.toFixed(1)}MB)`);
             }
             
             // Step 3: Save to backend with local path and GCS URL
@@ -3808,14 +3867,11 @@ function AIChatPageContent() {
         // No need to generate B-roll images since we have videos - mark as complete
         setIsGeneratingBroll(false);
         
-        // Check if we can navigate (both audio and stock complete)
-        // Audio might already be complete, in which case navigate now
-        if (!isGeneratingVoice) {
-          console.log('[AIChat] Audio already complete, navigating to workspace (videos tab)');
-          router.push(`/create-video/workspace?projectId=${projectId}&startMode=videos`);
-        } else {
-          console.log('[AIChat] Stock downloads complete, waiting for audio to finish before navigation');
-        }
+        // Both audio and stock are complete (we waited for audio before downloading stock)
+        // Navigate directly to workspace
+        console.log('[AIChat] Audio and stock downloads complete, navigating to workspace (videos tab)');
+        stockJobsCompleteRef.current = true;
+        router.push(`/create-video/workspace?projectId=${projectId}&startMode=videos`);
         
       } catch (error: any) {
         console.error('[AIChat] Failed to process stock-auto videos:', error);
