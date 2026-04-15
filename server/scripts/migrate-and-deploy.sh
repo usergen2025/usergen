@@ -131,11 +131,36 @@ case "$action" in
             
             # Get DATABASE_URL
             db_url=$(get_database_url "$service")
-            
-            # Run migration
-            if DATABASE_URL="$db_url" npx prisma migrate deploy 2>&1; then
+
+            migrate_out=$(DATABASE_URL="$db_url" npx prisma migrate deploy 2>&1)
+            mig_status=$?
+            echo "$migrate_out"
+
+            if [ "$mig_status" -eq 0 ]; then
                 print_success "$service migrated successfully"
                 ((migrate_count++))
+            elif echo "$migrate_out" | grep -q "P3005"; then
+                # Database already had tables before migrations were added — baseline first migration, then deploy.
+                first_mig=""
+                for d in prisma/migrations/[0-9]*; do
+                    [ -d "$d" ] || continue
+                    first_mig=$(basename "$d")
+                    break
+                done
+                if [ -n "$first_mig" ]; then
+                    print_warning "Non-empty DB + new migrations — baselining \"$first_mig\" then re-running deploy..."
+                    if DATABASE_URL="$db_url" npx prisma migrate resolve --applied "$first_mig" 2>&1 && \
+                       DATABASE_URL="$db_url" npx prisma migrate deploy 2>&1; then
+                        print_success "$service migrated successfully (after baseline)"
+                        ((migrate_count++))
+                    else
+                        print_error "Failed to migrate $service (after baseline attempt)"
+                        ((fail_count++))
+                    fi
+                else
+                    print_error "Failed to migrate $service (P3005, no migration folder to baseline)"
+                    ((fail_count++))
+                fi
             else
                 print_error "Failed to migrate $service"
                 ((fail_count++))
@@ -217,27 +242,47 @@ case "$action" in
         echo "=========================================="
         echo ""
         
-        # Step 1: Migrate
+        pipeline_ok=0
+
         echo "Step 1/3: Running Prisma Migrations..."
         echo ""
-        bash "$0" migrate
-        
-        # Step 2: Generate Prisma Clients
-        echo ""
-        echo "Step 2/3: Generating Prisma Clients..."
-        echo ""
-        bash "$0" generate
-        
-        # Step 3: Build Services
-        echo ""
-        echo "Step 3/3: Building All Services..."
-        echo ""
-        bash "$0" deploy
-        
+        if ! bash "$0" migrate; then
+            print_error "Migrate step failed — aborting pipeline"
+            pipeline_ok=1
+        fi
+
+        if [ "$pipeline_ok" -eq 0 ]; then
+            echo ""
+            echo "Step 2/3: Generating Prisma Clients..."
+            echo ""
+            if ! bash "$0" generate; then
+                print_error "Prisma generate step failed — aborting pipeline"
+                pipeline_ok=1
+            fi
+        fi
+
+        if [ "$pipeline_ok" -eq 0 ]; then
+            echo ""
+            echo "Step 3/3: Building All Services..."
+            echo ""
+            if ! bash "$0" deploy; then
+                print_error "Build step failed"
+                pipeline_ok=1
+            fi
+        fi
+
         echo ""
         echo "=========================================="
-        echo "✅ Full Deployment Pipeline Complete!"
+        if [ "$pipeline_ok" -eq 0 ]; then
+            echo -e "${GREEN}✅ Full Deployment Pipeline Complete!${NC}"
+        else
+            echo -e "${RED}❌ Deployment pipeline finished with errors${NC}"
+        fi
         echo "=========================================="
+
+        if [ "$pipeline_ok" -ne 0 ]; then
+            exit 1
+        fi
         ;;
         
     *)
