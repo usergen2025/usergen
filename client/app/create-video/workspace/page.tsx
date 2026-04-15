@@ -487,8 +487,18 @@ function WorkspacePageContent() {
               ? projectData.bRollVideoTasks
               : [];
             setBrollVideos(videos);
-            // If videos exist, set to videos mode
-            if (videos.length > 0) {
+            
+            // Check startMode query param (from ai-chat navigation)
+            const startModeParam = searchParams.get('startMode');
+            
+            if (startModeParam === 'videos' && videos.length > 0) {
+              // Explicitly requested videos mode and we have videos
+              setWorkspaceMode('videos');
+            } else if (startModeParam === 'images') {
+              // Explicitly requested images mode (mixed content case)
+              setWorkspaceMode('images');
+            } else if (videos.length > 0) {
+              // Default: if videos exist, set to videos mode
               setWorkspaceMode('videos');
             }
           }

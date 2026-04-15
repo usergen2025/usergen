@@ -10,6 +10,7 @@ export enum JobType {
   VIDEO_GENERATION = 'video-generation',
   AVATAR_VIDEO_GENERATION = 'avatar-video-generation',
   SCENE_COMPOSITE = 'scene-composite',
+  STOCK_DOWNLOAD = 'stock-download',
 }
 
 export interface JobData {
@@ -34,6 +35,7 @@ export class QueueManagerService {
     @InjectQueue('video-generation') private videoQueue: Queue,
     @InjectQueue('avatar-video-generation') private avatarVideoQueue: Queue,
     @InjectQueue('scene-composite') private sceneCompositeQueue: Queue,
+    @InjectQueue('stock-download') private stockDownloadQueue: Queue,
     private readonly configService: ConfigService,
   ) {
     this.concurrencyPerUser = parseInt(
@@ -183,6 +185,31 @@ export class QueueManagerService {
   }
 
   /**
+   * Add stock download job to queue
+   */
+  async addStockDownloadJob(data: JobData): Promise<string> {
+    const job = await this.stockDownloadQueue.add(
+      `stock-${data.projectId}-${data.sceneNumber}-${data.userId}`,
+      data,
+      {
+        jobId: `stock-${data.projectId}-${data.sceneNumber}-${Date.now()}`,
+        attempts: this.maxAttempts,
+        removeOnComplete: {
+          age: 3600,
+          count: 100,
+        },
+        removeOnFail: {
+          age: 86400,
+          count: 50,
+        },
+      },
+    );
+
+    console.log(`[QueueManager] Added stock download job: ${job.id}`);
+    return job.id!;
+  }
+
+  /**
    * Get job status
    */
   async getJobStatus(queueName: JobType, jobId: string) {
@@ -202,6 +229,9 @@ export class QueueManagerService {
         break;
       case JobType.SCENE_COMPOSITE:
         queue = this.sceneCompositeQueue;
+        break;
+      case JobType.STOCK_DOWNLOAD:
+        queue = this.stockDownloadQueue;
         break;
       default:
         throw new Error(`Unknown queue: ${queueName}`);

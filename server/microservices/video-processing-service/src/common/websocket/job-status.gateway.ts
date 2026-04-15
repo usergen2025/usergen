@@ -13,7 +13,7 @@ import { ConfigService } from '@nestjs/config';
 
 export interface JobStatusUpdate {
   jobId: string;
-  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite';
+  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download';
   state: 'completed' | 'failed' | 'processing' | 'progress';
   result?: any;
   progress?: number;

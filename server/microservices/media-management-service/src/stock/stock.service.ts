@@ -4,6 +4,12 @@ import { FreepikProvider } from './providers/freepik.provider';
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  UnifiedStorageService,
+  UnifiedStorageConfig,
+  GCSConfig,
+  getContentType,
+} from '@shared/storage';
 
 export interface StockSearchResult {
   id: string;
@@ -38,16 +44,38 @@ export interface StockSearchResponse {
 
 export interface StockDownloadResult {
   localPath: string;
+  localUrl: string;
   gcsUrl?: string;
+  publicUrl: string;
   filename: string;
 }
 
 @Injectable()
 export class StockService {
+  private readonly unifiedStorage: UnifiedStorageService;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly freepikProvider: FreepikProvider,
-  ) {}
+  ) {
+    // Initialize unified storage for GCS uploads
+    const gcsConfig: GCSConfig = {
+      enabled: this.configService.get<string>('GCS_ENABLED') === 'true',
+      bucketName: this.configService.get<string>('GCS_BUCKET_NAME') || '',
+      projectId: this.configService.get<string>('GCS_PROJECT_ID'),
+      credentialsPath: this.configService.get<string>('GOOGLE_APPLICATION_CREDENTIALS'),
+      credentialsBase64: this.configService.get<string>('GCS_CREDENTIALS_JSON_BASE64'),
+    };
+
+    const storageConfig: UnifiedStorageConfig = {
+      gcs: gcsConfig,
+      backendBaseUrl: this.configService.get<string>('BACKEND_BASE_URL') || 'http://localhost:9009',
+      uploadsBaseDir: path.join(process.cwd(), 'uploads'),
+      service: 'media',
+    };
+
+    this.unifiedStorage = new UnifiedStorageService(storageConfig);
+  }
 
   /**
    * Search for stock media (images or videos)
@@ -168,7 +196,7 @@ export class StockService {
   }
 
   /**
-   * Download stock item and optionally upload to GCS
+   * Download stock item and upload to GCS
    */
   async downloadStockItem(
     stockId: string,
@@ -192,7 +220,8 @@ export class StockService {
     const downloadUrl = downloadResponse.data.url;
     const filename = downloadResponse.data.filename;
 
-    // Download the file
+    // Download the file from Freepik
+    console.log(`[StockService] Downloading stock ${type} from Freepik: ${filename}`);
     const response = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
     });
@@ -206,10 +235,40 @@ export class StockService {
     const localPath = path.join(uploadDir, filename);
     fs.writeFileSync(localPath, response.data);
 
-    console.log(`[StockService] Downloaded stock ${type} to: ${localPath}`);
+    console.log(`[StockService] Downloaded stock ${type} to local: ${localPath}`);
+
+    // Upload to GCS for persistent storage
+    let gcsUrl: string | undefined;
+    let publicUrl: string;
+    const localUrl = `/uploads/stock/${projectId || 'general'}/${filename}`;
+
+    try {
+      const subPath = `stock/${projectId || 'general'}`;
+      const contentType = getContentType(filename);
+      
+      const uploadResult = await this.unifiedStorage.uploadFromPath({
+        localPath,
+        filename,
+        contentType,
+        subPath,
+        service: 'media',
+        makePublic: true,
+      });
+      
+      gcsUrl = uploadResult.gcsUrl;
+      publicUrl = uploadResult.publicUrl || gcsUrl || localUrl;
+      
+      console.log(`[StockService] Uploaded stock ${type} to GCS: ${gcsUrl}`);
+    } catch (error: any) {
+      console.warn(`[StockService] GCS upload failed, using local fallback: ${error.message}`);
+      publicUrl = localUrl;
+    }
 
     return {
       localPath,
+      localUrl,
+      gcsUrl,
+      publicUrl,
       filename,
     };
   }

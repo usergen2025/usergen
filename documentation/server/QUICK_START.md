@@ -116,6 +116,27 @@ npm run dev:swagger
 
 ## 📝 Troubleshooting
 
+### Stock Features Not Working (503 Errors)
+
+If you see `[Stock API Proxy] Error: fetch failed` or 503 errors when trying to use stock images/videos:
+
+1. **Ensure Media Management Service is running (port 9009):**
+   ```bash
+   npm run dev:media
+   # Or check: curl http://localhost:9009/health
+   ```
+
+2. **The Media Management Service handles:**
+   - Stock image/video search (Freepik integration)
+   - Stock media downloads
+   - File uploads to GCS
+
+3. **If running individual services, start it explicitly:**
+   ```bash
+   cd server/microservices/media-management-service
+   npm run start:dev
+   ```
+
 ### Services show "Service unavailable" in Swagger
 
 1. **Check if services are running:**

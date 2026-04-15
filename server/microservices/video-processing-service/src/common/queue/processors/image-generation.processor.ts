@@ -399,6 +399,8 @@ export class ImageGenerationProcessor extends WorkerHost {
       model: model.displayName,
       productImageUrl: publicProductImageUrl, // Store product image URL used
       generationMethod: 'image-to-image', // Mark as image-to-image generation
+      source: 'ai-image', // Content source type for tracking
+      contentType: 'image',
     };
 
     const bRollImages = ((latestProject as any).bRollImages as any[]) || [];
@@ -419,7 +421,7 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(100);
 
-    console.log(`[ImageGenerationProcessor] Completed PRODUCT_ONLY job ${job.id} for scene ${sceneNumber} using image-to-image`);
+    console.log(`[ImageGenerationProcessor] Completed PRODUCT_ONLY job ${job.id} for scene ${sceneNumber} using image-to-image (source: ai-image)`);
     
     // Emit WebSocket event
     await this.jobStatusGateway.notifyJobStatus(userId, {
@@ -865,6 +867,8 @@ export class ImageGenerationProcessor extends WorkerHost {
       compositeType: 'avatar-product',
       avatarImageUrl,
       productImageUrl: publicProductImageUrl,
+      source: 'ai-image', // Content source type for tracking
+      contentType: 'image',
     };
 
     const bRollImages = ((latestProject as any).bRollImages as any[]) || [];
@@ -886,7 +890,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     await job.updateProgress(100);
 
     console.log(
-      `[ImageGenerationProcessor] Completed AVATAR_PRODUCT image-to-image for scene ${sceneNumber}`,
+      `[ImageGenerationProcessor] Completed AVATAR_PRODUCT image-to-image for scene ${sceneNumber} (source: ai-image)`,
     );
     
     // Emit WebSocket event
@@ -1334,6 +1338,8 @@ export class ImageGenerationProcessor extends WorkerHost {
       prompt,
       modelId: selectedModelId, // Store which model was used
       model: model.displayName, // Store display name
+      source: 'ai-image', // Content source type for tracking
+      contentType: 'image',
     };
 
     // Get latest bRollImages array from database to avoid race conditions
@@ -1356,7 +1362,7 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(100);
 
-    console.log(`[ImageGenerationProcessor] Completed job ${job.id} for scene ${sceneNumber}`);
+    console.log(`[ImageGenerationProcessor] Completed job ${job.id} for scene ${sceneNumber} (source: ai-image)`);
     console.log(`[ImageGenerationProcessor] 📤 Sending WebSocket update - Scene: ${sceneNumber}, JobId: ${job.id}, LocalUrl: ${localUrl}, LocalPath: ${imagePath}`);
     
     // Emit WebSocket event for job completion

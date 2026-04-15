@@ -118,7 +118,9 @@ export class StockController {
           type: 'object',
           properties: {
             localPath: { type: 'string' },
+            localUrl: { type: 'string' },
             gcsUrl: { type: 'string' },
+            publicUrl: { type: 'string' },
             filename: { type: 'string' },
           },
         },

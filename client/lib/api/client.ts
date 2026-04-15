@@ -522,7 +522,11 @@ class ApiClient {
   async updateSceneBroll(projectId: string, sceneNumber: number, data: {
     brollUrl: string;
     brollType: 'image' | 'video';
-    source: 'freepik' | 'upload';
+    source: 'stock-image' | 'stock-video' | 'upload-image' | 'upload-video' | 'freepik' | 'upload';
+    localPath?: string;
+    gcsUrl?: string;
+    videoPrompt?: string;
+    skipConversion?: boolean;
   }): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
@@ -683,6 +687,25 @@ class ApiClient {
     return response.data;
   }
 
+  // B-roll image analysis for video prompt generation
+  async analyzeBrollImage(imageUrl: string, sceneVoiceover: string): Promise<ApiResponse<{ videoPrompt: string }>> {
+    const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ videoPrompt: string }>>(
+      `${aiContentServiceUrl}/assets/analyze-broll-image`,
+      { imageUrl, sceneVoiceover },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   // Voice/Audio endpoints
   async getElevenLabsVoices(
     search?: string, 
@@ -832,6 +855,27 @@ class ApiClient {
     const response = await axios.post<ApiResponse<{ jobId: string }>>(
       `${videoServiceUrl}/video-projects/${projectId}/generate-audio`,
       {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async queueStockDownloads(
+    projectId: string, 
+    scenes: Array<{ sceneNumber: number; searchTerm: string }>
+  ): Promise<ApiResponse<{ jobIds: Array<{ sceneNumber: number; jobId: string }> }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ jobIds: Array<{ sceneNumber: number; jobId: string }> }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/queue-stock-downloads`,
+      { scenes },
       {
         headers: {
           'Content-Type': 'application/json',

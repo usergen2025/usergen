@@ -557,6 +557,93 @@ Return your analysis as a JSON object with the following structure:
   }
 
   /**
+   * Analyze uploaded B-roll image and generate a video prompt based on the image content and scene context
+   * This is used when users upload their own images for B-roll scenes
+   */
+  async analyzeBrollImageForVideoPrompt(imageUrl: string, sceneVoiceover: string): Promise<string> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key is not configured');
+    }
+
+    // Ensure URL is publicly accessible
+    let publicUrl = imageUrl;
+    if (!publicUrl.startsWith('http://') && !publicUrl.startsWith('https://')) {
+      const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
+                            this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
+                            'http://localhost:9001';
+      if (publicUrl.startsWith('/uploads')) {
+        publicUrl = `${backendBaseUrl}${publicUrl}`;
+      } else {
+        throw new Error(`Asset URL must be publicly accessible HTTP(S) URL. Received: ${publicUrl.substring(0, 100)}`);
+      }
+    }
+
+    const prompt = `You are a video prompt generator for B-roll footage. Analyze this image and the scene context to generate a video prompt.
+
+Scene voiceover/context: "${sceneVoiceover}"
+
+Analyze the image and generate a video prompt that:
+1. Captures the main visual elements and composition from the uploaded image
+2. Is contextually relevant to the scene voiceover
+3. Describes motion or animation that would work well as B-roll footage
+4. Is suitable for AI video generation (2-5 seconds of footage)
+
+Return a JSON object with:
+{
+  "videoPrompt": "A detailed video generation prompt that combines the visual elements from the image with natural motion/animation suitable for B-roll footage",
+  "imageDescription": "Brief description of what's shown in the uploaded image"
+}`;
+
+    try {
+      const dataUrl = await httpImageToOpenAIDataUrl(publicUrl);
+      const visionUrl = dataUrl ?? publicUrl;
+      const detail: 'low' | 'auto' = dataUrl ? 'auto' : 'low';
+
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: {
+                url: visionUrl,
+                detail,
+              },
+            },
+          ],
+        },
+      ];
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0.5,
+        max_tokens: 500,
+      });
+
+      const extracted = extractAssistantText(completion.choices[0]?.message);
+      if (extracted.ok === true) {
+        try {
+          const result = JSON.parse(extracted.text);
+          this.logger.log(`Generated video prompt for B-roll image: ${result.videoPrompt?.substring(0, 100)}...`, 'AssetAnalysisService');
+          return result.videoPrompt || `Animated visual scene matching: ${result.imageDescription || sceneVoiceover}`;
+        } catch (parseErr: any) {
+          this.logger.warn(`Failed to parse video prompt response: ${parseErr.message}`, 'AssetAnalysisService');
+          return `B-roll footage matching the visual style of the uploaded image, context: ${sceneVoiceover.substring(0, 100)}`;
+        }
+      } else {
+        throw new Error('Empty response from OpenAI Vision API');
+      }
+    } catch (error: any) {
+      this.logger.error(`B-roll image analysis failed for ${publicUrl}: ${error.message}`, error.stack, 'AssetAnalysisService');
+      // Return a fallback prompt based on voiceover
+      return `Professional B-roll footage related to: ${sceneVoiceover.substring(0, 150)}`;
+    }
+  }
+
+  /**
    * Detect if a URL points to an image or HTML page by checking Content-Type header
    */
   async detectUrlType(url: string): Promise<UrlTypeDetectionResult> {

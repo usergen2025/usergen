@@ -8,7 +8,7 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
 
 export interface JobStatusUpdate {
   jobId: string;
-  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite';
+  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download';
   state: 'completed' | 'failed' | 'processing' | 'progress';
   result?: any;
   progress?: number;

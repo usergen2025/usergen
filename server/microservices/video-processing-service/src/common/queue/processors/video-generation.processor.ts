@@ -361,6 +361,8 @@ export class VideoGenerationProcessor extends WorkerHost {
         heygenImageKey, // Store image_key used
         generationMethod: 'heygen-avatar-iv',
         style: 'AVATAR_PRODUCT',
+        source: 'ai-video', // Content source type for tracking
+        contentType: 'video',
       };
 
       const bRollVideoTasks = ((latestProject as any).bRollVideoTasks as any[]) || [];
@@ -381,7 +383,7 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       await job.updateProgress(100);
 
-      console.log(`[VideoGenerationProcessor] Completed AVATAR_PRODUCT job ${job.id} for scene ${sceneNumber}`);
+      console.log(`[VideoGenerationProcessor] Completed AVATAR_PRODUCT job ${job.id} for scene ${sceneNumber} (source: ai-video)`);
       
       // Emit WebSocket event
       await this.jobStatusGateway.notifyJobStatus(userId, {
@@ -671,6 +673,8 @@ export class VideoGenerationProcessor extends WorkerHost {
       prompt: videoPrompt,
       modelId: selectedModelId, // Store which model was used
       model: model.displayName, // Store display name
+      source: 'ai-video', // Content source type for tracking
+      contentType: 'video',
     };
 
     // Get latest bRollVideoTasks array from database to avoid race conditions
@@ -692,6 +696,7 @@ export class VideoGenerationProcessor extends WorkerHost {
     });
 
     await job.updateProgress(100);
+    console.log(`[VideoGenerationProcessor] Completed video job ${job.id} for scene ${sceneNumber} (source: ai-video)`);
 
     const isAlternateCompositeScene = project.style === 'ALTERNATE' && sceneNumber % 2 === 1;
     const sceneJobId = (job.data as any).sceneJobId;

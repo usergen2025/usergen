@@ -12,6 +12,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
 import AIChatTagAwareInput from '@/components/ui/AIChatTagAwareInput';
 import ImagePreview from '@/components/ui/ImagePreview';
+import SceneEditInput from '@/components/ui/SceneEditInput';
 import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
 
@@ -271,14 +272,18 @@ function AIChatPageContent() {
   const [reviewPlaybackProgress, setReviewPlaybackProgress] = useState<Record<number, number>>({});
   
   // B-roll source selection state
-  const [brollSourcePreference, setBrollSourcePreference] = useState<'ai' | 'manual' | null>(null);
+  const [brollSourcePreference, setBrollSourcePreference] = useState<'ai' | 'manual' | 'stock-auto' | null>(null);
+  const [isAutoSelectingStock, setIsAutoSelectingStock] = useState(false);
+  const [stockDownloadProgress, setStockDownloadProgress] = useState(0);
+  const stockJobsCompleteRef = useRef(false);
   const [brollSourceConfirmed, setBrollSourceConfirmed] = useState(false);
   const [manualBrollByScene, setManualBrollByScene] = useState<Record<number, {
     type: 'stock-image' | 'stock-video' | 'upload-image' | 'upload-video';
     url: string;
     thumbnailUrl?: string;
     id: string;
-    source: 'freepik' | 'upload';
+    source: 'stock-image' | 'stock-video' | 'upload-image' | 'upload-video';
+    file?: File; // Original file for uploads (used for server-side upload)
   } | null>>({});
   const [brollModalOpen, setBrollModalOpen] = useState(false);
   const [brollModalSceneNumber, setBrollModalSceneNumber] = useState(1);
@@ -298,6 +303,9 @@ function AIChatPageContent() {
   const [generationProgress, setGenerationProgress] = useState(0);
   const audioJobIdRef = useRef<string | null>(null); // Use ref instead of state to avoid closure issues
   const imageJobIdsRef = useRef<Set<string>>(new Set());
+  const stockJobIdsRef = useRef<Set<string>>(new Set()); // Track stock download job IDs
+  const loadingProjectIdRef = useRef<string | null>(null); // Guard against concurrent/duplicate project loads
+  const allScenesHaveVideosRef = useRef<boolean>(false); // Track if all manual selections are videos (for navigation)
 
   // Fetch user profile when authenticated
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -350,6 +358,10 @@ function AIChatPageContent() {
       
       // Don't reload if we already have this projectId loaded
       if (projectId === projectIdParam) return;
+      
+      // Guard against concurrent loads of the same project (prevents duplicate toasts)
+      if (loadingProjectIdRef.current === projectIdParam) return;
+      loadingProjectIdRef.current = projectIdParam;
       
       try {
         const response = await apiClient.getVideoProject(projectIdParam);
@@ -641,6 +653,9 @@ function AIChatPageContent() {
       } catch (error: any) {
         console.error('Failed to load project:', error);
         showToast('Failed to load project', 'error');
+      } finally {
+        // Clear loading guard after completion
+        loadingProjectIdRef.current = null;
       }
     };
     
@@ -687,9 +702,9 @@ function AIChatPageContent() {
         });
         return;
       }
-      if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTo({
-          top: chatContainerRef.current.scrollHeight,
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTo({
+            top: chatContainerRef.current.scrollHeight,
           behavior: 'smooth',
         });
       }
@@ -769,6 +784,17 @@ function AIChatPageContent() {
             console.log('[AIChat] Audio completed for avatar-only style, starting rendering');
             setGenerationProgress(30);
             startAvatarOnlyRendering(projectId);
+          } else if (brollSourcePreference === 'stock-auto' && stockJobsCompleteRef.current && projectId) {
+            // Stock-auto flow: both audio and stock downloads complete, navigate to workspace
+            console.log('[AIChat] Audio completed and stock downloads done, navigating to workspace (videos tab)');
+            setGenerationProgress(100);
+            setTimeout(() => {
+              router.push(`/create-video/workspace?projectId=${projectId}&startMode=videos`);
+            }, 500);
+          } else if (brollSourcePreference === 'stock-auto') {
+            // Stock-auto flow: audio complete but still waiting for stock downloads
+            console.log('[AIChat] Audio completed, waiting for stock downloads to finish');
+            setGenerationProgress(prev => Math.min(prev + 50, 100));
           } else {
             // Normal flow - update progress for b-roll styles
             setGenerationProgress(prev => Math.min(prev + 50, 100));
@@ -805,8 +831,9 @@ function AIChatPageContent() {
             // Navigate to workspace page after a brief delay
             setTimeout(() => {
               if (projectId) {
-                console.log('[AIChat] All generation complete, navigating to workspace');
-                router.push(`/create-video/workspace?projectId=${projectId}`);
+                const startMode = allScenesHaveVideosRef.current ? 'videos' : 'images';
+                console.log(`[AIChat] All generation complete, navigating to workspace (startMode=${startMode})`);
+                router.push(`/create-video/workspace?projectId=${projectId}&startMode=${startMode}`);
               }
             }, 1000);
           }
@@ -1476,6 +1503,16 @@ function AIChatPageContent() {
     }
   };
 
+  // Auto-cancel scene edits when proceeding to next step
+  useEffect(() => {
+    if (proceedConfirmed || currentStep !== 'script-generated') {
+      if (activeSceneEditNumber !== null) {
+        setActiveSceneEditNumber(null);
+        setSceneDraftByNumber({});
+      }
+    }
+  }, [proceedConfirmed, currentStep, activeSceneEditNumber]);
+
   // Extract tags from input (e.g., @technology @professional)
   // Returns cleaned content (without @) and array of tags
   const extractTagsAndContent = (input: string): { content: string; tags: string[] } => {
@@ -1514,7 +1551,7 @@ function AIChatPageContent() {
       //   duration = `${num} ${unit}`;
       // }
       const duration = selectedVideoDuration || '30 seconds';
-
+      
       // Get selected style from state or sessionStorage
       const styleToUse = selectedVideoStyle || 
         (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
@@ -1763,7 +1800,7 @@ function AIChatPageContent() {
       // const durationMatch = userScriptMessage.match(/(\d+)\s*(second|sec|minute|min)/i);
       // if (durationMatch) { ... }
       const duration = selectedVideoDuration || '30 seconds';
-
+      
       // Get selected style from state or sessionStorage
       const styleToUse = selectedVideoStyle || 
         (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
@@ -3538,8 +3575,8 @@ function AIChatPageContent() {
     // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
   };
 
-  // Handle B-roll source selection (AI or manual)
-  const handleBrollSourceSelection = async (source: 'ai' | 'manual') => {
+  // Handle B-roll source selection (AI, manual, or stock-auto)
+  const handleBrollSourceSelection = async (source: 'ai' | 'manual' | 'stock-auto') => {
     setBrollSourcePreference(source);
     
     if (source === 'ai') {
@@ -3548,14 +3585,258 @@ function AIChatPageContent() {
       setTimeout(async () => {
         await startBrollGeneration();
       }, 500);
+    } else if (source === 'stock-auto') {
+      // User chose auto stock visuals - fetch, download, and save stock videos, then navigate to workspace
+      setIsAutoSelectingStock(true);
+      setStockDownloadProgress(0);
+      stockJobsCompleteRef.current = false;
+      
+      if (!projectId) {
+        showToast('Project not found. Please try again.', 'error');
+        setIsAutoSelectingStock(false);
+        return;
+      }
+      
+      // Start audio generation first (in parallel with stock downloads)
+      let audioStarted = false;
+      try {
+        setIsGeneratingVoice(true);
+        setBrollSourceConfirmed(true);
+        setCurrentStep('audio-image-generation');
+        setGenerationProgress(0);
+        
+        const audioResponse = await apiClient.generateAudio(projectId);
+        if (audioResponse.success && audioResponse.data?.jobId) {
+          audioJobIdRef.current = audioResponse.data.jobId;
+          console.log('[AIChat] Started audio generation for stock-auto, jobId:', audioResponse.data.jobId);
+          subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+          audioStarted = true;
+        } else if (audioResponse.success && audioResponse.data?.existing) {
+          setIsGeneratingVoice(false);
+          setGenerationProgress(50);
+          audioStarted = true;
+        } else {
+          throw new Error('Failed to start voice generation');
+        }
+      } catch (audioError: any) {
+        console.error('[AIChat] Failed to generate audio for stock-auto:', audioError);
+        setIsGeneratingVoice(false);
+        showToast('Failed to start voice generation', 'error');
+        setIsAutoSelectingStock(false);
+        return;
+      }
+      
+      try {
+        const scenes = generatedScript?.scenes || generatedScript?.scene_plan || [];
+        console.log(`[AIChat] Auto-selecting and downloading stock videos for ${scenes.length} scenes`);
+        
+        let completedCount = 0;
+        
+        // Process each scene: search -> download -> save to backend
+        const processPromises = scenes.map(async (scene: any, index: number) => {
+          const sceneNumber = scene.scene_number || (index + 1);
+          const searchTerm = scene.stock_search_term || scene.broll_visual_description?.substring(0, 50) || 'professional video background';
+          
+          console.log(`[AIChat] Scene ${sceneNumber} using search term: "${searchTerm}" (from: ${scene.stock_search_term ? 'stock_search_term' : 'broll_visual_description or fallback'})`);
+          
+          try {
+            // Step 1: Search for stock video
+            const searchResponse = await fetch(
+              `/api/stock/search?term=${encodeURIComponent(searchTerm)}&type=video&page=1&limit=1&aspectRatio=9:16`
+            );
+            
+            if (!searchResponse.ok) {
+              console.warn(`[AIChat] Stock search failed for scene ${sceneNumber}`);
+              completedCount++;
+              setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+              return { sceneNumber, success: false, reason: 'search_failed' };
+            }
+            
+            const searchData = await searchResponse.json();
+            if (!searchData.success || !searchData.data?.results?.[0]) {
+              console.warn(`[AIChat] No stock video found for scene ${sceneNumber}, search: "${searchTerm}"`);
+              completedCount++;
+              setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+              return { sceneNumber, success: false, reason: 'no_results' };
+            }
+            
+            const stockResult = searchData.data.results[0];
+            console.log(`[AIChat] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id})`);
+            
+            // Step 2: Download the stock video to get local path and GCS URL
+            const downloadResponse = await fetch(
+              `/api/stock/${stockResult.id}/download?type=video&projectId=${projectId}`
+            );
+            
+            if (!downloadResponse.ok) {
+              console.warn(`[AIChat] Stock download failed for scene ${sceneNumber}, using preview URL as fallback`);
+              // Fallback: use preview URL (may not work for rendering but at least saves something)
+              await apiClient.updateSceneBroll(projectId, sceneNumber, {
+                brollUrl: stockResult.previewUrl,
+                brollType: 'video',
+                source: 'stock-video',
+              });
+              completedCount++;
+              setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+              return { sceneNumber, success: true, fallback: true };
+            }
+            
+            const downloadData = await downloadResponse.json();
+            if (!downloadData.success || !downloadData.data) {
+              console.warn(`[AIChat] Download data invalid for scene ${sceneNumber}, using preview URL as fallback`);
+              await apiClient.updateSceneBroll(projectId, sceneNumber, {
+                brollUrl: stockResult.previewUrl,
+                brollType: 'video',
+                source: 'stock-video',
+              });
+              completedCount++;
+              setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+              return { sceneNumber, success: true, fallback: true };
+            }
+            
+            const { localPath, gcsUrl, publicUrl } = downloadData.data;
+            console.log(`[AIChat] Downloaded stock video for scene ${sceneNumber}: localPath=${localPath}, gcsUrl=${gcsUrl}`);
+            
+            // Step 3: Save to backend with local path and GCS URL
+            await apiClient.updateSceneBroll(projectId, sceneNumber, {
+              brollUrl: publicUrl || gcsUrl || stockResult.previewUrl,
+              brollType: 'video',
+              source: 'stock-video',
+              localPath: localPath,
+              gcsUrl: gcsUrl,
+            });
+            
+            completedCount++;
+            setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+            return { sceneNumber, success: true };
+          } catch (err) {
+            console.error(`[AIChat] Failed to process stock video for scene ${sceneNumber}:`, err);
+            completedCount++;
+            setStockDownloadProgress(Math.round((completedCount / scenes.length) * 100));
+            return { sceneNumber, success: false, reason: 'error', error: err };
+          }
+        });
+        
+        const results = await Promise.all(processPromises);
+        const downloadedCount = results.filter(r => r.success && !r.fallback).length;
+        const fallbackCount = results.filter(r => r.success && r.fallback).length;
+        const failedScenes = results.filter(r => !r.success).map(r => r.sceneNumber);
+        const totalSuccessCount = downloadedCount + fallbackCount;
+        
+        setIsAutoSelectingStock(false);
+        stockJobsCompleteRef.current = true;
+        setStockDownloadProgress(100);
+        
+        if (totalSuccessCount === 0) {
+          showToast('Failed to select any stock videos. Please try again or choose your own.', 'error');
+          setBrollSourcePreference(null);
+          stockJobsCompleteRef.current = false;
+          return;
+        }
+        
+        if (failedScenes.length > 0) {
+          console.warn(`[AIChat] Some scenes failed to get stock videos: ${failedScenes.join(', ')}`);
+          showToast(`Stock videos selected for ${totalSuccessCount}/${scenes.length} scenes. Missing scenes will use AI generation.`, 'info');
+        } else if (fallbackCount > 0 && downloadedCount === 0) {
+          console.warn(`[AIChat] All ${fallbackCount} scenes used preview URL fallback - downloads failed`);
+          showToast(`Stock videos selected for all ${fallbackCount} scenes, but downloads failed. Using preview URLs as fallback - final video quality may be affected.`, 'warning');
+        } else if (fallbackCount > 0) {
+          console.warn(`[AIChat] ${fallbackCount} scenes used preview URL fallback`);
+          showToast(`Stock videos saved for ${downloadedCount} scenes. ${fallbackCount} scenes using preview URLs as fallback.`, 'info');
+        } else {
+          showToast(`Stock videos downloaded and saved for all ${downloadedCount} scenes.`, 'success');
+        }
+        
+        // Track that all scenes have video B-roll for navigation
+        allScenesHaveVideosRef.current = true;
+        
+        // No need to generate B-roll images since we have videos - mark as complete
+        setIsGeneratingBroll(false);
+        
+        // Check if we can navigate (both audio and stock complete)
+        // Audio might already be complete, in which case navigate now
+        if (!isGeneratingVoice) {
+          console.log('[AIChat] Audio already complete, navigating to workspace (videos tab)');
+          router.push(`/create-video/workspace?projectId=${projectId}&startMode=videos`);
+        } else {
+          console.log('[AIChat] Stock downloads complete, waiting for audio to finish before navigation');
+        }
+        
+      } catch (error: any) {
+        console.error('[AIChat] Failed to process stock-auto videos:', error);
+        setIsAutoSelectingStock(false);
+        stockJobsCompleteRef.current = false;
+        showToast('Failed to select stock videos. Please try again.', 'error');
+      }
     }
     // If 'manual', scene cards will be shown for selection
+  };
+
+  // Extract first frame from a video URL as a data URL (for preview when workspace is in images mode)
+  const extractFirstFrameFromVideo = (videoUrl: string): Promise<string | null> => {
+    return new Promise((resolve) => {
+      try {
+        const video = document.createElement('video');
+        video.crossOrigin = 'anonymous';
+        video.muted = true;
+        video.preload = 'metadata';
+        
+        const timeoutId = setTimeout(() => {
+          console.warn('[AIChat] First frame extraction timed out');
+          video.remove();
+          resolve(null);
+        }, 10000); // 10s timeout
+        
+        video.onloadeddata = () => {
+          video.currentTime = 0.1; // Seek slightly to get a proper frame
+        };
+        
+        video.onseeked = () => {
+          clearTimeout(timeoutId);
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth || 1080;
+            canvas.height = video.videoHeight || 1920;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+              console.log(`[AIChat] Extracted first frame from video (${canvas.width}x${canvas.height})`);
+              video.remove();
+              resolve(dataUrl);
+            } else {
+              video.remove();
+              resolve(null);
+            }
+          } catch (err) {
+            console.error('[AIChat] Failed to draw video frame to canvas:', err);
+            video.remove();
+            resolve(null);
+          }
+        };
+        
+        video.onerror = () => {
+          clearTimeout(timeoutId);
+          console.error('[AIChat] Failed to load video for frame extraction');
+          video.remove();
+          resolve(null);
+        };
+        
+        video.src = videoUrl;
+        video.load();
+      } catch (err) {
+        console.error('[AIChat] Error in extractFirstFrameFromVideo:', err);
+        resolve(null);
+      }
+    });
   };
 
   // Handle B-roll selection from modal (stock or upload)
   const handleBrollSelection = (selection: BRollSelection) => {
     const sceneNumber = brollModalSceneNumber;
     
+    // Use the type field as the source since it contains the full source type
+    // (stock-image, stock-video, upload-image, upload-video)
     setManualBrollByScene(prev => ({
       ...prev,
       [sceneNumber]: {
@@ -3563,12 +3844,13 @@ function AIChatPageContent() {
         url: selection.downloadUrl || selection.url,
         thumbnailUrl: selection.type.includes('video') ? selection.url : undefined,
         id: selection.id || `upload-${Date.now()}`,
-        source: selection.source,
+        source: selection.type,
+        file: selection.file, // Keep the original file for server upload
       }
     }));
     
     setBrollModalOpen(false);
-    console.log(`[AIChat] B-roll selected for scene ${sceneNumber}:`, selection.type, selection.source);
+    console.log(`[AIChat] B-roll selected for scene ${sceneNumber}:`, selection.type, selection.file ? '(with file)' : '(no file)');
   };
 
   // Handle proceeding with manual B-roll selections
@@ -3616,6 +3898,19 @@ function AIChatPageContent() {
           asset.type === 'image' && asset.id.startsWith('product-')
         )?.url || null;
 
+        // First, check if we have a mix of images and videos (need first frame extraction for videos)
+        const hasAnyImage = scenes.some((s: any, i: number) => {
+          const sNum = s.scene_number || (i + 1);
+          const sel = manualBrollByScene[sNum];
+          return sel && (sel.type === 'stock-image' || sel.type === 'upload-image');
+        });
+        const hasAnyVideo = scenes.some((s: any, i: number) => {
+          const sNum = s.scene_number || (i + 1);
+          const sel = manualBrollByScene[sNum];
+          return sel && (sel.type === 'stock-video' || sel.type === 'upload-video');
+        });
+        const hasMixedContent = hasAnyImage && hasAnyVideo;
+
         const promises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number || (index + 1);
           const manualSelection = manualBrollByScene[sceneNumber];
@@ -3625,11 +3920,84 @@ function AIChatPageContent() {
             console.log(`[AIChat] Using manual B-roll for scene ${sceneNumber}:`, manualSelection.type);
             
             try {
-              // Update scene with manual B-roll URL
+              const isVideo = manualSelection.type.includes('video');
+              const isUpload = manualSelection.type.startsWith('upload');
+              
+              let finalUrl = manualSelection.url;
+              let localPath: string | undefined;
+              let gcsUrl: string | undefined;
+              
+              // For user uploads, use server-side upload to GCS
+              if (isUpload && manualSelection.file) {
+                console.log(`[AIChat] Uploading user file to server for scene ${sceneNumber}`);
+                
+                const formData = new FormData();
+                formData.append('file', manualSelection.file);
+                formData.append('sceneNumber', String(sceneNumber));
+                
+                try {
+                  const uploadResponse = await fetch(`/api/video/${projectId}/upload-broll`, {
+                    method: 'POST',
+                    body: formData,
+                  });
+                  
+                  if (uploadResponse.ok) {
+                    const uploadData = await uploadResponse.json();
+                    if (uploadData.success && uploadData.data) {
+                      finalUrl = uploadData.data.url || uploadData.data.publicUrl || uploadData.data.gcsUrl || finalUrl;
+                      localPath = uploadData.data.localPath;
+                      gcsUrl = uploadData.data.gcsUrl;
+                      console.log(`[AIChat] File uploaded for scene ${sceneNumber}: ${finalUrl}`);
+                    }
+                  } else {
+                    console.warn(`[AIChat] Upload failed for scene ${sceneNumber}, using blob URL as fallback`);
+                  }
+                } catch (uploadError) {
+                  console.warn(`[AIChat] Upload error for scene ${sceneNumber}, using blob URL:`, uploadError);
+                }
+              }
+              
+              // If mixed content and this is a video, extract first frame for images mode preview
+              if (hasMixedContent && isVideo) {
+                console.log(`[AIChat] Mixed content detected, extracting first frame for scene ${sceneNumber}`);
+                const firstFrame = await extractFirstFrameFromVideo(finalUrl);
+                if (firstFrame) {
+                  // Save the first frame as an image entry (for images mode preview)
+                  // Derive the image source type from the video source type
+                  const imageSourceType = manualSelection.type.replace('video', 'image') as 'stock-image' | 'upload-image';
+                  await apiClient.updateSceneBroll(projectId, sceneNumber, {
+                    brollUrl: firstFrame,
+                    brollType: 'image',
+                    source: imageSourceType,
+                  });
+                }
+              }
+              
+              // For uploaded images, analyze and generate a video prompt
+              let videoPrompt: string | undefined;
+              if (!isVideo && isUpload && finalUrl.startsWith('http')) {
+                try {
+                  console.log(`[AIChat] Analyzing uploaded image for scene ${sceneNumber} to generate video prompt`);
+                  const voiceover = scene.voiceover || scene.script || '';
+                  const analysisResult = await apiClient.analyzeBrollImage(finalUrl, voiceover);
+                  if (analysisResult.success && analysisResult.data?.videoPrompt) {
+                    videoPrompt = analysisResult.data.videoPrompt;
+                    console.log(`[AIChat] Generated video prompt for scene ${sceneNumber}: ${videoPrompt.substring(0, 100)}...`);
+                  }
+                } catch (analysisError) {
+                  console.warn(`[AIChat] Failed to analyze image for scene ${sceneNumber}:`, analysisError);
+                }
+              }
+              
+              // Update scene with manual B-roll URL (video or image)
+              // Use the type field as source which contains the full source type (stock-image, stock-video, upload-image, upload-video)
               await apiClient.updateSceneBroll(projectId, sceneNumber, {
-                brollUrl: manualSelection.url,
-                brollType: manualSelection.type.includes('video') ? 'video' : 'image',
-                source: manualSelection.source,
+                brollUrl: finalUrl,
+                brollType: isVideo ? 'video' : 'image',
+                source: manualSelection.type,
+                localPath,
+                gcsUrl,
+                videoPrompt, // Include the generated video prompt for uploaded images
               });
               return; // Skip AI generation for this scene
             } catch (error: any) {
@@ -3693,13 +4061,23 @@ function AIChatPageContent() {
 
         await Promise.all(promises);
 
+        // Determine if ALL scenes have manual video selections (skip images page)
+        const allScenesHaveVideos = scenes.length > 0 && scenes.every((scene: any, index: number) => {
+          const sceneNumber = scene.scene_number || (index + 1);
+          const selection = manualBrollByScene[sceneNumber];
+          return selection && (selection.type === 'stock-video' || selection.type === 'upload-video');
+        });
+        // Store for WebSocket navigation callback
+        allScenesHaveVideosRef.current = allScenesHaveVideos;
+
         // Check if we can navigate immediately
         if (imageJobIdsRef.current.size === 0 && !isGeneratingVoice) {
           setIsGeneratingBroll(false);
           setGenerationProgress(100);
           setTimeout(() => {
-            console.log('[AIChat] All manual B-roll saved, navigating to workspace');
-            router.push(`/create-video/workspace?projectId=${projectId}`);
+            const startMode = allScenesHaveVideos ? 'videos' : 'images';
+            console.log(`[AIChat] All manual B-roll saved, navigating to workspace (startMode=${startMode})`);
+            router.push(`/create-video/workspace?projectId=${projectId}&startMode=${startMode}`);
           }, 1000);
         }
       } catch (error: any) {
@@ -4228,7 +4606,7 @@ function AIChatPageContent() {
   const handleLanguageSelection = (language: 'english' | 'hindi' | 'hinglish') => {
     setSelectedLanguage(language);
     setScriptSubstep('duration');
-
+    
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('selectedScriptLanguage', language);
     }
@@ -4464,7 +4842,7 @@ function AIChatPageContent() {
     const u = productAsset?.url;
     if (!u) return undefined;
     if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('blob:')) return u;
-    if (typeof window !== 'undefined') {
+        if (typeof window !== 'undefined') {
       return u.startsWith('/') ? `${window.location.origin}${u}` : `${window.location.origin}/${u}`;
     }
     return u;
@@ -4496,12 +4874,12 @@ function AIChatPageContent() {
           avatarVisualStylePreset: selectedAvatarVisualStyle,
         },
       });
-
+      
       setIsGeneratingAvatarPreview(true);
       setAvatarSubstep('avatar-preview');
       setAvatarPreviewUrl(null);
       setAvatarPreviewImageKey(null);
-
+      
       const previewResult = await apiClient.generateAvatarPreview({
         projectId,
         avatarId: avatarIdForPreview,
@@ -4511,11 +4889,11 @@ function AIChatPageContent() {
         productImageUrl: resolveProductImageUrlForAvatarPreview(),
         previewSceneIndex: 0,
       });
-
+      
       if (previewResult.success && previewResult.data) {
         setAvatarPreviewUrl(previewResult.data.publicUrl);
         setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
-
+        
         await apiClient.updateVideoProject(projectId, {
           metadata: {
             aiChatStep: 'avatar-selection',
@@ -4635,7 +5013,7 @@ function AIChatPageContent() {
       if (previewResult.success && previewResult.data) {
         setAvatarPreviewUrl(previewResult.data.publicUrl);
         setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
-
+        
         await apiClient.updateVideoProject(projectId, {
           metadata: {
             aiChatStep: 'avatar-selection',
@@ -4871,18 +5249,18 @@ function AIChatPageContent() {
         setSelectedLanguage(null);
         setSelectedVideoDuration('30 seconds');
       } else if (scriptSubstep === 'language') {
-        attachedAssets.forEach(asset => {
-          if (asset.preview) {
-            URL.revokeObjectURL(asset.preview);
-          }
-        });
-        setAttachedAssets([]);
-        setGeneratedScript(null);
-        setFormattedScript(null);
-        setUserScriptMessage(null);
-        setScriptError(null);
-        setScriptInput('');
-        setCurrentStep('asset-upload');
+      attachedAssets.forEach(asset => {
+        if (asset.preview) {
+          URL.revokeObjectURL(asset.preview);
+        }
+      });
+      setAttachedAssets([]);
+      setGeneratedScript(null);
+      setFormattedScript(null);
+      setUserScriptMessage(null);
+      setScriptError(null);
+      setScriptInput('');
+      setCurrentStep('asset-upload');
       }
     }
   };
@@ -5841,11 +6219,15 @@ function AIChatPageContent() {
                                         <div>
                                           <p className="text-[12px] text-[#7A7A7A] mb-1">Voiceover</p>
                                           {isEditing ? (
-                                            <textarea
+                                            <SceneEditInput
                                               value={draft.voiceover}
-                                              onChange={(e) => handleSceneDraftChange(scene.sceneNumber, 'voiceover', e.target.value)}
-                                              rows={3}
-                                              className="w-full rounded-[10px] border border-[#E0E0E0] px-3 py-2 text-[14px] text-[#212121] outline-none resize-y focus:border-[#E86412]"
+                                              onChange={(value) => handleSceneDraftChange(scene.sceneNumber, 'voiceover', value)}
+                                              onSave={() => handleSaveSceneEdit(scene.sceneNumber)}
+                                              onCancel={() => handleCancelSceneEdit(scene.sceneNumber)}
+                                              placeholder="Enter voiceover text..."
+                                              disabled={isSavingScriptScene}
+                                              isSaving={isSavingScriptScene}
+                                              isDirty={isDirty}
                                             />
                                           ) : (
                                             <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#212121] whitespace-pre-wrap">{scene.voiceover || '-'}</p>
@@ -5854,45 +6236,25 @@ function AIChatPageContent() {
                                         <div>
                                           <p className="text-[12px] text-[#7A7A7A] mb-1">Visuals</p>
                                           {isEditing ? (
-                                            <textarea
+                                            <SceneEditInput
                                               value={draft.brollPrompt}
-                                              onChange={(e) => handleSceneDraftChange(scene.sceneNumber, 'brollPrompt', e.target.value)}
-                                              rows={2}
-                                              className="w-full rounded-[10px] border border-[#E0E0E0] px-3 py-2 text-[14px] text-[#212121] outline-none resize-y focus:border-[#E86412]"
+                                              onChange={(value) => handleSceneDraftChange(scene.sceneNumber, 'brollPrompt', value)}
+                                              onSave={() => handleSaveSceneEdit(scene.sceneNumber)}
+                                              onCancel={() => handleCancelSceneEdit(scene.sceneNumber)}
+                                              placeholder="Enter visual description..."
+                                              disabled={isSavingScriptScene}
+                                              isSaving={isSavingScriptScene}
+                                              isDirty={isDirty}
                                             />
                                           ) : (
                                             <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] text-[#212121] whitespace-pre-wrap">{scene.brollPrompt || '-'}</p>
                                           )}
                                         </div>
                                       </div>
-                                      <div className="flex flex-col gap-2 flex-shrink-0">
-                                        {isEditing ? (
-                                          <>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleSaveSceneEdit(scene.sceneNumber)}
-                                              disabled={isSavingScriptScene || !isDirty}
-                                              className={cn(
-                                                'px-3 py-1.5 rounded-full text-[13px] bg-[#E86412] text-white',
-                                                (isSavingScriptScene || !isDirty) && 'opacity-50 cursor-not-allowed',
-                                              )}
-                                            >
-                                              Save
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleCancelSceneEdit(scene.sceneNumber)}
-                                              disabled={isSavingScriptScene}
-                                              className={cn(
-                                                'px-3 py-1.5 rounded-full text-[13px] border border-[#E0E0E0] text-[#424242] bg-white',
-                                                isSavingScriptScene && 'opacity-50 cursor-not-allowed',
-                                              )}
-                                            >
-                                              Cancel
-                                            </button>
-                                          </>
-                                        ) : (
-                                          <button
+                                      {/* Only show Edit button when NOT editing and allowed */}
+                                      {!isEditing && !proceedConfirmed && currentStep === 'script-generated' && (
+                                        <div className="flex flex-col gap-2 flex-shrink-0">
+                                          <button 
                                             type="button"
                                             onClick={() => handleStartSceneEdit(scene.sceneNumber)}
                                             className="w-8 h-8 rounded-full border border-[#E0E0E0] text-[#424242] bg-white hover:border-[#E86412] hover:text-[#E86412] inline-flex items-center justify-center"
@@ -5900,8 +6262,8 @@ function AIChatPageContent() {
                                           >
                                             <Pencil className="w-4 h-4" />
                                           </button>
-                                        )}
-                                      </div>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 );
@@ -6892,106 +7254,106 @@ Use a recent photo of yourself.`}
               )}
 
             {/* Avatar Preview Substep — library + generate paths */}
-            {hasReachedSubstep('avatar-selection', 'avatar-preview') && (
-              <>
-                {/* AI Message - Preview intro */}
-                <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
-                  <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                    {isGeneratingAvatarPreview
+              {hasReachedSubstep('avatar-selection', 'avatar-preview') && (
+                <>
+                  {/* AI Message - Preview intro */}
+                  <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
+                    <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
+                      {isGeneratingAvatarPreview 
                       ? 'Hold on while I generate a preview of your avatar...'
                       : "Here's a preview of how your avatar will appear in the video. Take a look and let me know if you'd like to try a different variation or proceed to voice selection."}
-                  </p>
-                </div>
+                    </p>
+                  </div>
 
-                {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
-                <div
-                  className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
-                  style={{
+                  {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
+                  <div 
+                    className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
+                    style={{
                     background:
                       'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
-                      'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
-                      'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
-                  }}
-                >
-                  <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
-                    {isGeneratingAvatarPreview ? (
-                      <div className="flex flex-col items-center justify-center gap-3">
-                        <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
-                        <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
-                          Generating preview...
-                        </span>
-                      </div>
-                    ) : avatarPreviewUrl ? (
-                      <img
-                        src={avatarPreviewUrl}
-                        alt="Avatar Preview"
-                        className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                        onClick={() => {
-                          setAvatarPreviewModalOpen(true);
-                        }}
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center gap-3 h-[236px] min-h-[236px]">
-                        <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
-                          Preview not available
-                        </span>
-                      </div>
-                    )}
+                        'linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, ' +
+                        'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
+                    }}
+                  >
+                    <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
+                      {isGeneratingAvatarPreview ? (
+                        <div className="flex flex-col items-center justify-center gap-3">
+                          <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
+                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                            Generating preview...
+                          </span>
+                        </div>
+                      ) : avatarPreviewUrl ? (
+                        <img
+                          src={avatarPreviewUrl}
+                          alt="Avatar Preview"
+                          className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                          onClick={() => {
+                            setAvatarPreviewModalOpen(true);
+                          }}
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center gap-3 h-[236px] min-h-[236px]">
+                          <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] text-gray-500">
+                            Preview not available
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                {/* Style Label */}
-                {!isGeneratingAvatarPreview && avatarPreviewUrl && selectedAvatarVisualStyle && (
-                  <div className="flex flex-col items-start gap-[clamp(0.25rem,0.39vh,4px)] mt-[clamp(0.25rem,0.49vh,5px)]">
-                    <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal text-gray-600">
+                  {/* Style Label */}
+                  {!isGeneratingAvatarPreview && avatarPreviewUrl && selectedAvatarVisualStyle && (
+                    <div className="flex flex-col items-start gap-[clamp(0.25rem,0.39vh,4px)] mt-[clamp(0.25rem,0.49vh,5px)]">
+                      <span className="font-heading text-[clamp(0.75rem,1.17vh,12px)] font-normal text-gray-600">
                       Style:{' '}
                       {AVATAR_VISUAL_STYLE_PRESETS.find((p) => p.id === selectedAvatarVisualStyle)?.label ||
                         selectedAvatarVisualStyle}
-                    </span>
-                  </div>
-                )}
-
-                {/* Regenerate and Proceed Buttons */}
-                {!isGeneratingAvatarPreview && avatarPreviewUrl && (
-                  <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
-                    <button
-                      onClick={handleRegenerateAvatarPreview}
-                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                    >
-                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                        <Image
-                          src="/assets/u_redo.svg"
-                          alt="Regenerate"
-                          width={16}
-                          height={16}
-                          className="w-fit"
-                        />
-                      </div>
-                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                        Regenerate
                       </span>
-                    </button>
+                    </div>
+                  )}
 
-                    <button
-                      onClick={handleProceedFromAvatarPreview}
-                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                    >
-                      <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                        <Image
-                          src="/assets/u_arrow-right.svg"
-                          alt="Proceed"
-                          width={16}
-                          height={16}
-                          className="w-fit"
-                        />
-                      </div>
-                      <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                        Proceed
-                      </span>
-                    </button>
-                  </div>
-                )}
-              </>
+                  {/* Regenerate and Proceed Buttons */}
+                  {!isGeneratingAvatarPreview && avatarPreviewUrl && (
+                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
+                      <button
+                        onClick={handleRegenerateAvatarPreview}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                      >
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_redo.svg"
+                            alt="Regenerate"
+                            width={16}
+                            height={16}
+                            className="w-fit"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                          Regenerate
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={handleProceedFromAvatarPreview}
+                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                      >
+                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
+                          <Image
+                            src="/assets/u_arrow-right.svg"
+                            alt="Proceed"
+                            width={16}
+                            height={16}
+                            className="w-fit"
+                          />
+                        </div>
+                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
+                          Proceed
+                        </span>
+                      </button>
+                    </div>
+              )}
+            </>
             )}
 
             {/* Voice Selection Step - Only show NEW voice-specific content */}
@@ -8572,6 +8934,17 @@ Read everything on screen smoothly.`}
                               </span>
                             </button>
 
+                            {/* Stock Auto Option */}
+                            <button
+                              onClick={() => handleBrollSourceSelection('stock-auto')}
+                              disabled={isAutoSelectingStock}
+                              className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                                {isAutoSelectingStock ? 'Selecting...' : 'Use stock visuals'}
+                              </span>
+                            </button>
+
                             {/* Choose Own Option */}
                             <button
                               onClick={() => handleBrollSourceSelection('manual')}
@@ -8584,10 +8957,41 @@ Read everything on screen smoothly.`}
                           </div>
                         )}
 
+                        {/* Stock-Auto Loading State */}
+                        {brollSourcePreference === 'stock-auto' && isAutoSelectingStock && (
+                          <>
+                            {/* User Selection Message */}
+                            <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                              <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                                  Use stock visuals
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Loading Indicator for Stock Auto-Selection */}
+                            <div className="flex flex-col items-center gap-4 w-full max-w-full sm:max-w-[852px] mt-[clamp(1rem,2vh,24px)] p-8 bg-white rounded-[16px] shadow-[0px_1px_7px_rgba(87,73,119,0.15)]">
+                              <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-200 border-t-[#E86412]"></div>
+                              <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal text-[#212121] text-center">
+                                Searching and downloading stock videos for your scenes...
+                              </p>
+                              <div className="w-full max-w-[300px] h-2 bg-gray-100 rounded-full overflow-hidden">
+                                <div 
+                                  className="h-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-300"
+                                  style={{ width: `${stockDownloadProgress}%` }}
+                                />
+                              </div>
+                              <p className="font-heading text-[clamp(0.75rem,1.37vh,14px)] text-gray-500">
+                                {stockDownloadProgress}% complete
+                              </p>
+                            </div>
+                          </>
+                        )}
+
                         {/* Manual B-Roll Selection: Scene Cards Grid */}
                         {brollSourcePreference === 'manual' && (
                           <>
-                            {/* User "Choose my own visuals" Message */}
+                            {/* User Selection Message */}
                             <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                               <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
                                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
@@ -9186,8 +9590,8 @@ Read everything on screen smoothly.`}
                     <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">{opt.label}</span>
                   </button>
                 ))}
-              </div>
-            )}
+            </div>
+          )}
 
           {/* Script Input Bar - Show when language is selected and assets are attached or script-input step */}
           {((currentStep === 'assets-attached' && scriptSubstep === 'input') || currentStep === 'script-input') && (
@@ -9627,22 +10031,21 @@ Read everything on screen smoothly.`}
       {/* Avatar Preview Modal */}
       {showAvatarPreview && previewAvatar && (
         <>
-          {/* Overlay */}
+          {/* Overlay - backdrop only (translucent), card/image stay fully opaque */}
           <div
             className="fixed inset-0 z-50 flex items-center justify-center"
             style={{
-              background: 'linear-gradient(116.46deg, rgba(191, 143, 100, 0.5) 17.88%, rgba(179, 104, 56, 0.5) 89.93%)',
-              opacity: 0.9,
+              background: 'linear-gradient(116.46deg, rgba(191, 143, 100, 0.7) 17.88%, rgba(179, 104, 56, 0.7) 89.93%)',
             }}
             onClick={() => setShowAvatarPreview(false)}
           >
-            {/* Modal Content */}
+            {/* Modal Content - reduced padding for thinner border */}
             <div
-              className="relative w-[clamp(17rem,35.42vh,340px)] rounded-[8px] p-[clamp(0.3125rem,0.49vh,5px)] bg-white"
+              className="relative w-[clamp(17rem,35.42vh,340px)] rounded-[8px] p-[2px] bg-white"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Avatar Image - Wrapper to center image without cropping */}
-              <div className="relative w-full rounded-[12px] overflow-hidden flex items-center justify-center bg-gray-50" style={{ minHeight: 'clamp(21.875rem,43.65vh,447px)' }}>
+              <div className="relative w-full rounded-[10px] overflow-hidden flex items-center justify-center bg-white" style={{ minHeight: 'clamp(21.875rem,43.65vh,447px)' }}>
                 {(() => {
                   const avatarImageUrl = previewAvatar.thumbnailUrl || previewAvatar.avatarUrl || previewAvatar.originalImageUrl;
                   const AI_CONTENT_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL 
@@ -9655,21 +10058,21 @@ Read everything on screen smoothly.`}
                       : null;
                   
                   return (
-                    <div className="relative w-full h-full flex items-center justify-center p-4">
+                    <div className="relative w-full h-full flex items-center justify-center p-2 bg-white">
                       {fullImageUrl && !previewImageFailed ? (
                         <Image
                           src={fullImageUrl}
                           alt={previewAvatar.name || 'Avatar'}
                           width={300}
                           height={400}
-                          className="object-contain max-w-full max-h-full"
+                          className="object-contain max-w-full max-h-full opacity-100"
                           unoptimized
                           onError={() => {
                             setPreviewImageFailed(true);
                           }}
                         />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                        <div className="w-full h-full flex items-center justify-center bg-gray-100">
                           <span className="text-sm text-gray-400">No Image Available</span>
                         </div>
                       )}

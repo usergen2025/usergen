@@ -295,6 +295,52 @@ export class VideoController {
     return await this.videoService.updateProjectStep(projectId, userId, dto);
   }
 
+  @Put(':projectId/scenes/:sceneNumber/broll')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiParam({ name: 'sceneNumber', description: 'Scene number (1-based)' })
+  @ApiOperation({ summary: 'Update scene B-roll', description: 'Update B-roll image or video for a specific scene with stock or uploaded content' })
+  @ApiResponse({ status: 200, description: 'Scene B-roll updated successfully' })
+  @ApiResponse({ status: 404, description: 'Video project not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        brollUrl: { type: 'string', description: 'URL of the B-roll media (stock or uploaded)' },
+        brollType: { type: 'string', enum: ['image', 'video'], description: 'Type of B-roll media' },
+        source: { 
+          type: 'string', 
+          enum: ['stock-image', 'stock-video', 'upload-image', 'upload-video', 'freepik', 'upload'], 
+          description: 'Source type of the B-roll (generic types preferred: stock-image, stock-video, upload-image, upload-video)' 
+        },
+        localPath: { type: 'string', description: 'Local file path for downloaded stock content (optional)' },
+        gcsUrl: { type: 'string', description: 'GCS URL for uploaded stock content (optional)' },
+        videoPrompt: { type: 'string', description: 'Video generation prompt for uploaded images (optional)' },
+        skipConversion: { type: 'boolean', description: 'Skip video conversion if already a video (optional)' },
+      },
+      required: ['brollUrl', 'brollType', 'source'],
+    },
+  })
+  async updateSceneBroll(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('sceneNumber') sceneNumber: string,
+    @Body() body: { brollUrl: string; brollType: 'image' | 'video'; source: string; localPath?: string; gcsUrl?: string; videoPrompt?: string; skipConversion?: boolean },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+
+    const sceneNum = parseInt(sceneNumber, 10);
+    if (isNaN(sceneNum) || sceneNum < 1) {
+      throw new BadRequestException('Invalid scene number');
+    }
+
+    return await this.videoService.updateSceneBroll(projectId, userId, sceneNum, body);
+  }
+
   @Delete(':projectId')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth('JWT-auth')
@@ -439,6 +485,78 @@ export class VideoController {
       success: true,
       data: { jobId },
       message: 'Audio generation queued successfully',
+    };
+  }
+
+  @Post(':projectId/queue-stock-downloads')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({ 
+    summary: 'Queue stock video downloads', 
+    description: 'Queue stock video downloads for multiple scenes. Returns job IDs for WebSocket tracking.' 
+  })
+  @ApiBody({
+    description: 'Stock download request',
+    schema: {
+      type: 'object',
+      properties: {
+        scenes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              sceneNumber: { type: 'number', example: 1 },
+              searchTerm: { type: 'string', example: 'professional business meeting' },
+            },
+            required: ['sceneNumber', 'searchTerm'],
+          },
+        },
+      },
+      required: ['scenes'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Stock downloads queued successfully' })
+  async queueStockDownloads(
+    @Request() req: any, 
+    @Param('projectId') projectId: string,
+    @Body() body: { scenes: Array<{ sceneNumber: number; searchTerm: string }> }
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    // Verify project exists
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    if (!body.scenes || !Array.isArray(body.scenes) || body.scenes.length === 0) {
+      throw new BadRequestException('scenes array is required and cannot be empty');
+    }
+
+    const authToken = req.headers?.authorization || null;
+    const jobIds: Array<{ sceneNumber: number; jobId: string }> = [];
+
+    // Queue a job for each scene
+    for (const scene of body.scenes) {
+      const jobId = await this.queueManager.addStockDownloadJob({
+        projectId,
+        userId,
+        sceneNumber: scene.sceneNumber,
+        searchTerm: scene.searchTerm,
+        authToken,
+      });
+      jobIds.push({ sceneNumber: scene.sceneNumber, jobId });
+    }
+
+    console.log(`[VideoController] Queued ${jobIds.length} stock download jobs for project ${projectId}`);
+
+    return {
+      success: true,
+      data: { jobIds },
+      message: `Stock downloads queued for ${jobIds.length} scenes`,
     };
   }
 

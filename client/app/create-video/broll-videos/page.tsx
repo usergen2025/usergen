@@ -71,7 +71,7 @@ function BrollVideosPageContent() {
       sceneNumber: update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
     });
     
-    if (update.queueType === 'video-generation' || update.queueType === 'scene-composite') {
+    if (update.queueType === 'video-generation' || update.queueType === 'scene-composite' || update.queueType === 'stock-download') {
       if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;

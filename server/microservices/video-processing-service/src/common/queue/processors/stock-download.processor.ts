@@ -1,0 +1,235 @@
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
+import { Job } from 'bullmq';
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { DatabaseService } from '../../database/database.service';
+import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import axios from 'axios';
+
+export interface StockDownloadJobData {
+  projectId: string;
+  sceneNumber: number;
+  searchTerm: string;
+  userId: string;
+  authToken?: string;
+}
+
+export interface StockDownloadResult {
+  success: boolean;
+  sceneNumber: number;
+  videoUrl?: string;
+  localPath?: string;
+  gcsUrl?: string;
+  publicUrl?: string;
+  fallback?: boolean;
+  error?: string;
+}
+
+@Processor('stock-download', {
+  concurrency: 5, // Process 5 stock downloads concurrently per worker
+})
+@Injectable()
+export class StockDownloadProcessor extends WorkerHost {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly configService: ConfigService,
+    private readonly jobStatusGateway: JobStatusGateway,
+  ) {
+    super();
+  }
+
+  async process(job: Job<StockDownloadJobData>): Promise<StockDownloadResult> {
+    const { projectId, sceneNumber, searchTerm, userId, authToken } = job.data;
+
+    console.log(`[StockDownloadProcessor] Processing job ${job.id} for project ${projectId}, scene ${sceneNumber}`);
+
+    try {
+      // Get media-management-service URL
+      const mediaServiceUrl = this.configService.get<string>('MEDIA_MANAGEMENT_SERVICE_URL') || 'http://localhost:9005/api';
+      
+      await job.updateProgress(10);
+
+      // Step 1: Search for stock video
+      const searchResponse = await axios.get(
+        `${mediaServiceUrl}/stock/search`,
+        {
+          params: {
+            term: searchTerm,
+            type: 'video',
+            page: 1,
+            limit: 1,
+            aspectRatio: '9:16',
+          },
+        }
+      );
+
+      if (!searchResponse.data.success || !searchResponse.data.data?.results?.[0]) {
+        console.warn(`[StockDownloadProcessor] No stock video found for scene ${sceneNumber}, search: "${searchTerm}"`);
+        
+        // Notify job failure via WebSocket
+        this.jobStatusGateway.notifyJobStatus(userId, {
+          jobId: job.id!,
+          queueType: 'stock-download',
+          state: 'failed',
+          error: 'No stock videos found for the search term',
+          result: {
+            success: false,
+            sceneNumber,
+            error: 'no_results',
+          },
+          progress: 100,
+        }).catch(err => {
+          console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
+        });
+        
+        return {
+          success: false,
+          sceneNumber,
+          error: 'no_results',
+        };
+      }
+
+      const stockResult = searchResponse.data.data.results[0];
+      console.log(`[StockDownloadProcessor] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id})`);
+
+      await job.updateProgress(40);
+
+      // Step 2: Download the stock video
+      const downloadResponse = await axios.get(
+        `${mediaServiceUrl}/stock/${stockResult.id}/download`,
+        {
+          params: {
+            type: 'video',
+            projectId,
+          },
+        }
+      );
+
+      await job.updateProgress(80);
+
+      let videoUrl = stockResult.previewUrl;
+      let localPath: string | undefined;
+      let gcsUrl: string | undefined;
+      let publicUrl: string | undefined;
+      let fallback = false;
+
+      if (downloadResponse.data.success && downloadResponse.data.data) {
+        localPath = downloadResponse.data.data.localPath;
+        gcsUrl = downloadResponse.data.data.gcsUrl;
+        publicUrl = downloadResponse.data.data.publicUrl;
+        videoUrl = publicUrl || gcsUrl || videoUrl;
+        console.log(`[StockDownloadProcessor] Downloaded stock video for scene ${sceneNumber}: localPath=${localPath}, gcsUrl=${gcsUrl}`);
+      } else {
+        console.warn(`[StockDownloadProcessor] Download failed for scene ${sceneNumber}, using preview URL as fallback`);
+        fallback = true;
+      }
+
+      // Step 3: Update the project with the stock video
+      const project = await this.databaseService.videoProject.findFirst({
+        where: { id: projectId },
+      });
+
+      if (project) {
+        // Parse existing bRollVideoTasks
+        let bRollVideoTasks: any[] = [];
+        try {
+          bRollVideoTasks = project.bRollVideoTasks 
+            ? (typeof project.bRollVideoTasks === 'string' 
+                ? JSON.parse(project.bRollVideoTasks) 
+                : project.bRollVideoTasks as any[])
+            : [];
+        } catch (e) {
+          bRollVideoTasks = [];
+        }
+
+        // Find or create entry for this scene
+        const existingIndex = bRollVideoTasks.findIndex((v: any) => v.sceneNumber === sceneNumber);
+        const videoEntry = {
+          sceneNumber,
+          videoUrl,
+          localPath,
+          gcsUrl,
+          publicUrl,
+          source: 'stock-video',
+          customUpload: false,
+          status: 'completed',
+          downloadedAt: new Date().toISOString(),
+        };
+
+        if (existingIndex >= 0) {
+          bRollVideoTasks[existingIndex] = videoEntry;
+        } else {
+          bRollVideoTasks.push(videoEntry);
+        }
+
+        // Update project
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: {
+            bRollVideoTasks: bRollVideoTasks as any,
+          },
+        });
+      }
+
+      await job.updateProgress(100);
+
+      console.log(`[StockDownloadProcessor] Completed job ${job.id} for scene ${sceneNumber}`);
+
+      const result: StockDownloadResult = {
+        success: true,
+        sceneNumber,
+        videoUrl,
+        localPath,
+        gcsUrl,
+        publicUrl,
+        fallback,
+      };
+
+      // Emit WebSocket event for job completion
+      this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: job.id!,
+        queueType: 'stock-download',
+        state: 'completed',
+        result: {
+          success: true,
+          video: result,
+        },
+        progress: 100,
+      }).catch(err => {
+        console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
+      });
+
+      return result;
+    } catch (error: any) {
+      console.error(`[StockDownloadProcessor] Error processing job ${job.id}:`, error);
+
+      // Emit WebSocket event for job failure
+      this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: job.id!,
+        queueType: 'stock-download',
+        state: 'failed',
+        error: error.message,
+        result: {
+          success: false,
+          sceneNumber,
+          error: error.message,
+        },
+        progress: typeof job.progress === 'number' ? job.progress : 0,
+      }).catch(err => {
+        console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
+      });
+
+      throw error;
+    }
+  }
+
+  @OnWorkerEvent('completed')
+  onCompleted(job: Job) {
+    console.log(`[StockDownloadProcessor] Job ${job.id} completed`);
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job, error: Error) {
+    console.error(`[StockDownloadProcessor] Job ${job.id} failed:`, error.message);
+  }
+}

@@ -445,6 +445,131 @@ export class VideoService {
   }
 
   /**
+   * Update B-roll for a specific scene (stock or uploaded content)
+   * Source types: 'stock-image' | 'stock-video' | 'upload-image' | 'upload-video' | 'ai-image' | 'ai-video'
+   */
+  async updateSceneBroll(
+    projectId: string,
+    userId: string,
+    sceneNumber: number,
+    data: { 
+      brollUrl: string; 
+      brollType: 'image' | 'video'; 
+      source: string;
+      localPath?: string;
+      gcsUrl?: string;
+      videoPrompt?: string;
+      skipConversion?: boolean;
+    },
+  ) {
+    const existing = await this.databaseService.videoProject.findFirst({
+      where: {
+        id: projectId,
+        userId,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Video project not found');
+    }
+
+    const now = new Date().toISOString();
+    
+    // Determine the full source type based on brollType and source
+    // This handles both new format (stock-image, upload-video) and legacy format (freepik, upload)
+    let fullSourceType: string;
+    if (data.source.includes('-')) {
+      // New format: already includes type (e.g., 'stock-image', 'upload-video')
+      fullSourceType = data.source;
+    } else {
+      // Legacy format: convert 'freepik' -> 'stock-X', 'upload' -> 'upload-X'
+      const sourceBase = data.source === 'freepik' ? 'stock' : data.source;
+      fullSourceType = `${sourceBase}-${data.brollType}`;
+    }
+    
+    const isUpload = fullSourceType.startsWith('upload-');
+    
+    if (data.brollType === 'image') {
+      // Update bRollImages array
+      const currentImages = (existing.bRollImages as any[]) || [];
+      const existingIndex = currentImages.findIndex(
+        (img: any) => img.sceneNumber === sceneNumber,
+      );
+
+      const newImageEntry = {
+        sceneNumber,
+        imageUrl: data.brollUrl,
+        localPath: data.localPath || null,
+        localUrl: data.localPath ? `/uploads/stock/${projectId}/${data.localPath.split('/').pop()}` : data.brollUrl,
+        gcsUrl: data.gcsUrl || null,
+        publicUrl: data.gcsUrl || data.brollUrl,
+        source: fullSourceType,
+        contentType: 'image',
+        customUpload: isUpload,
+        videoPrompt: data.videoPrompt || null, // Generated prompt for video conversion
+        createdAt: now,
+      };
+
+      let updatedImages: any[];
+      if (existingIndex >= 0) {
+        updatedImages = [...currentImages];
+        updatedImages[existingIndex] = { ...currentImages[existingIndex], ...newImageEntry };
+      } else {
+        updatedImages = [...currentImages, newImageEntry];
+      }
+
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { bRollImages: updatedImages },
+      });
+    } else {
+      // Update bRollVideoTasks array for video
+      const currentVideos = (existing.bRollVideoTasks as any[]) || [];
+      const existingIndex = currentVideos.findIndex(
+        (vid: any) => vid.sceneNumber === sceneNumber,
+      );
+
+      const newVideoEntry = {
+        sceneNumber,
+        videoUrl: data.brollUrl,
+        localPath: data.localPath || null,
+        localUrl: data.localPath ? `/uploads/stock/${projectId}/${data.localPath.split('/').pop()}` : data.brollUrl,
+        gcsUrl: data.gcsUrl || null,
+        publicUrl: data.gcsUrl || data.brollUrl,
+        source: fullSourceType,
+        contentType: 'video',
+        customUpload: isUpload,
+        skipConversion: data.skipConversion || isUpload, // Skip conversion for uploaded videos
+        status: 'completed', // Stock/upload videos are ready
+        createdAt: now,
+      };
+
+      let updatedVideos: any[];
+      if (existingIndex >= 0) {
+        updatedVideos = [...currentVideos];
+        updatedVideos[existingIndex] = { ...currentVideos[existingIndex], ...newVideoEntry };
+      } else {
+        updatedVideos = [...currentVideos, newVideoEntry];
+      }
+
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { bRollVideoTasks: updatedVideos },
+      });
+    }
+
+    return {
+      success: true,
+      message: `Scene ${sceneNumber} B-roll updated successfully`,
+      data: {
+        sceneNumber,
+        brollType: data.brollType,
+        source: fullSourceType,
+      },
+    };
+  }
+
+  /**
    * Delete video project
    */
   async deleteProject(projectId: string, userId: string) {

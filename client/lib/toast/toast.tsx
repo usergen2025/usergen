@@ -30,10 +30,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const showToast = useCallback((message: string, type: ToastType = 'info', duration?: number) => {
-    const id = `toast-${Date.now()}-${Math.random()}`;
-    const newToast: Toast = { id, message, type, duration };
-
-    setToasts((prev) => [...prev, newToast]);
+    // Dedupe: skip if identical message+type already exists in current toasts
+    setToasts((prev) => {
+      if (prev.some(t => t.message === message && t.type === type)) {
+        return prev; // Skip duplicate
+      }
+      const id = `toast-${Date.now()}-${Math.random()}`;
+      const newToast: Toast = { id, message, type, duration };
+      return [...prev, newToast];
+    });
   }, []);
 
   const removeToast = useCallback((id: string) => {
