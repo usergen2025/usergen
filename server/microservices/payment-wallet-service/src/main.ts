@@ -4,9 +4,19 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import compression from 'compression';
 import { AppModule } from './app.module';
+import { MessageQueueService } from './common/message-queue/message-queue.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  try {
+    await app.get(MessageQueueService).connect();
+  } catch (err) {
+    console.warn(
+      'RabbitMQ connection failed at startup; credit events will publish lazily or be skipped until broker is available.',
+      err,
+    );
+  }
 
   app.use(helmet());
   app.use(compression());
