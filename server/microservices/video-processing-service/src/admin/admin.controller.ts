@@ -8,7 +8,7 @@ import { AdminService } from './admin.service';
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
-  @Get('stats')
+  @Get('project-stats')
   @ApiOperation({ summary: 'Get project statistics' })
   @ApiResponse({ status: 200, description: 'Project statistics' })
   async getProjectStats() {

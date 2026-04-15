@@ -1737,7 +1737,7 @@ class ApiClient {
     const token = this.getToken();
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const response = await axios.get<ApiResponse<any>>(
-      `${videoServiceUrl}/admin/stats`,
+      `${videoServiceUrl}/admin/project-stats`,
       {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),

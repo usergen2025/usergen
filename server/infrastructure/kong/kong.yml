@@ -1,15 +1,23 @@
+# Kong declarative config for UserGen microservices (Docker Compose service names + ports).
+# Video admin uses GET /api/admin/project-stats (auth dashboard stays GET /api/admin/stats).
+# Longer /api/admin/* paths and regex routes are matched before the generic /api/admin prefix.
+
 _format_version: "3.0"
 
 services:
   - name: auth-service
     url: http://auth-service:9000
     routes:
-      - name: auth-routes
+      - name: auth-api-routes
         paths:
           - /api/auth
         methods:
           - GET
           - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
         plugins:
           - name: cors
             config:
@@ -17,11 +25,51 @@ services:
                 - http://localhost:3200
                 - http://localhost:9000
                 - http://localhost:9001
+                - https://dev.usergen.ai
+                - https://api.dev.usergen.ai
               methods:
                 - GET
                 - POST
                 - PUT
                 - DELETE
+                - PATCH
+                - OPTIONS
+              headers:
+                - Accept
+                - Authorization
+                - Content-Type
+                - X-Request-ID
+              credentials: true
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
+      - name: auth-admin-routes
+        paths:
+          - /api/admin
+        methods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        plugins:
+          - name: cors
+            config:
+              origins:
+                - http://localhost:3200
+                - http://localhost:9000
+                - https://dev.usergen.ai
+                - https://api.dev.usergen.ai
+              methods:
+                - GET
+                - POST
+                - PUT
+                - DELETE
+                - PATCH
                 - OPTIONS
               headers:
                 - Accept
@@ -50,6 +98,7 @@ services:
           - PUT
           - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -71,6 +120,7 @@ services:
           - PUT
           - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -86,9 +136,14 @@ services:
         paths:
           - /api/transactions
           - /api/credits
+          - /api/pricing
         methods:
           - GET
           - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -106,6 +161,10 @@ services:
         methods:
           - GET
           - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -128,7 +187,9 @@ services:
           - GET
           - POST
           - PUT
+          - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -159,7 +220,9 @@ services:
           - GET
           - POST
           - PUT
+          - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -178,7 +241,40 @@ services:
           - GET
           - POST
           - PUT
+          - PATCH
           - DELETE
+          - OPTIONS
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 50
+              hour: 500
+              policy: local
+
+      # More specific than auth /api/admin — must win first
+      - name: video-admin-user-stats
+        paths:
+          - '~/^/api/admin/users/[^/]+/stats$'
+        regex_priority: 100
+        methods:
+          - GET
+          - OPTIONS
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 50
+              hour: 500
+              policy: local
+
+      - name: video-admin-projects
+        paths:
+          - /api/admin/projects
+          - /api/admin/project-stats
+        methods:
+          - GET
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -197,7 +293,9 @@ services:
           - GET
           - POST
           - PUT
+          - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -216,6 +314,9 @@ services:
         methods:
           - GET
           - POST
+          - PUT
+          - PATCH
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -231,11 +332,14 @@ services:
         paths:
           - /api/media
           - /api/files
+          - /api/stock
         methods:
           - GET
           - POST
           - PUT
+          - PATCH
           - DELETE
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -254,6 +358,7 @@ services:
           - /api/status
         methods:
           - GET
+          - OPTIONS
         plugins:
           - name: cors
           - name: rate-limiting
@@ -271,6 +376,8 @@ plugins:
         - http://localhost:9000
         - http://localhost:9001
         - http://localhost:9090
+        - https://dev.usergen.ai
+        - https://api.dev.usergen.ai
       methods:
         - GET
         - POST
