@@ -111,6 +111,7 @@ model PasswordReset {
 enum UserRole {
   USER
   ADMIN
+  OWNER
   AVATAR_CREATOR
   BRAND
 }

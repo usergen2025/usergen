@@ -1,12 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createLogger, format, transports } from 'winston';
-import { LoggerService as WinstonLoggerService } from 'winston';
-import { LoggerHelper } from '../../../shared/utils';
+import { createLogger, format, transports, Logger } from 'winston';
+import { LoggerHelper } from '@shared/utils';
 
 @Injectable()
 export class LoggerService {
-  private readonly logger: WinstonLoggerService;
+  private readonly logger: Logger;
 
   constructor(private configService: ConfigService) {
     this.logger = createLogger({
@@ -16,7 +15,7 @@ export class LoggerService {
         format.errors({ stack: true }),
         format.json(),
         format.printf(({ timestamp, level, message, ...meta }) => {
-          return LoggerHelper.formatLogMessage(level, message, meta);
+          return LoggerHelper.formatLogMessage(level, String(message), meta);
         })
       ),
       transports: [

@@ -10,6 +10,7 @@ const AUTH_SERVICE_URL = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://loc
 const VIDEO_SERVICE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:9004/api';
 const AI_CONTENT_SERVICE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL || 'http://localhost:9001/api';
 const VOICE_SERVICE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:9002/api';
+const PAYMENT_SERVICE_URL = process.env.NEXT_PUBLIC_PAYMENT_SERVICE_URL || 'http://localhost:9005/api';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -135,6 +136,14 @@ class ApiClient {
       method: 'POST',
       data,
     });
+  }
+
+  async loginWithPassword(email: string, password: string): Promise<ApiResponse<{ user: User; tokens: AuthTokens }>> {
+    const response = await axios.post<ApiResponse<{ user: User; tokens: AuthTokens }>>(
+      `${AUTH_SERVICE_URL}/auth/login`,
+      { email, password }
+    );
+    return response.data;
   }
 
   async sendOtp(data: {
@@ -1419,6 +1428,426 @@ class ApiClient {
     );
 
     return response.data;
+  }
+
+  // ==================== Credits/Billing APIs ====================
+
+  async getCreditsBalance(userId: string, workspaceId?: string): Promise<ApiResponse<{ credits: number }>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const params = new URLSearchParams({ userId });
+    if (workspaceId) {
+      params.append('workspaceId', workspaceId);
+    }
+
+    const response = await axios.get<ApiResponse<{ credits: number }>>(
+      `${paymentServiceUrl}/transactions/balance?${params.toString()}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getTransactionHistory(
+    userId: string, 
+    options?: { 
+      workspaceId?: string; 
+      limit?: number;
+      startDate?: string;
+      endDate?: string;
+    }
+  ): Promise<ApiResponse<any[]>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const params = new URLSearchParams({ userId });
+    if (options?.workspaceId) params.append('workspaceId', options.workspaceId);
+    if (options?.limit) params.append('limit', options.limit.toString());
+    if (options?.startDate) params.append('startDate', options.startDate);
+    if (options?.endDate) params.append('endDate', options.endDate);
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${paymentServiceUrl}/transactions/history?${params.toString()}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getProjectCostBreakdown(projectId: string): Promise<ApiResponse<any>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<any>>(
+      `${paymentServiceUrl}/credits/project/${projectId}/breakdown`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getPricingConfig(): Promise<ApiResponse<any[]>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${paymentServiceUrl}/pricing`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async getUserBillingSummary(
+    userId: string,
+    options?: { startDate?: string; endDate?: string }
+  ): Promise<ApiResponse<any>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const params = new URLSearchParams();
+    if (options?.startDate) params.append('startDate', options.startDate);
+    if (options?.endDate) params.append('endDate', options.endDate);
+
+    const queryString = params.toString();
+    const url = `${paymentServiceUrl}/credits/user/${userId}/summary${queryString ? '?' + queryString : ''}`;
+
+    const response = await axios.get<ApiResponse<any>>(url, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    return response.data;
+  }
+
+  // ==================== ADMIN API METHODS ====================
+
+  // Admin - Dashboard Stats
+  async getAdminDashboardStats(): Promise<ApiResponse<{
+    totalUsers: number;
+    activeUsersToday: number;
+    totalAdmins: number;
+    newUsersToday: number;
+    usersByRole: Record<string, number>;
+  }>> {
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/stats`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  // Admin - Users
+  async getAdminUsers(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    role?: string;
+  }): Promise<ApiResponse<{
+    users: any[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }>> {
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (params?.page) queryParams.append('page', params.page.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+    if (params?.search) queryParams.append('search', params.search);
+    if (params?.role) queryParams.append('role', params.role);
+
+    const queryString = queryParams.toString();
+    const response = await axios.get<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users${queryString ? '?' + queryString : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminUserById(userId: string): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users/${userId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async updateUserRole(userId: string, role: string): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.put<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users/${userId}/role`,
+      { role },
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async updateUserCredits(userId: string, credits: number, addToExisting?: boolean): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.put<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users/${userId}/credits`,
+      { credits, addToExisting },
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async createAdminUser(data: {
+    email: string;
+    password: string;
+    name: string;
+    role: 'ADMIN' | 'OWNER';
+  }): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.post<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users`,
+      data,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async deactivateUser(userId: string): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.delete<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users/${userId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async reactivateUser(userId: string): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const response = await axios.put<ApiResponse<any>>(
+      `${AUTH_SERVICE_URL}/admin/users/${userId}/reactivate`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminUsersList(): Promise<ApiResponse<any[]>> {
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${AUTH_SERVICE_URL}/admin/admins`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  // Admin - Projects/Generations
+  async getAdminProjects(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    search?: string;
+  }): Promise<ApiResponse<{
+    projects: any[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }>> {
+    const token = this.getToken();
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const queryParams = new URLSearchParams();
+    if (params?.page) queryParams.append('page', params.page.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+    if (params?.status) queryParams.append('status', params.status);
+    if (params?.search) queryParams.append('search', params.search);
+
+    const queryString = queryParams.toString();
+    const response = await axios.get<ApiResponse<any>>(
+      `${videoServiceUrl}/admin/projects${queryString ? '?' + queryString : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminProjectById(projectId: string): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const response = await axios.get<ApiResponse<any>>(
+      `${videoServiceUrl}/admin/projects/${projectId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminProjectStats(): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const response = await axios.get<ApiResponse<any>>(
+      `${videoServiceUrl}/admin/stats`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  // Admin - Pricing
+  async updatePricing(
+    operationType: string,
+    creditCost: number,
+    adminUserId: string,
+    reason?: string
+  ): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const response = await axios.put<ApiResponse<any>>(
+      `${paymentServiceUrl}/pricing/${operationType}`,
+      { creditCost, adminUserId, reason },
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getPricingHistory(operationType: string, limit?: number): Promise<ApiResponse<any[]>> {
+    const token = this.getToken();
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const params = limit ? `?limit=${limit}` : '';
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${paymentServiceUrl}/pricing/${operationType}/history${params}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  // Admin - IAM (Nest controllers often return raw arrays; normalize to ApiResponse)
+  private normalizeIamResponse<T>(raw: unknown): ApiResponse<T> {
+    if (Array.isArray(raw)) {
+      return { success: true, data: raw as T };
+    }
+    if (raw && typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      if ('success' in obj) {
+        return raw as ApiResponse<T>;
+      }
+      if (Array.isArray(obj.data)) {
+        return { success: true, data: obj.data as T };
+      }
+    }
+    return { success: false, message: 'Unexpected IAM service response' };
+  }
+
+  async getIamRoles(): Promise<ApiResponse<any[]>> {
+    const token = this.getToken();
+    const iamServiceUrl = process.env.NEXT_PUBLIC_IAM_SERVICE_URL || 'http://localhost:9010/api';
+    const response = await axios.get(
+      `${iamServiceUrl}/roles`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return this.normalizeIamResponse<any[]>(response.data);
+  }
+
+  async getIamPermissions(): Promise<ApiResponse<any[]>> {
+    const token = this.getToken();
+    const iamServiceUrl = process.env.NEXT_PUBLIC_IAM_SERVICE_URL || 'http://localhost:9010/api';
+    const response = await axios.get(
+      `${iamServiceUrl}/permissions`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return this.normalizeIamResponse<any[]>(response.data);
+  }
+
+  async getAuditLogs(params?: {
+    page?: number;
+    limit?: number;
+  }): Promise<ApiResponse<any[]>> {
+    const token = this.getToken();
+    const iamServiceUrl = process.env.NEXT_PUBLIC_IAM_SERVICE_URL || 'http://localhost:9010/api';
+    const queryParams = new URLSearchParams();
+    if (params?.page) queryParams.append('page', params.page.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+
+    const queryString = queryParams.toString();
+    const response = await axios.get(
+      `${iamServiceUrl}/access/logs${queryString ? '?' + queryString : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return this.normalizeIamResponse<any[]>(response.data);
   }
 }
 

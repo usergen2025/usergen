@@ -30,6 +30,11 @@ export class RolesService {
     return this.prisma.role.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
+      include: {
+        rolePermissions: {
+          include: { permission: true },
+        },
+      },
     });
   }
 

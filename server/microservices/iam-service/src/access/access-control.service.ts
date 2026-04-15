@@ -148,13 +148,22 @@ export class AccessControlService {
   /**
    * Check multiple permissions at once
    */
-  async checkPermissions(dto: CheckPermissionDto & { permissions: string[] }) {
+  async checkPermissions(dto: { 
+    userId: string; 
+    resourceType?: string; 
+    resourceId?: string; 
+    permissions: string[];
+    context?: Record<string, any>;
+  }) {
     const results: Record<string, boolean> = {};
 
     for (const permission of dto.permissions) {
       results[permission] = await this.checkPermission({
-        ...dto,
+        userId: dto.userId,
+        resourceType: dto.resourceType,
+        resourceId: dto.resourceId,
         permission,
+        context: dto.context,
       });
     }
 
@@ -336,7 +345,7 @@ export class AccessControlService {
           resourceType: data.resourceType,
           resourceId: data.resourceId,
           permission: data.permission,
-          result: data.result,
+          result: data.result ?? false,
           reason: data.reason,
           context: data.context,
         },
@@ -344,6 +353,23 @@ export class AccessControlService {
     } catch (error) {
       console.error('Failed to log access:', error);
     }
+  }
+
+  async listAccessLogs(params: { page?: number; limit?: number }) {
+    const page = Math.max(1, params.page ?? 1);
+    const limit = Math.min(100, Math.max(1, params.limit ?? 50));
+    const skip = (page - 1) * limit;
+
+    const [items, total] = await Promise.all([
+      this.prisma.accessLog.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.accessLog.count(),
+    ]);
+
+    return { items, total, page, limit };
   }
 }
 

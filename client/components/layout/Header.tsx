@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LogOut, Menu, X, FolderKanban, Wallet, Briefcase, Video, Megaphone } from 'lucide-react';
+import { LogOut, Menu, X, FolderKanban, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
+import CreditDisplay from '@/components/billing/CreditDisplay';
 import Image from 'next/image';
 import Button from '@/components/ui/Button';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
@@ -218,6 +219,9 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
 
             {/* Right Side Actions */}
             <div className="flex items-center gap-2">
+              {isAuthenticated && (
+                <CreditDisplay className="hidden sm:flex" showAddButton={false} />
+              )}
               {isAuthenticated ? (
                 <Dropdown
                   trigger={
@@ -288,6 +292,14 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
                         icon={<FolderKanban className="w-5 h-5" />}
                       >
                         My Projects
+                      </DropdownItem>
+                      <DropdownItem 
+                        onClick={() => {
+                          router.push('/billing');
+                        }}
+                        icon={<Receipt className="w-5 h-5" />}
+                      >
+                        Billing
                       </DropdownItem>
                       <DropdownItem 
                         onClick={() => {

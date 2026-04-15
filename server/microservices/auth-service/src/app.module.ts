@@ -7,6 +7,7 @@ import { PassportModule } from '@nestjs/passport';
 // Core modules
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { AdminModule } from './admin/admin.module';
 import { ConfigModule as AppConfigModule } from './config/config.module';
 import { DatabaseModule } from './common/database/database.module';
 import { RedisModule } from './common/redis/redis.module';
@@ -56,6 +57,7 @@ import { SwaggerAuthGuard } from './common/guards/swagger-auth.guard';
     // Feature modules
     AuthModule,
     UsersModule,
+    AdminModule,
   ],
   providers: [SwaggerAuthGuard],
 })

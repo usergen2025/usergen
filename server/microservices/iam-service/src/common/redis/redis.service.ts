@@ -7,10 +7,10 @@ export class RedisService {
   private readonly redis: Redis;
 
   constructor(private configService: ConfigService) {
-    this.redis = new Redis(this.configService.get('REDIS_URL'), {
-      retryDelayOnFailover: 100,
+    this.redis = new Redis(this.configService.get('REDIS_URL') || 'redis://localhost:6379', {
       enableReadyCheck: false,
       maxRetriesPerRequest: null,
+      lazyConnect: true,
     });
 
     this.redis.on('connect', () => {

@@ -23,6 +23,23 @@ export class AccessController {
     return this.accessService.checkPermissions(dto);
   }
 
+  @Get('logs')
+  @ApiOperation({ summary: 'List access audit logs' })
+  async listLogs(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, total, page: p, limit: l } = await this.accessService.listAccessLogs({
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+    return {
+      success: true,
+      data: items,
+      meta: { total, page: p, limit: l },
+    };
+  }
+
   @Get('user/:userId/permissions')
   @ApiOperation({ summary: 'Get all effective permissions for a user' })
   async getUserPermissions(

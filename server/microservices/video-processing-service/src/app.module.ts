@@ -5,6 +5,7 @@ import { VideoController } from './video/video.controller';
 import { VideoModule } from './video/video.module';
 import { DatabaseModule } from './common/database/database.module';
 import { RenderingModule } from './rendering/rendering.module';
+import { AdminModule } from './admin/admin.module';
 import { QueueModule } from './common/queue/queue.module';
 import { QueueManagerService } from './common/queue/queue-manager.service';
 import { WebSocketModule } from './common/websocket/websocket.module';
@@ -30,6 +31,7 @@ import { StorageModule } from './common/storage/storage.module';
     QueueModule,
     WebSocketModule,
     StorageModule,
+    AdminModule,
   ],
   controllers: [VideoController],
 })

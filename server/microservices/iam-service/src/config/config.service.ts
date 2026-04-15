@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConfigService as NestConfigService } from '@nestjs/config';
 
 @Injectable()
-export class ConfigService {
-  constructor(private configService: ConfigService) {}
+export class AppConfigService {
+  constructor(private configService: NestConfigService) {}
 
   get<T = any>(propertyPath: string, defaultValue?: T): T {
     return this.configService.get<T>(propertyPath, defaultValue);

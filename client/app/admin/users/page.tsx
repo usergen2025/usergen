@@ -1,0 +1,520 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { 
+  Search, 
+  MoreVertical,
+  Eye,
+  Ban,
+  CheckCircle,
+  ChevronLeft,
+  ChevronRight,
+  X,
+  UserCog,
+  Coins
+} from 'lucide-react';
+import { cn } from '@/lib/utils/cn';
+import { apiClient } from '@/lib/api/client';
+import { useToast } from '@/lib/toast/toast';
+
+interface UserData {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  credits: number;
+  isActive: boolean;
+  isEmailVerified: boolean;
+  createdAt: string;
+  lastLoginAt?: string;
+  profilePicture?: string;
+}
+
+export default function AdminUsersPage() {
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedRole, setSelectedRole] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [selectedUser, setSelectedUser] = useState<UserData | null>(null);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [showRoleModal, setShowRoleModal] = useState(false);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [actionUser, setActionUser] = useState<UserData | null>(null);
+  const [newRole, setNewRole] = useState('');
+  const [creditsAmount, setCreditsAmount] = useState(0);
+  const [addToExisting, setAddToExisting] = useState(true);
+  const { showToast } = useToast();
+
+  const usersPerPage = 20;
+
+  const fetchUsers = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const response = await apiClient.getAdminUsers({
+        page: currentPage,
+        limit: usersPerPage,
+        search: searchQuery || undefined,
+        role: selectedRole !== 'all' ? selectedRole : undefined,
+      });
+
+      if (response.success && response.data) {
+        setUsers(response.data.users);
+        setTotalPages(response.data.pagination.totalPages);
+        setTotalUsers(response.data.pagination.total);
+      }
+    } catch (error: any) {
+      console.error('Failed to fetch users:', error);
+      showToast(error.message || 'Failed to fetch users', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentPage, searchQuery, selectedRole, showToast]);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedRole]);
+
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return 'Never';
+    return new Date(dateString).toLocaleDateString('en-IN', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
+  const getRoleBadgeColor = (role: string) => {
+    switch (role) {
+      case 'OWNER':
+        return 'bg-red-500/20 text-red-400';
+      case 'ADMIN':
+        return 'bg-orange-500/20 text-orange-400';
+      case 'BRAND':
+        return 'bg-purple-500/20 text-purple-400';
+      case 'AVATAR_CREATOR':
+        return 'bg-blue-500/20 text-blue-400';
+      default:
+        return 'bg-gray-500/20 text-gray-400';
+    }
+  };
+
+  const handleViewUser = async (user: UserData) => {
+    try {
+      const response = await apiClient.getAdminUserById(user.id);
+      if (response.success && response.data) {
+        setSelectedUser(response.data);
+        setShowUserModal(true);
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to fetch user details', 'error');
+    }
+  };
+
+  const handleRoleChange = async () => {
+    if (!actionUser || !newRole) return;
+    try {
+      const response = await apiClient.updateUserRole(actionUser.id, newRole);
+      if (response.success) {
+        showToast('User role updated successfully', 'success');
+        setShowRoleModal(false);
+        setActionUser(null);
+        setNewRole('');
+        fetchUsers();
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update role', 'error');
+    }
+  };
+
+  const handleCreditsUpdate = async () => {
+    if (!actionUser) return;
+    try {
+      const response = await apiClient.updateUserCredits(actionUser.id, creditsAmount, addToExisting);
+      if (response.success) {
+        showToast('Credits updated successfully', 'success');
+        setShowCreditsModal(false);
+        setActionUser(null);
+        setCreditsAmount(0);
+        fetchUsers();
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update credits', 'error');
+    }
+  };
+
+  const handleToggleActive = async (user: UserData) => {
+    try {
+      const response = user.isActive 
+        ? await apiClient.deactivateUser(user.id)
+        : await apiClient.reactivateUser(user.id);
+      
+      if (response.success) {
+        showToast(`User ${user.isActive ? 'deactivated' : 'reactivated'} successfully`, 'success');
+        fetchUsers();
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to update user status', 'error');
+    }
+  };
+
+  if (isLoading && users.length === 0) {
+    return (
+      <div className="p-6">
+        <div className="mb-6">
+          <div className="h-8 w-48 bg-gray-700 rounded animate-pulse mb-2"></div>
+          <div className="h-4 w-64 bg-gray-700 rounded animate-pulse"></div>
+        </div>
+        <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="px-6 py-4 border-b border-gray-700 animate-pulse">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gray-700"></div>
+                <div className="flex-1">
+                  <div className="h-4 w-32 bg-gray-700 rounded mb-2"></div>
+                  <div className="h-3 w-48 bg-gray-700 rounded"></div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white mb-2">User Management</h1>
+        <p className="text-gray-400">View and manage all platform users ({totalUsers} total)</p>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-4 mb-6">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+          <input
+            type="text"
+            placeholder="Search users by name or email..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500"
+          />
+        </div>
+        <select
+          value={selectedRole}
+          onChange={(e) => setSelectedRole(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-orange-500"
+        >
+          <option value="all">All Roles</option>
+          <option value="USER">Users</option>
+          <option value="BRAND">Brands</option>
+          <option value="AVATAR_CREATOR">Avatar Creators</option>
+          <option value="ADMIN">Admins</option>
+          <option value="OWNER">Owners</option>
+        </select>
+      </div>
+
+      {/* Users Table */}
+      <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-700">
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">User</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Role</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Credits</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Joined</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Last Login</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Status</th>
+                <th className="px-6 py-4 text-right text-sm font-medium text-gray-400">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-700">
+              {users.map((user) => (
+                <tr key={user.id} className="hover:bg-gray-700/50 transition-colors">
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-white font-bold">
+                        {user.name?.charAt(0) || user.email.charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="text-white font-medium">{user.name || 'No Name'}</p>
+                        <p className="text-sm text-gray-400">{user.email}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={cn(
+                      "px-2 py-1 rounded-full text-xs font-medium",
+                      getRoleBadgeColor(user.role)
+                    )}>
+                      {user.role}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-white">₹{user.credits}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-gray-400">{formatDate(user.createdAt)}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-gray-400">{formatDate(user.lastLoginAt)}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    {user.isActive ? (
+                      <span className="flex items-center gap-1 text-green-400 text-sm">
+                        <CheckCircle className="w-4 h-4" />
+                        Active
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-red-400 text-sm">
+                        <Ban className="w-4 h-4" />
+                        Inactive
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => handleViewUser(user)}
+                        className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                        title="View Details"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionUser(user);
+                          setNewRole(user.role);
+                          setShowRoleModal(true);
+                        }}
+                        className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                        title="Change Role"
+                      >
+                        <UserCog className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionUser(user);
+                          setCreditsAmount(0);
+                          setAddToExisting(true);
+                          setShowCreditsModal(true);
+                        }}
+                        className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                        title="Manage Credits"
+                      >
+                        <Coins className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleToggleActive(user)}
+                        className={cn(
+                          "p-2 rounded-lg transition-colors",
+                          user.isActive 
+                            ? "text-red-400 hover:text-red-300 hover:bg-red-500/20" 
+                            : "text-green-400 hover:text-green-300 hover:bg-green-500/20"
+                        )}
+                        title={user.isActive ? "Deactivate" : "Reactivate"}
+                      >
+                        {user.isActive ? <Ban className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between">
+          <p className="text-sm text-gray-400">
+            Showing {(currentPage - 1) * usersPerPage + 1} to {Math.min(currentPage * usersPerPage, totalUsers)} of {totalUsers} users
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <span className="text-gray-400">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* User Details Modal */}
+      {showUserModal && selectedUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">User Details</h3>
+              <button onClick={() => setShowUserModal(false)} className="text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-white text-2xl font-bold">
+                  {selectedUser.name?.charAt(0) || selectedUser.email.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <h4 className="text-xl font-semibold text-white">{selectedUser.name || 'No Name'}</h4>
+                  <p className="text-gray-400">{selectedUser.email}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm text-gray-400">Role</label>
+                  <p className="text-white">{selectedUser.role}</p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Credits</label>
+                  <p className="text-white">₹{selectedUser.credits}</p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Status</label>
+                  <p className={selectedUser.isActive ? 'text-green-400' : 'text-red-400'}>
+                    {selectedUser.isActive ? 'Active' : 'Inactive'}
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Email Verified</label>
+                  <p className={selectedUser.isEmailVerified ? 'text-green-400' : 'text-yellow-400'}>
+                    {selectedUser.isEmailVerified ? 'Yes' : 'No'}
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Joined</label>
+                  <p className="text-white">{formatDate(selectedUser.createdAt)}</p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Last Login</label>
+                  <p className="text-white">{formatDate(selectedUser.lastLoginAt)}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Role Modal */}
+      {showRoleModal && actionUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl max-w-md w-full">
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Change User Role</h3>
+              <button onClick={() => setShowRoleModal(false)} className="text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-400 mb-4">
+                Changing role for <span className="text-white font-medium">{actionUser.email}</span>
+              </p>
+              <select
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value)}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white mb-4"
+              >
+                <option value="USER">User</option>
+                <option value="BRAND">Brand</option>
+                <option value="AVATAR_CREATOR">Avatar Creator</option>
+                <option value="ADMIN">Admin</option>
+                <option value="OWNER">Owner</option>
+              </select>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowRoleModal(false)}
+                  className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRoleChange}
+                  className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600"
+                >
+                  Update Role
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Credits Modal */}
+      {showCreditsModal && actionUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl max-w-md w-full">
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Manage Credits</h3>
+              <button onClick={() => setShowCreditsModal(false)} className="text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-400 mb-2">
+                Managing credits for <span className="text-white font-medium">{actionUser.email}</span>
+              </p>
+              <p className="text-gray-400 mb-4">
+                Current balance: <span className="text-white font-medium">₹{actionUser.credits}</span>
+              </p>
+              <div className="mb-4">
+                <label className="block text-sm text-gray-400 mb-2">Credits Amount</label>
+                <input
+                  type="number"
+                  value={creditsAmount}
+                  onChange={(e) => setCreditsAmount(parseInt(e.target.value) || 0)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white"
+                />
+              </div>
+              <label className="flex items-center gap-2 mb-4">
+                <input
+                  type="checkbox"
+                  checked={addToExisting}
+                  onChange={(e) => setAddToExisting(e.target.checked)}
+                  className="w-4 h-4 rounded"
+                />
+                <span className="text-gray-400">Add to existing balance</span>
+              </label>
+              <p className="text-sm text-gray-500 mb-4">
+                New balance will be: ₹{addToExisting ? actionUser.credits + creditsAmount : creditsAmount}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowCreditsModal(false)}
+                  className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreditsUpdate}
+                  className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600"
+                >
+                  Update Credits
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

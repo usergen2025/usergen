@@ -100,3 +100,73 @@ enum EntityType {
   WORKSPACE
 }
 
+// ==================== Pricing Configuration ====================
+
+// Dynamic pricing configuration (admin-managed)
+model OperationPricing {
+  id            String   @id @default(cuid())
+  operationType String   @unique // "SCRIPT_GENERATION", "IMAGE_GENERATION", etc.
+  displayName   String
+  description   String?
+  creditCost    Int      // Cost in credits (1 credit = 1 rupee)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  updatedBy     String?  // Admin user ID who last updated
+  
+  pricingHistory PricingHistory[]
+
+  @@map("operation_pricing")
+  @@index([operationType])
+  @@index([isActive])
+}
+
+// Track pricing changes over time for audit
+model PricingHistory {
+  id                 String   @id @default(cuid())
+  operationPricingId String
+  previousCost       Int
+  newCost            Int
+  changedBy          String   // Admin user ID
+  reason             String?
+  createdAt          DateTime @default(now())
+  
+  operationPricing   OperationPricing @relation(fields: [operationPricingId], references: [id], onDelete: Cascade)
+
+  @@map("pricing_history")
+  @@index([operationPricingId])
+  @@index([createdAt])
+}
+
+// Snapshot of costs at time of generation (preserves historical pricing)
+model GenerationCostSnapshot {
+  id            String   @id @default(cuid())
+  projectId     String
+  userId        String
+  sceneNumber   Int?
+  operationType String   // "SCRIPT_GENERATION", "IMAGE_GENERATION", etc.
+  operationName String   // Human-readable name
+  creditCost    Int      // Cost AT TIME OF GENERATION
+  metadata      Json?    // Additional details (retry count, duration, provider, etc.)
+  createdAt     DateTime @default(now())
+  
+  @@map("generation_cost_snapshots")
+  @@index([projectId])
+  @@index([userId])
+  @@index([operationType])
+  @@index([createdAt])
+}
+
+// Operation types enum for type safety
+enum OperationType {
+  SCRIPT_GENERATION
+  SCENE_REGENERATION
+  AUDIO_GENERATION
+  IMAGE_GENERATION
+  VIDEO_GENERATION
+  AVATAR_VIDEO
+  STOCK_FOOTAGE
+  FINAL_RENDER
+  WATERMARK_REMOVAL
+}
+
