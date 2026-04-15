@@ -17,6 +17,9 @@ export class StockController {
   @ApiQuery({ name: 'page', required: false, description: 'Page number (default: 1)' })
   @ApiQuery({ name: 'limit', required: false, description: 'Results per page (default: 20)' })
   @ApiQuery({ name: 'aspectRatio', required: false, enum: ['9:16', '16:9', '1:1'], description: 'Filter by aspect ratio' })
+  @ApiQuery({ name: 'targetDuration', required: false, description: 'Target video duration in seconds (enables smart duration matching)' })
+  @ApiQuery({ name: 'minDuration', required: false, description: 'Minimum video duration in seconds' })
+  @ApiQuery({ name: 'maxDuration', required: false, description: 'Maximum video duration in seconds' })
   @ApiResponse({
     status: 200,
     description: 'Search results returned successfully',
@@ -41,6 +44,7 @@ export class StockController {
                   aspectRatio: { type: 'string' },
                   premium: { type: 'boolean' },
                   duration: { type: 'string' },
+                  durationSeconds: { type: 'number' },
                   quality: { type: 'string' },
                 },
               },
@@ -67,6 +71,9 @@ export class StockController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('aspectRatio') aspectRatio?: '9:16' | '16:9' | '1:1',
+    @Query('targetDuration') targetDuration?: string,
+    @Query('minDuration') minDuration?: string,
+    @Query('maxDuration') maxDuration?: string,
   ) {
     if (!term) {
       throw new HttpException('Search term is required', HttpStatus.BAD_REQUEST);
@@ -83,6 +90,9 @@ export class StockController {
         page: page ? parseInt(page, 10) : 1,
         limit: limit ? parseInt(limit, 10) : 20,
         aspectRatio,
+        targetDuration: targetDuration ? parseFloat(targetDuration) : undefined,
+        minDuration: minDuration ? parseFloat(minDuration) : undefined,
+        maxDuration: maxDuration ? parseFloat(maxDuration) : undefined,
       };
 
       const results = await this.stockService.searchStock(request);
@@ -102,11 +112,13 @@ export class StockController {
   @Get(':id/download')
   @ApiOperation({
     summary: 'Download stock media item',
-    description: 'Download a stock image or video by ID',
+    description: 'Download a stock image or video by ID. For videos, optionally trim to target duration and compress if too large.',
   })
   @ApiParam({ name: 'id', description: 'Stock item ID (e.g., freepik-image-12345)' })
   @ApiQuery({ name: 'type', required: true, enum: ['image', 'video'], description: 'Media type' })
   @ApiQuery({ name: 'projectId', required: false, description: 'Project ID to associate download with' })
+  @ApiQuery({ name: 'targetDuration', required: false, description: 'Target video duration in seconds (video will be trimmed if longer)' })
+  @ApiQuery({ name: 'maxSizeMB', required: false, description: 'Maximum file size in MB (video will be compressed if larger, default: 100)' })
   @ApiResponse({
     status: 200,
     description: 'Download successful',
@@ -122,6 +134,12 @@ export class StockController {
             gcsUrl: { type: 'string' },
             publicUrl: { type: 'string' },
             filename: { type: 'string' },
+            originalDuration: { type: 'number' },
+            finalDuration: { type: 'number' },
+            originalSizeMB: { type: 'number' },
+            finalSizeMB: { type: 'number' },
+            trimmed: { type: 'boolean' },
+            compressed: { type: 'boolean' },
           },
         },
       },
@@ -133,6 +151,8 @@ export class StockController {
     @Param('id') id: string,
     @Query('type') type: 'image' | 'video',
     @Query('projectId') projectId?: string,
+    @Query('targetDuration') targetDuration?: string,
+    @Query('maxSizeMB') maxSizeMB?: string,
   ) {
     if (!id) {
       throw new HttpException('Stock ID is required', HttpStatus.BAD_REQUEST);
@@ -143,7 +163,13 @@ export class StockController {
     }
 
     try {
-      const result = await this.stockService.downloadStockItem(id, type, projectId);
+      const result = await this.stockService.downloadStockItem(
+        id,
+        type,
+        projectId,
+        targetDuration ? parseFloat(targetDuration) : undefined,
+        maxSizeMB ? parseFloat(maxSizeMB) : 100,
+      );
 
       return {
         success: true,

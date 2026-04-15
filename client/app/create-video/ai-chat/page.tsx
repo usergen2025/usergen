@@ -3632,18 +3632,65 @@ function AIChatPageContent() {
         
         let completedCount = 0;
         
+        // Helper function to parse time_range to duration in seconds
+        const parseTimeRangeToDuration = (timeRange: string | undefined): number | undefined => {
+          if (!timeRange) return undefined;
+          // Parse formats like "0-5sec", "5-10 sec", "10-15sec"
+          const match = timeRange.match(/(\d+)-(\d+)\s*sec/i);
+          if (match) {
+            const start = parseInt(match[1], 10);
+            const end = parseInt(match[2], 10);
+            return end - start;
+          }
+          return undefined;
+        };
+        
+        // Helper function to determine the correct aspect ratio for stock videos based on video style
+        // HALF_N_HALF: All scenes need 1080x960 (9:8) -> use 1:1 stock videos
+        // ALTERNATE: Odd scenes need 1080x960 (9:8) -> use 1:1, Even scenes need 1080x1920 (9:16) -> use 9:16
+        // Others (AVATAR_CUTOUT, PRODUCT_ONLY, B_ROLL_ONLY): All scenes need 9:16
+        const getStockAspectRatio = (sceneNumber: number): '9:16' | '1:1' => {
+          const style = selectedVideoStyle || 
+            (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+          
+          const normalizedStyle = style?.toUpperCase().replace(/-/g, '_');
+          
+          if (normalizedStyle === 'HALF_N_HALF') {
+            // HALF_N_HALF: All scenes use 1:1 (will be scaled to 1080x960)
+            return '1:1';
+          } else if (normalizedStyle === 'ALTERNATE') {
+            // ALTERNATE: Odd scenes use 1:1 (half-n-half), Even scenes use 9:16 (full screen)
+            return sceneNumber % 2 === 1 ? '1:1' : '9:16';
+          }
+          // Default to 9:16 for AVATAR_CUTOUT, PRODUCT_ONLY, B_ROLL_ONLY, etc.
+          return '9:16';
+        };
+        
         // Process each scene: search -> download -> save to backend
         const processPromises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number || (index + 1);
           const searchTerm = scene.stock_search_term || scene.broll_visual_description?.substring(0, 50) || 'professional video background';
           
-          console.log(`[AIChat] Scene ${sceneNumber} using search term: "${searchTerm}" (from: ${scene.stock_search_term ? 'stock_search_term' : 'broll_visual_description or fallback'})`);
+          // Get scene duration from time_range (script) or default to 5 seconds
+          const sceneDuration = parseTimeRangeToDuration(scene.time_range) || 5;
+          
+          // Determine correct aspect ratio based on video style and scene number
+          const aspectRatio = getStockAspectRatio(sceneNumber);
+          
+          console.log(`[AIChat] Scene ${sceneNumber} using search term: "${searchTerm}", duration: ${sceneDuration}s, aspectRatio: ${aspectRatio}`);
           
           try {
-            // Step 1: Search for stock video
-            const searchResponse = await fetch(
-              `/api/stock/search?term=${encodeURIComponent(searchTerm)}&type=video&page=1&limit=1&aspectRatio=9:16`
-            );
+            // Step 1: Search for stock video with duration matching and correct aspect ratio
+            const searchParams = new URLSearchParams({
+              term: searchTerm,
+              type: 'video',
+              page: '1',
+              limit: '5', // Get more results to find best duration match
+              aspectRatio: aspectRatio,
+              targetDuration: sceneDuration.toString(),
+            });
+            
+            const searchResponse = await fetch(`/api/stock/search?${searchParams.toString()}`);
             
             if (!searchResponse.ok) {
               console.warn(`[AIChat] Stock search failed for scene ${sceneNumber}`);
@@ -3661,12 +3708,17 @@ function AIChatPageContent() {
             }
             
             const stockResult = searchData.data.results[0];
-            console.log(`[AIChat] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id})`);
+            console.log(`[AIChat] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id}, duration: ${stockResult.durationSeconds}s)`);
             
-            // Step 2: Download the stock video to get local path and GCS URL
-            const downloadResponse = await fetch(
-              `/api/stock/${stockResult.id}/download?type=video&projectId=${projectId}`
-            );
+            // Step 2: Download the stock video with trimming to target duration
+            const downloadParams = new URLSearchParams({
+              type: 'video',
+              projectId: projectId!,
+              targetDuration: sceneDuration.toString(),
+              maxSizeMB: '100',
+            });
+            
+            const downloadResponse = await fetch(`/api/stock/${stockResult.id}/download?${downloadParams.toString()}`);
             
             if (!downloadResponse.ok) {
               console.warn(`[AIChat] Stock download failed for scene ${sceneNumber}, using preview URL as fallback`);
@@ -3694,8 +3746,11 @@ function AIChatPageContent() {
               return { sceneNumber, success: true, fallback: true };
             }
             
-            const { localPath, gcsUrl, publicUrl } = downloadData.data;
+            const { localPath, gcsUrl, publicUrl, trimmed, compressed, originalDuration, finalDuration, originalSizeMB, finalSizeMB } = downloadData.data;
             console.log(`[AIChat] Downloaded stock video for scene ${sceneNumber}: localPath=${localPath}, gcsUrl=${gcsUrl}`);
+            if (trimmed || compressed) {
+              console.log(`[AIChat] Video processed: trimmed=${trimmed} (${originalDuration?.toFixed(1)}s -> ${finalDuration?.toFixed(1)}s), compressed=${compressed} (${originalSizeMB?.toFixed(1)}MB -> ${finalSizeMB?.toFixed(1)}MB)`);
+            }
             
             // Step 3: Save to backend with local path and GCS URL
             await apiClient.updateSceneBroll(projectId, sceneNumber, {

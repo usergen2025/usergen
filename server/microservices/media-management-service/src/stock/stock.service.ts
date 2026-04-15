@@ -10,6 +10,7 @@ import {
   GCSConfig,
   getContentType,
 } from '@shared/storage';
+import { processStockVideo, cleanupProcessedFiles } from './utils/video-processor.util';
 
 export interface StockSearchResult {
   id: string;
@@ -21,6 +22,7 @@ export interface StockSearchResult {
   aspectRatio: string;
   premium: boolean;
   duration?: string;
+  durationSeconds?: number; // Parsed duration in seconds
   quality?: string;
 }
 
@@ -30,6 +32,10 @@ export interface StockSearchRequest {
   page?: number;
   limit?: number;
   aspectRatio?: '9:16' | '16:9' | '1:1';
+  // Duration filtering for videos (in seconds)
+  minDuration?: number;
+  maxDuration?: number;
+  targetDuration?: number; // Preferred exact match duration
 }
 
 export interface StockSearchResponse {
@@ -48,6 +54,13 @@ export interface StockDownloadResult {
   gcsUrl?: string;
   publicUrl: string;
   filename: string;
+  // Video processing info
+  originalDuration?: number;
+  finalDuration?: number;
+  originalSizeMB?: number;
+  finalSizeMB?: number;
+  trimmed?: boolean;
+  compressed?: boolean;
 }
 
 @Injectable()
@@ -88,8 +101,77 @@ export class StockService {
     if (request.type === 'image') {
       return this.searchImages(request);
     } else {
+      // If targetDuration is specified, use smart multi-pass search
+      if (request.targetDuration) {
+        return this.searchVideosWithDurationMatching(request);
+      }
       return this.searchVideos(request);
     }
+  }
+
+  /**
+   * Smart multi-pass video search with duration matching
+   * Pass 1: Exact match (targetDuration - 1 to targetDuration + 2)
+   * Pass 2: Slightly longer (targetDuration to targetDuration + 5)
+   * Pass 3: Broader range (targetDuration to targetDuration + 15)
+   * Pass 4: Fallback (no duration filter)
+   */
+  private async searchVideosWithDurationMatching(request: StockSearchRequest): Promise<StockSearchResponse> {
+    const targetDuration = request.targetDuration!;
+    
+    // Define search passes with progressively broader duration ranges
+    const searchPasses = [
+      { name: 'exact', from: Math.max(1, targetDuration - 1), to: targetDuration + 2 },
+      { name: 'slightly-longer', from: targetDuration, to: targetDuration + 5 },
+      { name: 'broader', from: targetDuration, to: targetDuration + 15 },
+      { name: 'fallback', from: undefined, to: undefined },
+    ];
+
+    for (const pass of searchPasses) {
+      console.log(`[StockService] Duration search pass "${pass.name}": from=${pass.from}, to=${pass.to}`);
+      
+      const searchRequest: StockSearchRequest = {
+        ...request,
+        minDuration: pass.from,
+        maxDuration: pass.to,
+      };
+
+      try {
+        const response = await this.searchVideos(searchRequest);
+        
+        if (response.results.length > 0) {
+          // Sort results by duration proximity to target
+          const sortedResults = response.results.sort((a, b) => {
+            const aDiff = Math.abs((a.durationSeconds || 0) - targetDuration);
+            const bDiff = Math.abs((b.durationSeconds || 0) - targetDuration);
+            return aDiff - bDiff;
+          });
+
+          console.log(`[StockService] Found ${sortedResults.length} videos in pass "${pass.name}". Best match: ${sortedResults[0].durationSeconds}s (target: ${targetDuration}s)`);
+
+          return {
+            results: sortedResults,
+            pagination: response.pagination,
+          };
+        }
+        
+        console.log(`[StockService] No results in pass "${pass.name}", trying next pass...`);
+      } catch (error: any) {
+        console.warn(`[StockService] Error in pass "${pass.name}": ${error.message}`);
+      }
+    }
+
+    // If all passes fail, return empty result
+    console.log(`[StockService] All search passes failed for term "${request.term}"`);
+    return {
+      results: [],
+      pagination: {
+        total: 0,
+        page: 1,
+        limit: request.limit || 20,
+        totalPages: 0,
+      },
+    };
   }
 
   private async searchImages(request: StockSearchRequest): Promise<StockSearchResponse> {
@@ -163,11 +245,23 @@ export class StockService {
       aspectRatioFilter.push(request.aspectRatio);
     }
 
+    // Build duration filter if specified
+    const durationFilter: { from?: number; to?: number } | undefined = 
+      (request.minDuration || request.maxDuration) 
+        ? {
+            from: request.minDuration,
+            to: request.maxDuration,
+          }
+        : undefined;
+
+    console.log(`[StockService] Searching videos with term: "${request.term}", duration filter:`, durationFilter);
+
     const response = await this.freepikProvider.searchVideos({
       term: request.term,
       page: request.page || 1,
       filters: {
         aspect_ratio: aspectRatioFilter.length > 0 ? aspectRatioFilter : undefined,
+        duration: durationFilter,
       },
     });
 
@@ -181,6 +275,7 @@ export class StockService {
       aspectRatio: video['aspect-ratio'],
       premium: video.premium,
       duration: video.duration,
+      durationSeconds: this.parseDurationToSeconds(video.duration),
       quality: video.quality,
     }));
 
@@ -196,12 +291,32 @@ export class StockService {
   }
 
   /**
+   * Parse Freepik duration string (HH:MM:SS or MM:SS) to seconds
+   */
+  private parseDurationToSeconds(duration: string): number {
+    if (!duration) return 0;
+    
+    const parts = duration.split(':').map(Number);
+    if (parts.length === 3) {
+      // HH:MM:SS format
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) {
+      // MM:SS format
+      return parts[0] * 60 + parts[1];
+    }
+    return 0;
+  }
+
+  /**
    * Download stock item and upload to GCS
+   * For videos, optionally trim to target duration and compress if too large
    */
   async downloadStockItem(
     stockId: string,
     type: 'image' | 'video',
     projectId?: string,
+    targetDuration?: number,
+    maxSizeMB: number = 100,
   ): Promise<StockDownloadResult> {
     // Parse the stock ID to get the Freepik ID
     const freepikId = parseInt(stockId.replace(`freepik-${type}-`, ''), 10);
@@ -218,10 +333,10 @@ export class StockService {
     }
 
     const downloadUrl = downloadResponse.data.url;
-    const filename = downloadResponse.data.filename;
+    const originalFilename = downloadResponse.data.filename;
 
     // Download the file from Freepik
-    console.log(`[StockService] Downloading stock ${type} from Freepik: ${filename}`);
+    console.log(`[StockService] Downloading stock ${type} from Freepik: ${originalFilename}`);
     const response = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
     });
@@ -232,23 +347,69 @@ export class StockService {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
-    const localPath = path.join(uploadDir, filename);
-    fs.writeFileSync(localPath, response.data);
+    const originalLocalPath = path.join(uploadDir, originalFilename);
+    fs.writeFileSync(originalLocalPath, response.data);
 
-    console.log(`[StockService] Downloaded stock ${type} to local: ${localPath}`);
+    console.log(`[StockService] Downloaded stock ${type} to local: ${originalLocalPath}`);
+
+    // For videos, process (trim and compress) if needed
+    let finalLocalPath = originalLocalPath;
+    let finalFilename = originalFilename;
+    let processingResult: {
+      originalDuration?: number;
+      finalDuration?: number;
+      originalSizeMB?: number;
+      finalSizeMB?: number;
+      trimmed?: boolean;
+      compressed?: boolean;
+    } = {};
+
+    if (type === 'video' && targetDuration && targetDuration > 0) {
+      console.log(`[StockService] Processing video: target duration ${targetDuration}s, max size ${maxSizeMB} MB`);
+      
+      try {
+        const result = await processStockVideo(originalLocalPath, targetDuration, maxSizeMB);
+        
+        processingResult = {
+          originalDuration: result.originalDuration,
+          finalDuration: result.finalDuration,
+          originalSizeMB: result.originalSize,
+          finalSizeMB: result.finalSize,
+          trimmed: result.trimmed,
+          compressed: result.compressed,
+        };
+
+        if (result.outputPath !== originalLocalPath) {
+          finalLocalPath = result.outputPath;
+          finalFilename = path.basename(result.outputPath);
+          
+          // Clean up original file if different from processed
+          try {
+            fs.unlinkSync(originalLocalPath);
+            console.log(`[StockService] Cleaned up original file: ${originalLocalPath}`);
+          } catch (cleanupError) {
+            console.warn(`[StockService] Could not clean up original file: ${originalLocalPath}`);
+          }
+        }
+
+        console.log(`[StockService] Video processing complete: ${processingResult.originalDuration?.toFixed(2)}s -> ${processingResult.finalDuration?.toFixed(2)}s, ${processingResult.originalSizeMB?.toFixed(2)} MB -> ${processingResult.finalSizeMB?.toFixed(2)} MB`);
+      } catch (processError: any) {
+        console.warn(`[StockService] Video processing failed, using original: ${processError.message}`);
+      }
+    }
 
     // Upload to GCS for persistent storage
     let gcsUrl: string | undefined;
     let publicUrl: string;
-    const localUrl = `/uploads/stock/${projectId || 'general'}/${filename}`;
+    const localUrl = `/uploads/stock/${projectId || 'general'}/${finalFilename}`;
 
     try {
       const subPath = `stock/${projectId || 'general'}`;
-      const contentType = getContentType(filename);
+      const contentType = getContentType(finalFilename);
       
       const uploadResult = await this.unifiedStorage.uploadFromPath({
-        localPath,
-        filename,
+        localPath: finalLocalPath,
+        filename: finalFilename,
         contentType,
         subPath,
         service: 'media',
@@ -265,11 +426,12 @@ export class StockService {
     }
 
     return {
-      localPath,
+      localPath: finalLocalPath,
       localUrl,
       gcsUrl,
       publicUrl,
-      filename,
+      filename: finalFilename,
+      ...processingResult,
     };
   }
 
