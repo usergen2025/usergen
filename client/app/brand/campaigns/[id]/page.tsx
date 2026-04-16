@@ -26,11 +26,21 @@ interface Applicant {
   earnings?: number;
 }
 
+function paramSegment(
+  params: ReturnType<typeof useParams> | null,
+  key: string
+): string {
+  const v = params?.[key];
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v[0] ?? '';
+  return '';
+}
+
 export default function CampaignDetailsPage() {
   const router = useRouter();
   const params = useParams();
   const { showToast } = useToast();
-  const campaignId = params.id as string;
+  const campaignId = paramSegment(params, 'id');
   
   const [campaign, setCampaign] = useState<any>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
