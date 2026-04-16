@@ -21,7 +21,7 @@ function AvatarPageContent() {
   const { isAuthenticated } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  const projectIdFromUrl = searchParams?.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId') ?? null;
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);

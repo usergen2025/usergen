@@ -18,7 +18,7 @@ function ScriptPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
-  const projectIdFromUrl = searchParams?.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId') ?? null;
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);

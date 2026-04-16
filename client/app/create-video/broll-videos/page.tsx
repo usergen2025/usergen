@@ -40,7 +40,7 @@ function BrollVideosPageContent() {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const projectIdFromUrl = searchParams?.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId') ?? null;
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);

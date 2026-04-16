@@ -17,7 +17,7 @@ function BRollPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
-  const projectId = searchParams?.get('projectId');
+  const projectId = searchParams?.get('projectId') ?? null;
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   

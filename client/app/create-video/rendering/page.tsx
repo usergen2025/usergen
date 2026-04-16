@@ -14,7 +14,7 @@ function RenderingPageContent() {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const projectId = searchParams?.get('projectId');
+  const projectId = searchParams?.get('projectId') ?? null;
   
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState<string>('pending');
