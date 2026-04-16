@@ -67,4 +67,9 @@ export class ListUsersQueryDto {
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
+
+  @ApiProperty({ description: 'Filter by exact user id', required: false })
+  @IsOptional()
+  @IsString()
+  userId?: string;
 }

@@ -43,9 +43,25 @@ export class AdminController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
   @ApiQuery({ name: 'role', required: false, type: String })
+  @ApiQuery({ name: 'userId', required: false, type: String })
   async getUsers(@Query() query: ListUsersQueryDto) {
     const result = await this.adminService.getUsers(query);
     return { success: true, data: result };
+  }
+
+  @Get('users/batch')
+  @Roles('ADMIN', 'OWNER')
+  @ApiOperation({ summary: 'Get multiple users by id (comma-separated, max 100)' })
+  @ApiQuery({ name: 'ids', required: true, type: String })
+  async getUsersBatch(@Query('ids') ids: string) {
+    const idList = ids
+      ? ids
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const users = await this.adminService.getUsersByIds(idList);
+    return { success: true, data: users };
   }
 
   @Get('users/:userId')

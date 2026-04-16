@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { VideoModule } from '../video/video.module';
 import { RenderingService } from './rendering.service';
@@ -13,9 +13,10 @@ import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { DatabaseModule } from '../common/database/database.module';
 import { StorageModule } from '../common/storage/storage.module';
+import { QueueModule } from '../common/queue/queue.module';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule, StorageModule, VideoModule],
+  imports: [ConfigModule, DatabaseModule, StorageModule, VideoModule, forwardRef(() => QueueModule)],
   providers: [
     RenderingService,
     AlternateAvatarService,

@@ -23,17 +23,20 @@ export class AdminController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'status', required: false, type: String })
   @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'userId', required: false, type: String })
   async getAllProjects(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Query('userId') userId?: string,
   ) {
     const result = await this.adminService.getAllProjects({
       page: page ? parseInt(page) : undefined,
       limit: limit ? parseInt(limit) : undefined,
       status,
       search,
+      userId,
     });
     return { success: true, data: result };
   }

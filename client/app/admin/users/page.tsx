@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { 
-  Search, 
-  MoreVertical,
+import { Suspense, useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
+import {
+  Search,
   Eye,
   Ban,
   CheckCircle,
@@ -11,7 +12,9 @@ import {
   ChevronRight,
   X,
   UserCog,
-  Coins
+  Coins,
+  Video,
+  ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
@@ -30,7 +33,35 @@ interface UserData {
   profilePicture?: string;
 }
 
-export default function AdminUsersPage() {
+function UsersLoadingSkeleton() {
+  return (
+    <div className="p-6">
+      <div className="mb-6">
+        <div className="mb-2 h-8 w-48 animate-pulse rounded bg-gray-700"></div>
+        <div className="h-4 w-64 animate-pulse rounded bg-gray-700"></div>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-gray-700 bg-gray-800">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="animate-pulse border-b border-gray-700 px-6 py-4">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-full bg-gray-700"></div>
+              <div className="flex-1">
+                <div className="mb-2 h-4 w-32 rounded bg-gray-700"></div>
+                <div className="h-3 w-48 rounded bg-gray-700"></div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminUsersContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const filterUserId = searchParams.get('userId') ?? '';
+
   const [users, setUsers] = useState<UserData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,6 +89,7 @@ export default function AdminUsersPage() {
         limit: usersPerPage,
         search: searchQuery || undefined,
         role: selectedRole !== 'all' ? selectedRole : undefined,
+        userId: filterUserId || undefined,
       });
 
       if (response.success && response.data) {
@@ -71,7 +103,7 @@ export default function AdminUsersPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentPage, searchQuery, selectedRole, showToast]);
+  }, [currentPage, searchQuery, selectedRole, filterUserId, showToast]);
 
   useEffect(() => {
     fetchUsers();
@@ -79,7 +111,7 @@ export default function AdminUsersPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedRole]);
+  }, [searchQuery, selectedRole, filterUserId]);
 
   const formatDate = (dateString?: string) => {
     if (!dateString) return 'Never';
@@ -196,6 +228,31 @@ export default function AdminUsersPage() {
         <p className="text-gray-400">View and manage all platform users ({totalUsers} total)</p>
       </div>
 
+      {filterUserId && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-4 py-3">
+          <p className="text-sm text-gray-300">
+            Showing user{' '}
+            <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-orange-300">{filterUserId}</code>
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href={`/admin/generations?userId=${encodeURIComponent(filterUserId)}`}
+              className="inline-flex items-center gap-1 text-sm text-orange-400 hover:text-orange-300"
+            >
+              View generations
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+            <button
+              type="button"
+              onClick={() => router.push('/admin/users')}
+              className="rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600"
+            >
+              Clear filter
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-4 mb-6">
         <div className="relative flex-1">
@@ -283,6 +340,13 @@ export default function AdminUsersPage() {
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center justify-end gap-2">
+                      <Link
+                        href={`/admin/generations?userId=${encodeURIComponent(user.id)}`}
+                        className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+                        title="View generations"
+                      >
+                        <Video className="h-4 w-4" />
+                      </Link>
                       <button
                         onClick={() => handleViewUser(user)}
                         className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
@@ -516,5 +580,13 @@ export default function AdminUsersPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AdminUsersPage() {
+  return (
+    <Suspense fallback={<UsersLoadingSkeleton />}>
+      <AdminUsersContent />
+    </Suspense>
   );
 }

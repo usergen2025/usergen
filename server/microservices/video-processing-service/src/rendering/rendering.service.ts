@@ -6,6 +6,7 @@ import { BytePlusProvider } from './providers/byteplus.provider';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
+import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -24,8 +25,77 @@ export class RenderingService {
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly publicUrlService: PublicUrlService,
+    private readonly queueManager: QueueManagerService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
+  }
+
+  /**
+   * Deduct credits for final render once per project (idempotent via metadata.billingFinalRenderCharged).
+   */
+  private async chargeFinalRenderCredits(projectId: string, userId: string): Promise<void> {
+    try {
+      const proj = await this.databaseService.videoProject.findUnique({ where: { id: projectId } });
+      if (!proj) return;
+      const raw = proj.metadata;
+      const meta =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? { ...(raw as Record<string, unknown>) }
+          : {};
+      if (meta.billingFinalRenderCharged === true) return;
+
+      const paymentBase = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(
+        /\/api\/?$/,
+        '',
+      );
+      const response = await axios.post(
+        `${paymentBase}/api/credits/record-and-deduct`,
+        {
+          projectId,
+          userId,
+          operationType: 'FINAL_RENDER',
+          operationName: 'Final Render',
+        },
+        { timeout: 10000 },
+      );
+
+      if (!response.data?.success) {
+        console.warn(`[RenderingService] Final render billing incomplete for ${projectId}:`, response.data);
+        return;
+      }
+
+      const snap = response.data.data;
+      const creditCost = typeof snap?.creditCost === 'number' ? snap.creditCost : 15;
+
+      meta.billingFinalRenderCharged = true;
+      meta.billingFinalRenderAt = new Date().toISOString();
+      if (snap?.id) meta.billingFinalRenderSnapshotId = snap.id;
+
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: meta as object,
+          creditsSpent: (proj.creditsSpent ?? 0) + creditCost,
+        },
+      });
+    } catch (err: any) {
+      console.error('[RenderingService] chargeFinalRenderCredits:', err?.message ?? err);
+    }
+  }
+
+  /**
+   * Queue lightweight preview derivatives generation.
+   */
+  private async enqueuePreviewDerivatives(projectId: string, userId: string, videoUrl: string): Promise<void> {
+    try {
+      await this.queueManager.addPreviewDerivativesJob({
+        projectId,
+        userId,
+        videoUrl,
+      });
+    } catch (err: any) {
+      console.warn(`[RenderingService] Failed to queue preview derivatives for ${projectId}: ${err?.message || err}`);
+    }
   }
 
   /**
@@ -1070,6 +1140,9 @@ export class RenderingService {
       } as any,
     });
 
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
+
     console.log(`[RenderingService] HALF_N_HALF video completed: ${publicUrl || localVideoUrl}`);
   }
 
@@ -1814,6 +1887,9 @@ export class RenderingService {
       } as any,
     });
 
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
+
     console.log(`[RenderingService] CUTOUT video completed: ${publicUrl || localVideoUrl}`);
   }
 
@@ -2128,6 +2204,9 @@ export class RenderingService {
       } as any,
     });
 
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
+
     console.log(`[RenderingService] ✅ ALTERNATE video completed: ${publicUrl || localVideoUrl}, duration: ${totalDuration.toFixed(2)}s, scenes: ${sceneVideoPaths.length}`);
   }
 
@@ -2303,6 +2382,9 @@ export class RenderingService {
         completedAt: new Date(),
       } as any,
     });
+
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
 
     console.log(`[RenderingService] AVATAR_ONLY video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -2494,6 +2576,9 @@ export class RenderingService {
         completedAt: new Date(),
       } as any,
     });
+
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
 
     console.log(`[RenderingService] PRODUCT_ONLY video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -2696,6 +2781,9 @@ export class RenderingService {
         completedAt: new Date(),
       } as any,
     });
+
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
 
     console.log(`[RenderingService] AVATAR_PRODUCT video completed: ${publicUrl || localVideoUrl}`);
   }

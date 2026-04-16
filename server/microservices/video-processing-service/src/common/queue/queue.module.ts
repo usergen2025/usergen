@@ -8,6 +8,7 @@ import { VideoGenerationProcessor } from './processors/video-generation.processo
 import { AvatarVideoGenerationProcessor } from './processors/avatar-video-generation.processor';
 import { SceneCompositeProcessor } from './processors/scene-composite.processor';
 import { StockDownloadProcessor } from './processors/stock-download.processor';
+import { PreviewDerivativesProcessor } from './processors/preview-derivatives.processor';
 import { DatabaseModule } from '../database/database.module';
 import { RenderingModule } from '../../rendering/rendering.module';
 import { WebSocketModule } from '../websocket/websocket.module';
@@ -31,6 +32,7 @@ import { VideoModule } from '../../video/video.module';
       { name: 'avatar-video-generation' },
       { name: 'scene-composite' },
       { name: 'stock-download' },
+      { name: 'preview-derivatives' },
     ),
   ],
   providers: [
@@ -41,6 +43,7 @@ import { VideoModule } from '../../video/video.module';
     AvatarVideoGenerationProcessor,
     SceneCompositeProcessor,
     StockDownloadProcessor,
+    PreviewDerivativesProcessor,
     AssetProcessorService,
   ],
   exports: [QueueManagerService],

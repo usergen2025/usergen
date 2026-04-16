@@ -50,6 +50,14 @@ const permissions = [
   { name: 'avatar:delete', resource: 'avatar', action: 'delete', description: 'Delete avatars' },
 ];
 
+/**
+ * Role matrix (product policy — extend IAM checks in services when enforcing beyond JWT UserRole):
+ * - admin.owner: all admin permissions including IAM assign and user delete.
+ * - admin.admin: operations without IAM mutation, user delete, or generation delete; can manage users/pricing otherwise.
+ * - admin.support / admin.viewer: read-heavy; adjust credits only where listed.
+ * JWT role (ADMIN | OWNER) on auth-service remains the coarse gate for /admin; fine-grained UI/API checks should
+ * resolve IAM roles → permission names (e.g. generations:read) for feature flags.
+ */
 // Define admin roles with their permissions
 const roles = [
   {

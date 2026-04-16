@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LogOut, Menu, X, FolderKanban, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
+import { LogOut, Menu, X, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
 import CreditDisplay from '@/components/billing/CreditDisplay';
 import Image from 'next/image';
 import Button from '@/components/ui/Button';
@@ -151,7 +151,18 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
     { href: '/pricing', label: 'Pricing' },
   ];
 
-  const navItems = userIsBrand ? brandNavItems : publicNavItems;
+  /** Logged-in creators: primary destinations only (wallet balance is in the header). */
+  const loggedInCreatorNavItems = [
+    { href: '/', label: 'Home' },
+    { href: '/projects', label: 'My Projects' },
+    { href: '/pricing', label: 'Pricing' },
+  ];
+
+  const navItems = userIsBrand
+    ? brandNavItems
+    : isAuthenticated
+      ? loggedInCreatorNavItems
+      : publicNavItems;
   
   // Get brand name or user name for display
   const displayName = userIsBrand 
@@ -287,27 +298,11 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
                     <>
                       <DropdownItem 
                         onClick={() => {
-                          router.push('/projects');
-                        }}
-                        icon={<FolderKanban className="w-5 h-5" />}
-                      >
-                        My Projects
-                      </DropdownItem>
-                      <DropdownItem 
-                        onClick={() => {
                           router.push('/billing');
                         }}
                         icon={<Receipt className="w-5 h-5" />}
                       >
                         Billing
-                      </DropdownItem>
-                      <DropdownItem 
-                        onClick={() => {
-                          router.push('/wallet');
-                        }}
-                        icon={<Wallet className="w-5 h-5" />}
-                      >
-                        My Wallet
                       </DropdownItem>
                       <DropdownItem onClick={handleLogout} icon={<LogOut className="w-5 h-5" />}>
                         Logout

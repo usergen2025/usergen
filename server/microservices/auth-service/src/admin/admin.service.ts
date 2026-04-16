@@ -21,6 +21,10 @@ export class AdminService {
 
     const where: any = {};
 
+    if (query.userId) {
+      where.id = query.userId;
+    }
+
     if (query.search) {
       where.OR = [
         { name: { contains: query.search, mode: 'insensitive' } },
@@ -94,6 +98,22 @@ export class AdminService {
     }
 
     return user;
+  }
+
+  /** Up to 100 ids; returns id, email, name for admin UI (e.g. generation list). */
+  async getUsersByIds(ids: string[]) {
+    const unique = [...new Set(ids.filter(Boolean))].slice(0, 100);
+    if (unique.length === 0) {
+      return [];
+    }
+    return this.databaseService.user.findMany({
+      where: { id: { in: unique } },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+      },
+    });
   }
 
   async updateUserRole(userId: string, dto: UpdateUserRoleDto, adminId: string) {

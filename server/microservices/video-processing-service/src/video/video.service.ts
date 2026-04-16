@@ -133,6 +133,85 @@ export class VideoService {
   }
 
   /**
+   * Get paginated lightweight projects list for cards/grid UI.
+   */
+  async getProjectsPaginated(
+    userId: string,
+    params: {
+      limit?: number;
+      cursor?: string;
+      status?: string;
+      workspaceId?: string;
+    } = {},
+  ) {
+    const limit = Math.min(Math.max(params.limit || 20, 1), 50);
+    const where: any = { userId };
+
+    if (params.workspaceId) {
+      where.workspaceId = params.workspaceId;
+    }
+    if (params.status && params.status !== 'all') {
+      where.status = params.status;
+    }
+
+    if (params.cursor) {
+      const cursorProject = await this.databaseService.videoProject.findFirst({
+        where: { id: params.cursor, userId },
+        select: { createdAt: true, id: true },
+      });
+
+      if (cursorProject) {
+        where.OR = [
+          { createdAt: { lt: cursorProject.createdAt } },
+          {
+            AND: [
+              { createdAt: cursorProject.createdAt },
+              { id: { lt: cursorProject.id } },
+            ],
+          },
+        ];
+      }
+    }
+
+    const items = await this.databaseService.videoProject.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        videoType: true,
+        style: true,
+        avatarId: true,
+        status: true,
+        currentStep: true,
+        progress: true,
+        progressStage: true,
+        videoUrl: true,
+        thumbnailUrl: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+        metadata: true,
+      },
+    });
+
+    const hasMore = items.length > limit;
+    const pageItems = hasMore ? items.slice(0, limit) : items;
+    const nextCursor = hasMore ? pageItems[pageItems.length - 1]?.id || null : null;
+
+    return {
+      success: true,
+      data: {
+        items: pageItems,
+        nextCursor,
+        hasMore,
+      },
+    };
+  }
+
+  /**
    * Update video project
    */
   async updateProject(projectId: string, userId: string, dto: UpdateVideoProjectDto) {

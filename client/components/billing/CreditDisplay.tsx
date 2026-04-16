@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Wallet, Plus, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
@@ -25,7 +25,7 @@ export default function CreditDisplay({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchCredits = async () => {
+  const fetchCredits = useCallback(async () => {
     if (!isAuthenticated || !user?.id) return;
     
     setIsLoading(true);
@@ -46,19 +46,27 @@ export default function CreditDisplay({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isAuthenticated, user?.id, user?.credits]);
 
   useEffect(() => {
     fetchCredits();
-  }, [isAuthenticated, user?.id]);
+  }, [fetchCredits]);
+
+  useEffect(() => {
+    const onCreditsRefresh = () => {
+      void fetchCredits();
+    };
+    window.addEventListener('credits-refresh', onCreditsRefresh);
+    return () => window.removeEventListener('credits-refresh', onCreditsRefresh);
+  }, [fetchCredits]);
 
   // Refresh credits periodically (every 60 seconds)
   useEffect(() => {
     if (!isAuthenticated) return;
     
-    const interval = setInterval(fetchCredits, 60000);
+    const interval = setInterval(() => void fetchCredits(), 60000);
     return () => clearInterval(interval);
-  }, [isAuthenticated, user?.id]);
+  }, [isAuthenticated, fetchCredits]);
 
   if (!isAuthenticated) {
     return null;

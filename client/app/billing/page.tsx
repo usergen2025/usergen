@@ -350,7 +350,7 @@ function BillingContent() {
   // Show skeleton while auth is loading
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
+      <div className="min-h-screen">
         <div className="max-w-6xl mx-auto px-4 pt-8 md:pt-12">
           <div className="flex flex-row items-center gap-4 mb-8">
             <SkeletonPulse className="w-6 h-6" />
@@ -368,7 +368,7 @@ function BillingContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
+    <div className="min-h-screen">
       <div className="max-w-6xl mx-auto px-4 pt-8 md:pt-12">
         {/* Workspace-style Header */}
         <div className="flex flex-row items-center gap-4 mb-8">
@@ -597,7 +597,7 @@ function BillingContent() {
 export default function BillingPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
+      <div className="min-h-screen">
         <div className="max-w-6xl mx-auto px-4 pt-8 md:pt-12">
           <div className="flex flex-row items-center gap-4 mb-8">
             <div className="w-6 h-6 animate-pulse bg-gray-200 rounded" />

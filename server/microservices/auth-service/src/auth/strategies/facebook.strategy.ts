@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, Profile } from 'passport-facebook';
 import { ConfigService } from '@nestjs/config';
+import { resolveAuthApiPublicBase } from '../utils/oauth-public-base.util';
 
 @Injectable()
 export class FacebookStrategy extends PassportStrategy(Strategy, 'facebook') {
@@ -10,20 +11,25 @@ export class FacebookStrategy extends PassportStrategy(Strategy, 'facebook') {
   constructor(private readonly configService: ConfigService) {
     const appId = configService.get<string>('FACEBOOK_APP_ID');
     const appSecret = configService.get<string>('FACEBOOK_APP_SECRET');
-    const baseUrl = configService.get<string>('BASE_URL') || configService.get<string>('CDN_URL') || 'http://localhost:9000';
+    const oauthBase =
+      configService.get<string>('OAUTH_PUBLIC_BASE_URL') ||
+      configService.get<string>('BASE_URL') ||
+      'http://localhost:9000';
+    const apiPublicBase = resolveAuthApiPublicBase(oauthBase);
+    const callbackURL = `${apiPublicBase}/auth/facebook/callback`;
 
     // Determine strategy config based on credentials
     const strategyConfig = (!appId || !appSecret || appId === 'your-facebook-app-id' || appSecret === 'your-facebook-app-secret')
       ? {
           clientID: 'dummy', // Dummy values to prevent Passport error
           clientSecret: 'dummy',
-          callbackURL: `${baseUrl}/auth/facebook/callback`,
+          callbackURL,
           profileFields: ['id', 'emails', 'name', 'picture'],
         }
       : {
           clientID: appId,
           clientSecret: appSecret,
-          callbackURL: `${baseUrl}/auth/facebook/callback`,
+          callbackURL,
           profileFields: ['id', 'emails', 'name', 'picture'],
         };
 

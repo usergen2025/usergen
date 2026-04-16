@@ -11,6 +11,7 @@ export enum JobType {
   AVATAR_VIDEO_GENERATION = 'avatar-video-generation',
   SCENE_COMPOSITE = 'scene-composite',
   STOCK_DOWNLOAD = 'stock-download',
+  PREVIEW_DERIVATIVES = 'preview-derivatives',
 }
 
 export interface JobData {
@@ -36,6 +37,7 @@ export class QueueManagerService {
     @InjectQueue('avatar-video-generation') private avatarVideoQueue: Queue,
     @InjectQueue('scene-composite') private sceneCompositeQueue: Queue,
     @InjectQueue('stock-download') private stockDownloadQueue: Queue,
+    @InjectQueue('preview-derivatives') private previewDerivativesQueue: Queue,
     private readonly configService: ConfigService,
   ) {
     this.concurrencyPerUser = parseInt(
@@ -210,6 +212,31 @@ export class QueueManagerService {
   }
 
   /**
+   * Add preview derivatives generation job (thumbnail + compressed preview video).
+   */
+  async addPreviewDerivativesJob(data: JobData): Promise<string> {
+    const job = await this.previewDerivativesQueue.add(
+      `preview-${data.projectId}-${data.userId}`,
+      data,
+      {
+        jobId: `preview-${data.projectId}-${Date.now()}`,
+        attempts: this.maxAttempts,
+        removeOnComplete: {
+          age: 3600,
+          count: 100,
+        },
+        removeOnFail: {
+          age: 86400,
+          count: 50,
+        },
+      },
+    );
+
+    console.log(`[QueueManager] Added preview derivatives job: ${job.id}`);
+    return job.id!;
+  }
+
+  /**
    * Get job status
    */
   async getJobStatus(queueName: JobType, jobId: string) {
@@ -232,6 +259,9 @@ export class QueueManagerService {
         break;
       case JobType.STOCK_DOWNLOAD:
         queue = this.stockDownloadQueue;
+        break;
+      case JobType.PREVIEW_DERIVATIVES:
+        queue = this.previewDerivativesQueue;
         break;
       default:
         throw new Error(`Unknown queue: ${queueName}`);

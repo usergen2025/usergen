@@ -75,7 +75,7 @@ export class VideoGenerationProcessor extends WorkerHost {
       // If heygenImageKey is missing, the helper will lazily upload the composite image
       // to HeyGen and persist the image_key back into bRollImages.
       if (style === 'AVATAR_PRODUCT') {
-        return await this.processAvatarProductVideo(
+        const result = await this.processAvatarProductVideo(
           job,
           project,
           sceneNumber,
@@ -84,10 +84,12 @@ export class VideoGenerationProcessor extends WorkerHost {
           userId,
           projectId
         );
+        await this.recordOperationCharge(projectId, userId, sceneNumber, style, job.id);
+        return result;
       }
 
       // Default processing for other styles
-      return await this.processDefaultVideo(
+      const result = await this.processDefaultVideo(
         job,
         project,
         sceneNumber,
@@ -98,6 +100,8 @@ export class VideoGenerationProcessor extends WorkerHost {
         userId,
         projectId
       );
+      await this.recordOperationCharge(projectId, userId, sceneNumber, style, job.id);
+      return result;
     } catch (error: any) {
       console.error(`[VideoGenerationProcessor] Error processing job ${job.id}:`, error);
       
@@ -113,6 +117,60 @@ export class VideoGenerationProcessor extends WorkerHost {
       });
       
       throw error;
+    }
+  }
+
+  private async recordOperationCharge(
+    projectId: string,
+    userId: string,
+    sceneNumber: number,
+    style: string,
+    jobId?: string | number,
+  ) {
+    const idempotencyKey = `video:${projectId}:${sceneNumber}`;
+    try {
+      const project = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+        select: { metadata: true, creditsSpent: true },
+      });
+      const baseMetadata =
+        project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+          ? ({ ...(project.metadata as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+      const billedKeys = Array.isArray(baseMetadata.billedOperationKeys)
+        ? (baseMetadata.billedOperationKeys as string[])
+        : [];
+      if (billedKeys.includes(idempotencyKey)) {
+        return;
+      }
+
+      const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
+      const response = await axios.post(
+        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        {
+          projectId,
+          userId,
+          sceneNumber,
+          operationType: 'VIDEO_GENERATION',
+          operationName: 'Video Generation',
+          metadata: { idempotencyKey, style, jobId },
+        },
+        { timeout: 10000 },
+      );
+
+      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: {
+            ...baseMetadata,
+            billedOperationKeys: [...billedKeys, idempotencyKey],
+          } as any,
+          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
+        },
+      });
+    } catch (error: any) {
+      console.warn(`[VideoGenerationProcessor] Billing hook failed: ${error.message}`);
     }
   }
 

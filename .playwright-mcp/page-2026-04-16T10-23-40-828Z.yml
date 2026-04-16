@@ -1,0 +1,23 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e5]:
+      - link "UserGen.ai Logo UserGen.ai" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "UserGen.ai Logo" [ref=e7]
+        - generic [ref=e8]: UserGen.ai
+      - navigation [ref=e10]:
+        - link "Home" [ref=e11] [cursor=pointer]:
+          - /url: /
+        - link "Features" [ref=e12] [cursor=pointer]:
+          - /url: /features
+        - link "Use Cases" [ref=e13] [cursor=pointer]:
+          - /url: /use-cases
+        - link "Enterprise" [ref=e14] [cursor=pointer]:
+          - /url: /enterprise
+        - link "Pricing" [ref=e15] [cursor=pointer]:
+          - /url: /pricing
+      - generic [ref=e16]:
+        - button "Login" [ref=e18]
+        - button "Create a Video" [ref=e19]
+  - main [ref=e20]:
+    - paragraph [ref=e22]: Loading...

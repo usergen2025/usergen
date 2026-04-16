@@ -63,7 +63,9 @@ export interface CostTrackingResult {
 
 // Payment service URL - can be overridden via environment
 const getPaymentServiceUrl = () => {
-  return process.env.PAYMENT_SERVICE_URL || 'http://localhost:9005';
+  const raw = process.env.PAYMENT_SERVICE_URL || 'http://localhost:9005';
+  // Support both http://host:9005 and http://host:9005/api without double /api in paths
+  return raw.replace(/\/api\/?$/, '');
 };
 
 /**

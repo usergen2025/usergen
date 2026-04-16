@@ -118,6 +118,15 @@ export class AudioGenerationProcessor extends WorkerHost {
         },
       });
 
+      await this.recordOperationCharge({
+        projectId,
+        userId,
+        operationType: 'AUDIO_GENERATION',
+        operationName: 'Audio Generation',
+        idempotencyKey: `audio:${projectId}`,
+        metadata: { jobId: job.id },
+      });
+
       await job.updateProgress(100);
 
       console.log(`[AudioGenerationProcessor] Completed job ${job.id} - Generated ${audioFiles.length} audio files`);
@@ -175,6 +184,62 @@ export class AudioGenerationProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   onFailed(job: Job, error: Error) {
     console.error(`[AudioGenerationProcessor] Job ${job.id} failed:`, error.message);
+  }
+
+  private async recordOperationCharge(params: {
+    projectId: string;
+    userId: string;
+    operationType: string;
+    operationName: string;
+    idempotencyKey: string;
+    sceneNumber?: number;
+    metadata?: Record<string, unknown>;
+  }) {
+    const { projectId, userId, operationType, operationName, idempotencyKey, sceneNumber, metadata } = params;
+    try {
+      const project = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+        select: { metadata: true, creditsSpent: true },
+      });
+      const baseMetadata =
+        project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+          ? ({ ...(project.metadata as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+      const billedKeys = Array.isArray(baseMetadata.billedOperationKeys)
+        ? (baseMetadata.billedOperationKeys as string[])
+        : [];
+      if (billedKeys.includes(idempotencyKey)) {
+        return;
+      }
+
+      const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
+      const response = await axios.post(
+        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        {
+          projectId,
+          userId,
+          sceneNumber,
+          operationType,
+          operationName,
+          metadata: { ...metadata, idempotencyKey },
+        },
+        { timeout: 10000 },
+      );
+
+      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: {
+            ...baseMetadata,
+            billedOperationKeys: [...billedKeys, idempotencyKey],
+          } as any,
+          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
+        },
+      });
+    } catch (error: any) {
+      console.warn(`[AudioGenerationProcessor] Billing hook failed for ${operationType}: ${error.message}`);
+    }
   }
 }
 

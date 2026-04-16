@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { 
-  Search, 
+import { Suspense, useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
+import {
+  Search,
   Video,
   Eye,
   ChevronLeft,
@@ -10,7 +12,9 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
-  Coins
+  Coins,
+  ExternalLink,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
@@ -30,6 +34,8 @@ interface Project {
   completedAt?: string;
   videoUrl?: string;
   thumbnailUrl?: string;
+  ownerName?: string | null;
+  ownerEmail?: string | null;
 }
 
 const statusColors: Record<string, string> = {
@@ -50,7 +56,35 @@ const styleLabels: Record<string, string> = {
   'alternate': 'Alternate',
 };
 
-export default function AdminGenerationsPage() {
+function GenerationsLoadingSkeleton() {
+  return (
+    <div className="p-6">
+      <div className="mb-6">
+        <div className="h-8 w-48 bg-gray-700 rounded animate-pulse mb-2"></div>
+        <div className="h-4 w-64 bg-gray-700 rounded animate-pulse"></div>
+      </div>
+      <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="p-4 border-b border-gray-700 animate-pulse">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-gray-700"></div>
+              <div className="flex-1">
+                <div className="h-4 w-48 bg-gray-700 rounded mb-2"></div>
+                <div className="h-3 w-32 bg-gray-700 rounded"></div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminGenerationsContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const filterUserId = searchParams.get('userId') ?? '';
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -72,10 +106,24 @@ export default function AdminGenerationsPage() {
         limit: itemsPerPage,
         status: selectedStatus !== 'all' ? selectedStatus : undefined,
         search: searchQuery || undefined,
+        userId: filterUserId || undefined,
       });
 
       if (response.success && response.data) {
-        setProjects(response.data.projects);
+        let list = response.data.projects as Project[];
+        const ids = [...new Set(list.map((p) => p.userId))];
+        if (ids.length > 0) {
+          const batch = await apiClient.getAdminUsersByIds(ids);
+          if (batch.success && batch.data?.length) {
+            const map = new Map(batch.data.map((u) => [u.id, u]));
+            list = list.map((p) => ({
+              ...p,
+              ownerName: map.get(p.userId)?.name ?? null,
+              ownerEmail: map.get(p.userId)?.email ?? null,
+            }));
+          }
+        }
+        setProjects(list);
         setTotalPages(response.data.pagination.totalPages);
         setTotalProjects(response.data.pagination.total);
       }
@@ -85,7 +133,7 @@ export default function AdminGenerationsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentPage, selectedStatus, searchQuery, showToast]);
+  }, [currentPage, selectedStatus, searchQuery, filterUserId, showToast]);
 
   useEffect(() => {
     fetchProjects();
@@ -93,7 +141,7 @@ export default function AdminGenerationsPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, selectedStatus]);
+  }, [searchQuery, selectedStatus, filterUserId]);
 
   const fetchProjectDetails = async (projectId: string) => {
     try {
@@ -103,9 +151,21 @@ export default function AdminGenerationsPage() {
       ]);
 
       if (projectResponse.success && projectResponse.data) {
+        const rawBreakdown = costResponse.data || null;
+        const operations =
+          rawBreakdown?.operations ||
+          rawBreakdown?.snapshots ||
+          (rawBreakdown?.byScene
+            ? Object.values(rawBreakdown.byScene).flatMap((scene: any) => scene?.operations || [])
+            : []);
         setProjectDetails({
           ...projectResponse.data,
-          costBreakdown: costResponse.data,
+          costBreakdown: rawBreakdown
+            ? {
+                ...rawBreakdown,
+                operations,
+              }
+            : null,
         });
       }
     } catch (error: any) {
@@ -134,54 +194,67 @@ export default function AdminGenerationsPage() {
     });
   };
 
+  const userSubtitle = (project: Project) => {
+    if (project.ownerName || project.ownerEmail) {
+      const name = project.ownerName || 'Unknown';
+      const email = project.ownerEmail || '';
+      return `${name}${email ? ` · ${email}` : ''} · ${project.videoType}`;
+    }
+    return `${project.userId} · ${project.videoType}`;
+  };
+
   if (isLoading && projects.length === 0) {
-    return (
-      <div className="p-6">
-        <div className="mb-6">
-          <div className="h-8 w-48 bg-gray-700 rounded animate-pulse mb-2"></div>
-          <div className="h-4 w-64 bg-gray-700 rounded animate-pulse"></div>
-        </div>
-        <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-          {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="p-4 border-b border-gray-700 animate-pulse">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-lg bg-gray-700"></div>
-                <div className="flex-1">
-                  <div className="h-4 w-48 bg-gray-700 rounded mb-2"></div>
-                  <div className="h-3 w-32 bg-gray-700 rounded"></div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return <GenerationsLoadingSkeleton />;
   }
 
   return (
     <div className="p-6">
-      {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white mb-2">Generation History</h1>
         <p className="text-gray-400">View all video generations across the platform ({totalProjects} total)</p>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-4 mb-6">
+      {filterUserId && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-4 py-3">
+          <p className="text-sm text-gray-300">
+            Filtered by user{' '}
+            <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-orange-300">{filterUserId}</code>
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href={`/admin/users?userId=${encodeURIComponent(filterUserId)}`}
+              className="inline-flex items-center gap-1 text-sm text-orange-400 hover:text-orange-300"
+            >
+              User in directory
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+            <button
+              type="button"
+              onClick={() => router.push('/admin/generations')}
+              className="inline-flex items-center gap-1 rounded-lg bg-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-600"
+            >
+              <X className="h-4 w-4" />
+              Clear filter
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+          <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-500" />
           <input
             type="text"
             placeholder="Search by project name or user..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500"
+            className="w-full rounded-lg border border-gray-700 bg-gray-800 py-2 pl-10 pr-4 text-white placeholder-gray-500 focus:border-orange-500 focus:outline-none"
           />
         </div>
         <select
           value={selectedStatus}
           onChange={(e) => setSelectedStatus(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-orange-500"
+          className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white focus:border-orange-500 focus:outline-none"
         >
           <option value="all">All Status</option>
           <option value="COMPLETED">Completed</option>
@@ -191,97 +264,113 @@ export default function AdminGenerationsPage() {
         </select>
       </div>
 
-      {/* Projects List */}
-      <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+      <div className="overflow-hidden rounded-xl border border-gray-700 bg-gray-800">
         {projects.length === 0 ? (
           <div className="p-8 text-center">
-            <Video className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+            <Video className="mx-auto mb-4 h-12 w-12 text-gray-600" />
             <p className="text-gray-400">No projects found</p>
           </div>
         ) : (
           <div className="divide-y divide-gray-700">
             {projects.map((project) => (
               <div key={project.id} className="bg-gray-800">
-                {/* Row */}
                 <button
                   onClick={() => handleExpandProject(project.id)}
-                  className="w-full p-4 flex items-center justify-between hover:bg-gray-700/50 transition-colors text-left"
+                  className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-gray-700/50"
                 >
-                  <div className="flex items-center gap-4 flex-1 min-w-0">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
-                      <Video className="w-5 h-5 text-white" />
+                  <div className="flex min-w-0 flex-1 items-center gap-4">
+                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-purple-500 to-pink-500">
+                      <Video className="h-5 w-5 text-white" />
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white font-medium truncate">{project.title || 'Untitled Project'}</p>
-                      <p className="text-sm text-gray-400 truncate">
-                        User: {project.userId} • {project.videoType}
-                      </p>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium text-white">{project.title || 'Untitled Project'}</p>
+                      <p className="truncate text-sm text-gray-400">{userSubtitle(project)}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-6">
-                    <div className="text-right hidden md:block">
-                      <p className="text-white font-medium">₹{project.creditsSpent || 0}</p>
+                    <div className="hidden text-right md:block">
+                      <p className="font-medium text-white">₹{project.creditsSpent || 0}</p>
                       <p className="text-sm text-gray-400">{styleLabels[project.style] || project.style || 'N/A'}</p>
                     </div>
-                    <span className={cn(
-                      "px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap",
-                      statusColors[project.status] || 'bg-gray-500/20 text-gray-400'
-                    )}>
+                    <span
+                      className={cn(
+                        'whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium',
+                        statusColors[project.status] || 'bg-gray-500/20 text-gray-400'
+                      )}
+                    >
                       {project.status}
                     </span>
-                    <div className="text-right hidden sm:block">
+                    <div className="hidden text-right sm:block">
                       <p className="text-sm text-gray-400">{formatDate(project.createdAt)}</p>
                     </div>
                     {expandedProject === project.id ? (
-                      <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                      <ChevronUp className="h-5 w-5 flex-shrink-0 text-gray-400" />
                     ) : (
-                      <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                      <ChevronDown className="h-5 w-5 flex-shrink-0 text-gray-400" />
                     )}
                   </div>
                 </button>
 
-                {/* Expanded Details */}
                 {expandedProject === project.id && (
-                  <div className="px-4 pb-4 bg-gray-900/50">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Cost Breakdown */}
-                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                        <h4 className="text-white font-medium mb-3 flex items-center gap-2">
-                          <Coins className="w-4 h-4 text-orange-500" />
+                  <div className="bg-gray-900/50 px-4 pb-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="rounded-lg border border-gray-700 bg-gray-800 p-4">
+                        <h4 className="mb-3 flex items-center gap-2 font-medium text-white">
+                          <Coins className="h-4 w-4 text-orange-500" />
                           Cost Breakdown
                         </h4>
                         {projectDetails?.costBreakdown?.operations?.length > 0 ? (
                           <div className="space-y-2">
                             {projectDetails.costBreakdown.operations.map((op: any, idx: number) => (
                               <div key={idx} className="flex items-center justify-between text-sm">
-                                <span className="text-gray-400">{op.operationType?.replace(/_/g, ' ') || op.operationName}</span>
+                                <span className="text-gray-400">
+                                  {op.operationType?.replace(/_/g, ' ') || op.operationName}
+                                </span>
                                 <span className="text-white">₹{op.creditCost || 0}</span>
                               </div>
                             ))}
-                            <div className="border-t border-gray-700 pt-2 mt-2 flex items-center justify-between font-medium">
+                            <div className="mt-2 flex items-center justify-between border-t border-gray-700 pt-2 font-medium">
                               <span className="text-gray-300">Total</span>
-                              <span className="text-orange-400">₹{projectDetails.costBreakdown.totalCost || project.creditsSpent || 0}</span>
+                              <span className="text-orange-400">
+                                ₹{projectDetails.costBreakdown.totalCost || projectDetails.costBreakdown.operations?.reduce((sum: number, op: any) => sum + (op.creditCost || 0), 0) || project.creditsSpent || 0}
+                              </span>
                             </div>
                           </div>
                         ) : (
-                          <p className="text-gray-500 text-sm">No cost data available</p>
+                          <p className="text-sm text-gray-500">No cost data available</p>
                         )}
                       </div>
 
-                      {/* Details */}
-                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                        <h4 className="text-white font-medium mb-3 flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-orange-500" />
+                      <div className="rounded-lg border border-gray-700 bg-gray-800 p-4">
+                        <h4 className="mb-3 flex items-center gap-2 font-medium text-white">
+                          <Clock className="h-4 w-4 text-orange-500" />
                           Details
                         </h4>
                         <div className="space-y-2 text-sm">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-gray-400">Project ID</span>
-                            <span className="text-white font-mono text-xs">{project.id}</span>
+                            <span className="break-all font-mono text-xs text-white">{project.id}</span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-gray-400">User ID</span>
-                            <span className="text-white font-mono text-xs">{project.userId}</span>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-gray-400">User</span>
+                            <div className="text-right">
+                              {(project.ownerName || project.ownerEmail) && (
+                                <p className="text-white">
+                                  {project.ownerName || '—'}{' '}
+                                  {project.ownerEmail && (
+                                    <span className="text-gray-400">({project.ownerEmail})</span>
+                                  )}
+                                </p>
+                              )}
+                              <p className="font-mono text-xs text-gray-500">{project.userId}</p>
+                              <Link
+                                href={`/admin/users?userId=${encodeURIComponent(project.userId)}`}
+                                className="mt-1 inline-flex items-center gap-1 text-orange-400 hover:text-orange-300"
+                              >
+                                Open in Users
+                                <ExternalLink className="h-3 w-3" />
+                              </Link>
+                            </div>
                           </div>
                           <div className="flex items-center justify-between">
                             <span className="text-gray-400">Video Type</span>
@@ -311,13 +400,13 @@ export default function AdminGenerationsPage() {
                           )}
                           {project.videoUrl && (
                             <div className="pt-2">
-                              <a 
-                                href={project.videoUrl} 
-                                target="_blank" 
+                              <a
+                                href={project.videoUrl}
+                                target="_blank"
                                 rel="noopener noreferrer"
                                 className="flex items-center gap-2 text-orange-400 hover:text-orange-300"
                               >
-                                <Eye className="w-4 h-4" />
+                                <Eye className="h-4 w-4" />
                                 View Video
                               </a>
                             </div>
@@ -332,34 +421,42 @@ export default function AdminGenerationsPage() {
           </div>
         )}
 
-        {/* Pagination */}
         {projects.length > 0 && (
-          <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between">
+          <div className="flex items-center justify-between border-t border-gray-700 px-6 py-4">
             <p className="text-sm text-gray-400">
-              Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, totalProjects)} of {totalProjects} projects
+              Showing {(currentPage - 1) * itemsPerPage + 1} to{' '}
+              {Math.min(currentPage * itemsPerPage, totalProjects)} of {totalProjects} projects
             </p>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <ChevronLeft className="w-5 h-5" />
+                <ChevronLeft className="h-5 w-5" />
               </button>
               <span className="text-gray-400">
                 Page {currentPage} of {totalPages || 1}
               </span>
               <button
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages || totalPages === 0}
-                className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <ChevronRight className="w-5 h-5" />
+                <ChevronRight className="h-5 w-5" />
               </button>
             </div>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+export default function AdminGenerationsPage() {
+  return (
+    <Suspense fallback={<GenerationsLoadingSkeleton />}>
+      <AdminGenerationsContent />
+    </Suspense>
   );
 }

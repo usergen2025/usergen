@@ -1,0 +1,26 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e5]:
+      - link "UserGen.ai Logo UserGen.ai" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "UserGen.ai Logo" [ref=e7]
+        - generic [ref=e8]: UserGen.ai
+      - navigation [ref=e10]:
+        - link "Home" [ref=e11] [cursor=pointer]:
+          - /url: /
+        - link "My Projects" [ref=e12] [cursor=pointer]:
+          - /url: /projects
+        - link "Pricing" [ref=e13] [cursor=pointer]:
+          - /url: /pricing
+      - generic [ref=e14]:
+        - generic "View billing" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+          - img [ref=e20]
+        - generic [ref=e27] [cursor=pointer]:
+          - img "User" [ref=e29]
+          - generic [ref=e30]: Ashish Kumar
+  - main [ref=e31]:
+    - generic [ref=e34]: Loading workspace...
+  - button "Open Next.js Dev Tools" [ref=e40] [cursor=pointer]:
+    - img [ref=e41]
+  - alert [ref=e44]

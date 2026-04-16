@@ -117,7 +117,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       // Handle AVATAR_PRODUCT style - create composite images
       if (normalizedStyle === 'AVATAR_PRODUCT') {
         console.log(`[ImageGenerationProcessor] ✅✅✅ AVATAR_PRODUCT DETECTED! Processing composite image generation...`);
-        return await this.processAvatarProductStyle(
+        const result = await this.processAvatarProductStyle(
           job,
           project,
           sceneNumber,
@@ -129,6 +129,8 @@ export class ImageGenerationProcessor extends WorkerHost {
           projectId,
           analyzedAssets
         );
+        await this.recordOperationCharge(projectId, userId, sceneNumber, normalizedStyle, job.id);
+        return result;
       } else {
         console.log(`[ImageGenerationProcessor] ❌ NOT AVATAR_PRODUCT (${normalizedStyle}), falling through to ${normalizedStyle === 'PRODUCT_ONLY' ? 'PRODUCT_ONLY' : 'default'} processing`);
       }
@@ -158,7 +160,7 @@ export class ImageGenerationProcessor extends WorkerHost {
         if (!productImageUrl) {
           throw new Error('Product image URL is required for PRODUCT_ONLY style. Please ensure product image is uploaded in assets.');
         }
-        return await this.processProductOnlyStyle(
+        const result = await this.processProductOnlyStyle(
           job,
           project,
           sceneNumber,
@@ -170,10 +172,12 @@ export class ImageGenerationProcessor extends WorkerHost {
           userId,
           analyzedAssets
         );
+        await this.recordOperationCharge(projectId, userId, sceneNumber, normalizedStyle, job.id);
+        return result;
       }
 
       // Default processing for other styles (use Seedream when we have reference assets)
-      return await this.processDefaultStyle(
+      const result = await this.processDefaultStyle(
         job,
         project,
         sceneNumber,
@@ -185,6 +189,8 @@ export class ImageGenerationProcessor extends WorkerHost {
         analyzedAssets,
         referenceImagesOrdered
       );
+      await this.recordOperationCharge(projectId, userId, sceneNumber, normalizedStyle, job.id);
+      return result;
     } catch (error: any) {
       console.error(`[ImageGenerationProcessor] Error processing job ${job.id}:`, error);
       
@@ -211,6 +217,58 @@ export class ImageGenerationProcessor extends WorkerHost {
       }
 
       throw error;
+    }
+  }
+
+  private async recordOperationCharge(
+    projectId: string,
+    userId: string,
+    sceneNumber: number,
+    style: string,
+    jobId?: string | number,
+  ) {
+    const idempotencyKey = `image:${projectId}:${sceneNumber}`;
+    try {
+      const project = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+        select: { metadata: true, creditsSpent: true },
+      });
+      const baseMetadata =
+        project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+          ? ({ ...(project.metadata as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+      const billedKeys = Array.isArray(baseMetadata.billedOperationKeys)
+        ? (baseMetadata.billedOperationKeys as string[])
+        : [];
+      if (billedKeys.includes(idempotencyKey)) {
+        return;
+      }
+      const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
+      const response = await axios.post(
+        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        {
+          projectId,
+          userId,
+          sceneNumber,
+          operationType: 'IMAGE_GENERATION',
+          operationName: 'Image Generation',
+          metadata: { idempotencyKey, style, jobId },
+        },
+        { timeout: 10000 },
+      );
+      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: {
+            ...baseMetadata,
+            billedOperationKeys: [...billedKeys, idempotencyKey],
+          } as any,
+          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
+        },
+      });
+    } catch (error: any) {
+      console.warn(`[ImageGenerationProcessor] Billing hook failed: ${error.message}`);
     }
   }
 

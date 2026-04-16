@@ -10,23 +10,32 @@ export class AdminService {
     limit?: number;
     status?: string;
     search?: string;
+    userId?: string;
   }) {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    const conditions: Record<string, unknown>[] = [];
+
+    if (query.userId) {
+      conditions.push({ userId: query.userId });
+    }
 
     if (query.status) {
-      where.status = query.status;
+      conditions.push({ status: query.status });
     }
 
     if (query.search) {
-      where.OR = [
-        { title: { contains: query.search, mode: 'insensitive' } },
-        { userId: { contains: query.search, mode: 'insensitive' } },
-      ];
+      conditions.push({
+        OR: [
+          { title: { contains: query.search, mode: 'insensitive' } },
+          { userId: { contains: query.search, mode: 'insensitive' } },
+        ],
+      });
     }
+
+    const where = conditions.length === 0 ? {} : { AND: conditions };
 
     const [projects, total] = await Promise.all([
       this.databaseService.videoProject.findMany({

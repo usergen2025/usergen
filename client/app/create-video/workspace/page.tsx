@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Edit, Music, Type, ChevronUp, Play, Loader2, User, Check } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
@@ -154,6 +154,8 @@ function WorkspacePageContent() {
   const avatarSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const [previewDimensions, setPreviewDimensions] = useState({ width: 320, height: 537 });
+  const [mobileDrawerFrame, setMobileDrawerFrame] = useState({ top: 170, height: 420 });
+  const [viewportWidth, setViewportWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1280);
   
   // Workspace mode: 'images' | 'converting' | 'videos'
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('images');
@@ -173,12 +175,15 @@ function WorkspacePageContent() {
   // B-roll selection modal state
   const [brollModalOpen, setBrollModalOpen] = useState(false);
   const [brollModalSceneNumber, setBrollModalSceneNumber] = useState<number>(1);
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   
   // Derived state for backward compatibility
   const isVideoMode = workspaceMode === 'videos';
   const isConverting = workspaceMode === 'converting';
   const isRendering = workspaceMode === 'rendering';
   const isCompleted = workspaceMode === 'completed';
+  const isTabletViewport = viewportWidth >= 560 && viewportWidth < 1280;
   
   // WebSocket job tracking
   const videoJobIdsRef = useRef<Map<number, Set<string>>>(new Map());
@@ -357,8 +362,13 @@ function WorkspacePageContent() {
         if (response.success && response.data) {
           const projectData = response.data;
 
-          // Verify it's an AI chat flow project
-          if (projectData.metadata?.generationFlow !== 'AI_CHAT') {
+          const hasFinalVideoUrl = Boolean(
+            projectData.videoPublicUrl || projectData.videoGcsUrl || projectData.videoUrl
+          );
+          const isCompletedProject = projectData.status === 'COMPLETED';
+
+          // Allow completed projects with a final video even when generationFlow is classic.
+          if (projectData.metadata?.generationFlow !== 'AI_CHAT' && !(isCompletedProject && hasFinalVideoUrl)) {
             // Show a local message instead of redirecting into the classic flow
             showToast('This project was created with the classic flow and is not available in the AI workspace.', 'info');
             setProject(null);
@@ -576,13 +586,45 @@ function WorkspacePageContent() {
     }
   };
 
+  const handleDownloadFinalVideo = useCallback(async () => {
+    if (!finalVideoUrl) return;
+
+    try {
+      const response = await fetch(finalVideoUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch video (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `${project?.title || `project-${projectId || 'video'}`}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      showToast('Download started', 'success');
+    } catch (error) {
+      console.warn('Direct download failed, falling back to opening URL:', error);
+      window.open(finalVideoUrl, '_blank');
+      showToast('Download could not start directly. Opened video in a new tab.', 'info');
+    }
+  }, [finalVideoUrl, project?.title, projectId, showToast]);
+
   // Track preview container dimensions for avatar overlay positioning
   useEffect(() => {
     const updateDimensions = () => {
+      setViewportWidth(window.innerWidth);
       if (previewContainerRef.current) {
+        const rect = previewContainerRef.current.getBoundingClientRect();
         setPreviewDimensions({
           width: previewContainerRef.current.offsetWidth,
           height: previewContainerRef.current.offsetHeight,
+        });
+        setMobileDrawerFrame({
+          top: Math.max(96, rect.top),
+          height: Math.max(260, Math.round(rect.height)),
         });
       }
     };
@@ -590,6 +632,18 @@ function WorkspacePageContent() {
     updateDimensions();
     window.addEventListener('resize', updateDimensions);
     return () => window.removeEventListener('resize', updateDimensions);
+  }, [workspaceMode, selectedSceneIndex, sceneCount]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setViewportWidth(window.innerWidth);
+      if (window.innerWidth >= 1280) {
+        setLeftDrawerOpen(false);
+        setRightDrawerOpen(false);
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   // Handle scene navigation
@@ -608,6 +662,10 @@ function WorkspacePageContent() {
   // Handle image upload - opens B-roll selection modal for current scene
   const handleUpload = () => {
     handleOpenBrollModal(currentSceneNumber);
+  };
+  const handleSceneUpload = (sceneNumber: number) => {
+    setSelectedSceneIndex(Math.max(0, sceneNumber - 1));
+    handleOpenBrollModal(sceneNumber);
   };
 
   // Save avatar overlay settings to project metadata (debounced)
@@ -858,6 +916,11 @@ function WorkspacePageContent() {
     }
   };
 
+  const handleSceneRegenerate = async (sceneIndex: number) => {
+    setSelectedSceneIndex(sceneIndex);
+    await handleRegenerate();
+  };
+
   // Handle convert to videos (uses batch API)
   const handleConvertToVideos = async () => {
     if (!projectId) return;
@@ -1012,6 +1075,9 @@ function WorkspacePageContent() {
             setTimeout(() => {
               setWorkspaceMode('completed');
               showToast('Video rendering completed!', 'success');
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('credits-refresh'));
+              }
             }, 1000);
             return;
           }
@@ -1458,14 +1524,14 @@ function WorkspacePageContent() {
 
   if (loading || authLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#FFFCF8]">
+      <div className="flex flex-col items-center justify-center min-h-screen">
         <div className="text-[clamp(1rem,1.76vh,18px)] text-[#212121]">Loading workspace...</div>
       </div>
     );
   }
 
   return (
-    <div className="relative h-full bg-[#FFFCF8] overflow-hidden flex flex-col">
+    <div className="relative h-full overflow-hidden flex flex-col">
       {/* Shimmer animation keyframes */}
       <style jsx>{`
         @keyframes shimmer {
@@ -1476,7 +1542,7 @@ function WorkspacePageContent() {
 
       {/* Rendering Overlay */}
       {workspaceMode === 'rendering' && (
-        <div className="absolute inset-0 z-50 bg-[#FFFCF8] flex flex-col items-center justify-center px-4">
+        <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-[2px] flex flex-col items-center justify-center px-4">
           <div className="max-w-lg w-full text-center space-y-8">
             {/* Fun Facts */}
             <div>
@@ -1522,10 +1588,7 @@ function WorkspacePageContent() {
 
       {/* Completed State - Final Video Preview */}
       {workspaceMode === 'completed' && finalVideoUrl && (
-        <div className="absolute inset-0 z-50 bg-[#FFFCF8] flex flex-col overflow-hidden">
-          {/* Background ellipses for completed state */}
-          <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
-          <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
+        <div className="absolute inset-0 z-50 bg-white/50 backdrop-blur-[1px] flex flex-col overflow-hidden">
           
           <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
             {/* Header Row */}
@@ -1583,16 +1646,16 @@ function WorkspacePageContent() {
                 <h3 className="font-heading text-[clamp(18px,2.34vh,24px)] font-semibold text-[#212121]">Export & Share</h3>
                 <div className="flex justify-center gap-6">
                   {/* Download */}
-                  <a
-                    href={finalVideoUrl}
-                    download
+                  <button
+                    type="button"
+                    onClick={handleDownloadFinalVideo}
                     className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]"
                   >
                     <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                     </svg>
                     <span className="text-xs text-gray-600">Download</span>
-                  </a>
+                  </button>
                   
                   {/* Instagram */}
                   <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
@@ -1637,16 +1700,12 @@ function WorkspacePageContent() {
         </div>
       )}
       
-      {/* Background ellipses */}
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
-
       {/* Main Container - matches AI chat page structure */}
-      <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
+      <div className="relative max-w-[1248px] w-full mx-auto pt-3 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
         {/* Header Row - matches AI chat navigation bar */}
         <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0 px-3 sm:px-6 md:px-[96px]">
           {/* Left: Back + Workspace */}
-          <div className="flex flex-row items-center gap-[clamp(0.75rem,2vh,20px)] min-w-[90px] sm:min-w-[110px] md:min-w-[125px]">
+          <div className="flex flex-row items-center gap-2 sm:gap-[clamp(0.75rem,2vh,20px)] min-w-[90px] sm:min-w-[110px] md:min-w-[125px]">
             <button
               onClick={handleBack}
               className="flex items-center justify-center w-[clamp(16px,2.34vh,24px)] h-[clamp(16px,2.34vh,24px)] cursor-pointer hover:opacity-80 transition-opacity"
@@ -1658,7 +1717,7 @@ function WorkspacePageContent() {
 
           {/* Center: Mode toggle tabs - only show when videos exist and not converting/rendering/completed */}
           {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
-            <div className="flex items-center gap-1 bg-gray-100 rounded-full p-1">
+            <div className="hidden xl:flex items-center gap-1 bg-gray-100 rounded-full p-1">
               <button
                 onClick={handleBackToImages}
                 className={cn(
@@ -1685,6 +1744,7 @@ function WorkspacePageContent() {
           )}
 
           {/* Right: Convert to Videos / Export button */}
+          <div className="flex items-center gap-2">
           <button
             onClick={workspaceMode === 'videos' ? handleExport : handleConvertToVideos}
             disabled={workspaceMode === 'converting'}
@@ -1702,12 +1762,20 @@ function WorkspacePageContent() {
               )}
             </span>
           </button>
+          </div>
         </div>
 
-        {/* Main content area - flex layout with internal scrolling */}
-        <div className="flex flex-row items-start gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-hidden px-6">
+        {/* Main content area — stack on small screens; three columns from lg up */}
+        <div className="flex flex-col xl:flex-row items-stretch xl:items-start gap-4 xl:gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-y-auto xl:overflow-y-hidden xl:overflow-x-visible px-4 sm:px-6 pb-6 xl:pb-0 min-h-0">
         {/* Left sidebar - Scene list */}
-        <div className="flex flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-[clamp(250px,28vw,380px)] h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] rounded-[20px] overflow-hidden">
+        <div className={cn(
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full xl:basis-[clamp(280px,28vw,360px)] xl:min-w-[280px] xl:max-w-[360px] h-auto xl:h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
+          "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
+          "fixed left-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
+          leftDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "-translate-x-full opacity-0 pointer-events-none"
+        )}
+        style={leftDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
           <div className="flex flex-col items-center gap-[clamp(8px,0.98vh,10px)] w-full h-full overflow-y-auto pr-[clamp(4px,0.52vw,8px)]">
             {scenes.length > 0 ? (
               scenes.map((scene, index) => {
@@ -1723,7 +1791,10 @@ function WorkspacePageContent() {
                 return (
                   <div
                     key={index}
-                    onClick={() => setSelectedSceneIndex(index)}
+                    onClick={() => {
+                      setSelectedSceneIndex(index);
+                      setLeftDrawerOpen(false);
+                    }}
                     className={cn(
                       "rounded-[12px] cursor-pointer transition-all",
                       isSelected ? "p-[2px]" : "p-0"
@@ -1794,15 +1865,34 @@ function WorkspacePageContent() {
                         <span className="font-heading font-normal text-[clamp(14px,1.76vh,18px)] leading-[clamp(18px,2.15vh,22px)] text-[#212121] line-clamp-2">
                           {sceneText || `Scene ${sceneNumber}`}
                         </span>
-                        <div className="flex flex-row justify-between items-center gap-[clamp(6px,0.69vw,8px)] w-full">
-                          <span className="font-heading font-normal text-[clamp(12px,1.17vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-[#616161]">
-                            {timeRange}
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button className="w-[clamp(22px,2.73vh,28px)] h-[clamp(22px,2.73vh,28px)] flex items-center justify-center">
-                              <Edit className="w-full h-full text-[#212121]" />
-                            </button>
-                          </div>
+                        <span className="font-heading font-normal text-[clamp(12px,1.17vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-[#616161]">
+                          {timeRange}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSceneUpload(sceneNumber);
+                            }}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
+                            title="Upload scene media"
+                            aria-label={`Upload media for scene ${sceneNumber}`}
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              await handleSceneRegenerate(index);
+                            }}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
+                            title="Regenerate scene"
+                            aria-label={`Regenerate scene ${sceneNumber}`}
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1818,7 +1908,7 @@ function WorkspacePageContent() {
         </div>
 
         {/* Center - Preview */}
-        <div className="flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-[clamp(380px,38vw,480px)] h-full">
+        <div className="relative flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-full min-w-0 xl:flex-1 xl:max-w-[520px] xl:min-w-[340px] max-w-[min(520px,calc(100vw-2rem))] min-[560px]:max-w-[min(620px,calc(100vw-1rem))] mx-auto h-auto xl:h-full shrink-0">
           {/* Scene counter */}
           <div className="flex flex-row justify-center items-center w-full">
             <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121]">
@@ -1827,7 +1917,33 @@ function WorkspacePageContent() {
           </div>
 
           {/* Preview area with navigation arrows on sides */}
-          <div className="flex flex-row items-center justify-center gap-[clamp(8px,0.98vh,12px)] w-full flex-1 min-h-0">
+          <div className="flex flex-row items-center justify-center gap-[clamp(8px,0.98vh,12px)] w-full flex-1 min-h-0 min-[0px]:min-h-[min(60vh,560px)] lg:min-h-0">
+            {/* Mobile edge rails */}
+            <button
+              type="button"
+              onClick={() => {
+                setRightDrawerOpen(false);
+                setLeftDrawerOpen(true);
+              }}
+              className="xl:hidden absolute left-[-10px] min-[560px]:left-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-r-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
+              aria-label="Open scenes drawer"
+            >
+              <Clapperboard className="w-3.5 h-3.5 text-[#8B6C5C]" />
+              <span className="[writing-mode:vertical-rl] rotate-180 text-[10px] tracking-[0.08em] font-heading text-[#8B6C5C]">SCENES</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLeftDrawerOpen(false);
+                setRightDrawerOpen(true);
+              }}
+              className="xl:hidden absolute right-[-10px] min-[560px]:right-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-l-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
+              aria-label="Open settings drawer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-[#8B6C5C]" />
+              <span className="[writing-mode:vertical-rl] text-[10px] tracking-[0.08em] font-heading text-[#8B6C5C]">SETTINGS</span>
+            </button>
+
             {/* Left navigation arrow */}
             <button
               onClick={handlePreviousScene}
@@ -1842,7 +1958,7 @@ function WorkspacePageContent() {
               ref={previewContainerRef}
               className="relative rounded-[12px] overflow-hidden bg-gray-200 flex items-center justify-center flex-shrink-0"
               style={{ 
-                width: 'min(260px, calc((100% - 100px)))',
+                width: isTabletViewport ? 'min(340px, calc((100% - 128px)))' : 'min(260px, calc((100% - 100px)))',
                 aspectRatio: '9/16'
               }}
             >
@@ -1934,27 +2050,45 @@ function WorkspacePageContent() {
             </button>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex flex-row items-center gap-[clamp(6px,0.69vw,8px)]">
-            <button
-              onClick={handleUpload}
-              className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(6px,0.69vw,8px)] py-[clamp(6px,0.69vw,8px)] rounded-[16px] hover:bg-gray-100 transition-colors"
-            >
-              <Image src="/assets/u_upload.svg" alt="Upload" width={16} height={16} className="w-[clamp(14px,1.56vh,16px)] h-[clamp(14px,1.56vh,16px)]" />
-              <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121] underline">Upload</span>
-            </button>
-            <button
-              onClick={handleRegenerate}
-              className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(6px,0.69vw,8px)] py-[clamp(6px,0.69vw,8px)] rounded-[16px] hover:bg-gray-100 transition-colors"
-            >
-              <Image src="/assets/u_redo.svg" alt="Regenerate" width={16} height={16} className="w-[clamp(14px,1.56vh,16px)] h-[clamp(14px,1.56vh,16px)]" />
-              <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121] underline">Regenerate</span>
-            </button>
-          </div>
+          {/* Mobile mode toggle below preview */}
+          {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
+            <div className="xl:hidden flex items-center gap-1 bg-gray-100 rounded-full p-1">
+              <button
+                onClick={handleBackToImages}
+                className={cn(
+                  "px-4 py-1.5 rounded-full text-[12px] font-medium transition-all",
+                  workspaceMode === 'images'
+                    ? "bg-white shadow-sm text-[#212121]"
+                    : "text-gray-500 hover:text-gray-700"
+                )}
+              >
+                Images
+              </button>
+              <button
+                onClick={() => setWorkspaceMode('videos')}
+                className={cn(
+                  "px-4 py-1.5 rounded-full text-[12px] font-medium transition-all",
+                  workspaceMode === 'videos'
+                    ? "bg-white shadow-sm text-[#212121]"
+                    : "text-gray-500 hover:text-gray-700"
+                )}
+              >
+                Videos
+              </button>
+            </div>
+          )}
+
         </div>
 
         {/* Right sidebar - Settings */}
-        <div className="flex flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-[clamp(300px,26.7vw,384px)] h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] rounded-[20px] overflow-hidden">
+        <div className={cn(
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full xl:basis-[clamp(320px,26.7vw,384px)] xl:min-w-[320px] xl:max-w-[384px] min-h-0 xl:h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
+          "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
+          "fixed right-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
+          rightDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "translate-x-full opacity-0 pointer-events-none"
+        )}
+        style={rightDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
           <div className="flex flex-col justify-start items-start gap-[clamp(8px,0.98vh,10px)] w-full h-full overflow-hidden">
             
             {/* Avatar Overlay Section - Only for AVATAR_CUTOUT style */}
@@ -2202,8 +2336,21 @@ function WorkspacePageContent() {
             </div>
           </div>
         </div>
+
         </div>
       </div>
+
+      {(leftDrawerOpen || rightDrawerOpen) && (
+        <button
+          type="button"
+          aria-label="Close workspace drawers"
+          className="xl:hidden fixed inset-0 z-40 bg-black/30"
+          onClick={() => {
+            setLeftDrawerOpen(false);
+            setRightDrawerOpen(false);
+          }}
+        />
+      )}
 
       {/* B-Roll Selection Modal */}
       <BRollSelectionModal

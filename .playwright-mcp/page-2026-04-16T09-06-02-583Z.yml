@@ -1,0 +1,51 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e5]:
+      - link "UserGen.ai Logo UserGen.ai" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "UserGen.ai Logo" [ref=e7]
+        - generic [ref=e8]: UserGen.ai
+      - navigation [ref=e10]:
+        - link "Home" [ref=e11] [cursor=pointer]:
+          - /url: /
+        - link "Features" [ref=e12] [cursor=pointer]:
+          - /url: /features
+        - link "Use Cases" [ref=e13] [cursor=pointer]:
+          - /url: /use-cases
+        - link "Enterprise" [ref=e14] [cursor=pointer]:
+          - /url: /enterprise
+        - link "Pricing" [ref=e15] [cursor=pointer]:
+          - /url: /pricing
+      - generic [ref=e16]:
+        - button "Login" [ref=e18]
+        - button "Create a Video" [ref=e19]
+  - main [ref=e20]:
+    - generic [ref=e21]:
+      - generic [ref=e23]: Loading workspace...
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - button "Go back" [ref=e29] [cursor=pointer]:
+            - img [ref=e30]
+          - heading "Login" [level=1] [ref=e32]
+        - generic [ref=e34]:
+          - generic [ref=e35]:
+            - generic [ref=e36]: Email
+            - textbox "Email" [ref=e38]
+          - generic [ref=e39]:
+            - generic [ref=e40]: One Time Password
+            - textbox "------" [disabled] [ref=e42]
+          - generic [ref=e43]:
+            - button "Google Google" [ref=e44]:
+              - img "Google" [ref=e46]
+              - generic [ref=e47]: Google
+            - button "Facebook Facebook" [ref=e48]:
+              - img "Facebook" [ref=e50]
+              - generic [ref=e51]: Facebook
+          - button "SEND OTP" [disabled]
+          - paragraph [ref=e53]:
+            - text: Don't have an account?
+            - link "Sign up" [ref=e54] [cursor=pointer]:
+              - /url: /signup
+  - button "Open Next.js Dev Tools" [ref=e60] [cursor=pointer]:
+    - img [ref=e61]
+  - alert [ref=e64]

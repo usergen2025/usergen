@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useTransition, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Plus, Play, Clock, CheckCircle, XCircle, Loader2, Edit } from 'lucide-react';
+import { ArrowLeft, Plus, Play, Pause, Clock, CheckCircle, XCircle, Loader2, Edit, Trash2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
+import ConfirmModal from '@/components/ui/ConfirmModal';
 import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
@@ -25,6 +26,8 @@ interface VideoProject {
   progress: number;
   progressStage?: string;
   videoUrl?: string;
+  videoPublicUrl?: string;
+  videoGcsUrl?: string;
   thumbnailUrl?: string;
   createdAt: string;
   updatedAt: string;
@@ -42,45 +45,104 @@ export default function ProjectsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [projects, setProjects] = useState<VideoProject[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [activePreviewProjectId, setActivePreviewProjectId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'draft' | 'in-progress' | 'completed'>('all');
+  const [isFilterPending, startFilterTransition] = useTransition();
+  const [projectPendingDelete, setProjectPendingDelete] = useState<VideoProject | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.push('/login?redirect=/projects');
       return;
     }
-
-    if (isAuthenticated) {
-      loadProjects();
-    }
   }, [isAuthenticated, authLoading, router]);
 
-  const loadProjects = async () => {
+  const loadProjects = useCallback(async (opts?: { reset?: boolean; status?: 'all' | 'draft' | 'in-progress' | 'completed' }) => {
+    const reset = opts?.reset ?? false;
+    const status = opts?.status ?? filter;
+    const cursor = reset ? null : nextCursor;
+    if (!reset && (!hasMore || !cursor)) return;
+
     try {
-      setLoading(true);
-      const response = await apiClient.getVideoProjects();
+      if (reset) {
+        setLoading(true);
+        setActivePreviewProjectId(null);
+      } else {
+        setLoadingMore(true);
+      }
+
+      const response = await apiClient.getVideoProjectsPaginated({
+        limit: 20,
+        cursor,
+        status,
+      });
       if (response.success && response.data) {
-        setProjects(response.data);
+        const legacyArray = Array.isArray(response.data) ? response.data : null;
+        const items = legacyArray || response.data.items || [];
+        setProjects((prev) => (reset ? items : [...prev, ...items]));
+        setNextCursor(legacyArray ? null : response.data.nextCursor ?? null);
+        setHasMore(legacyArray ? false : Boolean(response.data.hasMore));
       }
     } catch (error: any) {
       showToast(error.message || 'Failed to load projects', 'error');
     } finally {
-      setLoading(false);
+      if (reset) {
+        setLoading(false);
+      } else {
+        setLoadingMore(false);
+      }
     }
-  };
+  }, [filter, nextCursor, hasMore, showToast]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void loadProjects({ reset: true, status: filter });
+  }, [isAuthenticated, filter, loadProjects]);
+
+  useEffect(() => {
+    if (loading || !hasMore) return;
+    const sentinel = loadMoreRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !loadingMore) {
+          void loadProjects({ reset: false, status: filter });
+        }
+      },
+      { rootMargin: '320px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loading, hasMore, loadingMore, loadProjects, filter]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        setActivePreviewProjectId(null);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'COMPLETED':
-        return <CheckCircle className="w-5 h-5 text-green-600" />;
+        return <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />;
       case 'IN_PROGRESS':
-        return <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />;
+        return <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />;
       case 'FAILED':
-        return <XCircle className="w-5 h-5 text-red-600" />;
+        return <XCircle className="w-4 h-4 text-red-600 shrink-0" />;
       case 'DRAFT':
-        return <Clock className="w-5 h-5 text-gray-600" />;
+        return <Clock className="w-4 h-4 text-gray-600 shrink-0" />;
       default:
-        return <Clock className="w-5 h-5 text-gray-600" />;
+        return <Clock className="w-4 h-4 text-gray-600 shrink-0" />;
     }
   };
 
@@ -126,6 +188,16 @@ export default function ProjectsPage() {
     return `${VIDEO_SERVICE_BASE_URL}${project.videoUrl}`;
   };
 
+  const getPreviewVideoUrl = (project: VideoProject): string | undefined => {
+    const preview = project.metadata?.previewVideoUrl;
+    if (typeof preview === 'string' && preview.length > 0) {
+      if (preview.startsWith('http')) return preview;
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+      return `${VIDEO_SERVICE_BASE_URL}${preview}`;
+    }
+    return getVideoUrl(project);
+  };
+
   const getStepText = (step: string) => {
     const stepMap: Record<string, string> = {
       STYLE_SELECTION: 'Style Selection',
@@ -160,70 +232,71 @@ export default function ProjectsPage() {
     router.push(`${route}?projectId=${project.id}&step=${project.currentStep}`);
   };
 
-  const handleDelete = async (projectId: string) => {
-    if (!confirm('Are you sure you want to delete this project?')) {
-      return;
-    }
+  const handleViewWorkspace = (projectId: string) => {
+    router.push(`/create-video/workspace?projectId=${projectId}`);
+  };
 
+  const handleDelete = async (projectId: string) => {
     try {
+      setIsDeleting(true);
       await apiClient.deleteVideoProject(projectId);
       showToast('Project deleted successfully', 'success');
+      setProjectPendingDelete(null);
       loadProjects();
     } catch (error: any) {
       showToast(error.message || 'Failed to delete project', 'error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  const filteredProjects = projects.filter((project) => {
-    if (filter === 'all') return true;
-    if (filter === 'draft') return project.status === 'DRAFT';
-    if (filter === 'in-progress') return project.status === 'IN_PROGRESS';
-    if (filter === 'completed') return project.status === 'COMPLETED';
-    return true;
-  });
+  const filteredProjects = useMemo(() => projects, [projects]);
 
   if (authLoading || loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background pb-20">
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-6 flex items-center justify-between">
-            <div className="flex items-center gap-4">
+    <div className="min-h-screen pb-16">
+      <div className="max-w-6xl mx-auto px-4 pt-8 md:pt-12">
+        <div className="max-w-6xl mx-auto">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-row items-center gap-4">
               <button
                 onClick={() => router.back()}
-                className="flex items-center gap-2 text-text-primary hover:text-text-secondary transition-colors"
+                className="flex items-center justify-center w-6 h-6 cursor-pointer hover:opacity-80 transition-opacity"
+                aria-label="Back"
               >
-                <ArrowLeft className="w-5 h-5" />
-                <span>Back</span>
+                <ArrowLeft className="w-full h-full text-[#212121]" strokeWidth={1.5} />
               </button>
-              <h1 className={cn(typography.heading.h1)}>My Projects</h1>
+              <h1 className="font-heading text-2xl font-medium text-[#212121]">My Projects</h1>
             </div>
-            <Link href="/create-video/ai-chat">
-              <Button variant="primary">
-                <Plus className="w-4 h-4 mr-2" />
-                Create New Project
+            <Link href="/create-video/ai-chat" className="shrink-0">
+              <Button variant="primary" size="sm" className="!px-4 !py-2 text-sm shadow-button">
+                <Plus className="w-4 h-4 mr-1.5" />
+                New Project
               </Button>
             </Link>
           </div>
 
           {/* Filters */}
-          <div className="mb-6 flex gap-2">
+          <div className="mb-6 inline-flex items-center gap-1.5 rounded-full bg-white/85 p-1.5 shadow-sm ring-1 ring-[#F0E6DF]">
             {(['all', 'draft', 'in-progress', 'completed'] as const).map((f) => (
               <button
                 key={f}
-                onClick={() => setFilter(f)}
+                onClick={() => {
+                  if (f === filter) return;
+                  startFilterTransition(() => setFilter(f));
+                }}
                 className={cn(
-                  'px-4 py-2 rounded-lg transition-colors',
+                  'px-3 py-1.5 text-xs sm:text-sm rounded-full transition-all duration-150 will-change-transform',
                   filter === f
-                    ? 'bg-primary text-white'
-                    : 'bg-secondary text-text-primary hover:bg-primary-light'
+                    ? 'gradient-primary text-white shadow-sm'
+                    : 'text-[#574977] hover:bg-[#F8EFE9]'
                 )}
               >
                 {f.charAt(0).toUpperCase() + f.slice(1).replace('-', ' ')}
@@ -233,8 +306,8 @@ export default function ProjectsPage() {
 
           {/* Projects Grid */}
           {filteredProjects.length === 0 ? (
-            <Card className="p-12 text-center">
-              <p className={cn(typography.body.large, "text-text-secondary mb-4")}>
+            <Card className="p-8 sm:p-12 text-center bg-white/95">
+              <p className={cn(typography.body.medium, "text-text-secondary mb-4")}>
                 {filter === 'all'
                   ? 'No projects yet. Create your first video project!'
                   : `No ${filter} projects found.`}
@@ -247,73 +320,93 @@ export default function ProjectsPage() {
               </Link>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredProjects.map((project) => (
-                <Card key={project.id} className="p-6 hover:shadow-lg transition-shadow">
-                  {/* Thumbnail/Video Preview */}
-                  {project.status === 'COMPLETED' && project.videoUrl ? (
-                    <div className="mb-4 w-full h-48 rounded-lg overflow-hidden bg-gray-200 relative group">
-                      <video
-                        src={getVideoUrl(project) || ''}
-                        className="w-full h-full object-cover"
-                        controls={false}
-                        muted
-                        loop
-                        playsInline
-                        onMouseEnter={(e) => e.currentTarget.play()}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.pause();
-                          e.currentTarget.currentTime = 0;
-                        }}
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/20 transition-colors">
-                        <button
-                          onClick={() => {
-                            const fullVideoUrl = getVideoUrl(project);
-                            if (fullVideoUrl) {
-                              window.open(fullVideoUrl, '_blank');
-                            }
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-3 rounded-full bg-background/90 hover:bg-background"
-                        >
-                          <Play className="w-6 h-6 text-primary" fill="currentColor" />
-                        </button>
-                      </div>
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+              {filteredProjects.map((project, index) => {
+                const isCompleted = project.status === 'COMPLETED' && Boolean(getVideoUrl(project));
+                const isPreviewing = activePreviewProjectId === project.id;
+                const previewUrl = getPreviewVideoUrl(project);
+                return (
+                <Card
+                  key={project.id}
+                  className="project-card-enter w-full max-w-[260px] mx-auto p-3 sm:p-3.5 rounded-2xl bg-white/95 border border-[#F0E6DF] shadow-sm hover:shadow-card hover:-translate-y-0.5 transition-all duration-200"
+                  style={{ animationDelay: `${Math.min(index, 6) * 50}ms` }}
+                >
+                  {/* Thumbnail — 9:16 to match generated vertical video */}
+                  {isCompleted ? (
+                    <div className="mb-2.5 mx-auto w-full aspect-[9/16] rounded-xl overflow-hidden bg-gray-200 relative group">
+                      {isPreviewing && previewUrl ? (
+                        <video
+                          src={previewUrl}
+                          className="w-full h-full object-cover"
+                          controls
+                          autoPlay
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : (
+                        <>
+                          {project.thumbnailUrl ? (
+                            <img
+                              src={project.thumbnailUrl}
+                              alt={project.title || 'Project thumbnail'}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Play className="w-8 h-8 text-gray-400" />
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setActivePreviewProjectId(project.id)}
+                            className="absolute inset-0 flex items-center justify-center bg-black/0 hover:bg-black/20 transition-colors"
+                            aria-label="Play preview"
+                          >
+                            <span className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 rounded-full bg-background/90">
+                              <Play className="w-5 h-5 text-primary" fill="currentColor" />
+                            </span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   ) : project.thumbnailUrl ? (
-                    <div className="mb-4 w-full h-48 rounded-lg overflow-hidden bg-gray-200">
+                    <div className="mb-2.5 mx-auto w-full aspect-[9/16] rounded-xl overflow-hidden bg-gray-200">
                       <img
                         src={project.thumbnailUrl}
                         alt={project.title || 'Project thumbnail'}
                         className="w-full h-full object-cover"
+                        loading="lazy"
                       />
                     </div>
                   ) : (
-                    <div className="mb-4 w-full h-48 rounded-lg bg-gray-200 flex items-center justify-center">
-                      <Play className="w-12 h-12 text-gray-400" />
+                    <div className="mb-2.5 mx-auto w-full aspect-[9/16] rounded-xl bg-gray-200 flex items-center justify-center">
+                      <Play className="w-8 h-8 text-gray-400" />
                     </div>
                   )}
 
                   {/* Project Info */}
-                  <div className="mb-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      {getStatusIcon(project.status)}
-                      <span className={cn(typography.heading.h4)}>
+                  <div className="mb-2.5">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="font-heading text-sm sm:text-base font-medium leading-snug line-clamp-1 text-[#212121]">
                         {project.title || `Project ${project.id.slice(0, 8)}`}
                       </span>
+                      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-[#F9F4EF] text-[#574977] whitespace-nowrap">
+                        {getStatusIcon(project.status)}
+                        {getStatusText(project.status)}
+                      </span>
                     </div>
-                    <p className={cn(typography.body.small, "text-text-secondary mb-2")}>
+                    <p className={cn(typography.body.small, "text-text-secondary mb-1 line-clamp-1 text-xs")}>
                       {project.description || 'No description'}
                     </p>
-                    <div className="flex items-center gap-4 text-sm text-text-secondary">
-                      <span>Status: {getStatusText(project.status)}</span>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-secondary">
                       {project.status === 'IN_PROGRESS' && (
                         <span>Step: {getStepText(project.currentStep)}</span>
                       )}
                     </div>
                     {project.progress > 0 && (
                       <div className="mt-2">
-                        <div className="flex items-center justify-between text-sm mb-1">
+                        <div className="flex items-center justify-between text-[11px] mb-1">
                           <span className="text-text-secondary">Progress</span>
                           <span className="text-text-secondary">{project.progress}%</span>
                         </div>
@@ -328,51 +421,97 @@ export default function ProjectsPage() {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex gap-2">
-                    {project.status === 'COMPLETED' && project.videoUrl ? (
+                  <div className="flex items-center gap-1.5">
+                    {isCompleted ? (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setActivePreviewProjectId((prev) =>
+                              prev === project.id ? null : project.id
+                            )
+                          }
+                          className="!px-2.5 !py-2 !text-xs sm:!text-sm min-h-0"
+                        >
+                          {isPreviewing ? (
+                            <>
+                              <Pause className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                              Pause
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                              Play
+                            </>
+                          )}
+                        </Button>
                       <Button
                         variant="primary"
-                        onClick={() => {
-                          const fullVideoUrl = getVideoUrl(project);
-                          if (fullVideoUrl) {
-                            window.open(fullVideoUrl, '_blank');
-                          }
-                        }}
-                        className="flex-1"
+                        size="sm"
+                        onClick={() => handleViewWorkspace(project.id)}
+                        className="flex-1 !px-3 !py-2 !text-xs sm:!text-sm min-h-0"
                       >
-                        <Play className="w-4 h-4 mr-2" />
                         View
                       </Button>
+                      </>
                     ) : (
                       <Button
                         variant="primary"
+                        size="sm"
                         onClick={() => handleContinue(project)}
-                        className="flex-1"
+                        className="flex-1 !px-3 !py-2 !text-xs sm:!text-sm min-h-0"
                       >
-                        <Edit className="w-4 h-4 mr-2" />
+                        <Edit className="w-3.5 h-3.5 mr-1.5 shrink-0" />
                         Continue
                       </Button>
                     )}
-                    <Button
-                      variant="outline"
-                      onClick={() => handleDelete(project.id)}
+                    <button
+                      type="button"
+                      onClick={() => setProjectPendingDelete(project)}
+                      className="inline-flex items-center justify-center h-8 w-8 rounded-full border border-[#E7D9CF] text-[#8B6C5C] hover:text-[#E03A3A] hover:border-[#E03A3A] hover:bg-[#FFF4F4] transition-colors"
+                      aria-label="Delete project"
                     >
-                      Delete
-                    </Button>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
                   {/* Timestamp */}
-                  <p className={cn(typography.body.small, "text-text-muted mt-4 text-center")}>
+                  <p className={cn(typography.body.small, "text-text-muted mt-2 text-center text-[11px]")}>
                     {project.status === 'COMPLETED' && project.completedAt
                       ? `Completed ${new Date(project.completedAt).toLocaleDateString()}`
                       : `Updated ${new Date(project.updatedAt).toLocaleDateString()}`}
                   </p>
                 </Card>
-              ))}
+              )})}
             </div>
+          )}
+
+          {(loadingMore || hasMore) && (
+            <div ref={loadMoreRef} className="h-12 flex items-center justify-center mt-6">
+              {loadingMore && <Loader2 className="w-5 h-5 animate-spin text-primary" />}
+            </div>
+          )}
+
+          {isFilterPending && (
+            <div className="text-xs text-[#7A6A60] mt-3">Updating filter...</div>
           )}
         </div>
       </div>
+      <ConfirmModal
+        isOpen={Boolean(projectPendingDelete)}
+        onClose={() => !isDeleting && setProjectPendingDelete(null)}
+        onConfirm={() => {
+          if (!projectPendingDelete) return;
+          return handleDelete(projectPendingDelete.id);
+        }}
+        title="Delete project?"
+        description={`This will permanently remove "${projectPendingDelete?.title || `Project ${projectPendingDelete?.id?.slice(0, 8)}`}" and its generated assets.`}
+        confirmLabel="Delete project"
+        cancelLabel="Keep project"
+        variant="danger"
+        isLoading={isDeleting}
+      />
     </div>
   );
 }

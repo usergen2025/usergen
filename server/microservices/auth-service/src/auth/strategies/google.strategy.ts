@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, VerifyCallback } from 'passport-google-oauth20';
 import { ConfigService } from '@nestjs/config';
+import { resolveAuthApiPublicBase } from '../utils/oauth-public-base.util';
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
@@ -10,20 +11,25 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
   constructor(private readonly configService: ConfigService) {
     const clientID = configService.get<string>('GOOGLE_CLIENT_ID');
     const clientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
-    const baseUrl = configService.get<string>('BASE_URL') || configService.get<string>('CDN_URL') || 'http://localhost:9000';
+    const oauthBase =
+      configService.get<string>('OAUTH_PUBLIC_BASE_URL') ||
+      configService.get<string>('BASE_URL') ||
+      'http://localhost:9000';
+    const apiPublicBase = resolveAuthApiPublicBase(oauthBase);
+    const callbackURL = `${apiPublicBase}/auth/google/callback`;
 
     // Determine strategy config based on credentials
     const strategyConfig = (!clientID || !clientSecret || clientID === 'your-google-client-id' || clientSecret === 'your-google-client-secret')
       ? {
           clientID: 'dummy', // Dummy values to prevent Passport error
           clientSecret: 'dummy',
-          callbackURL: `${baseUrl}/auth/google/callback`,
+          callbackURL,
           scope: ['email', 'profile'],
         }
       : {
           clientID,
           clientSecret,
-          callbackURL: `${baseUrl}/auth/google/callback`,
+          callbackURL,
           scope: ['email', 'profile'],
         };
 

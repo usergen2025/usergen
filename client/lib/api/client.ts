@@ -442,6 +442,37 @@ class ApiClient {
     return response.data;
   }
 
+  async getVideoProjectsPaginated(params?: {
+    limit?: number;
+    cursor?: string | null;
+    status?: 'all' | 'draft' | 'in-progress' | 'completed';
+  }): Promise<ApiResponse<{ items: any[]; nextCursor: string | null; hasMore: boolean }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    if (params?.status && params.status !== 'all') {
+      const mappedStatus =
+        params.status === 'in-progress'
+          ? 'IN_PROGRESS'
+          : params.status.toUpperCase();
+      query.set('status', mappedStatus);
+    }
+
+    const response = await axios.get<ApiResponse<{ items: any[]; nextCursor: string | null; hasMore: boolean }>>(
+      `${videoServiceUrl}/video-projects?${query.toString()}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async getActiveVideoProject(): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
@@ -1566,6 +1597,7 @@ class ApiClient {
     limit?: number;
     search?: string;
     role?: string;
+    userId?: string;
   }): Promise<ApiResponse<{
     users: any[];
     pagination: { page: number; limit: number; total: number; totalPages: number };
@@ -1576,10 +1608,31 @@ class ApiClient {
     if (params?.limit) queryParams.append('limit', params.limit.toString());
     if (params?.search) queryParams.append('search', params.search);
     if (params?.role) queryParams.append('role', params.role);
+    if (params?.userId) queryParams.append('userId', params.userId);
 
     const queryString = queryParams.toString();
     const response = await axios.get<ApiResponse<any>>(
       `${AUTH_SERVICE_URL}/admin/users${queryString ? '?' + queryString : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminUsersByIds(
+    ids: string[]
+  ): Promise<ApiResponse<Array<{ id: string; email: string; name: string | null }>>> {
+    const token = this.getToken();
+    const unique = [...new Set(ids.filter(Boolean))].slice(0, 100);
+    if (unique.length === 0) {
+      return { success: true, data: [] };
+    }
+    const query = `ids=${encodeURIComponent(unique.join(','))}`;
+    const response = await axios.get<ApiResponse<Array<{ id: string; email: string; name: string | null }>>>(
+      `${AUTH_SERVICE_URL}/admin/users/batch?${query}`,
       {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -1695,6 +1748,7 @@ class ApiClient {
     limit?: number;
     status?: string;
     search?: string;
+    userId?: string;
   }): Promise<ApiResponse<{
     projects: any[];
     pagination: { page: number; limit: number; total: number; totalPages: number };
@@ -1706,6 +1760,7 @@ class ApiClient {
     if (params?.limit) queryParams.append('limit', params.limit.toString());
     if (params?.status) queryParams.append('status', params.status);
     if (params?.search) queryParams.append('search', params.search);
+    if (params?.userId) queryParams.append('userId', params.userId);
 
     const queryString = queryParams.toString();
     const response = await axios.get<ApiResponse<any>>(

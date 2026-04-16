@@ -64,6 +64,11 @@ body {
   font-family: var(--font-sans);
 }
 
+.app-global-gradient {
+  background: linear-gradient(135deg, #fff5f0 0%, #fff0f5 100%);
+  background-attachment: fixed;
+}
+
 /* Gradient Utilities */
 .gradient-primary {
   background: linear-gradient(90deg, var(--color-primary-start) 0%, var(--color-primary-end) 100%);
@@ -103,5 +108,26 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes projectCardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.project-card-enter {
+  animation: projectCardEnter 220ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-card-enter {
+    animation: none;
   }
 }

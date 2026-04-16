@@ -101,13 +101,13 @@ export default function AdminLayout({
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar: fixed height = viewport; nav scrolls; profile stays at bottom */}
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-gray-800 transform transition-transform duration-200 lg:translate-x-0 lg:static lg:flex lg:flex-col",
+        "fixed inset-y-0 left-0 z-50 w-64 bg-gray-800 flex flex-col h-screen min-h-0 transform transition-transform duration-200 lg:translate-x-0",
         sidebarOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         {/* Logo */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
+        <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-gray-700">
           <Link href="/admin" className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center">
               <Shield className="w-5 h-5 text-white" />
@@ -123,7 +123,7 @@ export default function AdminLayout({
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 min-h-0 overflow-y-auto p-4 space-y-1">
           {adminNavItems.map((item) => {
             const isActive = pathname === item.href || 
               (item.href !== '/admin' && pathname?.startsWith(item.href));
@@ -150,7 +150,7 @@ export default function AdminLayout({
         </nav>
 
         {/* User section */}
-        <div className="p-4 border-t border-gray-700">
+        <div className="flex-shrink-0 p-4 border-t border-gray-700">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-white font-bold">
               {user?.name?.charAt(0).toUpperCase() || 'A'}
@@ -170,8 +170,8 @@ export default function AdminLayout({
         </div>
       </aside>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main content — offset fixed sidebar on desktop */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 lg:pl-64">
         {/* Top bar */}
         <header className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center gap-4 lg:hidden">
           <button

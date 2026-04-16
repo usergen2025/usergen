@@ -1,0 +1,146 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e5]:
+      - link "UserGen.ai Logo UserGen.ai" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "UserGen.ai Logo" [ref=e7]
+        - generic [ref=e8]: UserGen.ai
+      - navigation [ref=e10]:
+        - link "Home" [ref=e11] [cursor=pointer]:
+          - /url: /
+        - link "My Projects" [ref=e23] [cursor=pointer]:
+          - /url: /projects
+        - link "Pricing" [ref=e15] [cursor=pointer]:
+          - /url: /pricing
+      - generic [ref=e16]:
+        - generic "View billing" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+          - generic [ref=e28]: ₹2,485
+        - generic [ref=e31] [cursor=pointer]:
+          - img "User" [ref=e33]
+          - generic [ref=e34]: Ashish Kumar
+  - main [ref=e20]:
+    - generic [ref=e47]:
+      - generic [ref=e48]:
+        - generic [ref=e49]:
+          - button [ref=e50] [cursor=pointer]:
+            - img [ref=e51]
+          - heading "Workspace" [level=2] [ref=e53]
+        - generic [ref=e54]:
+          - button "Images" [ref=e55]
+          - button "Videos" [ref=e56]
+        - button "Export →" [ref=e58]:
+          - generic [ref=e59]: Export →
+      - generic [ref=e60]:
+        - generic [ref=e62]:
+          - generic [ref=e64] [cursor=pointer]:
+            - img [ref=e68]
+            - generic [ref=e70]:
+              - generic [ref=e71]: Introducing the vibrant पीवर इन्दौरी कश्मीरी लाल मिर्च पाउडर.
+              - generic [ref=e72]: 00:00/00:05
+              - generic [ref=e73]:
+                - button "Upload media for scene 1" [ref=e74]:
+                  - img [ref=e75]
+                - button "Regenerate scene 1" [ref=e78]:
+                  - img [ref=e79]
+          - generic [ref=e85] [cursor=pointer]:
+            - img [ref=e89]
+            - generic [ref=e91]:
+              - generic [ref=e92]: Perfectly ground for a rich, vibrant color in every dish.
+              - generic [ref=e93]: 00:05/00:09
+              - generic [ref=e94]:
+                - button "Upload media for scene 2" [ref=e95]:
+                  - img [ref=e96]
+                - button "Regenerate scene 2" [ref=e99]:
+                  - img [ref=e100]
+          - generic [ref=e106] [cursor=pointer]:
+            - img [ref=e110]
+            - generic [ref=e112]:
+              - generic [ref=e113]: Enhance your culinary creations with authentic Indian flavors.
+              - generic [ref=e114]: 00:09/00:14
+              - generic [ref=e115]:
+                - button "Upload media for scene 3" [ref=e116]:
+                  - img [ref=e117]
+                - button "Regenerate scene 3" [ref=e120]:
+                  - img [ref=e121]
+          - generic [ref=e127] [cursor=pointer]:
+            - img [ref=e131]
+            - generic [ref=e133]:
+              - generic [ref=e134]: No artificial flavours, no added preservatives.
+              - generic [ref=e135]: 00:14/00:18
+              - generic [ref=e136]:
+                - button "Upload media for scene 4" [ref=e137]:
+                  - img [ref=e138]
+                - button "Regenerate scene 4" [ref=e141]:
+                  - img [ref=e142]
+          - generic [ref=e148] [cursor=pointer]:
+            - img [ref=e152]
+            - generic [ref=e154]:
+              - generic [ref=e155]: Ideal for home cooks, chefs, and spice enthusiasts.
+              - generic [ref=e156]: 00:18/00:22
+              - generic [ref=e157]:
+                - button "Upload media for scene 5" [ref=e158]:
+                  - img [ref=e159]
+                - button "Regenerate scene 5" [ref=e162]:
+                  - img [ref=e163]
+          - generic [ref=e169] [cursor=pointer]:
+            - img [ref=e173]
+            - generic [ref=e175]:
+              - generic [ref=e176]: Bring home the magic of पीवर इन्दौरी कश्मीरी लाल मिर्च पाउडर today.
+              - generic [ref=e177]: 00:22/00:27
+              - generic [ref=e178]:
+                - button "Upload media for scene 6" [ref=e179]:
+                  - img [ref=e180]
+                - button "Regenerate scene 6" [ref=e183]:
+                  - img [ref=e184]
+        - generic [ref=e189]:
+          - generic [ref=e191]: Scene 1 of 6
+          - generic [ref=e192]:
+            - button [disabled] [ref=e193]:
+              - img [ref=e194]
+            - button [ref=e198]:
+              - img [ref=e199]
+        - generic [ref=e202]:
+          - generic [ref=e203]:
+            - generic [ref=e204]:
+              - img [ref=e205]
+              - generic [ref=e209]: Background Music
+              - button [ref=e210]:
+                - img [ref=e211]
+            - generic [ref=e215]:
+              - generic [ref=e216]:
+                - button "Library" [ref=e217]:
+                  - generic [ref=e218]: Library
+                - button "Upload" [ref=e219]:
+                  - generic [ref=e220]: Upload
+              - generic [ref=e221]:
+                - generic [ref=e222]:
+                  - button [ref=e223]:
+                    - img [ref=e224]
+                  - generic:
+                    - generic: Commercial Music
+                - generic [ref=e228]:
+                  - button [ref=e229]:
+                    - img [ref=e230]
+                  - generic:
+                    - generic: Advertisement Music
+                - generic [ref=e234]:
+                  - button [ref=e235]:
+                    - img [ref=e236]
+                  - generic:
+                    - generic: Motivation Music
+                - generic [ref=e240]:
+                  - button [ref=e241]:
+                    - img [ref=e242]
+                  - generic:
+                    - generic: Nature Music
+          - generic [ref=e246]:
+            - generic [ref=e247]:
+              - img [ref=e248]
+              - generic [ref=e250]: Captions
+              - button [ref=e251]:
+                - img [ref=e252]
+            - generic [ref=e257]: Enable captions to show them on the video preview
+  - button "Open Next.js Dev Tools" [ref=e42] [cursor=pointer]:
+    - img [ref=e43]
+  - alert [ref=e46]

@@ -145,10 +145,23 @@ export class VideoController {
   @ApiOperation({ summary: 'Get all video projects', description: 'Get all video projects for the authenticated user' })
   @ApiResponse({ status: 200, description: 'Video projects retrieved successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async getProjects(@Request() req: any) {
+  async getProjects(
+    @Request() req: any,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('status') status?: string,
+  ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
       throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+
+    if (limit || cursor || status) {
+      return await this.videoService.getProjectsPaginated(userId, {
+        limit: limit ? parseInt(limit, 10) : undefined,
+        cursor,
+        status,
+      });
     }
 
     return await this.videoService.getProjects(userId);

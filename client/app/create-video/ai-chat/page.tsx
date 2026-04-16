@@ -5470,7 +5470,7 @@ function AIChatPageContent() {
 
   if (isLoading) {
     return (
-      <div className="h-screen bg-[#FFFCF8] flex items-center justify-center">
+      <div className="h-screen flex items-center justify-center">
         <div className="text-center">Loading...</div>
       </div>
     );
@@ -5497,7 +5497,7 @@ function AIChatPageContent() {
   };
 
   return (
-    <div className="relative h-full bg-[#FFFCF8] overflow-hidden flex flex-col">
+    <div className="relative h-full overflow-hidden flex flex-col">
       {/* Hidden input for per-scene manual audio upload */}
       <input
         ref={manualUploadInputRef}
@@ -5528,10 +5528,6 @@ function AIChatPageContent() {
           });
         }}
       />
-
-      {/* Gradient Ellipses Background - Exact Figma positions */}
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
 
       {/* Main Container - Figma: width: 1248px, left: 96px, top: 43px */}
       <div className="relative max-w-[1248px] w-full mx-auto px-3 sm:px-6 md:px-[96px] pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
