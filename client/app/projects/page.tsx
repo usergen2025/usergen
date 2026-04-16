@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useTransition, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Plus, Play, Pause, Clock, CheckCircle, XCircle, Loader2, Edit, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Play, Pause, Clock, CheckCircle, XCircle, Edit, Trash2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ConfirmModal from '@/components/ui/ConfirmModal';
@@ -39,6 +39,30 @@ interface VideoProject {
   };
 }
 
+const SKELETON_INITIAL_COUNT = 8;
+const SKELETON_MORE_COUNT = 4;
+
+function ProjectCardSkeleton({ index }: { index: number }) {
+  return (
+    <div
+      className="w-full max-w-[212px] mx-auto p-2.5 sm:p-3 rounded-2xl border border-[#F0E6DF] shadow-sm overflow-hidden project-skeleton-shimmer"
+      style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
+    >
+      <div className="mb-2.5 mx-auto w-full aspect-[9/16] rounded-xl bg-white/50" />
+      <div className="mb-2.5 space-y-2">
+        <div className="h-4 rounded-md w-[80%] bg-white/55" />
+        <div className="h-3 rounded-md w-full bg-white/50" />
+        <div className="h-3 rounded-md w-2/3 bg-white/50" />
+      </div>
+      <div className="flex gap-1.5 mt-2">
+        <div className="h-8 flex-1 rounded-lg bg-white/55" />
+        <div className="h-8 w-8 rounded-full bg-white/50 shrink-0" />
+      </div>
+      <div className="mt-2 h-3 w-1/2 mx-auto rounded bg-white/50" />
+    </div>
+  );
+}
+
 export default function ProjectsPage() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -54,6 +78,15 @@ export default function ProjectsPage() {
   const [projectPendingDelete, setProjectPendingDelete] = useState<VideoProject | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const previewVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
+  const [playingPreviewProjectId, setPlayingPreviewProjectId] = useState<string | null>(null);
+  const filterRef = useRef(filter);
+  const nextCursorRef = useRef<string | null>(null);
+  const hasMoreRef = useRef(true);
+  const loadingMoreGuardRef = useRef(false);
+  const fetchNextPageRef = useRef<() => Promise<void>>(async () => {});
+
+  filterRef.current = filter;
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -62,69 +95,115 @@ export default function ProjectsPage() {
     }
   }, [isAuthenticated, authLoading, router]);
 
-  const loadProjects = useCallback(async (opts?: { reset?: boolean; status?: 'all' | 'draft' | 'in-progress' | 'completed' }) => {
-    const reset = opts?.reset ?? false;
-    const status = opts?.status ?? filter;
-    const cursor = reset ? null : nextCursor;
-    if (!reset && (!hasMore || !cursor)) return;
+  const maybeFetchMoreIfSentinelVisible = useCallback(() => {
+    const el = loadMoreRef.current;
+    if (!el || !hasMoreRef.current || loadingMoreGuardRef.current) return;
+    const rect = el.getBoundingClientRect();
+    const rootMargin = 320;
+    if (rect.top < window.innerHeight + rootMargin) {
+      void fetchNextPageRef.current();
+    }
+  }, []);
 
-    try {
-      if (reset) {
-        setLoading(true);
-        setActivePreviewProjectId(null);
-      } else {
-        setLoadingMore(true);
+  const fetchFirstPage = useCallback(
+    async (status: 'all' | 'draft' | 'in-progress' | 'completed') => {
+      setLoading(true);
+      setProjects([]);
+      setActivePreviewProjectId(null);
+      try {
+        const response = await apiClient.getVideoProjectsPaginated({
+          limit: 20,
+          cursor: null,
+          status,
+        });
+        if (response.success && response.data) {
+          const legacyArray = Array.isArray(response.data) ? response.data : null;
+          const items = legacyArray || response.data.items || [];
+          setProjects(items);
+          const nc = legacyArray ? null : response.data.nextCursor ?? null;
+          const hm = legacyArray ? false : Boolean(response.data.hasMore);
+          setNextCursor(nc);
+          setHasMore(hm);
+          nextCursorRef.current = nc;
+          hasMoreRef.current = hm;
+        }
+      } catch (error: any) {
+        showToast(error.message || 'Failed to load projects', 'error');
+      } finally {
+        setLoading(false);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => maybeFetchMoreIfSentinelVisible());
+        });
       }
+    },
+    [showToast, maybeFetchMoreIfSentinelVisible]
+  );
 
+  const fetchNextPage = useCallback(async () => {
+    if (loadingMoreGuardRef.current) return;
+    const cursor = nextCursorRef.current;
+    if (!hasMoreRef.current || !cursor) return;
+    loadingMoreGuardRef.current = true;
+    setLoadingMore(true);
+    try {
       const response = await apiClient.getVideoProjectsPaginated({
         limit: 20,
         cursor,
-        status,
+        status: filterRef.current,
       });
       if (response.success && response.data) {
         const legacyArray = Array.isArray(response.data) ? response.data : null;
         const items = legacyArray || response.data.items || [];
-        setProjects((prev) => (reset ? items : [...prev, ...items]));
-        setNextCursor(legacyArray ? null : response.data.nextCursor ?? null);
-        setHasMore(legacyArray ? false : Boolean(response.data.hasMore));
+        setProjects((prev) => [...prev, ...items]);
+        const nc = legacyArray ? null : response.data.nextCursor ?? null;
+        const hm = legacyArray ? false : Boolean(response.data.hasMore);
+        setNextCursor(nc);
+        setHasMore(hm);
+        nextCursorRef.current = nc;
+        hasMoreRef.current = hm;
       }
     } catch (error: any) {
       showToast(error.message || 'Failed to load projects', 'error');
     } finally {
-      if (reset) {
-        setLoading(false);
-      } else {
-        setLoadingMore(false);
-      }
+      loadingMoreGuardRef.current = false;
+      setLoadingMore(false);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => maybeFetchMoreIfSentinelVisible());
+      });
     }
-  }, [filter, nextCursor, hasMore, showToast]);
+  }, [showToast, maybeFetchMoreIfSentinelVisible]);
+
+  useEffect(() => {
+    fetchNextPageRef.current = fetchNextPage;
+  }, [fetchNextPage]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    void loadProjects({ reset: true, status: filter });
-  }, [isAuthenticated, filter, loadProjects]);
+    void fetchFirstPage(filter);
+  }, [isAuthenticated, filter, fetchFirstPage]);
 
   useEffect(() => {
-    if (loading || !hasMore) return;
+    if (!isAuthenticated || loading || !hasMore) return;
     const sentinel = loadMoreRef.current;
     if (!sentinel) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !loadingMore) {
-          void loadProjects({ reset: false, status: filter });
+        if (entries[0]?.isIntersecting && !loadingMoreGuardRef.current) {
+          void fetchNextPageRef.current();
         }
       },
       { rootMargin: '320px' }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [loading, hasMore, loadingMore, loadProjects, filter]);
+  }, [isAuthenticated, loading, hasMore, loadingMore, filter]);
 
   useEffect(() => {
     const onVisibility = () => {
       if (document.hidden) {
         setActivePreviewProjectId(null);
+        setPlayingPreviewProjectId(null);
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
@@ -136,7 +215,7 @@ export default function ProjectsPage() {
       case 'COMPLETED':
         return <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />;
       case 'IN_PROGRESS':
-        return <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />;
+        return <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse shrink-0" aria-hidden />;
       case 'FAILED':
         return <XCircle className="w-4 h-4 text-red-600 shrink-0" />;
       case 'DRAFT':
@@ -236,13 +315,50 @@ export default function ProjectsPage() {
     router.push(`/create-video/workspace?projectId=${projectId}`);
   };
 
+  const handleTogglePreview = (projectId: string) => {
+    const videoEl = previewVideoRefs.current[projectId];
+    const isActive = activePreviewProjectId === projectId;
+    const isPlaying = playingPreviewProjectId === projectId;
+
+    if (!isActive) {
+      // Ensure only one preview can play at a time.
+      if (playingPreviewProjectId && playingPreviewProjectId !== projectId) {
+        const current = previewVideoRefs.current[playingPreviewProjectId];
+        current?.pause();
+      }
+      setActivePreviewProjectId(projectId);
+      setPlayingPreviewProjectId(null);
+      return;
+    }
+
+    if (!videoEl) {
+      return;
+    }
+
+    if (isPlaying) {
+      videoEl.pause();
+      setPlayingPreviewProjectId(null);
+      return;
+    }
+
+    // Ensure only one preview can play at a time.
+    if (playingPreviewProjectId && playingPreviewProjectId !== projectId) {
+      const current = previewVideoRefs.current[playingPreviewProjectId];
+      current?.pause();
+    }
+
+    void videoEl.play().catch(() => {
+      setPlayingPreviewProjectId(null);
+    });
+  };
+
   const handleDelete = async (projectId: string) => {
     try {
       setIsDeleting(true);
       await apiClient.deleteVideoProject(projectId);
       showToast('Project deleted successfully', 'success');
       setProjectPendingDelete(null);
-      loadProjects();
+      await fetchFirstPage(filterRef.current);
     } catch (error: any) {
       showToast(error.message || 'Failed to delete project', 'error');
     } finally {
@@ -252,60 +368,103 @@ export default function ProjectsPage() {
 
   const filteredProjects = useMemo(() => projects, [projects]);
 
-  if (authLoading || loading) {
+  if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      <div className="min-h-screen pb-16">
+        <div className="max-w-[1248px] mx-auto px-4 pt-8 md:pt-12">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="h-8 w-40 rounded-lg project-skeleton-shimmer" />
+            <div className="h-9 w-32 rounded-full project-skeleton-shimmer" />
+          </div>
+          <div className="mb-6 inline-flex items-center gap-1 rounded-full bg-white/85 p-1 shadow-sm ring-1 ring-[#F0E6DF]">
+            <div className="h-6 w-12 rounded-full project-skeleton-shimmer" />
+            <div className="h-6 w-12 rounded-full project-skeleton-shimmer" />
+            <div className="h-6 w-16 rounded-full project-skeleton-shimmer" />
+            <div className="h-6 w-16 rounded-full project-skeleton-shimmer" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+            {Array.from({ length: SKELETON_INITIAL_COUNT }).map((_, i) => (
+              <ProjectCardSkeleton key={`auth-sk-${i}`} index={i} />
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
 
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen pb-16">
-      <div className="max-w-6xl mx-auto px-4 pt-8 md:pt-12">
-        <div className="max-w-6xl mx-auto">
-          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-row items-center gap-4">
-              <button
-                onClick={() => router.back()}
-                className="flex items-center justify-center w-6 h-6 cursor-pointer hover:opacity-80 transition-opacity"
-                aria-label="Back"
-              >
-                <ArrowLeft className="w-full h-full text-[#212121]" strokeWidth={1.5} />
-              </button>
-              <h1 className="font-heading text-2xl font-medium text-[#212121]">My Projects</h1>
-            </div>
-            <Link href="/create-video/ai-chat" className="shrink-0">
-              <Button variant="primary" size="sm" className="!px-4 !py-2 text-sm shadow-button">
-                <Plus className="w-4 h-4 mr-1.5" />
-                New Project
-              </Button>
-            </Link>
-          </div>
+      <div className="max-w-[1248px] mx-auto px-4 pt-8 md:pt-12">
+        <div className="max-w-[1248px] mx-auto">
+          {loading && filteredProjects.length === 0 ? (
+            <>
+              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="h-8 w-40 rounded-lg project-skeleton-shimmer" />
+                <div className="h-9 w-32 rounded-full project-skeleton-shimmer" />
+              </div>
+              <div className="mb-6 inline-flex items-center gap-1 rounded-full bg-white/85 p-1 shadow-sm ring-1 ring-[#F0E6DF]">
+                <div className="h-6 w-12 rounded-full project-skeleton-shimmer" />
+                <div className="h-6 w-12 rounded-full project-skeleton-shimmer" />
+                <div className="h-6 w-16 rounded-full project-skeleton-shimmer" />
+                <div className="h-6 w-16 rounded-full project-skeleton-shimmer" />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-row items-center gap-4">
+                  <button
+                    onClick={() => router.back()}
+                    className="flex items-center justify-center w-6 h-6 cursor-pointer hover:opacity-80 transition-opacity"
+                    aria-label="Back"
+                  >
+                    <ArrowLeft className="w-full h-full text-[#212121]" strokeWidth={1.5} />
+                  </button>
+                  <h1 className="font-heading text-2xl font-medium text-[#212121]">My Projects</h1>
+                </div>
+                <Link href="/create-video/ai-chat" className="shrink-0">
+                  <Button variant="primary" size="sm" className="!px-4 !py-2 text-sm shadow-button">
+                    <Plus className="w-4 h-4 mr-1.5" />
+                    New Project
+                  </Button>
+                </Link>
+              </div>
 
-          {/* Filters */}
-          <div className="mb-6 inline-flex items-center gap-1.5 rounded-full bg-white/85 p-1.5 shadow-sm ring-1 ring-[#F0E6DF]">
-            {(['all', 'draft', 'in-progress', 'completed'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => {
-                  if (f === filter) return;
-                  startFilterTransition(() => setFilter(f));
-                }}
-                className={cn(
-                  'px-3 py-1.5 text-xs sm:text-sm rounded-full transition-all duration-150 will-change-transform',
-                  filter === f
-                    ? 'gradient-primary text-white shadow-sm'
-                    : 'text-[#574977] hover:bg-[#F8EFE9]'
-                )}
-              >
-                {f.charAt(0).toUpperCase() + f.slice(1).replace('-', ' ')}
-              </button>
-            ))}
-          </div>
+              {/* Filters */}
+              <div className="mb-6 inline-flex items-center gap-1 rounded-full bg-white/85 p-1 shadow-sm ring-1 ring-[#F0E6DF]">
+                {(['all', 'draft', 'in-progress', 'completed'] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => {
+                      if (f === filter) return;
+                      startFilterTransition(() => setFilter(f));
+                    }}
+                    className={cn(
+                      'px-2.5 py-1 text-[11px] sm:text-xs rounded-full transition-all duration-150 will-change-transform',
+                      filter === f
+                        ? 'gradient-primary text-white shadow-sm'
+                        : 'text-[#574977] hover:bg-[#F8EFE9]'
+                    )}
+                  >
+                    {f.charAt(0).toUpperCase() + f.slice(1).replace('-', ' ')}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           {/* Projects Grid */}
-          {filteredProjects.length === 0 ? (
+          {loading && filteredProjects.length === 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+              {Array.from({ length: SKELETON_INITIAL_COUNT }).map((_, i) => (
+                <ProjectCardSkeleton key={`init-sk-${i}`} index={i} />
+              ))}
+            </div>
+          ) : filteredProjects.length === 0 ? (
             <Card className="p-8 sm:p-12 text-center bg-white/95">
               <p className={cn(typography.body.medium, "text-text-secondary mb-4")}>
                 {filter === 'all'
@@ -320,28 +479,46 @@ export default function ProjectsPage() {
               </Link>
             </Card>
           ) : (
-            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
               {filteredProjects.map((project, index) => {
                 const isCompleted = project.status === 'COMPLETED' && Boolean(getVideoUrl(project));
                 const isPreviewing = activePreviewProjectId === project.id;
                 const previewUrl = getPreviewVideoUrl(project);
+                const isPreviewPlaying = playingPreviewProjectId === project.id;
                 return (
                 <Card
                   key={project.id}
-                  className="project-card-enter w-full max-w-[260px] mx-auto p-3 sm:p-3.5 rounded-2xl bg-white/95 border border-[#F0E6DF] shadow-sm hover:shadow-card hover:-translate-y-0.5 transition-all duration-200"
+                  className="project-card-enter w-full max-w-[212px] mx-auto p-2.5 sm:p-3 rounded-2xl bg-white/95 border border-[#F0E6DF] shadow-sm hover:shadow-card hover:-translate-y-0.5 transition-all duration-200"
                   style={{ animationDelay: `${Math.min(index, 6) * 50}ms` }}
                 >
                   {/* Thumbnail — 9:16 to match generated vertical video */}
                   {isCompleted ? (
                     <div className="mb-2.5 mx-auto w-full aspect-[9/16] rounded-xl overflow-hidden bg-gray-200 relative group">
-                      {isPreviewing && previewUrl ? (
+                      {previewUrl && (isPreviewing || !project.thumbnailUrl) ? (
                         <video
                           src={previewUrl}
+                          ref={(el) => {
+                            previewVideoRefs.current[project.id] = el;
+                          }}
                           className="w-full h-full object-cover"
-                          controls
-                          autoPlay
+                          autoPlay={isPreviewing}
                           playsInline
                           preload="metadata"
+                          onPlay={() => {
+                            // If another preview is currently playing, pause it.
+                            if (playingPreviewProjectId && playingPreviewProjectId !== project.id) {
+                              const current = previewVideoRefs.current[playingPreviewProjectId];
+                              current?.pause();
+                            }
+                            setPlayingPreviewProjectId(project.id);
+                          }}
+                          onPause={() => {
+                            setPlayingPreviewProjectId(null);
+                          }}
+                          onEnded={() => {
+                            setPlayingPreviewProjectId(null);
+                            setActivePreviewProjectId(null);
+                          }}
                         />
                       ) : (
                         <>
@@ -357,17 +534,31 @@ export default function ProjectsPage() {
                               <Play className="w-8 h-8 text-gray-400" />
                             </div>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setActivePreviewProjectId(project.id)}
-                            className="absolute inset-0 flex items-center justify-center bg-black/0 hover:bg-black/20 transition-colors"
-                            aria-label="Play preview"
-                          >
-                            <span className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 rounded-full bg-background/90">
-                              <Play className="w-5 h-5 text-primary" fill="currentColor" />
-                            </span>
-                          </button>
                         </>
+                      )}
+                      {previewUrl && (
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePreview(project.id)}
+                          className={cn(
+                            "absolute inset-0 flex items-center justify-center transition-colors",
+                            isPreviewPlaying ? "bg-black/10 hover:bg-black/20" : "bg-black/0 hover:bg-black/20"
+                          )}
+                          aria-label={isPreviewPlaying ? 'Pause preview' : 'Play preview'}
+                        >
+                          <span className={cn(
+                            "p-2 rounded-full bg-background/90 transition-opacity",
+                            isPreviewPlaying
+                              ? "opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                              : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                          )}>
+                            {isPreviewPlaying ? (
+                              <Pause className="w-5 h-5 text-primary" fill="currentColor" />
+                            ) : (
+                              <Play className="w-5 h-5 text-primary" fill="currentColor" />
+                            )}
+                          </span>
+                        </button>
                       )}
                     </div>
                   ) : project.thumbnailUrl ? (
@@ -425,35 +616,13 @@ export default function ProjectsPage() {
                     {isCompleted ? (
                       <>
                         <Button
-                          variant="outline"
+                          variant="primary"
                           size="sm"
-                          onClick={() =>
-                            setActivePreviewProjectId((prev) =>
-                              prev === project.id ? null : project.id
-                            )
-                          }
-                          className="!px-2.5 !py-2 !text-xs sm:!text-sm min-h-0"
+                          onClick={() => handleViewWorkspace(project.id)}
+                          className="flex-1 !px-3 !py-2 !text-xs sm:!text-sm min-h-0"
                         >
-                          {isPreviewing ? (
-                            <>
-                              <Pause className="w-3.5 h-3.5 mr-1.5 shrink-0" />
-                              Pause
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3.5 h-3.5 mr-1.5 shrink-0" />
-                              Play
-                            </>
-                          )}
+                          View
                         </Button>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => handleViewWorkspace(project.id)}
-                        className="flex-1 !px-3 !py-2 !text-xs sm:!text-sm min-h-0"
-                      >
-                        View
-                      </Button>
                       </>
                     ) : (
                       <Button
@@ -487,9 +656,15 @@ export default function ProjectsPage() {
             </div>
           )}
 
-          {(loadingMore || hasMore) && (
-            <div ref={loadMoreRef} className="h-12 flex items-center justify-center mt-6">
-              {loadingMore && <Loader2 className="w-5 h-5 animate-spin text-primary" />}
+          {hasMore && (
+            <div ref={loadMoreRef} className="mt-6 min-h-[120px]">
+              {loadingMore && (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                  {Array.from({ length: SKELETON_MORE_COUNT }).map((_, i) => (
+                    <ProjectCardSkeleton key={`append-sk-${i}`} index={i} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

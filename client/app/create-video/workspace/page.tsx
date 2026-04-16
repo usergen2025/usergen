@@ -1530,8 +1530,11 @@ function WorkspacePageContent() {
     );
   }
 
+  const showMainWorkspace =
+    workspaceMode !== 'rendering' && !(workspaceMode === 'completed' && finalVideoUrl);
+
   return (
-    <div className="relative h-full overflow-hidden flex flex-col">
+    <div className="relative min-h-full flex flex-col overflow-hidden">
       {/* Shimmer animation keyframes */}
       <style jsx>{`
         @keyframes shimmer {
@@ -1540,9 +1543,9 @@ function WorkspacePageContent() {
         }
       `}</style>
 
-      {/* Rendering Overlay */}
+      {/* Rendering — dedicated full-area state (not stacked over main workspace) */}
       {workspaceMode === 'rendering' && (
-        <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-[2px] flex flex-col items-center justify-center px-4">
+        <div className="flex flex-col flex-1 min-h-0 w-full items-center justify-center px-4 py-10">
           <div className="max-w-lg w-full text-center space-y-8">
             {/* Fun Facts */}
             <div>
@@ -1586,10 +1589,9 @@ function WorkspacePageContent() {
         </div>
       )}
 
-      {/* Completed State - Final Video Preview */}
+      {/* Completed — dedicated full-area final video (not overlay) */}
       {workspaceMode === 'completed' && finalVideoUrl && (
-        <div className="absolute inset-0 z-50 bg-white/50 backdrop-blur-[1px] flex flex-col overflow-hidden">
-          
+        <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
           <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
             {/* Header Row */}
             <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0">
@@ -1699,7 +1701,9 @@ function WorkspacePageContent() {
           </div>
         </div>
       )}
-      
+
+      {showMainWorkspace && (
+      <>
       {/* Main Container - matches AI chat page structure */}
       <div className="relative max-w-[1248px] w-full mx-auto pt-3 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
         {/* Header Row - matches AI chat navigation bar */}
@@ -1769,7 +1773,7 @@ function WorkspacePageContent() {
         <div className="flex flex-col xl:flex-row items-stretch xl:items-start gap-4 xl:gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-y-auto xl:overflow-y-hidden xl:overflow-x-visible px-4 sm:px-6 pb-6 xl:pb-0 min-h-0">
         {/* Left sidebar - Scene list */}
         <div className={cn(
-          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full xl:basis-[clamp(280px,28vw,360px)] xl:min-w-[280px] xl:max-w-[360px] h-auto xl:h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full xl:basis-[clamp(280px,28vw,360px)] xl:min-w-[280px] xl:max-w-[360px] h-auto xl:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
           "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
           "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
           "fixed left-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
@@ -2013,8 +2017,8 @@ function WorkspacePageContent() {
                 <span className="text-[clamp(14px,1.76vh,18px)] text-gray-500">No image available</span>
               )}
               
-              {/* Avatar Overlay - Only for AVATAR_CUTOUT style when enabled, hidden during rendering/converting */}
-              {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && hasPreviewMedia && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+              {/* Avatar Overlay - Only for AVATAR_CUTOUT style when enabled, hidden during converting */}
+              {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && hasPreviewMedia && workspaceMode !== 'converting' && (
                 <DraggableResizableAvatar
                   avatarImageUrl={avatarImageUrl}
                   position={getCurrentAvatarPosition()}
@@ -2025,8 +2029,8 @@ function WorkspacePageContent() {
                 />
               )}
               
-              {/* Caption Overlay - For all styles when captions enabled, hidden during rendering/converting */}
-              {captionsEnabled && hasPreviewMedia && workspaceMode !== 'rendering' && workspaceMode !== 'converting' && (
+              {/* Caption Overlay - For all styles when captions enabled, hidden during converting */}
+              {captionsEnabled && hasPreviewMedia && workspaceMode !== 'converting' && (
                 <DraggableResizableCaption
                   captionText={previewCaptionText}
                   position={getCurrentCaptionPosition()}
@@ -2082,7 +2086,7 @@ function WorkspacePageContent() {
 
         {/* Right sidebar - Settings */}
         <div className={cn(
-          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full xl:basis-[clamp(320px,26.7vw,384px)] xl:min-w-[320px] xl:max-w-[384px] min-h-0 xl:h-full bg-white shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full xl:basis-[clamp(320px,26.7vw,384px)] xl:min-w-[320px] xl:max-w-[384px] min-h-0 xl:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
           "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
           "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
           "fixed right-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
@@ -2344,12 +2348,14 @@ function WorkspacePageContent() {
         <button
           type="button"
           aria-label="Close workspace drawers"
-          className="xl:hidden fixed inset-0 z-40 bg-black/30"
+          className="xl:hidden fixed inset-0 z-40 bg-black/20"
           onClick={() => {
             setLeftDrawerOpen(false);
             setRightDrawerOpen(false);
           }}
         />
+      )}
+      </>
       )}
 
       {/* B-Roll Selection Modal */}

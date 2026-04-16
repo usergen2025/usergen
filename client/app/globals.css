@@ -126,8 +126,35 @@ body {
   animation: projectCardEnter 220ms ease-out both;
 }
 
+/* Projects page — skeleton shimmer behind card-shaped placeholders */
+@keyframes projectSkeletonShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.project-skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    #efe8e3 0%,
+    #faf6f3 38%,
+    #f5ede8 62%,
+    #efe8e3 100%
+  );
+  background-size: 220% 100%;
+  animation: projectSkeletonShimmer 1.35s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .project-card-enter {
     animation: none;
+  }
+
+  .project-skeleton-shimmer {
+    animation: none;
+    background: #efe8e3;
   }
 }

@@ -25,7 +25,8 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   
   // Use relative positioning so page content is not covered by the fixed floating header bar
   const headerPosition = (isAIChatPage || isBrandRoute || isWorkspacePage || isBillingPage || isProjectsPage) ? 'relative' : position;
-  
-  return <Header position={headerPosition} />;
+  const floatingBarSurface = isWorkspacePage ? 'translucent' : 'solid';
+
+  return <Header position={headerPosition} floatingBarSurface={floatingBarSurface} />;
 }
 

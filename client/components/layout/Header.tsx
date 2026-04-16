@@ -19,9 +19,11 @@ import { apiClient, User } from '@/lib/api/client';
 
 interface HeaderProps {
   position?: 'fixed' | 'relative' | 'sticky';
+  /** Softer bar so global body gradient reads through (workspace / gradient-first pages). */
+  floatingBarSurface?: 'solid' | 'translucent';
 }
 
-export default function Header({ position = 'fixed' }: HeaderProps) {
+export default function Header({ position = 'fixed', floatingBarSurface = 'solid' }: HeaderProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { logout, isAuthenticated, user: authUser, isBrand } = useAuth();
@@ -173,7 +175,14 @@ export default function Header({ position = 'fixed' }: HeaderProps) {
     <>
       <header className={cn(positionClasses[position], "w-full pt-[43px] pb-0")}>
       <div className="max-w-[1248px] mx-auto px-6">
-        <div className="bg-white shadow-header rounded-2xl px-6 py-4">
+        <div
+          className={cn(
+            'shadow-header rounded-2xl px-6 py-4',
+            floatingBarSurface === 'translucent'
+              ? 'bg-white/80 backdrop-blur-sm ring-1 ring-[#F0E6DF]/90'
+              : 'bg-white'
+          )}
+        >
           <div className="flex items-center justify-between">
             {/* Logo - Conditionally render based on role */}
             {userIsBrand ? (
