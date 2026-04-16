@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/ui/Button';
@@ -16,6 +16,10 @@ import { apiClient } from '@/lib/api/client';
 function SignupPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const getSearchParam = useCallback(
+    (key: string) => searchParams?.get(key),
+    [searchParams]
+  );
   const { login, isAuthenticated, isLoading: authLoading } = useAuth();
   const { showToast } = useToast();
   const [formData, setFormData] = useState({
@@ -31,10 +35,10 @@ function SignupPageContent() {
   // Redirect if already authenticated
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      const redirectUrl = searchParams.get('redirect') || '/dashboard';
+      const redirectUrl = getSearchParam('redirect') || '/dashboard';
       router.push(redirectUrl);
     }
-  }, [isAuthenticated, authLoading, router, searchParams]);
+  }, [isAuthenticated, authLoading, router, getSearchParam]);
 
   const handleSendOtp = async () => {
     // Validate inputs
@@ -106,8 +110,8 @@ function SignupPageContent() {
         showToast('Registration successful! Welcome to UserGen.ai', 'success');
 
         // Get redirect URL from query params or sessionStorage
-        const redirectUrl = searchParams.get('redirect') || sessionStorage.getItem('pendingRedirect') || '/dashboard';
-        const fromParam = searchParams.get('from');
+        const redirectUrl = getSearchParam('redirect') || sessionStorage.getItem('pendingRedirect') || '/dashboard';
+        const fromParam = getSearchParam('from');
         
         // Clear pending redirect
         if (typeof window !== 'undefined') {
@@ -300,7 +304,7 @@ function SignupPageContent() {
             <p className="text-sm text-text-secondary">
               Already have an account?{' '}
               <Link 
-                href={`/login${searchParams.get('redirect') ? `?redirect=${searchParams.get('redirect')}&from=${searchParams.get('from') || ''}&style=${searchParams.get('style') || ''}` : ''}`}
+                href={`/login${getSearchParam('redirect') ? `?redirect=${getSearchParam('redirect')}&from=${getSearchParam('from') || ''}&style=${getSearchParam('style') || ''}` : ''}`}
                 className="text-primary hover:underline font-medium"
               >
                 Login
