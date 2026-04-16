@@ -83,7 +83,7 @@ function GenerationsLoadingSkeleton() {
 function AdminGenerationsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const filterUserId = searchParams.get('userId') ?? '';
+  const filterUserId = searchParams?.get('userId') ?? '';
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);

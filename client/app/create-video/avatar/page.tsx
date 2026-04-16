@@ -21,7 +21,7 @@ function AvatarPageContent() {
   const { isAuthenticated } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  const projectIdFromUrl = searchParams.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId');
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
@@ -157,7 +157,7 @@ function AvatarPageContent() {
         }
         
         // Update project with avatar ID and mode
-        const projectIdParam = searchParams.get('projectId');
+        const projectIdParam = searchParams?.get('projectId');
         if (projectIdParam && response.data.avatarId) {
           try {
             await apiClient.updateVideoProject(projectIdParam, {
@@ -195,7 +195,7 @@ function AvatarPageContent() {
       return;
     }
 
-    const projectIdParam = searchParams.get('projectId');
+    const projectIdParam = searchParams?.get('projectId');
     let currentProjectId = projectIdParam;
     const avatarIdToUse = activeTab === 'upload' && avatarCreationStarted ? selectedAvatar || imageKey : selectedAvatar;
     

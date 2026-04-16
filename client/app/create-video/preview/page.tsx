@@ -35,7 +35,7 @@ function PreviewPageContent() {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const [projectId, setProjectId] = useState<string | null>(searchParams.get('projectId'));
+  const [projectId, setProjectId] = useState<string | null>(() => searchParams?.get('projectId') ?? null);
   
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
@@ -90,7 +90,7 @@ function PreviewPageContent() {
   };
 
   // Get projectId from URL as a string value for dependencies
-  const projectIdFromUrlStr = searchParams.get('projectId') || '';
+  const projectIdFromUrlStr = searchParams?.get('projectId') || '';
 
   // Load project data
   useEffect(() => {

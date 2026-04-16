@@ -60,7 +60,7 @@ function UsersLoadingSkeleton() {
 function AdminUsersContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const filterUserId = searchParams.get('userId') ?? '';
+  const filterUserId = searchParams?.get('userId') ?? '';
 
   const [users, setUsers] = useState<UserData[]>([]);
   const [isLoading, setIsLoading] = useState(true);

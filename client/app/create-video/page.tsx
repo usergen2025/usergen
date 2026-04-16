@@ -10,7 +10,7 @@ function CreateVideoPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
-  const projectId = searchParams.get('projectId');
+  const projectId = searchParams?.get('projectId');
   const [checking, setChecking] = useState(true);
 
   // Check if we have a project and redirect based on currentStep

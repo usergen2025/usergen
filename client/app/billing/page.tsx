@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { 
   ArrowLeft, 
   Wallet, 
@@ -175,7 +175,6 @@ function ProjectListSkeleton() {
 
 function BillingContent() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { isAuthenticated, user, isLoading: authLoading } = useAuth();
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([]);

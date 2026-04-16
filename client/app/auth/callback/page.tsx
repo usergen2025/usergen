@@ -17,9 +17,9 @@ function OAuthCallbackContent() {
   useEffect(() => {
     const handleCallback = async () => {
       try {
-        const accessToken = searchParams.get('access_token');
-        const refreshToken = searchParams.get('refresh_token');
-        const error = searchParams.get('error');
+        const accessToken = searchParams?.get('access_token');
+        const refreshToken = searchParams?.get('refresh_token');
+        const error = searchParams?.get('error');
 
         if (error) {
           setStatus('error');

@@ -37,7 +37,7 @@ export function useVideoStepNavigation(projectId: string | null, currentStep?: s
     
     // Strategy 2: Check URL query params (added when navigating from projects page)
     if (!step) {
-      const stepFromUrl = searchParams.get('step');
+      const stepFromUrl = searchParams?.get('step');
       if (stepFromUrl) {
         step = stepFromUrl;
         console.log('[useVideoStepNavigation] Step from URL query param:', step);
@@ -71,7 +71,7 @@ export function useVideoStepNavigation(projectId: string | null, currentStep?: s
       projectId,
       currentStep,
       pathname,
-      stepFromUrl: searchParams.get('step'),
+      stepFromUrl: searchParams?.get('step'),
     });
     router.back();
   };

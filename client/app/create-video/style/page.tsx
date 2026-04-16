@@ -51,7 +51,7 @@ function StylePageContent() {
   const searchParams = useSearchParams();
   const { isAuthenticated, isLoading } = useAuth();
   const { showToast } = useToast();
-  const projectIdFromUrl = searchParams.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId');
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
@@ -68,7 +68,7 @@ function StylePageContent() {
   const [isUnderline, setIsUnderline] = useState(false);
 
   // Check if this is the first page (from home) vs coming from another page
-  const fromParam = searchParams.get('from');
+  const fromParam = searchParams?.get('from');
   const isFirstPage = !fromParam;
 
   // Load project ONLY if projectId is in URL (editing existing project)
@@ -76,7 +76,7 @@ function StylePageContent() {
     const loadProject = async () => {
       if (!isAuthenticated || isLoading) return;
 
-      const projectIdParam = searchParams.get('projectId');
+      const projectIdParam = searchParams?.get('projectId');
       
       // Only load if projectId is explicitly in URL (coming from projects page)
       if (projectIdParam) {
@@ -116,7 +116,7 @@ function StylePageContent() {
 
       // Fallback to sessionStorage for backward compatibility
       if (typeof window !== 'undefined') {
-        const styleParam = searchParams.get('style');
+        const styleParam = searchParams?.get('style');
         if (styleParam && styleParam !== '') {
           setSelectedStyle(styleParam as VideoStyle);
         }

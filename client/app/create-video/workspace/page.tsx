@@ -109,7 +109,7 @@ function WorkspacePageContent() {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const projectIdFromUrl = searchParams.get('projectId');
+  const projectIdFromUrl = searchParams?.get('projectId');
 
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
@@ -499,7 +499,7 @@ function WorkspacePageContent() {
             setBrollVideos(videos);
             
             // Check startMode query param (from ai-chat navigation)
-            const startModeParam = searchParams.get('startMode');
+            const startModeParam = searchParams?.get('startMode');
             
             if (startModeParam === 'videos' && videos.length > 0) {
               // Explicitly requested videos mode and we have videos

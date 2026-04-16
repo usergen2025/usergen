@@ -326,7 +326,7 @@ function AIChatPageContent() {
 
   // Restore language from sessionStorage only for existing projects, clear for new projects
   useEffect(() => {
-    const projectIdParam = searchParams.get('projectId');
+    const projectIdParam = searchParams?.get('projectId');
     if (typeof window !== 'undefined') {
       if (projectIdParam) {
         // Existing project - language will be restored from project metadata in loadProject
@@ -353,7 +353,7 @@ function AIChatPageContent() {
   // Load project if projectId exists in URL (resume functionality)
   useEffect(() => {
     const loadProject = async () => {
-      const projectIdParam = searchParams.get('projectId');
+      const projectIdParam = searchParams?.get('projectId');
       if (!projectIdParam || !isAuthenticated || isLoading) return;
       
       // Don't reload if we already have this projectId loaded
