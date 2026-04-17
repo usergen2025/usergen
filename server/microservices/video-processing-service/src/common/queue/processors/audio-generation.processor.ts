@@ -118,14 +118,20 @@ export class AudioGenerationProcessor extends WorkerHost {
         },
       });
 
-      await this.recordOperationCharge({
-        projectId,
-        userId,
-        operationType: 'AUDIO_GENERATION',
-        operationName: 'Audio Generation',
-        idempotencyKey: `audio:${projectId}`,
-        metadata: { jobId: job.id },
-      });
+      const files = Array.isArray(audioFiles) ? audioFiles : [];
+      for (const af of files) {
+        const sn = (af as any)?.sceneNumber ?? (af as any)?.scene_number;
+        if (sn == null) continue;
+        await this.recordOperationCharge({
+          projectId,
+          userId,
+          operationType: 'AUDIO_GENERATION',
+          operationName: 'Audio Generation',
+          idempotencyKey: `audio:${projectId}:${sn}:${job.id}`,
+          sceneNumber: typeof sn === 'number' ? sn : parseInt(String(sn), 10),
+          metadata: { jobId: job.id },
+        });
+      }
 
       await job.updateProgress(100);
 
@@ -199,7 +205,7 @@ export class AudioGenerationProcessor extends WorkerHost {
     try {
       const project = await this.databaseService.videoProject.findUnique({
         where: { id: projectId },
-        select: { metadata: true, creditsSpent: true },
+        select: { metadata: true },
       });
       const baseMetadata =
         project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
@@ -214,7 +220,7 @@ export class AudioGenerationProcessor extends WorkerHost {
 
       const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
       const response = await axios.post(
-        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        `${paymentServiceUrl}/api/pricing/record-cost`,
         {
           projectId,
           userId,
@@ -226,7 +232,9 @@ export class AudioGenerationProcessor extends WorkerHost {
         { timeout: 10000 },
       );
 
-      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      if (response.data?.skipped || !response.data?.data) {
+        return;
+      }
       await this.databaseService.videoProject.update({
         where: { id: projectId },
         data: {
@@ -234,7 +242,6 @@ export class AudioGenerationProcessor extends WorkerHost {
             ...baseMetadata,
             billedOperationKeys: [...billedKeys, idempotencyKey],
           } as any,
-          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
         },
       });
     } catch (error: any) {

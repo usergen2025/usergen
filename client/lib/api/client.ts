@@ -1546,6 +1546,42 @@ class ApiClient {
     return response.data;
   }
 
+  /** Admin: all pricing rows including inactive (for toggles). */
+  async getPricingConfigForAdmin(): Promise<ApiResponse<any[]>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<any[]>>(
+      `${paymentServiceUrl}/pricing/admin/all`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
+  async updatePricingActivation(
+    operationType: string,
+    isActive: boolean,
+    adminUserId: string
+  ): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const response = await axios.patch<ApiResponse<any>>(
+      `${paymentServiceUrl}/pricing/${encodeURIComponent(operationType)}/activation`,
+      { isActive, adminUserId },
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
   async getUserBillingSummary(
     userId: string,
     options?: { startDate?: string; endDate?: string }
@@ -1779,6 +1815,70 @@ class ApiClient {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const response = await axios.get<ApiResponse<any>>(
       `${videoServiceUrl}/admin/projects/${projectId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getAdminProjectLogs(projectId: string): Promise<
+    ApiResponse<{
+      source: string;
+      body: string;
+      lastGcsSyncedAt: string | null;
+      gcsUrl: string | null;
+      hint?: string;
+    }>
+  > {
+    const token = this.getToken();
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const response = await axios.get(
+      `${videoServiceUrl}/admin/projects/${projectId}/logs`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async getNotifications(): Promise<ApiResponse<{ notifications: any[] }>> {
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<{ notifications: any[] }>>(
+      `${VIDEO_SERVICE_URL}/notifications`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  async markNotificationRead(id: string): Promise<ApiResponse<void>> {
+    const token = this.getToken();
+    const response = await axios.patch<ApiResponse<void>>(
+      `${VIDEO_SERVICE_URL}/notifications/${id}/read`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return response.data;
+  }
+
+  /** Heartbeat while user is on a video project page (suppresses duplicate "video ready" notifications). */
+  async postVideoPresence(projectId: string | null): Promise<ApiResponse<void>> {
+    const token = this.getToken();
+    const response = await axios.post<ApiResponse<void>>(
+      `${VIDEO_SERVICE_URL}/notifications/presence`,
+      { projectId },
       {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),

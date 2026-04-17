@@ -14,9 +14,17 @@ import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { DatabaseModule } from '../common/database/database.module';
 import { StorageModule } from '../common/storage/storage.module';
 import { QueueModule } from '../common/queue/queue.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule, StorageModule, VideoModule, forwardRef(() => QueueModule)],
+  imports: [
+    ConfigModule,
+    DatabaseModule,
+    StorageModule,
+    VideoModule,
+    NotificationsModule,
+    forwardRef(() => QueueModule),
+  ],
   providers: [
     RenderingService,
     AlternateAvatarService,

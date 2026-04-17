@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { CreditsService } from './credits.service';
 
@@ -60,6 +60,27 @@ export class CreditsController {
     }
   ) {
     const snapshot = await this.creditsService.recordAndDeductCredits(body);
-    return { success: true, data: snapshot };
+    return { success: true, data: snapshot, skipped: !snapshot };
+  }
+
+  @Post('check-export-affordability')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Pre-export: unsettled costs + final render vs balance' })
+  async checkExportAffordability(
+    @Body() body: { projectId: string; userId: string },
+  ) {
+    const result = await this.creditsService.checkExportAffordability(body.userId, body.projectId);
+    return { success: true, data: result };
+  }
+
+  @Post('settle-project')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Settle all unsettled snapshots for a project (single debit)' })
+  async settleProject(
+    @Body() body: { projectId: string; userId: string; settlementNonce?: string },
+  ) {
+    const result = await this.creditsService.settleProjectWallet(body.userId, body.projectId, body.settlementNonce);
+    return { success: true, data: result };
   }
 }

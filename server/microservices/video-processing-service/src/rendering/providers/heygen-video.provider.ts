@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import FormData from 'form-data';
 import { preWarmUrl, withRetry } from '@shared/storage';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -62,9 +63,23 @@ export interface HeyGenAvatarIVResponse {
   video_id: string;
 }
 
+/** Optional context for HeyGen v3 Photo Avatar pipeline (POST /v3/assets → /v3/avatars → /v3/videos). */
+export interface HeyGenAvatarIVV3Context {
+  fullScriptText: string;
+  voiceId: string;
+  projectId: string;
+}
+
+/** Result of unified start — callers must use matching poll (v1 status vs v3 video GET). */
+export interface HeyGenAvatarIVUnifiedStart {
+  video_id: string;
+  useV3Polling: boolean;
+}
+
 @Injectable()
 export class HeyGenVideoProvider {
   private axiosInstance: AxiosInstance;
+  private axiosV3: AxiosInstance;
   private apiKey: string;
   private baseUrl: string = 'https://api.heygen.com/v2';
 
@@ -81,8 +96,23 @@ export class HeyGenVideoProvider {
       timeout: 60000,
     });
 
+    this.axiosV3 = axios.create({
+      baseURL: 'https://api.heygen.com',
+      headers: {
+        'x-api-key': this.apiKey,
+        accept: 'application/json',
+      },
+      timeout: 120000,
+    });
+
     // Add error interceptors to handle EPIPE and socket errors
     this.setupErrorHandlers();
+  }
+
+  /** `legacy_av4` (default) or `v3_photo_avatar` — see HEYGEN_AVATAR_PIPELINE in env.example */
+  getAvatarPipelineMode(): 'legacy_av4' | 'v3_photo_avatar' {
+    const v = (this.configService.get<string>('HEYGEN_AVATAR_PIPELINE') || 'legacy_av4').toLowerCase();
+    return v === 'v3_photo_avatar' ? 'v3_photo_avatar' : 'legacy_av4';
   }
 
   /**
@@ -500,6 +530,236 @@ export class HeyGenVideoProvider {
       console.error('[HeyGen] Avatar IV video generation error:', error.response?.data || error.message);
       throw new Error(`Failed to generate Avatar IV video: ${error.response?.data?.msg || error.response?.data?.error?.message || error.message}`);
     }
+  }
+
+  /**
+   * Public URL for an uploaded HeyGen image asset (image_key from v1 upload).
+   * Used to fetch bytes before POST /v3/assets when using the v3 Photo Avatar pipeline.
+   */
+  buildImageUrlFromImageKey(imageKey: string): string {
+    const key = (imageKey || '').trim();
+    if (key.startsWith('http')) return key;
+    const normalized = key.replace(/^\/+/, '');
+    return `https://resource2.heygen.ai/${normalized}`;
+  }
+
+  /**
+   * POST /v3/assets — multipart file upload; returns asset id for POST /v3/avatars.
+   */
+  async uploadV3AssetFromBuffer(buffer: Buffer, filename: string): Promise<string> {
+    const form = new FormData();
+    form.append('file', buffer, { filename });
+    const res = await this.axiosV3.post<any>('/v3/assets', form, {
+      headers: form.getHeaders(),
+    });
+    const d = res.data?.data ?? res.data;
+    const assetId = d?.id ?? d?.asset_id ?? d?.assetId;
+    if (!assetId) {
+      console.error('[HeyGen v3] /v3/assets response:', JSON.stringify(res.data));
+      throw new Error('Failed to get asset id from HeyGen v3 /v3/assets');
+    }
+    console.log(`[HeyGen v3] Asset uploaded: ${assetId}`);
+    return String(assetId);
+  }
+
+  /**
+   * POST /v3/avatars — create Photo Avatar from asset_id; returns avatar id for POST /v3/videos.
+   */
+  async createV3PhotoAvatar(assetId: string, name: string): Promise<string> {
+    const body = {
+      type: 'photo',
+      name: name.slice(0, 200),
+      file: { type: 'asset_id', asset_id: assetId },
+    };
+    const res = await this.axiosV3.post<any>('/v3/avatars', body);
+    const d = res.data?.data ?? res.data;
+    const avatarId =
+      d?.avatar_item?.id ?? d?.avatar_item_id ?? d?.id ?? d?.avatar_id;
+    if (!avatarId) {
+      console.error('[HeyGen v3] /v3/avatars response:', JSON.stringify(res.data));
+      throw new Error('Failed to get avatar id from HeyGen v3 /v3/avatars');
+    }
+    console.log(`[HeyGen v3] Photo avatar created: ${avatarId}`);
+    return String(avatarId);
+  }
+
+  /**
+   * POST /v3/videos — Photo Avatar talking-head video (script + voice).
+   */
+  async createV3AvatarVideo(params: {
+    avatarId: string;
+    script: string;
+    voiceId: string;
+    title: string;
+    resolution?: '4k' | '1080p' | '720p';
+    aspectRatio?: '16:9' | '9:16';
+    motionPrompt?: string;
+    expressiveness?: 'high' | 'medium' | 'low';
+  }): Promise<string> {
+    const body: Record<string, unknown> = {
+      type: 'avatar',
+      avatar_id: params.avatarId,
+      script: params.script,
+      voice_id: params.voiceId,
+      title: params.title,
+      resolution: params.resolution || '1080p',
+      aspect_ratio: params.aspectRatio || '9:16',
+    };
+    if (params.motionPrompt) body.motion_prompt = params.motionPrompt;
+    if (params.expressiveness) body.expressiveness = params.expressiveness;
+
+    const res = await this.axiosV3.post<any>('/v3/videos', body);
+    const d = res.data?.data ?? res.data;
+    const videoId = d?.video_id ?? d?.id;
+    if (!videoId) {
+      console.error('[HeyGen v3] /v3/videos response:', JSON.stringify(res.data));
+      throw new Error('Failed to get video_id from HeyGen v3 /v3/videos');
+    }
+    console.log(`[HeyGen v3] Video job created: ${videoId}`);
+    return String(videoId);
+  }
+
+  /**
+   * GET /v3/videos/{id} — map to legacy HeyGenVideoStatus shape for downstream code.
+   */
+  async getV3VideoStatus(videoId: string): Promise<HeyGenVideoStatus> {
+    const res = await this.axiosV3.get<any>(`/v3/videos/${encodeURIComponent(videoId)}`);
+    const d = res.data?.data ?? res.data;
+    const status = (d?.status || 'pending').toLowerCase();
+    const mapped: 'processing' | 'completed' | 'failed' | 'pending' | 'waiting' =
+      status === 'completed'
+        ? 'completed'
+        : status === 'failed'
+          ? 'failed'
+          : status === 'processing'
+            ? 'processing'
+            : 'pending';
+
+    return {
+      code: 100,
+      data: {
+        id: d?.id ?? videoId,
+        status: mapped,
+        video_url: d?.video_url,
+        thumbnail_url: d?.thumbnail_url,
+        duration: d?.duration,
+        created_at: d?.created_at,
+        callback_id: null,
+        error:
+          mapped === 'failed'
+            ? {
+                code: 0,
+                message: d?.failure_message || d?.error?.message || 'Video generation failed',
+                detail: '',
+              }
+            : null,
+      },
+    };
+  }
+
+  async pollV3VideoUntilComplete(
+    videoId: string,
+    maxAttempts: number = 120,
+    intervalMs: number = 5000,
+  ): Promise<HeyGenVideoStatus> {
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+      const status = await this.getV3VideoStatus(videoId);
+      console.log(`[HeyGen v3] Video ${videoId} status: ${status.data.status} (${attempts + 1}/${maxAttempts})`);
+      if (status.data.status === 'completed') return status;
+      if (status.data.status === 'failed') {
+        const msg = status.data.error?.message || 'Unknown error';
+        throw new Error(`HeyGen v3 video failed: ${msg}`);
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+      attempts++;
+    }
+    throw new Error(`HeyGen v3 video ${videoId} timed out after ${maxAttempts} attempts`);
+  }
+
+  /**
+   * v3 Photo Avatar pipeline: fetch image by image_key → v3 assets → v3 avatars → v3 videos.
+   * Requires non-empty script + voiceId (project voice).
+   */
+  async startAvatarIVV3PhotoAvatarPipeline(
+    request: HeyGenAvatarIVRequest,
+    ctx: HeyGenAvatarIVV3Context,
+  ): Promise<HeyGenAvatarIVUnifiedStart> {
+    const imageUrl = this.buildImageUrlFromImageKey(request.image_key);
+    console.log(`[HeyGen v3] Fetching image for Photo Avatar pipeline: ${imageUrl}`);
+    const imgRes = await axios.get<ArrayBuffer>(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      validateStatus: (s) => s < 500,
+    });
+    if (imgRes.status >= 400) {
+      throw new Error(`Failed to download image for v3 pipeline: HTTP ${imgRes.status}`);
+    }
+    const buffer = Buffer.from(imgRes.data);
+    const isPng = buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50;
+    const filename = isPng ? 'portrait.png' : 'portrait.jpg';
+
+    const assetId = await this.uploadV3AssetFromBuffer(buffer, filename);
+    const avatarId = await this.createV3PhotoAvatar(
+      assetId,
+      `Project ${ctx.projectId} ${Date.now()}`,
+    );
+    const script = (ctx.fullScriptText || ' ').trim() || '.';
+    const videoId = await this.createV3AvatarVideo({
+      avatarId,
+      script,
+      voiceId: ctx.voiceId,
+      title: request.video_title || `Video ${ctx.projectId}`,
+      resolution: '1080p',
+      aspectRatio: request.video_orientation === 'landscape' ? '16:9' : '9:16',
+      motionPrompt: request.custom_motion_prompt,
+      expressiveness: 'medium',
+    });
+    return { video_id: videoId, useV3Polling: true };
+  }
+
+  /**
+   * Chooses v3 Photo Avatar pipeline or legacy POST /video/av4/generate based on HEYGEN_AVATAR_PIPELINE and context.
+   */
+  async generateAvatarIVVideoUnified(
+    request: HeyGenAvatarIVRequest,
+    v3Context?: HeyGenAvatarIVV3Context,
+  ): Promise<HeyGenAvatarIVUnifiedStart> {
+    const mode = this.getAvatarPipelineMode();
+    const canV3 =
+      mode === 'v3_photo_avatar' &&
+      v3Context &&
+      v3Context.fullScriptText?.trim()?.length > 0 &&
+      v3Context.voiceId?.trim()?.length > 0;
+
+    if (!canV3) {
+      if (mode === 'v3_photo_avatar') {
+        console.warn(
+          '[HeyGen] HEYGEN_AVATAR_PIPELINE=v3_photo_avatar but missing script/voiceId; using legacy_av4',
+        );
+      }
+      const legacy = await this.generateAvatarIVVideo(request);
+      return { video_id: legacy.video_id, useV3Polling: false };
+    }
+
+    try {
+      return await this.startAvatarIVV3PhotoAvatarPipeline(request, v3Context);
+    } catch (e: any) {
+      console.error('[HeyGen v3] Pipeline failed, falling back to legacy Avatar IV:', e?.message || e);
+      const legacy = await this.generateAvatarIVVideo(request);
+      return { video_id: legacy.video_id, useV3Polling: false };
+    }
+  }
+
+  async pollAvatarVideoUntilCompleteUnified(
+    start: HeyGenAvatarIVUnifiedStart,
+    maxAttempts?: number,
+    intervalMs?: number,
+  ): Promise<HeyGenVideoStatus> {
+    if (start.useV3Polling) {
+      return this.pollV3VideoUntilComplete(start.video_id, maxAttempts, intervalMs);
+    }
+    return this.pollVideoUntilComplete(start.video_id, maxAttempts, intervalMs);
   }
 
   /**

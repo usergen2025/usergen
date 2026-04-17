@@ -207,6 +207,47 @@ export class StockDownloadProcessor extends WorkerHost {
             bRollVideoTasks: bRollVideoTasks as any,
           },
         });
+
+        const idempotencyKey = `stock:${projectId}:${sceneNumber}:${job.id ?? 'na'}`;
+        try {
+          const fresh = await this.databaseService.videoProject.findUnique({
+            where: { id: projectId },
+            select: { metadata: true },
+          });
+          const meta =
+            fresh?.metadata && typeof fresh.metadata === 'object' && !Array.isArray(fresh.metadata)
+              ? ({ ...(fresh.metadata as Record<string, unknown>) } as Record<string, unknown>)
+              : {};
+          const billedKeys = Array.isArray(meta.billedOperationKeys) ? (meta.billedOperationKeys as string[]) : [];
+          if (!billedKeys.includes(idempotencyKey)) {
+            const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
+            const response = await axios.post(
+              `${paymentServiceUrl}/api/pricing/record-cost`,
+              {
+                projectId,
+                userId,
+                sceneNumber,
+                operationType: 'STOCK_FOOTAGE',
+                operationName: 'Stock Footage',
+                metadata: { idempotencyKey, stockId: stockResult.id, jobId: job.id },
+              },
+              { timeout: 10000 },
+            );
+            if (!response.data?.skipped && response.data?.data) {
+              await this.databaseService.videoProject.update({
+                where: { id: projectId },
+                data: {
+                  metadata: {
+                    ...meta,
+                    billedOperationKeys: [...billedKeys, idempotencyKey],
+                  } as any,
+                },
+              });
+            }
+          }
+        } catch (billErr: any) {
+          console.warn(`[StockDownloadProcessor] record-cost failed for ${projectId} scene ${sceneNumber}:`, billErr?.message || billErr);
+        }
       }
 
       await job.updateProgress(100);

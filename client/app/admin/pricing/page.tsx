@@ -61,12 +61,16 @@ export default function AdminPricingPage() {
   const [history, setHistory] = useState<PricingHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isToggling, setIsToggling] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchPricing = async () => {
       setIsLoading(true);
       try {
-        const response = await apiClient.getPricingConfig();
+        let response = await apiClient.getPricingConfigForAdmin();
+        if (!response.success || !response.data?.length) {
+          response = await apiClient.getPricingConfig();
+        }
         if (response.success && response.data) {
           setPricing(response.data);
           // Initialize edit values
@@ -103,6 +107,33 @@ export default function AdminPricingPage() {
 
     fetchPricing();
   }, []);
+
+  const handleToggleActive = async (operationType: string, nextActive: boolean) => {
+    if (!user?.id) {
+      setSuccessMessage('Sign in as admin to change activation');
+      return;
+    }
+    setIsToggling(operationType);
+    try {
+      const response = await apiClient.updatePricingActivation(operationType, nextActive, user.id);
+      if (response.success && response.data) {
+        setPricing((prev) =>
+          prev.map((p) =>
+            p.operationType === operationType ? { ...p, isActive: response.data!.isActive } : p,
+          ),
+        );
+        setSuccessMessage(
+          `${operationType} is now ${response.data.isActive ? 'enabled' : 'disabled'} for new charges`,
+        );
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (e) {
+      console.error('Failed to toggle pricing activation:', e);
+      setSuccessMessage(null);
+    } finally {
+      setIsToggling(null);
+    }
+  };
 
   const handleSave = async (operationType: string) => {
     const newCost = editValues[operationType];
@@ -219,7 +250,8 @@ export default function AdminPricingPage() {
               key={item.id}
               className={cn(
                 "bg-gray-800 rounded-xl border p-4 transition-colors",
-                hasChanged ? "border-orange-500" : "border-gray-700"
+                hasChanged ? "border-orange-500" : "border-gray-700",
+                !item.isActive && "opacity-70"
               )}
             >
               <div className="flex items-start justify-between mb-3">
@@ -232,13 +264,29 @@ export default function AdminPricingPage() {
                     <p className="text-xs text-gray-500">{item.description}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => fetchHistory(item.operationType)}
-                  className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
-                  title="View history"
-                >
-                  <History className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleActive(item.operationType, !item.isActive)}
+                    disabled={isToggling === item.operationType}
+                    title={item.isActive ? 'Disable for new charges' : 'Enable for new charges'}
+                    className={cn(
+                      'text-xs px-2.5 py-1 rounded-md border transition-colors disabled:opacity-50',
+                      item.isActive
+                        ? 'border-green-500/50 text-green-300 bg-green-500/10'
+                        : 'border-gray-600 text-gray-400 bg-gray-700/50',
+                    )}
+                  >
+                    {isToggling === item.operationType ? '…' : item.isActive ? 'Active' : 'Inactive'}
+                  </button>
+                  <button
+                    onClick={() => fetchHistory(item.operationType)}
+                    className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                    title="View history"
+                  >
+                    <History className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-3">

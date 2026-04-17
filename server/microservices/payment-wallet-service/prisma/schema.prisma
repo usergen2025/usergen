@@ -140,16 +140,17 @@ model PricingHistory {
 
 // Snapshot of costs at time of generation (preserves historical pricing)
 model GenerationCostSnapshot {
-  id            String   @id @default(cuid())
-  projectId     String
-  userId        String
-  sceneNumber   Int?
-  operationType String   // "SCRIPT_GENERATION", "IMAGE_GENERATION", etc.
-  operationName String   // Human-readable name
-  creditCost    Int      // Cost AT TIME OF GENERATION
-  metadata      Json?    // Additional details (retry count, duration, provider, etc.)
-  createdAt     DateTime @default(now())
-  
+  id               String    @id @default(cuid())
+  projectId        String
+  userId           String
+  sceneNumber      Int?
+  operationType    String    // "SCRIPT_GENERATION", "IMAGE_GENERATION", etc.
+  operationName    String    // Human-readable name
+  creditCost       Int       // Cost AT TIME OF GENERATION
+  metadata         Json?     // Additional details (retry count, duration, provider, etc.)
+  createdAt        DateTime  @default(now())
+  walletSettledAt  DateTime? // Set when included in a wallet settlement (deferred billing)
+
   @@map("generation_cost_snapshots")
   @@index([projectId])
   @@index([userId])

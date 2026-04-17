@@ -252,6 +252,22 @@ services:
               hour: 500
               policy: local
 
+      - name: video-processing-notifications
+        paths:
+          - /api/notifications
+        methods:
+          - GET
+          - POST
+          - PATCH
+          - OPTIONS
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 100
+              hour: 1000
+              policy: local
+
       # More specific than auth /api/admin — must win first
       - name: video-admin-user-stats
         paths:

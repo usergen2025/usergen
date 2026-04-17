@@ -10,6 +10,8 @@ import { QueueModule } from './common/queue/queue.module';
 import { QueueManagerService } from './common/queue/queue-manager.service';
 import { WebSocketModule } from './common/websocket/websocket.module';
 import { StorageModule } from './common/storage/storage.module';
+import { ProjectLogModule } from './common/logging/project-log.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { StorageModule } from './common/storage/storage.module';
     QueueModule,
     WebSocketModule,
     StorageModule,
+    ProjectLogModule,
+    NotificationsModule,
     AdminModule,
   ],
   controllers: [VideoController],

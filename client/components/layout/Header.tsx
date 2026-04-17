@@ -15,6 +15,7 @@ import GetStartedModal from '@/components/auth/GetStartedModal';
 import BrandSignupModal from '@/components/auth/BrandSignupModal';
 import CreatorSignupModal from '@/components/auth/CreatorSignupModal';
 import BrandLogo from '@/components/layout/BrandLogo';
+import NotificationBell from '@/components/layout/NotificationBell';
 import { apiClient, User } from '@/lib/api/client';
 
 interface HeaderProps {
@@ -239,6 +240,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
 
             {/* Right Side Actions */}
             <div className="flex items-center gap-2">
+              {isAuthenticated && !userIsBrand && <NotificationBell />}
               {isAuthenticated && (
                 <CreditDisplay className="hidden sm:flex" showAddButton={false} />
               )}

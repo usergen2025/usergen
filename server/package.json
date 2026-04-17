@@ -64,7 +64,7 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
-    "migrate:dev": "npm run migrate:auth && npm run migrate:analytics",
+    "migrate:dev": "npm run migrate:all",
     "migrate:auth": "cd microservices/auth-service && npm run migration:run",
     "migrate:project": "cd microservices/project-management-service && npm run migration:run",
     "migrate:analytics": "cd microservices/analytics-service && npm run migration:run",

@@ -1,12 +1,16 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { AdminService } from './admin.service';
+import { ProjectLogService } from '../common/logging/project-log.service';
 
 @ApiTags('Admin')
 @Controller('admin')
 @ApiBearerAuth('JWT-auth')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly projectLogService: ProjectLogService,
+  ) {}
 
   @Get('project-stats')
   @ApiOperation({ summary: 'Get project statistics' })
@@ -47,6 +51,14 @@ export class AdminController {
   async getProjectById(@Param('projectId') projectId: string) {
     const project = await this.adminService.getProjectById(projectId);
     return { success: true, data: project };
+  }
+
+  @Get('projects/:projectId/logs')
+  @ApiOperation({ summary: 'Read project processing logs (local tail preferred; GCS fallback)' })
+  @ApiResponse({ status: 200, description: 'Log body and sync metadata' })
+  async getProjectLogs(@Param('projectId') projectId: string) {
+    const data = await this.projectLogService.readProjectLogs(projectId);
+    return { success: true, data };
   }
 
   @Get('users/:userId/stats')

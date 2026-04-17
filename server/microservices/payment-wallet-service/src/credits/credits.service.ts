@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../common/database/database.service';
 import { PricingService } from '../pricing/pricing.service';
 import { TransactionsService } from '../transactions/transactions.service';
@@ -49,10 +49,11 @@ export class CreditsService {
     operationName: string;
     metadata?: Record<string, any>;
   }) {
-    // Record the generation cost snapshot
     const snapshot = await this.pricingService.recordGenerationCost(data);
+    if (!snapshot) {
+      return null;
+    }
 
-    // Deduct credits from user
     await this.transactionsService.deductCredits({
       userId: data.userId,
       amount: snapshot.creditCost,
@@ -67,6 +68,105 @@ export class CreditsService {
     });
 
     return snapshot;
+  }
+
+  /**
+   * Pre-export check: unsettled snapshots + FINAL_RENDER fee vs wallet balance.
+   */
+  async checkExportAffordability(userId: string, projectId: string) {
+    const { totalDue } = await this.pricingService.getUnsettledProjectTotalPlusFinalRender(projectId);
+    const balance = await this.transactionsService.checkBalance(userId);
+    const currentBalance = balance.credits ?? 0;
+    const affordable = currentBalance >= totalDue;
+    return {
+      affordable,
+      requiredCredits: totalDue,
+      currentBalance,
+      message: affordable
+        ? 'OK'
+        : `Insufficient credits. This export requires ${totalDue} credits; you have ${currentBalance}.`,
+    };
+  }
+
+  /**
+   * After successful final video: add FINAL_RENDER snapshot, then deduct once for all unsettled rows.
+   * Optional settlementNonce prevents duplicate debits if the video service retries the same completion.
+   */
+  async settleProjectWallet(userId: string, projectId: string, settlementNonce?: string) {
+    if (settlementNonce) {
+      const finals = await this.databaseService.generationCostSnapshot.findMany({
+        where: { projectId, userId, operationType: 'FINAL_RENDER' },
+      });
+      const alreadySettled = finals.some(
+        (s) =>
+          s.walletSettledAt != null &&
+          (s.metadata as Record<string, unknown> | null)?.settlementNonce === settlementNonce,
+      );
+      if (alreadySettled) {
+        return { settled: true, amount: 0, snapshotIds: [] as string[], duplicate: true };
+      }
+    }
+
+    const finalFee = await this.pricingService.getCreditCost('FINAL_RENDER');
+    if (finalFee > 0) {
+      await this.pricingService.recordGenerationCost({
+        projectId,
+        userId,
+        operationType: 'FINAL_RENDER',
+        operationName: 'Final Render',
+        metadata: { settlement: true, ...(settlementNonce ? { settlementNonce } : {}) },
+      });
+    }
+
+    const pending = await this.databaseService.generationCostSnapshot.findMany({
+      where: { projectId, userId, walletSettledAt: null },
+    });
+
+    if (pending.length === 0) {
+      return { settled: true, amount: 0, snapshotIds: [] as string[] };
+    }
+
+    const amount = pending.reduce((s, p) => s + p.creditCost, 0);
+    if (amount <= 0) {
+      await this.databaseService.generationCostSnapshot.updateMany({
+        where: { id: { in: pending.map((p) => p.id) } },
+        data: { walletSettledAt: new Date() },
+      });
+      return { settled: true, amount: 0, snapshotIds: pending.map((p) => p.id) };
+    }
+
+    const balance = await this.transactionsService.checkBalance(userId);
+    if ((balance.credits ?? 0) < amount) {
+      throw new BadRequestException({
+        code: 'INSUFFICIENT_CREDITS',
+        message: `Settlement requires ${amount} credits; balance is ${balance.credits ?? 0}.`,
+        requiredCredits: amount,
+        currentBalance: balance.credits ?? 0,
+      });
+    }
+
+    await this.transactionsService.deductCredits({
+      userId,
+      amount,
+      activityName: 'Project export settlement',
+      resourceId: projectId,
+      metadata: {
+        settlement: true,
+        snapshotIds: pending.map((p) => p.id),
+      },
+    });
+
+    const now = new Date();
+    await this.databaseService.generationCostSnapshot.updateMany({
+      where: { id: { in: pending.map((p) => p.id) } },
+      data: { walletSettledAt: now },
+    });
+
+    return {
+      settled: true,
+      amount,
+      snapshotIds: pending.map((p) => p.id),
+    };
   }
 
   async getUserBillingSummary(userId: string, startDate?: Date, endDate?: Date) {

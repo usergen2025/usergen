@@ -104,6 +104,9 @@ interface BrollVideo {
 const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:3003';
 const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:3002';
 
+/** Matches Tailwind `lg` — left/right rails fixed from this width; drawers below. */
+const WORKSPACE_SIDEBAR_BREAKPOINT_PX = 1024;
+
 function WorkspacePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -155,11 +158,14 @@ function WorkspacePageContent() {
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const [previewDimensions, setPreviewDimensions] = useState({ width: 320, height: 537 });
   const [mobileDrawerFrame, setMobileDrawerFrame] = useState({ top: 170, height: 420 });
-  const [viewportWidth, setViewportWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1280);
+  const [viewportWidth, setViewportWidth] = useState<number>(
+    typeof window !== 'undefined' ? window.innerWidth : WORKSPACE_SIDEBAR_BREAKPOINT_PX
+  );
   
   // Workspace mode: 'images' | 'converting' | 'videos'
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('images');
   const [generatingVideos, setGeneratingVideos] = useState<Set<number>>(new Set());
+  const [regeneratingImageScenes, setRegeneratingImageScenes] = useState<Set<number>>(new Set());
   const [failedGenerations, setFailedGenerations] = useState<Set<number>>(new Set());
   const [playingVideo, setPlayingVideo] = useState<number | null>(null);
   // Use ref instead of state to avoid infinite re-renders when setting video elements
@@ -183,13 +189,16 @@ function WorkspacePageContent() {
   const isConverting = workspaceMode === 'converting';
   const isRendering = workspaceMode === 'rendering';
   const isCompleted = workspaceMode === 'completed';
-  const isTabletViewport = viewportWidth >= 560 && viewportWidth < 1280;
+  const isTabletViewport = viewportWidth >= 560 && viewportWidth < WORKSPACE_SIDEBAR_BREAKPOINT_PX;
   
   // WebSocket job tracking
   const videoJobIdsRef = useRef<Map<number, Set<string>>>(new Map());
   const jobToSceneRef = useRef<Map<string, number>>(new Map());
+  const imageRegenJobToSceneRef = useRef<Map<string, number>>(new Map());
   const processedJobIdsRef = useRef<Set<string>>(new Set());
+  const processedImageJobIdsRef = useRef<Set<string>>(new Set());
   const unsubscribeFromJobRef = useRef<((jobId: string) => void) | null>(null);
+  const subscribeToJobRef = useRef<((jobId: string, queueType: string) => void) | null>(null);
 
   // Calculate dynamic scene count based on available data
   const sceneCount = useMemo(() => {
@@ -311,6 +320,12 @@ function WorkspacePageContent() {
       return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
     
+    // Relative upload path without localUrl row (legacy / minimal payloads)
+    if (image.imageUrl?.startsWith('/uploads')) {
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+      return `${VIDEO_SERVICE_BASE_URL}${image.imageUrl}`;
+    }
+
     // Last resort: original provider URL
     return image.imageUrl || null;
   };
@@ -340,6 +355,11 @@ function WorkspacePageContent() {
       return `${VIDEO_SERVICE_BASE_URL}${url}`;
     }
     
+    if (video.videoUrl?.startsWith('/uploads')) {
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+      return `${VIDEO_SERVICE_BASE_URL}${video.videoUrl}`;
+    }
+
     // Last resort: original provider URL
     return video.videoUrl || null;
   };
@@ -577,6 +597,19 @@ function WorkspacePageContent() {
     loadProject();
   }, [projectId, isAuthenticated, authLoading, router, showToast]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !projectId) return;
+    const tick = () => {
+      apiClient.postVideoPresence(projectId).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => {
+      clearInterval(id);
+      apiClient.postVideoPresence(null).catch(() => {});
+    };
+  }, [isAuthenticated, projectId]);
+
   // Handle back navigation
   const handleBack = () => {
     if (projectId) {
@@ -637,7 +670,7 @@ function WorkspacePageContent() {
   useEffect(() => {
     const onResize = () => {
       setViewportWidth(window.innerWidth);
-      if (window.innerWidth >= 1280) {
+      if (window.innerWidth >= WORKSPACE_SIDEBAR_BREAKPOINT_PX) {
         setLeftDrawerOpen(false);
         setRightDrawerOpen(false);
       }
@@ -865,14 +898,27 @@ function WorkspacePageContent() {
     }
   }, []);
 
+  const mapServerImageToBroll = useCallback((raw: any, sceneNumber: number): BrollImage => {
+    return {
+      sceneNumber,
+      imageUrl: raw.imageUrl || raw.image_url || '',
+      localPath: raw.localPath || raw.local_path,
+      localUrl: raw.localUrl || raw.local_url,
+      gcsUrl: raw.gcsUrl || raw.gcs_url,
+      publicUrl: raw.publicUrl || raw.public_url,
+      prompt: raw.prompt,
+    };
+  }, []);
+
   // Handle image regeneration
-  const handleRegenerate = async () => {
+  const handleRegenerate = async (sceneIndexOverride?: number) => {
     if (!projectId) return;
 
-    const currentScene = scenes[selectedSceneIndex];
+    const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
+    const currentScene = scenes[sceneIndex];
     if (!currentScene) return;
 
-    const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (selectedSceneIndex + 1);
+    const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
     
     // For ALTERNATE style, ALL scenes need b-roll images
     // Even scenes (half-n-half) need b-roll for the top half
@@ -902,13 +948,39 @@ function WorkspacePageContent() {
     try {
       showToast('Regenerating image...', 'info');
       const defaultModel = getDefaultModel(project?.style);
-      const response = await apiClient.regenerateImage(projectId, sceneNumber, prompt, defaultModel);
-      if (response.success) {
+      const response = await apiClient.regenerateImage(
+        projectId,
+        sceneNumber,
+        prompt,
+        defaultModel,
+        undefined,
+        undefined,
+        undefined,
+        project?.style,
+        true,
+      );
+      if (!response.success || !response.data) {
+        showToast(response.message || 'Could not start image regeneration', 'error');
+        return;
+      }
+      const { jobId, existing, image } = response.data;
+      if (existing && image) {
+        setBrollImages((prev) => {
+          const next = mapServerImageToBroll(image, sceneNumber);
+          const exists = prev.some((img) => img.sceneNumber === sceneNumber);
+          if (exists) {
+            return prev.map((img) => (img.sceneNumber === sceneNumber ? next : img));
+          }
+          return [...prev, next];
+        });
+        showToast('Image is already available for this scene', 'info');
+        return;
+      }
+      if (jobId) {
+        imageRegenJobToSceneRef.current.set(jobId, sceneNumber);
+        setRegeneratingImageScenes((prev) => new Set(prev).add(sceneNumber));
+        subscribeToJobRef.current?.(jobId, 'image-generation');
         showToast('Image regeneration started', 'success');
-        // Reload project to get updated image
-        setTimeout(() => {
-          window.location.reload();
-        }, 2000);
       }
     } catch (error: any) {
       console.error('Failed to regenerate image:', error);
@@ -918,7 +990,7 @@ function WorkspacePageContent() {
 
   const handleSceneRegenerate = async (sceneIndex: number) => {
     setSelectedSceneIndex(sceneIndex);
-    await handleRegenerate();
+    await handleRegenerate(sceneIndex);
   };
 
   // Handle convert to videos (uses batch API)
@@ -1147,7 +1219,30 @@ function WorkspacePageContent() {
       startRenderingPolling();
     } catch (error: any) {
       console.error('Failed to start rendering:', error);
-      showToast(error.response?.data?.message || error.message || 'Failed to start rendering. Please try again.', 'error');
+      const status = error?.response?.status;
+      const raw = error?.response?.data;
+      const payload = typeof raw?.message === 'object' && raw?.message !== null ? raw.message : raw;
+      if (
+        status === 402 ||
+        payload?.code === 'INSUFFICIENT_CREDITS' ||
+        (typeof raw?.message === 'object' && (raw.message as { code?: string })?.code === 'INSUFFICIENT_CREDITS')
+      ) {
+        const req = (payload as { requiredCredits?: number })?.requiredCredits;
+        const cur = (payload as { currentBalance?: number })?.currentBalance;
+        const line =
+          typeof req === 'number' && typeof cur === 'number'
+            ? `This export requires ${req} credits; you have ${cur}.`
+            : (payload as { message?: string })?.message ||
+              (typeof raw?.message === 'string' ? raw.message : 'Insufficient credits');
+        showToast(line, 'error');
+      } else {
+        const msg =
+          (typeof raw?.message === 'string' ? raw.message : null) ||
+          (typeof payload?.message === 'string' ? payload.message : null) ||
+          error.message ||
+          'Failed to start rendering. Please try again.';
+        showToast(msg, 'error');
+      }
       setWorkspaceMode('videos');
     }
   };
@@ -1209,34 +1304,55 @@ function WorkspacePageContent() {
       if (data.success) {
         showToast(`B-roll updated for scene ${brollModalSceneNumber}`, 'success');
 
-        if (selection.type.includes('image')) {
-          setBrollImages(prev => {
-            const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
-            const newEntry = {
-              sceneNumber: brollModalSceneNumber,
-              imageUrl: fileUrl,
-              localUrl: fileUrl,
-              customUpload: selection.source === 'upload',
-            };
-            if (exists) {
-              return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+        // Reload project from API so preview / scene rail match persisted GCS URLs and script (same as AI chat flow)
+        try {
+          const refreshed = await apiClient.getVideoProject(projectId);
+          if (refreshed.success && refreshed.data) {
+            const pd = refreshed.data;
+            setProject(pd);
+            if (pd.bRollImages) {
+              setBrollImages(Array.isArray(pd.bRollImages) ? pd.bRollImages : []);
             }
-            return [...prev, newEntry];
-          });
-        } else {
-          setBrollVideos(prev => {
-            const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
-            const newEntry = {
-              sceneNumber: brollModalSceneNumber,
-              videoUrl: fileUrl,
-              localUrl: fileUrl,
-              customUpload: selection.source === 'upload',
-            };
-            if (exists) {
-              return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+            if (pd.bRollVideoTasks) {
+              setBrollVideos(Array.isArray(pd.bRollVideoTasks) ? pd.bRollVideoTasks : []);
             }
-            return [...prev, newEntry];
-          });
+            if (pd.script) {
+              const script = typeof pd.script === 'string' ? JSON.parse(pd.script) : pd.script;
+              const scriptScenes = script.scenes || script.scene_plan || [];
+              setScenes(scriptScenes);
+            }
+          }
+        } catch (reErr) {
+          console.warn('[Workspace] Refetch after B-roll failed, using optimistic state:', reErr);
+          if (selection.type.includes('image')) {
+            setBrollImages(prev => {
+              const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
+              const newEntry = {
+                sceneNumber: brollModalSceneNumber,
+                imageUrl: fileUrl,
+                localUrl: fileUrl,
+                customUpload: selection.source === 'upload',
+              };
+              if (exists) {
+                return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+              }
+              return [...prev, newEntry];
+            });
+          } else {
+            setBrollVideos(prev => {
+              const exists = prev.some(b => b.sceneNumber === brollModalSceneNumber);
+              const newEntry = {
+                sceneNumber: brollModalSceneNumber,
+                videoUrl: fileUrl,
+                localUrl: fileUrl,
+                customUpload: selection.source === 'upload',
+              };
+              if (exists) {
+                return prev.map(b => (b.sceneNumber === brollModalSceneNumber ? { ...b, ...newEntry } : b));
+              }
+              return [...prev, newEntry];
+            });
+          }
         }
       } else {
         throw new Error(data.message || 'Failed to process B-roll');
@@ -1268,6 +1384,61 @@ function WorkspacePageContent() {
 
   // WebSocket handler for video generation and scene-composite updates
   const handleJobStatusUpdate = useCallback((update: JobStatusUpdate) => {
+    if (update.queueType === 'image-generation') {
+      const jobId = update.jobId;
+      const img = update.result?.image;
+      const sceneFromImage = img?.sceneNumber ?? img?.scene_number;
+      const sceneNumber =
+        (typeof sceneFromImage === 'number'
+          ? sceneFromImage
+          : sceneFromImage != null
+            ? parseInt(String(sceneFromImage), 10)
+            : undefined) ?? imageRegenJobToSceneRef.current.get(jobId);
+
+      if (update.state === 'completed' && img && sceneNumber != null && !Number.isNaN(sceneNumber)) {
+        if (processedImageJobIdsRef.current.has(jobId)) {
+          return;
+        }
+        processedImageJobIdsRef.current.add(jobId);
+
+        const next = mapServerImageToBroll(img, sceneNumber);
+        setBrollImages((prev) => {
+          const exists = prev.some((i) => i.sceneNumber === sceneNumber);
+          if (exists) {
+            return prev.map((i) => (i.sceneNumber === sceneNumber ? next : i));
+          }
+          return [...prev, next];
+        });
+
+        setRegeneratingImageScenes((prev) => {
+          const n = new Set(prev);
+          n.delete(sceneNumber);
+          return n;
+        });
+        imageRegenJobToSceneRef.current.delete(jobId);
+        unsubscribeFromJobRef.current?.(jobId);
+        showToast(`Image ready for Scene ${sceneNumber}`, 'success');
+        return;
+      }
+
+      if (update.state === 'failed') {
+        const sn = sceneNumber ?? imageRegenJobToSceneRef.current.get(jobId);
+        if (sn != null) {
+          setRegeneratingImageScenes((prev) => {
+            const n = new Set(prev);
+            n.delete(sn);
+            return n;
+          });
+          imageRegenJobToSceneRef.current.delete(jobId);
+          showToast(update.error || `Image regeneration failed for Scene ${sn}`, 'error');
+        }
+        unsubscribeFromJobRef.current?.(jobId);
+        return;
+      }
+
+      return;
+    }
+
     const isVideo = update.queueType === 'video-generation';
     const isComposite = update.queueType === 'scene-composite';
     const sceneNum = update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber;
@@ -1361,21 +1532,22 @@ function WorkspacePageContent() {
               videoJobIdsRef.current.delete(sceneNumber);
             }
           }
-          jobToSceneRef.current.delete(jobId);
-          
-          showToast(`Video generation failed for Scene ${sceneNumber}`, 'error');
+        jobToSceneRef.current.delete(jobId);
+        
+        showToast(`Video generation failed for Scene ${sceneNumber}`, 'error');
         }
         
         unsubscribeFromJobRef.current?.(jobId);
       }
     }
-  }, [showToast]);
+  }, [showToast, mapServerImageToBroll]);
 
   // WebSocket integration
   const { subscribeToJob, unsubscribeFromJob } = useWebSocket({
     onJobStatusUpdate: handleJobStatusUpdate,
   });
   unsubscribeFromJobRef.current = unsubscribeFromJob;
+  subscribeToJobRef.current = subscribeToJob;
 
   // Video playback handlers
   const handlePlayVideo = (sceneNumber: number, videoUrl: string) => {
@@ -1427,6 +1599,11 @@ function WorkspacePageContent() {
       });
       videoJobIdsRef.current.clear();
       jobToSceneRef.current.clear();
+
+      imageRegenJobToSceneRef.current.forEach((_, jobId) => {
+        unsubscribeFromJob(jobId);
+      });
+      imageRegenJobToSceneRef.current.clear();
       
       // Clean up video elements
       Object.values(videoElementsRef.current).forEach(video => {
@@ -1486,10 +1663,12 @@ function WorkspacePageContent() {
   const currentScene = scenes[selectedSceneIndex];
   const currentSceneNumber = currentScene?.scene_number || currentScene?.sceneNumber || (selectedSceneIndex + 1);
   const currentImageUrl = getImageUrl(currentSceneNumber);
+  const isRegeneratingCurrentImage = regeneratingImageScenes.has(currentSceneNumber);
   const currentSceneText = currentScene ? getSceneText(currentScene) : '';
   const currentBrollVideoUrl =
     workspaceMode === 'videos' ? getVideoUrl(currentSceneNumber) : null;
-  const hasPreviewMedia = Boolean(currentImageUrl || currentBrollVideoUrl);
+  const hasPreviewMedia =
+    Boolean(currentImageUrl || currentBrollVideoUrl) && !isRegeneratingCurrentImage;
   const currentAudioForScene = audioFiles.find((af) => af.sceneNumber === currentSceneNumber);
 
   useEffect(() => {
@@ -1534,7 +1713,7 @@ function WorkspacePageContent() {
     workspaceMode !== 'rendering' && !(workspaceMode === 'completed' && finalVideoUrl);
 
   return (
-    <div className="relative min-h-full flex flex-col overflow-hidden">
+    <div className="relative h-full min-h-0 flex flex-col overflow-hidden">
       {/* Shimmer animation keyframes */}
       <style jsx>{`
         @keyframes shimmer {
@@ -1721,7 +1900,7 @@ function WorkspacePageContent() {
 
           {/* Center: Mode toggle tabs - only show when videos exist and not converting/rendering/completed */}
           {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
-            <div className="hidden xl:flex items-center gap-1 bg-gray-100 rounded-full p-1">
+            <div className="hidden lg:flex items-center gap-1 bg-gray-100 rounded-full p-1">
               <button
                 onClick={handleBackToImages}
                 className={cn(
@@ -1770,13 +1949,13 @@ function WorkspacePageContent() {
         </div>
 
         {/* Main content area — stack on small screens; three columns from lg up */}
-        <div className="flex flex-col xl:flex-row items-stretch xl:items-start gap-4 xl:gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-y-auto xl:overflow-y-hidden xl:overflow-x-visible px-4 sm:px-6 pb-6 xl:pb-0 min-h-0">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-start gap-4 lg:gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-y-auto lg:overflow-y-hidden lg:overflow-x-visible px-4 sm:px-6 pb-6 lg:pb-0 min-h-0">
         {/* Left sidebar - Scene list */}
         <div className={cn(
-          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full xl:basis-[clamp(280px,28vw,360px)] xl:min-w-[280px] xl:max-w-[360px] h-auto xl:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
-          "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
-          "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
-          "fixed left-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full lg:basis-[clamp(280px,28vw,360px)] lg:min-w-[280px] lg:max-w-[360px] h-auto lg:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "hidden lg:flex lg:relative lg:inset-auto lg:z-auto lg:rounded-[20px]",
+          "lg:translate-x-0 lg:opacity-100 lg:pointer-events-auto",
+          "fixed left-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
           leftDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "-translate-x-full opacity-0 pointer-events-none"
         )}
         style={leftDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
@@ -1790,6 +1969,7 @@ function WorkspacePageContent() {
                 const timeRange = getSceneTimeRange(index);
                 const isSelected = index === selectedSceneIndex;
                 const isGenerating = generatingVideos.has(sceneNumber);
+                const isRegeneratingImage = regeneratingImageScenes.has(sceneNumber);
                 const hasVideo = !!videoUrl;
 
                 return (
@@ -1812,7 +1992,7 @@ function WorkspacePageContent() {
                       isSelected ? "p-[clamp(12px,1.76vh,22px)]" : "p-[clamp(14px,1.95vh,24px)]"
                     )}>
                       <div className="w-[clamp(58px,7.8vw,90px)] h-[clamp(73px,11vh,113px)] rounded-[12px] overflow-hidden flex-shrink-0 relative">
-                        {workspaceMode === 'videos' && hasVideo ? (
+                        {workspaceMode === 'videos' && hasVideo && !isRegeneratingImage ? (
                           <video
                             src={videoUrl}
                             className="w-full h-full object-cover"
@@ -1824,7 +2004,7 @@ function WorkspacePageContent() {
                               target.style.opacity = '0.5';
                             }}
                           />
-                        ) : (workspaceMode === 'converting' || isGenerating) ? (
+                        ) : (workspaceMode === 'converting' || isGenerating || isRegeneratingImage) ? (
                           <div className="w-full h-full relative overflow-hidden">
                             {/* Skeleton shimmer animation */}
                             <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
@@ -1891,11 +2071,16 @@ function WorkspacePageContent() {
                               e.stopPropagation();
                               await handleSceneRegenerate(index);
                             }}
-                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
+                            disabled={isRegeneratingImage}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors disabled:opacity-50 disabled:pointer-events-none"
                             title="Regenerate scene"
                             aria-label={`Regenerate scene ${sceneNumber}`}
                           >
-                            <RefreshCw className="w-3.5 h-3.5" />
+                            {isRegeneratingImage ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -1912,7 +2097,7 @@ function WorkspacePageContent() {
         </div>
 
         {/* Center - Preview */}
-        <div className="relative flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-full min-w-0 xl:flex-1 xl:max-w-[520px] xl:min-w-[340px] max-w-[min(520px,calc(100vw-2rem))] min-[560px]:max-w-[min(620px,calc(100vw-1rem))] mx-auto h-auto xl:h-full shrink-0">
+        <div className="relative flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-full min-w-0 lg:flex-1 lg:max-w-[520px] lg:min-w-[340px] max-w-[min(520px,calc(100vw-2rem))] min-[560px]:max-w-[min(620px,calc(100vw-1rem))] mx-auto h-auto lg:h-full shrink-0">
           {/* Scene counter */}
           <div className="flex flex-row justify-center items-center w-full">
             <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121]">
@@ -1929,7 +2114,7 @@ function WorkspacePageContent() {
                 setRightDrawerOpen(false);
                 setLeftDrawerOpen(true);
               }}
-              className="xl:hidden absolute left-[-10px] min-[560px]:left-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-r-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
+              className="lg:hidden absolute left-[-10px] min-[560px]:left-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-r-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
               aria-label="Open scenes drawer"
             >
               <Clapperboard className="w-3.5 h-3.5 text-[#8B6C5C]" />
@@ -1941,7 +2126,7 @@ function WorkspacePageContent() {
                 setLeftDrawerOpen(false);
                 setRightDrawerOpen(true);
               }}
-              className="xl:hidden absolute right-[-10px] min-[560px]:right-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-l-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
+              className="lg:hidden absolute right-[-10px] min-[560px]:right-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] min-[560px]:h-[54%] min-[560px]:min-h-[230px] min-[560px]:max-h-[420px] w-8 min-[560px]:w-10 rounded-l-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
               aria-label="Open settings drawer"
             >
               <SlidersHorizontal className="w-3.5 h-3.5 text-[#8B6C5C]" />
@@ -1966,7 +2151,25 @@ function WorkspacePageContent() {
                 aspectRatio: '9/16'
               }}
             >
-              {workspaceMode === 'videos' && getVideoUrl(currentSceneNumber) ? (
+              {isRegeneratingCurrentImage ? (
+                <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div
+                      className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                      style={{
+                        animation: 'shimmer 1.5s infinite',
+                        transform: 'translateX(-100%)',
+                      }}
+                    />
+                  </div>
+                  <div className="relative z-10 flex flex-col items-center justify-center px-4 text-center">
+                    <Loader2 className="w-[clamp(40px,5vh,48px)] h-[clamp(40px,5vh,48px)] text-gray-500 animate-spin" />
+                    <span className="text-[clamp(14px,1.76vh,18px)] text-gray-600 mt-2">Regenerating image…</span>
+                    <span className="text-[clamp(11px,1.27vh,13px)] text-gray-400 mt-1">Scene {currentSceneNumber}</span>
+                  </div>
+                </div>
+              ) : workspaceMode === 'videos' && getVideoUrl(currentSceneNumber) ? (
                 <video
                   ref={(el) => {
                     // Use ref to avoid infinite re-renders - don't call setState here
@@ -2056,7 +2259,7 @@ function WorkspacePageContent() {
 
           {/* Mobile mode toggle below preview */}
           {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
-            <div className="xl:hidden flex items-center gap-1 bg-gray-100 rounded-full p-1">
+            <div className="lg:hidden flex items-center gap-1 bg-gray-100 rounded-full p-1">
               <button
                 onClick={handleBackToImages}
                 className={cn(
@@ -2086,10 +2289,10 @@ function WorkspacePageContent() {
 
         {/* Right sidebar - Settings */}
         <div className={cn(
-          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full xl:basis-[clamp(320px,26.7vw,384px)] xl:min-w-[320px] xl:max-w-[384px] min-h-0 xl:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
-          "hidden xl:flex xl:relative xl:inset-auto xl:z-auto xl:rounded-[20px]",
-          "xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto",
-          "fixed right-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out xl:transition-none",
+          "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full lg:basis-[clamp(320px,26.7vw,384px)] lg:min-w-[320px] lg:max-w-[384px] min-h-0 lg:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
+          "hidden lg:flex lg:relative lg:inset-auto lg:z-auto lg:rounded-[20px]",
+          "lg:translate-x-0 lg:opacity-100 lg:pointer-events-auto",
+          "fixed right-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
           rightDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "translate-x-full opacity-0 pointer-events-none"
         )}
         style={rightDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
@@ -2348,7 +2551,7 @@ function WorkspacePageContent() {
         <button
           type="button"
           aria-label="Close workspace drawers"
-          className="xl:hidden fixed inset-0 z-40 bg-black/20"
+          className="lg:hidden fixed inset-0 z-40 bg-black/20"
           onClick={() => {
             setLeftDrawerOpen(false);
             setRightDrawerOpen(false);
@@ -2372,6 +2575,11 @@ function WorkspacePageContent() {
             : project?.style === 'ALTERNATE' && brollModalSceneNumber % 2 === 1
               ? '9:8'
               : '9:16'
+        }
+        stockVideoDurationParams={
+          workspaceMode === 'videos'
+            ? { minDuration: 4, maxDuration: 120, targetDuration: 15 }
+            : undefined
         }
       />
     </div>

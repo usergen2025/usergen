@@ -3,11 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
 import { VideoService } from '../video/video.service';
 import { BytePlusProvider } from './providers/byteplus.provider';
-import { HeyGenVideoProvider } from './providers/heygen-video.provider';
+import {
+  HeyGenAvatarIVRequest,
+  HeyGenVideoProvider,
+  HeyGenVideoStatus,
+} from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
+import { aggregateVoiceoversFromScript } from '../common/utils/script-aggregate';
+import { UserNotificationService } from '../notifications/user-notification.service';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -26,60 +32,117 @@ export class RenderingService {
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly publicUrlService: PublicUrlService,
     private readonly queueManager: QueueManagerService,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
 
   /**
-   * Deduct credits for final render once per project (idempotent via metadata.billingFinalRenderCharged).
+   * HeyGen Avatar IV: legacy /video/av4 or v3 Photo Avatar pipeline + unified polling.
+   */
+  async generateAndPollAvatarIVUnified(
+    project: { id: string; script?: unknown; voiceId?: string | null },
+    request: HeyGenAvatarIVRequest,
+    maxPollingAttempts: number,
+    intervalMs = 5000,
+  ): Promise<HeyGenVideoStatus> {
+    const fullScript = aggregateVoiceoversFromScript(project.script);
+    const voiceId =
+      (project.voiceId as string) ||
+      this.configService.get<string>('HEYGEN_DEFAULT_VOICE_ID') ||
+      '';
+    const v3Ctx =
+      fullScript.trim() && voiceId.trim()
+        ? { fullScriptText: fullScript, voiceId, projectId: project.id }
+        : undefined;
+    const start = await this.heygenVideoProvider.generateAvatarIVVideoUnified(request, v3Ctx);
+    return this.heygenVideoProvider.pollAvatarVideoUntilCompleteUnified(
+      start,
+      maxPollingAttempts,
+      intervalMs,
+    );
+  }
+
+  private paymentServiceBase(): string {
+    return (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
+  }
+
+  /** Block start of render if unsettled + final render fee exceeds wallet. */
+  private async assertExportAffordable(projectId: string, userId: string): Promise<void> {
+    const paymentBase = this.paymentServiceBase();
+    try {
+      const response = await axios.post(
+        `${paymentBase}/api/credits/check-export-affordability`,
+        { projectId, userId },
+        { timeout: 12000 },
+      );
+      const data = response.data?.data;
+      if (data && data.affordable === false) {
+        throw new HttpException(
+          {
+            code: 'INSUFFICIENT_CREDITS',
+            message: data.message || 'Insufficient credits',
+            requiredCredits: data.requiredCredits,
+            currentBalance: data.currentBalance,
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
+    } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+      const msg = err?.response?.data?.message || err?.message || 'Payment service unavailable';
+      throw new HttpException(
+        {
+          code: 'AFFORDABILITY_CHECK_FAILED',
+          message: typeof msg === 'string' ? msg : 'Could not verify credits. Please try again.',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+  }
+
+  /**
+   * Single wallet debit for all unsettled snapshots + FINAL_RENDER line (deferred billing).
    */
   private async chargeFinalRenderCredits(projectId: string, userId: string): Promise<void> {
     try {
       const proj = await this.databaseService.videoProject.findUnique({ where: { id: projectId } });
       if (!proj) return;
+
+      const settlementNonce = crypto.randomUUID();
+
+      const response = await axios.post(
+        `${this.paymentServiceBase()}/api/credits/settle-project`,
+        { projectId, userId, settlementNonce },
+        { timeout: 30000 },
+      );
+
+      if (!response.data?.success) {
+        console.warn(`[RenderingService] Settlement incomplete for ${projectId}:`, response.data);
+        return;
+      }
+
+      if (response.data.data?.duplicate) {
+        return;
+      }
+
+      const amount = typeof response.data.data?.amount === 'number' ? response.data.data.amount : 0;
       const raw = proj.metadata;
       const meta =
         raw && typeof raw === 'object' && !Array.isArray(raw)
           ? { ...(raw as Record<string, unknown>) }
           : {};
-      if (meta.billingFinalRenderCharged === true) return;
-
-      const paymentBase = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(
-        /\/api\/?$/,
-        '',
-      );
-      const response = await axios.post(
-        `${paymentBase}/api/credits/record-and-deduct`,
-        {
-          projectId,
-          userId,
-          operationType: 'FINAL_RENDER',
-          operationName: 'Final Render',
-        },
-        { timeout: 10000 },
-      );
-
-      if (!response.data?.success) {
-        console.warn(`[RenderingService] Final render billing incomplete for ${projectId}:`, response.data);
-        return;
-      }
-
-      const snap = response.data.data;
-      const creditCost = typeof snap?.creditCost === 'number' ? snap.creditCost : 15;
-
-      meta.billingFinalRenderCharged = true;
-      meta.billingFinalRenderAt = new Date().toISOString();
-      if (snap?.id) meta.billingFinalRenderSnapshotId = snap.id;
+      meta.billingWalletSettledAt = new Date().toISOString();
 
       await this.databaseService.videoProject.update({
         where: { id: projectId },
         data: {
           metadata: meta as object,
-          creditsSpent: (proj.creditsSpent ?? 0) + creditCost,
+          creditsSpent: (proj.creditsSpent ?? 0) + amount,
         },
       });
     } catch (err: any) {
-      console.error('[RenderingService] chargeFinalRenderCredits:', err?.message ?? err);
+      console.error('[RenderingService] chargeFinalRenderCredits (settlement):', err?.message ?? err);
     }
   }
 
@@ -119,7 +182,7 @@ export class RenderingService {
    * @param durationSeconds Total duration of the video in seconds
    * @returns Number of max polling attempts
    */
-  private calculateMaxPollingAttempts(durationSeconds: number): number {
+  calculateMaxPollingAttempts(durationSeconds: number): number {
     // Each 30-second bucket gets 90 attempts
     // With 5-second polling interval, that's 7.5 minutes per 30 seconds of video
     const buckets = Math.ceil(durationSeconds / 30);
@@ -426,6 +489,8 @@ export class RenderingService {
     if (!project) {
       throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
     }
+
+    await this.assertExportAffordable(projectId, userId);
 
     // Update project status to IN_PROGRESS
     await this.databaseService.videoProject.update({
@@ -859,25 +924,24 @@ export class RenderingService {
     imageKeyHalfNHalfWithWhite = imageKeyToUse; // used later for Premium crop
     console.log(`[RenderingService] HALF_N_HALF: Using Avatar IV with project image_key`);
 
-    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-      image_key: imageKeyToUse,
-      video_title: `Avatar Video ${projectId}`,
-      audio_asset_id: audioAssetId,
-      video_orientation: 'portrait',
-      fit: 'cover',
-    });
-
-    console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
-    
-    // Calculate total audio duration for dynamic polling
     const totalAudioDurationHNH = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsHNH = this.calculateMaxPollingAttempts(totalAudioDurationHNH);
-    
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
-      videoResponse.video_id,
+
+    const completedVideo = await this.generateAndPollAvatarIVUnified(
+      project,
+      {
+        image_key: imageKeyToUse,
+        video_title: `Avatar Video ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+      },
       maxPollingAttemptsHNH,
-      5000
+      5000,
     );
+
+    const videoResponse = { video_id: completedVideo.data.id };
+    console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
 
     if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL');
@@ -1142,6 +1206,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] HALF_N_HALF video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -1312,25 +1377,24 @@ export class RenderingService {
     }
     console.log(`[RenderingService] CUTOUT: Using Avatar IV with project image_key`);
 
-    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-      image_key: imageKeyCutout,
-      video_title: `Avatar Video ${projectId}`,
-      audio_asset_id: audioAssetId,
-      video_orientation: 'portrait',
-      fit: 'cover',
-    });
-
-    console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
-    
-    // Calculate total audio duration for dynamic polling
     const totalAudioDurationCutout = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsCutout = this.calculateMaxPollingAttempts(totalAudioDurationCutout);
-    
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
-      videoResponse.video_id,
+
+    const completedVideo = await this.generateAndPollAvatarIVUnified(
+      project,
+      {
+        image_key: imageKeyCutout,
+        video_title: `Avatar Video ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+      },
       maxPollingAttemptsCutout,
-      5000
+      5000,
     );
+
+    const videoResponse = { video_id: completedVideo.data.id };
+    console.log(`[RenderingService] Created avatar video task ${videoResponse.video_id}`);
 
     if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL');
@@ -1889,6 +1953,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] CUTOUT video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -1920,24 +1985,25 @@ export class RenderingService {
     const audioBuffer = fs.readFileSync(audioFilePath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
 
-    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-      image_key: imageKeyToUse,
-      video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
-      audio_asset_id: audioAssetId,
-      video_orientation: 'portrait',
-      fit: 'cover',
-    });
-
-    console.log(`[RenderingService] ALTERNATE: Created avatar video task ${videoResponse.video_id} for scene ${sceneNumber}`);
-    
-    // Calculate audio duration for dynamic polling (use getVideoDuration which works for audio)
     const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
     const maxPollingAttemptsAlternate = this.calculateMaxPollingAttempts(sceneAudioDuration);
-    
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
-      videoResponse.video_id,
+
+    const completedVideo = await this.generateAndPollAvatarIVUnified(
+      project,
+      {
+        image_key: imageKeyToUse,
+        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+      },
       maxPollingAttemptsAlternate,
-      5000
+      5000,
+    );
+
+    const videoResponse = { video_id: completedVideo.data.id };
+    console.log(
+      `[RenderingService] ALTERNATE: Created avatar video task ${videoResponse.video_id} for scene ${sceneNumber}`,
     );
 
     if (!completedVideo.data.video_url) {
@@ -2206,6 +2272,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] ✅ ALTERNATE video completed: ${publicUrl || localVideoUrl}, duration: ${totalDuration.toFixed(2)}s, scenes: ${sceneVideoPaths.length}`);
   }
@@ -2296,26 +2363,26 @@ export class RenderingService {
     }
     console.log(`[RenderingService] AVATAR_ONLY: Using Avatar IV with project image_key`);
 
-    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-      image_key: imageKeyAvatarOnly,
-      video_title: `Avatar Video ${projectId}`,
-      audio_asset_id: audioAssetId,
-      video_orientation: 'portrait',
-      fit: 'cover',
-    });
-
-    console.log(`[RenderingService] AVATAR_ONLY: Created avatar video task ${videoResponse.video_id}`);
     await this.updateRenderingStatus(projectId, 'avatar_generating', 60);
 
-    // Calculate total audio duration for dynamic polling
     const totalAudioDurationAvatarOnly = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsAvatarOnly = this.calculateMaxPollingAttempts(totalAudioDurationAvatarOnly);
-    
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(
-      videoResponse.video_id,
+
+    const completedVideo = await this.generateAndPollAvatarIVUnified(
+      project,
+      {
+        image_key: imageKeyAvatarOnly,
+        video_title: `Avatar Video ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+      },
       maxPollingAttemptsAvatarOnly,
-      5000
+      5000,
     );
+
+    const videoResponse = { video_id: completedVideo.data.id };
+    console.log(`[RenderingService] AVATAR_ONLY: Created avatar video task ${videoResponse.video_id}`);
 
     if (!completedVideo.data.video_url) {
       throw new Error('Avatar video generation completed but no video URL returned');
@@ -2385,6 +2452,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] AVATAR_ONLY video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -2579,6 +2647,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] PRODUCT_ONLY video completed: ${publicUrl || localVideoUrl}`);
   }
@@ -2784,6 +2853,7 @@ export class RenderingService {
 
     await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
 
     console.log(`[RenderingService] AVATAR_PRODUCT video completed: ${publicUrl || localVideoUrl}`);
   }

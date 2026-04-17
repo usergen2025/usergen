@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Post, Body, Param, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Put, Post, Patch, Body, Param, Query, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { PricingService } from './pricing.service';
 
@@ -12,6 +12,29 @@ export class PricingController {
   @ApiResponse({ status: 200, description: 'Returns all active pricing configurations' })
   async getAllPricing() {
     const pricing = await this.pricingService.getAllPricing();
+    return { success: true, data: pricing };
+  }
+
+  @Get('admin/all')
+  @ApiOperation({ summary: 'Get all pricing rows (admin — includes inactive)' })
+  @ApiResponse({ status: 200, description: 'Returns all pricing configurations' })
+  async getAllPricingForAdmin() {
+    const pricing = await this.pricingService.getAllPricingForAdmin();
+    return { success: true, data: pricing };
+  }
+
+  @Patch(':operationType/activation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Enable or disable a pricing line (admin)' })
+  async updateActivation(
+    @Param('operationType') operationType: string,
+    @Body() body: { isActive: boolean; adminUserId: string },
+  ) {
+    const pricing = await this.pricingService.updatePricingActive(
+      operationType,
+      body.isActive,
+      body.adminUserId,
+    );
     return { success: true, data: pricing };
   }
 
@@ -79,6 +102,9 @@ export class PricingController {
     }
   ) {
     const snapshot = await this.pricingService.recordGenerationCost(body);
+    if (!snapshot) {
+      return { success: true, data: null, skipped: true };
+    }
     return { success: true, data: snapshot };
   }
 }

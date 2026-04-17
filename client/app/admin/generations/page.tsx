@@ -15,6 +15,7 @@ import {
   Coins,
   ExternalLink,
   X,
+  FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
@@ -94,6 +95,10 @@ function AdminGenerationsContent() {
   const [totalProjects, setTotalProjects] = useState(0);
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
   const [projectDetails, setProjectDetails] = useState<any>(null);
+  const [logModalOpen, setLogModalOpen] = useState(false);
+  const [logModalBody, setLogModalBody] = useState('');
+  const [logModalMeta, setLogModalMeta] = useState<{ hint?: string; lastSync?: string | null }>({});
+  const [logModalLoading, setLogModalLoading] = useState(false);
   const { showToast } = useToast();
 
   const itemsPerPage = 20;
@@ -180,6 +185,31 @@ function AdminGenerationsContent() {
     } else {
       setExpandedProject(projectId);
       fetchProjectDetails(projectId);
+    }
+  };
+
+  const openProjectLogs = async (projectId: string) => {
+    setLogModalOpen(true);
+    setLogModalLoading(true);
+    setLogModalBody('');
+    setLogModalMeta({});
+    try {
+      const res = await apiClient.getAdminProjectLogs(projectId);
+      if (res.success && res.data) {
+        setLogModalBody(res.data.body || '(empty)');
+        setLogModalMeta({
+          hint: res.data.hint,
+          lastSync: res.data.lastGcsSyncedAt ?? null,
+        });
+      } else {
+        showToast(res.message || 'Failed to load logs', 'error');
+        setLogModalBody('Could not load logs.');
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Failed to load logs', 'error');
+      setLogModalBody('Error loading logs.');
+    } finally {
+      setLogModalLoading(false);
     }
   };
 
@@ -347,9 +377,19 @@ function AdminGenerationsContent() {
                           Details
                         </h4>
                         <div className="space-y-2 text-sm">
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
                             <span className="text-gray-400">Project ID</span>
-                            <span className="break-all font-mono text-xs text-white">{project.id}</span>
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              <span className="break-all font-mono text-xs text-white">{project.id}</span>
+                              <button
+                                type="button"
+                                onClick={() => openProjectLogs(project.id)}
+                                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-orange-400 hover:border-orange-500 hover:text-orange-300"
+                              >
+                                <FileText className="h-3.5 w-3.5" />
+                                View logs
+                              </button>
+                            </div>
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-gray-400">User</span>
@@ -449,6 +489,47 @@ function AdminGenerationsContent() {
           </div>
         )}
       </div>
+
+      {logModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setLogModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-700 bg-gray-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+              <h3 className="font-medium text-white">Project logs</h3>
+              <button
+                type="button"
+                onClick={() => setLogModalOpen(false)}
+                className="rounded p-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="border-b border-gray-800 px-4 py-2 text-xs text-gray-500">
+              {logModalLoading ? (
+                'Loading…'
+              ) : (
+                <>
+                  {logModalMeta.lastSync && (
+                    <span className="mr-3">Last synced to GCS: {formatDate(logModalMeta.lastSync)}</span>
+                  )}
+                  {logModalMeta.hint && <span>{logModalMeta.hint}</span>}
+                </>
+              )}
+            </div>
+            <pre className="flex-1 overflow-auto p-4 text-left text-xs text-gray-200 whitespace-pre-wrap font-mono">
+              {logModalLoading ? '…' : logModalBody}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

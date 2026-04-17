@@ -10,6 +10,7 @@ import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { PublicUrlService } from '../../storage/public-url.service';
 import { AssetProcessorService, AnalyzedAsset } from '../../services/asset-processor.service';
+import { ProjectLogService } from '../../logging/project-log.service';
 import { preWarmUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -46,6 +47,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly publicUrlService: PublicUrlService,
     private readonly assetProcessor: AssetProcessorService,
+    private readonly projectLog: ProjectLogService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -64,6 +66,14 @@ export class ImageGenerationProcessor extends WorkerHost {
       avatarImageKey,
       videoStyle
     } = job.data;
+
+    await this.projectLog
+      .logProject(projectId, 'INFO', 'image-generation started', {
+        op: 'image-generation',
+        scene: sceneNumber,
+        jobId: String(job.id),
+      })
+      .catch(() => {});
 
     // ✅ Enhanced logging for debugging
     console.log(`[ImageGenerationProcessor] ========== JOB START ==========`);
@@ -216,7 +226,17 @@ export class ImageGenerationProcessor extends WorkerHost {
         console.error(`[ImageGenerationProcessor] Failed to emit WebSocket event:`, err);
       }
 
+      await this.projectLog
+        .logProject(projectId, 'ERROR', errorMessage, {
+          op: 'image-generation',
+          scene: sceneNumber,
+          jobId: String(job.id),
+        })
+        .catch(() => {});
+
       throw error;
+    } finally {
+      await this.projectLog.flushProjectToGcs(projectId).catch(() => {});
     }
   }
 
@@ -227,11 +247,11 @@ export class ImageGenerationProcessor extends WorkerHost {
     style: string,
     jobId?: string | number,
   ) {
-    const idempotencyKey = `image:${projectId}:${sceneNumber}`;
+    const idempotencyKey = `image:${projectId}:${sceneNumber}:${jobId ?? 'na'}`;
     try {
       const project = await this.databaseService.videoProject.findUnique({
         where: { id: projectId },
-        select: { metadata: true, creditsSpent: true },
+        select: { metadata: true },
       });
       const baseMetadata =
         project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
@@ -245,7 +265,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       }
       const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
       const response = await axios.post(
-        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        `${paymentServiceUrl}/api/pricing/record-cost`,
         {
           projectId,
           userId,
@@ -256,7 +276,9 @@ export class ImageGenerationProcessor extends WorkerHost {
         },
         { timeout: 10000 },
       );
-      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      if (response.data?.skipped || !response.data?.data) {
+        return;
+      }
       await this.databaseService.videoProject.update({
         where: { id: projectId },
         data: {
@@ -264,7 +286,6 @@ export class ImageGenerationProcessor extends WorkerHost {
             ...baseMetadata,
             billedOperationKeys: [...billedKeys, idempotencyKey],
           } as any,
-          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
         },
       });
     } catch (error: any) {

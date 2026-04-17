@@ -1931,6 +1931,7 @@ export class VideoController {
     fs.writeFileSync(filePath, file.buffer);
     const localUrl = `/uploads/broll/${userId}/${projectId}/${filename}`;
     let publicUrl: string | undefined;
+    let gcsUrl: string | undefined;
     try {
       const mimeType = file.mimetype || (ext === '.mp4' || ext === '.mov' ? 'video/mp4' : 'image/jpeg');
     const result = await this.publicUrlService.uploadFromPath(
@@ -1940,12 +1941,19 @@ export class VideoController {
         mimeType,
       );
       publicUrl = result.publicUrl;
+      gcsUrl = result.gcsUrl;
     } catch (err: any) {
       console.warn(`[VideoController] upload-broll GCS upload failed: ${err?.message}`);
     }
+    const canonical = publicUrl || localUrl;
     return {
       success: true,
-      data: { url: publicUrl || localUrl },
+      data: {
+        url: canonical,
+        publicUrl: publicUrl || undefined,
+        localUrl: publicUrl ? undefined : localUrl,
+        gcsUrl,
+      },
       message: 'B-roll file uploaded successfully',
     };
   }
@@ -2020,12 +2028,20 @@ export class VideoController {
       let processedVideoUrl: string | undefined;
 
       if (source === 'upload' && fileUrl) {
+        const isHttp = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
+        const isLocalPath = fileUrl.startsWith('/uploads');
+        const normalizedPublic = isHttp ? fileUrl : undefined;
+        const normalizedLocal = isLocalPath ? fileUrl : undefined;
+        const displayUrl = normalizedPublic || fileUrl;
+
         if (mediaType === 'image') {
-          processedImageUrl = fileUrl;
+          processedImageUrl = displayUrl;
           const existingIndex = bRollImages.findIndex((b: any) => b.sceneNumber === sceneNumber);
           const brollEntry = {
             sceneNumber,
-            imageUrl: processedImageUrl,
+            imageUrl: displayUrl,
+            publicUrl: normalizedPublic,
+            localUrl: normalizedLocal,
             source: 'custom_upload',
             customUpload: true,
             uploadedAt: new Date().toISOString(),
@@ -2036,11 +2052,13 @@ export class VideoController {
             bRollImages.push(brollEntry);
           }
         } else {
-          processedVideoUrl = fileUrl;
+          processedVideoUrl = displayUrl;
           const existingIndex = bRollVideoTasks.findIndex((b: any) => b.sceneNumber === sceneNumber);
           const brollEntry = {
             sceneNumber,
-            videoUrl: processedVideoUrl,
+            videoUrl: displayUrl,
+            publicUrl: normalizedPublic,
+            localUrl: normalizedLocal,
             source: 'custom_upload',
             customUpload: true,
             uploadedAt: new Date().toISOString(),
@@ -2052,13 +2070,48 @@ export class VideoController {
           }
         }
       } else if (source === 'freepik' && fileUrl) {
-        // Stock (Freepik) selection: persist so convert-to-videos and rendering use it
-        if (mediaType === 'image') {
-          processedImageUrl = fileUrl;
+        // Download stock asset and persist to our storage (GCS when enabled) so URLs are stable for pipelines
+        console.log(`[VideoController] Ingesting Freepik stock for scene ${sceneNumber} from preview URL`);
+        const stockResp = await axios.get<ArrayBuffer>(fileUrl, {
+          responseType: 'arraybuffer',
+          timeout: 120000,
+          maxContentLength: 80 * 1024 * 1024,
+          validateStatus: (s) => s >= 200 && s < 400,
+        });
+        if (stockResp.status >= 400) {
+          throw new HttpException(`Failed to download stock media: HTTP ${stockResp.status}`, HttpStatus.BAD_GATEWAY);
+        }
+        const buffer = Buffer.from(stockResp.data);
+        const headerCt = (stockResp.headers['content-type'] || '') as string;
+        const isImage = mediaType === 'image';
+        const ext = isImage
+          ? headerCt.includes('png')
+            ? 'png'
+            : 'jpg'
+          : headerCt.includes('webm')
+            ? 'webm'
+            : 'mp4';
+        const filename = `stock_${sourceId || 'asset'}_${sceneNumber}_${Date.now()}.${ext}`;
+        const contentType = isImage
+          ? headerCt.startsWith('image/')
+            ? headerCt
+            : 'image/jpeg'
+          : headerCt.startsWith('video/')
+            ? headerCt
+            : 'video/mp4';
+        const subPath = isImage ? `images/${userId}` : `videos/${userId}`;
+        const uploaded = await this.publicUrlService.uploadFromBuffer(buffer, subPath, filename, contentType);
+        const canonicalUrl = uploaded.publicUrl;
+
+        if (isImage) {
+          processedImageUrl = canonicalUrl;
           const existingIndex = bRollImages.findIndex((b: any) => b.sceneNumber === sceneNumber);
           const brollEntry = {
             sceneNumber,
-            imageUrl: processedImageUrl,
+            imageUrl: canonicalUrl,
+            gcsUrl: uploaded.gcsUrl,
+            publicUrl: canonicalUrl,
+            localUrl: uploaded.localUrl,
             source: 'freepik',
             sourceId: sourceId || undefined,
             customUpload: false,
@@ -2069,11 +2122,14 @@ export class VideoController {
             bRollImages.push(brollEntry);
           }
         } else {
-          processedVideoUrl = fileUrl;
+          processedVideoUrl = canonicalUrl;
           const existingIndex = bRollVideoTasks.findIndex((b: any) => b.sceneNumber === sceneNumber);
           const brollEntry = {
             sceneNumber,
-            videoUrl: processedVideoUrl,
+            videoUrl: canonicalUrl,
+            gcsUrl: uploaded.gcsUrl,
+            publicUrl: canonicalUrl,
+            localUrl: uploaded.localUrl,
             source: 'freepik',
             sourceId: sourceId || undefined,
             customUpload: false,

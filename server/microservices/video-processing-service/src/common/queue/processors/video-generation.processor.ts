@@ -12,6 +12,8 @@ import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import { VideoCompositorProvider } from '../../../rendering/providers/video-compositor.provider';
 import { HeyGenVideoProvider } from '../../../rendering/providers/heygen-video.provider';
 import { PublicUrlService } from '../../storage/public-url.service';
+import { ProjectLogService } from '../../logging/project-log.service';
+import { aggregateVoiceoversFromScript } from '../../utils/script-aggregate';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
@@ -49,6 +51,7 @@ export class VideoGenerationProcessor extends WorkerHost {
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly publicUrlService: PublicUrlService,
+    private readonly projectLog: ProjectLogService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -56,6 +59,14 @@ export class VideoGenerationProcessor extends WorkerHost {
 
   async process(job: Job<VideoGenerationJobData>): Promise<any> {
     const { projectId, userId, sceneNumber, imageUrl, prompt, duration, modelId, heygenImageKey, videoStyle } = job.data;
+
+    await this.projectLog
+      .logProject(projectId, 'INFO', 'video-generation started', {
+        op: 'video-generation',
+        scene: sceneNumber,
+        jobId: String(job.id),
+      })
+      .catch(() => {});
 
     console.log(`[VideoGenerationProcessor] Processing job ${job.id} for scene ${sceneNumber}, modelId: ${modelId || 'default'}, style: ${videoStyle || 'default'}`);
 
@@ -115,8 +126,18 @@ export class VideoGenerationProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[VideoGenerationProcessor] Failed to emit WebSocket event:`, err);
       });
-      
+
+      await this.projectLog
+        .logProject(projectId, 'ERROR', error?.message || 'video-generation failed', {
+          op: 'video-generation',
+          scene: sceneNumber,
+          jobId: String(job.id),
+        })
+        .catch(() => {});
+
       throw error;
+    } finally {
+      await this.projectLog.flushProjectToGcs(projectId).catch(() => {});
     }
   }
 
@@ -127,11 +148,11 @@ export class VideoGenerationProcessor extends WorkerHost {
     style: string,
     jobId?: string | number,
   ) {
-    const idempotencyKey = `video:${projectId}:${sceneNumber}`;
+    const idempotencyKey = `video:${projectId}:${sceneNumber}:${jobId ?? 'na'}`;
     try {
       const project = await this.databaseService.videoProject.findUnique({
         where: { id: projectId },
-        select: { metadata: true, creditsSpent: true },
+        select: { metadata: true },
       });
       const baseMetadata =
         project?.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
@@ -146,7 +167,7 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       const paymentServiceUrl = (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
       const response = await axios.post(
-        `${paymentServiceUrl}/api/credits/record-and-deduct`,
+        `${paymentServiceUrl}/api/pricing/record-cost`,
         {
           projectId,
           userId,
@@ -158,7 +179,9 @@ export class VideoGenerationProcessor extends WorkerHost {
         { timeout: 10000 },
       );
 
-      const creditCost = typeof response?.data?.data?.creditCost === 'number' ? response.data.data.creditCost : 0;
+      if (response.data?.skipped || !response.data?.data) {
+        return;
+      }
       await this.databaseService.videoProject.update({
         where: { id: projectId },
         data: {
@@ -166,7 +189,6 @@ export class VideoGenerationProcessor extends WorkerHost {
             ...baseMetadata,
             billedOperationKeys: [...billedKeys, idempotencyKey],
           } as any,
-          creditsSpent: (project?.creditsSpent ?? 0) + creditCost,
         },
       });
     } catch (error: any) {
@@ -339,22 +361,43 @@ export class VideoGenerationProcessor extends WorkerHost {
       `with image_key: ${heygenImageKey}, audio: ${audioAssetId || audioUrl}`
     );
     
-    let videoResponse;
+    let videoResponse: { video_id: string };
     try {
-      videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-        image_key: heygenImageKey,
-        video_title: `Scene ${sceneNumber} - ${projectId}`,
-        audio_asset_id: audioAssetId || undefined,
-        audio_url: audioUrl || undefined,
-        video_orientation: 'portrait', // 9:16 is portrait
-        fit: 'cover', // Cover the screen
-      });
+      const fullScript = aggregateVoiceoversFromScript((project as any).script);
+      const voiceId =
+        ((project as any).voiceId as string) ||
+        this.configService.get<string>('HEYGEN_DEFAULT_VOICE_ID') ||
+        '';
+      const v3Ctx =
+        fullScript.trim() && voiceId.trim()
+          ? { fullScriptText: fullScript, voiceId, projectId }
+          : undefined;
+
+      await job.updateProgress(35);
+
+      const start = await this.heygenVideoProvider.generateAvatarIVVideoUnified(
+        {
+          image_key: heygenImageKey,
+          video_title: `Scene ${sceneNumber} - ${projectId}`,
+          audio_asset_id: audioAssetId || undefined,
+          audio_url: audioUrl || undefined,
+          video_orientation: 'portrait',
+          fit: 'cover',
+        },
+        v3Ctx,
+      );
 
       await job.updateProgress(40);
 
-      // Poll until video is complete
-      console.log(`[VideoGenerationProcessor] Polling video ${videoResponse.video_id} until complete...`);
-      const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+      console.log(
+        `[VideoGenerationProcessor] Polling video ${start.video_id} until complete (v3=${start.useV3Polling})...`,
+      );
+      const completedVideo = await this.heygenVideoProvider.pollAvatarVideoUntilCompleteUnified(
+        start,
+        120,
+        5000,
+      );
+      videoResponse = { video_id: completedVideo.data.id };
 
       if (!completedVideo.data.video_url) {
         throw new Error('Avatar IV video generation completed but no video URL');

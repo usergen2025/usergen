@@ -27,6 +27,13 @@ interface StockSearchResult {
   quality?: string;
 }
 
+/** Optional filters for stock **video** search (forwarded to /api/stock/search → media service). */
+export interface StockVideoSearchDurationParams {
+  minDuration?: number;
+  maxDuration?: number;
+  targetDuration?: number;
+}
+
 interface BRollSelectionModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -35,6 +42,8 @@ interface BRollSelectionModalProps {
   defaultSearchTerm?: string;
   allowedTabs?: ('images' | 'videos' | 'upload')[];
   targetAspectRatio?: '9:16' | '16:9' | '9:8';
+  /** When searching stock videos, narrow by duration (seconds). Ignored for image tab. */
+  stockVideoDurationParams?: StockVideoSearchDurationParams;
 }
 
 type TabType = 'images' | 'videos' | 'upload';
@@ -47,6 +56,7 @@ export default function BRollSelectionModal({
   defaultSearchTerm = '',
   allowedTabs = ['images', 'videos', 'upload'],
   targetAspectRatio = '9:16',
+  stockVideoDurationParams,
 }: BRollSelectionModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>(allowedTabs[0] || 'images');
   const [searchTerm, setSearchTerm] = useState(defaultSearchTerm);
@@ -74,11 +84,18 @@ export default function BRollSelectionModal({
     try {
       const mediaType = tab === 'images' ? 'image' : 'video';
       const apiAspectRatio = targetAspectRatio === '9:8' ? '16:9' : targetAspectRatio;
-      
+
+      const durationQs: string[] = [];
+      if (mediaType === 'video' && stockVideoDurationParams) {
+        const { minDuration, maxDuration, targetDuration } = stockVideoDurationParams;
+        if (minDuration != null) durationQs.push(`minDuration=${encodeURIComponent(String(minDuration))}`);
+        if (maxDuration != null) durationQs.push(`maxDuration=${encodeURIComponent(String(maxDuration))}`);
+        if (targetDuration != null) durationQs.push(`targetDuration=${encodeURIComponent(String(targetDuration))}`);
+      }
+      const durationPart = durationQs.length ? `&${durationQs.join('&')}` : '';
+
       const response = await fetch(
-          `/api/stock/search?term=${encodeURIComponent(
-            term,
-          )}&type=${mediaType}&page=${page}&limit=20&aspectRatio=${apiAspectRatio}`,
+        `/api/stock/search?term=${encodeURIComponent(term)}&type=${mediaType}&page=${page}&limit=20&aspectRatio=${apiAspectRatio}${durationPart}`,
       );
       
       if (!response.ok) {
@@ -101,7 +118,7 @@ export default function BRollSelectionModal({
       setIsSearching(false);
       }
     },
-    [searchTerm, activeTab, targetAspectRatio],
+    [searchTerm, activeTab, targetAspectRatio, stockVideoDurationParams],
   );
 
   const handleTabChange = (tab: TabType) => {

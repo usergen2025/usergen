@@ -64,15 +64,21 @@ export class AlternateAvatarService {
     const audioBuffer = fs.readFileSync(audioFilePath);
     const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
 
-    const videoResponse = await this.heygenVideoProvider.generateAvatarIVVideo({
-      image_key: imageKeyToUse,
-      video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
-      audio_asset_id: audioAssetId,
-      video_orientation: 'portrait',
-      fit: 'cover',
-    });
+    const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
+    const maxPoll = this.renderingService.calculateMaxPollingAttempts(sceneAudioDuration);
 
-    const completedVideo = await this.heygenVideoProvider.pollVideoUntilComplete(videoResponse.video_id);
+    const completedVideo = await this.renderingService.generateAndPollAvatarIVUnified(
+      project,
+      {
+        image_key: imageKeyToUse,
+        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+        audio_asset_id: audioAssetId,
+        video_orientation: 'portrait',
+        fit: 'cover',
+      },
+      maxPoll,
+      5000,
+    );
     if (!completedVideo.data.video_url) {
       throw new Error(`Avatar video generation completed but no video URL for scene ${sceneNumber}`);
     }

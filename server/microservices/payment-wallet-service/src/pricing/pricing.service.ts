@@ -87,13 +87,13 @@ export class PricingService {
     console.log('[PricingService] Default pricing seeding complete');
   }
 
+  /** Active pricing only (e.g. public estimates, non-admin clients). */
   async getAllPricing() {
     const pricing = await this.databaseService.operationPricing.findMany({
       where: { isActive: true },
       orderBy: { operationType: 'asc' },
     });
 
-    // If no pricing exists, seed defaults first
     if (pricing.length === 0) {
       await this.seedDefaultPricing();
       return this.databaseService.operationPricing.findMany({
@@ -103,6 +103,20 @@ export class PricingService {
     }
 
     return pricing;
+  }
+
+  /** All rows including inactive — for admin pricing UI toggles. */
+  async getAllPricingForAdmin() {
+    let rows = await this.databaseService.operationPricing.findMany({
+      orderBy: { operationType: 'asc' },
+    });
+    if (rows.length === 0) {
+      await this.seedDefaultPricing();
+      rows = await this.databaseService.operationPricing.findMany({
+        orderBy: { operationType: 'asc' },
+      });
+    }
+    return rows;
   }
 
   async getPricingByType(operationType: string) {
@@ -126,6 +140,9 @@ export class PricingService {
 
   async getCreditCost(operationType: string): Promise<number> {
     const pricing = await this.getPricingByType(operationType);
+    if (!pricing.isActive) {
+      return 0;
+    }
     return pricing.creditCost;
   }
 
@@ -164,6 +181,22 @@ export class PricingService {
     });
   }
 
+  async updatePricingActive(operationType: string, isActive: boolean, adminUserId: string) {
+    const existing = await this.databaseService.operationPricing.findUnique({
+      where: { operationType },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Pricing not found for operation type: ${operationType}`);
+    }
+    return this.databaseService.operationPricing.update({
+      where: { operationType },
+      data: {
+        isActive,
+        updatedBy: adminUserId,
+      },
+    });
+  }
+
   async getPricingHistory(operationType: string, limit = 50) {
     const pricing = await this.databaseService.operationPricing.findUnique({
       where: { operationType },
@@ -188,8 +221,10 @@ export class PricingService {
     operationName: string;
     metadata?: Record<string, any>;
   }) {
-    // Get current pricing at time of generation
     const creditCost = await this.getCreditCost(data.operationType);
+    if (creditCost <= 0) {
+      return null;
+    }
 
     return this.databaseService.generationCostSnapshot.create({
       data: {
@@ -202,6 +237,25 @@ export class PricingService {
         metadata: data.metadata,
       },
     });
+  }
+
+  /** Unsettled snapshot total + FINAL_RENDER fee (for pre-export affordability). */
+  async getUnsettledProjectTotalPlusFinalRender(projectId: string): Promise<{
+    unsettledSum: number;
+    finalRenderFee: number;
+    totalDue: number;
+  }> {
+    const unsettled = await this.databaseService.generationCostSnapshot.findMany({
+      where: { projectId, walletSettledAt: null },
+    });
+    const unsettledSum = unsettled.reduce((s, r) => s + r.creditCost, 0);
+    const finalRenderFee = await this.getCreditCost('FINAL_RENDER');
+    const hasPendingFinalRender = unsettled.some((r) => r.operationType === 'FINAL_RENDER');
+    return {
+      unsettledSum,
+      finalRenderFee,
+      totalDue: unsettledSum + (hasPendingFinalRender ? 0 : finalRenderFee),
+    };
   }
 
   async getProjectCostBreakdown(projectId: string) {
