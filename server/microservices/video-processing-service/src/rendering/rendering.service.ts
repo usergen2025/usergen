@@ -14,6 +14,7 @@ import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import { aggregateVoiceoversFromScript } from '../common/utils/script-aggregate';
 import { UserNotificationService } from '../notifications/user-notification.service';
+import { ProjectLogService } from '../common/logging/project-log.service';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -33,6 +34,7 @@ export class RenderingService {
     private readonly publicUrlService: PublicUrlService,
     private readonly queueManager: QueueManagerService,
     private readonly userNotificationService: UserNotificationService,
+    private readonly projectLog: ProjectLogService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
@@ -51,10 +53,23 @@ export class RenderingService {
       (project.voiceId as string) ||
       this.configService.get<string>('HEYGEN_DEFAULT_VOICE_ID') ||
       '';
+    const uploadedAudioId = request.audio_asset_id?.trim();
+    const uploadedAudioUrl = request.audio_url?.trim();
     const v3Ctx =
-      fullScript.trim() && voiceId.trim()
-        ? { fullScriptText: fullScript, voiceId, projectId: project.id }
+      uploadedAudioId || uploadedAudioUrl || (fullScript.trim() && voiceId.trim())
+        ? {
+            fullScriptText: fullScript,
+            voiceId,
+            projectId: project.id,
+            ...(uploadedAudioId ? { audioAssetId: uploadedAudioId } : {}),
+          }
         : undefined;
+    const pipelineMode = this.heygenVideoProvider.getAvatarPipelineMode();
+    await this.projectLog
+      .logProject(project.id, 'INFO', `HeyGen Avatar IV start: pipeline=${pipelineMode}, stitched_audio_upload=${uploadedAudioId ? 'yes' : 'no'}`, {
+        op: 'heygen_avatar_iv',
+      })
+      .catch(() => {});
     const start = await this.heygenVideoProvider.generateAvatarIVVideoUnified(request, v3Ctx);
     return this.heygenVideoProvider.pollAvatarVideoUntilCompleteUnified(
       start,
@@ -491,6 +506,20 @@ export class RenderingService {
     }
 
     await this.assertExportAffordable(projectId, userId);
+
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    const styleLabel = String((project as { style?: string }).style || meta.style || 'video');
+    await this.projectLog
+      .logProject(
+        projectId,
+        'INFO',
+        `Export started: scenes, audio, and avatar are being combined into your final ${styleLabel} video (this can take several minutes).`,
+        { op: 'final_render_start' },
+      )
+      .catch(() => {});
 
     // Update project status to IN_PROGRESS
     await this.databaseService.videoProject.update({

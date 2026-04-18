@@ -1,10 +1,61 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
 @Injectable()
 export class VideoCompositorProvider {
+  constructor(private readonly configService: ConfigService) {}
+
+  /**
+   * Directory of TTF/OTF files for libass (optional). Env CAPTION_FONTS_DIR, else `<cwd>/assets/fonts` if it exists.
+   */
+  private getCaptionFontsDirectory(): string | undefined {
+    try {
+      const envDir = this.configService.get<string>('CAPTION_FONTS_DIR')?.trim();
+      if (envDir && fs.existsSync(envDir)) {
+        return path.resolve(envDir);
+      }
+    } catch {
+      /* ignore */
+    }
+    const bundled = path.join(process.cwd(), 'assets', 'fonts');
+    if (fs.existsSync(bundled)) {
+      return bundled;
+    }
+    return undefined;
+  }
+
+  /**
+   * When no fontsdir is available, libass often lacks web fonts — use a system face so glyphs render.
+   */
+  private resolveFontFamilyForAss(requested: string): string {
+    const raw = (requested || '').trim();
+    const first = raw.split(',')[0].replace(/['"]/g, '').trim();
+    if (!first) return 'Arial';
+    if (this.getCaptionFontsDirectory()) return first;
+    const lower = first.toLowerCase();
+    if (lower === 'inter' || lower.includes('inter')) return 'Arial';
+    if (lower === 'system-ui' || lower === 'sans-serif' || lower === 'ui-sans-serif') return 'Arial';
+    return first;
+  }
+
+  /** Escape path segments for FFmpeg filter strings (ass / fontsdir). */
+  private escapeFilterPath(p: string): string {
+    return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  }
+
+  private buildAssVideoFilter(escapedAssPath: string): string {
+    const fontsDir = this.getCaptionFontsDirectory();
+    let vf = `ass='${escapedAssPath}'`;
+    if (fontsDir) {
+      vf += `:fontsdir='${this.escapeFilterPath(fontsDir)}'`;
+      console.log(`[VideoCompositor] ASS fontsdir=${fontsDir}`);
+    }
+    return vf;
+  }
+
   /**
    * Check if FFmpeg is available
    */
@@ -1401,12 +1452,22 @@ export class VideoCompositorProvider {
     const marginV = Math.floor(videoHeight * (1 - py));
 
     const primaryColor = this.cssColorToAssOpaque(style.textColor, '&H00FFFFFF');
-    const outlineColor =
+    const rgbText = this.parseCssColor(style.textColor);
+    let outlineColor =
       !style.borderColor || style.borderColor === 'transparent'
         ? '&H00000000'
         : this.cssColorToAssOpaque(style.borderColor, '&H00000000');
     const bgTransparent =
       !style.backgroundColor || style.backgroundColor.trim().toLowerCase() === 'transparent';
+    // Readable outline on varied video: dark stroke on light text, light stroke on dark text when no explicit border color
+    if (
+      bgTransparent &&
+      (!style.borderColor || style.borderColor === 'transparent') &&
+      rgbText
+    ) {
+      const lum = (0.2126 * rgbText.r + 0.7152 * rgbText.g + 0.0722 * rgbText.b) / 255;
+      outlineColor = lum > 0.62 ? '&H00000000' : '&H00FFFFFF';
+    }
     const backColor = bgTransparent
       ? '&HFF000000'
       : this.cssColorToAssWithAlpha(style.backgroundColor, '&H80000000');
@@ -1423,6 +1484,7 @@ export class VideoCompositorProvider {
 
     const bold = style.fontWeight === 'bold' ? -1 : 0;
     const italic = style.fontStyle === 'italic' ? -1 : 0;
+    const fontName = this.resolveFontFamilyForAss(style.fontFamily);
 
     // ASS file content
     let assContent = `[Script Info]
@@ -1434,13 +1496,13 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,${style.fontFamily},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${borderStyle},${outlineAss},${shadowAss},2,${marginL},${marginR},${marginV},1
+Style: Default,${fontName},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${borderStyle},${outlineAss},${shadowAss},2,${marginL},${marginR},${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
     console.log(
-      `[VideoCompositor] ASS style computed: borderStyle=${borderStyle}, outline=${outlineAss}, shadow=${shadowAss}, bgTransparent=${bgTransparent}, backColor=${backColor}, outlineColor=${outlineColor}`,
+      `[VideoCompositor] ASS style computed: font=${fontName} (requested=${style.fontFamily}), borderStyle=${borderStyle}, outline=${outlineAss}, shadow=${shadowAss}, bgTransparent=${bgTransparent}, backColor=${backColor}, outlineColor=${outlineColor}`,
     );
 
     // Add caption events
@@ -1592,11 +1654,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     try {
       // Use ass filter to burn in subtitles
       // Escape the path for filter (Windows and special characters)
-      const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-      
+      const escapedAssPath = this.escapeFilterPath(assPath);
+      const vf = this.buildAssVideoFilter(escapedAssPath);
+
       const ffmpegCommand = `
         ffmpeg -i "${videoPath}" \
-        -vf "ass='${escapedAssPath}'" \
+        -vf "${vf}" \
         -c:v libx264 -preset medium -crf 23 \
         -c:a copy \
         -y "${outputPath}"

@@ -5497,7 +5497,7 @@ function AIChatPageContent() {
   };
 
   return (
-    <div className="relative h-full overflow-hidden flex flex-col">
+    <div className="relative h-full flex flex-col min-h-0 overflow-x-hidden">
       {/* Hidden input for per-scene manual audio upload */}
       <input
         ref={manualUploadInputRef}
@@ -5530,9 +5530,9 @@ function AIChatPageContent() {
       />
 
       {/* Main Container - Figma: width: 1248px, left: 96px, top: 43px */}
-      <div className="relative max-w-[1248px] w-full mx-auto px-3 sm:px-6 md:px-[96px] pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
-        {/* Navigation Bar - Figma: height: 34px, gap: 20px between back arrow and "AI Chat" */}
-        <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0">
+      <div className="relative max-w-[1248px] w-full mx-auto px-3 sm:px-6 md:px-[96px] pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
+        {/* Navigation Bar — mobile: auto height so stepper (2 rows) is not clipped */}
+        <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] flex-shrink-0 max-lg:min-h-[52px] max-lg:py-1 lg:h-[clamp(20px,3.3vh,34px)]">
           {/* Left: Back Arrow + AI Chat - Figma: gap: 20px */}
           <div className="flex flex-row items-center gap-[clamp(0.75rem,2vh,20px)] min-w-[90px] sm:min-w-[110px] md:min-w-[125px]">
             <button
@@ -5546,11 +5546,11 @@ function AIChatPageContent() {
           </div>
 
           {/* Right: Stepper - Figma: width: 448px, height: 34px, gap: 6px */}
-          <div className="flex flex-row items-center gap-0 pl-1 sm:pl-2 md:pl-2 max-w-[200px] sm:max-w-[300px] md:max-w-[400px] lg:max-w-[448px] w-full">
-            <div className="flex flex-col justify-between items-start gap-0.5 sm:gap-1 md:gap-1 w-full max-w-[180px] sm:max-w-[280px] md:max-w-[380px] lg:max-w-[440px] h-[clamp(20px,3.3vh,34px)]">
+          <div className="flex flex-row items-center gap-0 pl-1 sm:pl-2 md:pl-2 max-w-[min(100%,280px)] sm:max-w-[300px] md:max-w-[400px] lg:max-w-[448px] w-full min-w-0 flex-1 lg:flex-initial">
+            <div className="flex flex-col justify-between items-start gap-0.5 sm:gap-1 md:gap-1 w-full max-w-[180px] sm:max-w-[280px] md:max-w-[380px] lg:max-w-[440px] max-lg:h-auto lg:h-[clamp(20px,3.3vh,34px)] min-w-0">
               {/* Figma: height: 24px, gap: 10px, font: 14px, line-height: 24px */}
-              <div className="flex flex-row justify-between items-center gap-[clamp(0.5rem,1vh,10px)] w-full h-[clamp(18px,2.34vh,24px)]">
-                <span className="font-heading text-[clamp(10px,1.37vh,14px)] font-normal leading-[clamp(18px,2.34vh,24px)] text-black truncate">
+              <div className="flex flex-row justify-between items-center gap-[clamp(0.5rem,1vh,10px)] w-full min-h-0 lg:h-[clamp(18px,2.34vh,24px)]">
+                <span className="font-heading text-[clamp(10px,1.37vh,14px)] font-normal leading-snug text-black line-clamp-2 min-w-0 flex-1 text-left">
                   {getProgressMessage()}
                 </span>
                 <span className="font-heading text-[clamp(10px,1.37vh,14px)] font-normal leading-[clamp(18px,2.34vh,24px)] text-black text-center min-w-[16px] sm:min-w-[18px] md:min-w-[19px]">
@@ -5576,11 +5576,11 @@ function AIChatPageContent() {
         </div>
 
         {/* Chat Window - Figma: padding: 52px 56px, gap: 20px, border-radius: 12px */}
-        <div className="bg-white shadow-[0px_4px_22px_rgba(102,118,108,0.12)] rounded-xl py-[clamp(1rem,5.1vh,52px)] px-[clamp(0.75rem,5.5vh,56px)] flex flex-col justify-start items-start gap-[clamp(0.5rem,1.95vh,20px)] flex-1 min-h-0 overflow-hidden">
+        <div className="bg-white shadow-[0px_4px_22px_rgba(102,118,108,0.12)] rounded-xl py-[clamp(1rem,5.1vh,52px)] px-[clamp(0.75rem,5.5vh,56px)] max-lg:py-5 max-lg:px-4 flex flex-col justify-start items-start gap-[clamp(0.5rem,1.95vh,20px)] flex-1 min-h-0 overflow-hidden">
           {/* Chat Content Container - Figma: gap: 18px, justify-content: flex-end */}
           <div 
             ref={chatContainerRef}
-            className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto scroll-smooth pb-[clamp(1rem,3vh,60px)] pr-[clamp(0.5rem,1vw,16px)]"
+            className="flex flex-col justify-start items-start gap-[clamp(0.5rem,1.76vh,18px)] w-full flex-1 min-h-0 overflow-y-auto scroll-smooth pb-[max(clamp(1rem,3vh,60px),env(safe-area-inset-bottom))] pr-[clamp(0.5rem,1vw,16px)] max-lg:gap-3"
             style={{ scrollBehavior: 'smooth' }}
           >
             {/* Welcome Message - Step 0 - Always show once reached */}
@@ -6097,7 +6097,7 @@ function AIChatPageContent() {
                       <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                         <div className="flex flex-col gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,600px)]">
                           {/* Display assets as chips with previews */}
-                          <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)]">
+                          <div className="flex flex-col gap-[clamp(0.25rem,0.39vh,4px)] max-lg:flex-row max-lg:flex-wrap max-lg:justify-between max-lg:w-full">
                             {attachedAssets.map((asset) => (
                               <div
                                 key={asset.id}
@@ -6998,14 +6998,14 @@ Use a recent photo of yourself.`}
                         First, how should your AI avatar appear in the video? Choose a visual style:
                       </p>
                     </div>
-                    <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)]">
+                    <div className="grid grid-cols-2 gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)] lg:flex lg:flex-wrap">
                       {AVATAR_VISUAL_STYLE_PRESETS.map((preset) => (
                         <button
                           key={preset.id}
                           type="button"
                           onClick={() => setSelectedAvatarVisualStyle(preset.id)}
                           className={cn(
-                            'flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left',
+                            'flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-full min-w-0 lg:w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left',
                             selectedAvatarVisualStyle === preset.id && 'ring-2 ring-[#E86412]',
                           )}
                         >
@@ -7277,13 +7277,13 @@ Use a recent photo of yourself.`}
               </div>
 
               {/* Visual Style Preset Cards - Figma: left-to-right layout; image preview auto width, 4 per row */}
-              <div className="flex flex-wrap gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)]">
+              <div className="grid grid-cols-2 gap-[clamp(0.5rem,0.98vh,12px)] w-full max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)] pl-[clamp(0.5rem,1vw,16px)] lg:flex lg:flex-wrap">
                 {AVATAR_VISUAL_STYLE_PRESETS.map((preset) => (
                   <button
                     key={preset.id}
                     onClick={() => setSelectedAvatarVisualStyle(preset.id)}
                     className={cn(
-                      "flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left",
+                      "flex flex-row items-center gap-[clamp(0.5rem,0.78vh,8px)] p-[clamp(0.75rem,1.17vh,12px)] rounded-[12px] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] w-full min-w-0 lg:w-[200px] min-h-[80px] hover:opacity-90 transition-opacity text-left",
                       selectedAvatarVisualStyle === preset.id && "ring-2 ring-[#E86412]"
                     )}
                   >

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import FormData from 'form-data';
 import { preWarmUrl, withRetry } from '@shared/storage';
+import { ProjectLogService } from '../../common/logging/project-log.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -66,8 +67,11 @@ export interface HeyGenAvatarIVResponse {
 /** Optional context for HeyGen v3 Photo Avatar pipeline (POST /v3/assets → /v3/avatars → /v3/videos). */
 export interface HeyGenAvatarIVV3Context {
   fullScriptText: string;
+  /** HeyGen TTS voice id when not using uploaded stitched audio. */
   voiceId: string;
   projectId: string;
+  /** HeyGen `uploadAudio` asset id — v3: send as `audio_asset_id` (omit `script` / `voice_id`). */
+  audioAssetId?: string;
 }
 
 /** Result of unified start — callers must use matching poll (v1 status vs v3 video GET). */
@@ -83,7 +87,10 @@ export class HeyGenVideoProvider {
   private apiKey: string;
   private baseUrl: string = 'https://api.heygen.com/v2';
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly projectLog: ProjectLogService,
+  ) {
     this.apiKey = this.configService.get<string>('HEYGEN_API_KEY') || '';
     
     this.axiosInstance = axios.create({
@@ -584,23 +591,29 @@ export class HeyGenVideoProvider {
   }
 
   /**
-   * POST /v3/videos — Photo Avatar talking-head video (script + voice).
+   * POST /v3/videos — Photo Avatar: either uploaded audio (`audio_asset_id` / `audio_url`, no script/voice_id)
+   * or TTS (`script` + `voice_id`). HeyGen treats these as mutually exclusive.
    */
   async createV3AvatarVideo(params: {
     avatarId: string;
-    script: string;
-    voiceId: string;
     title: string;
     resolution?: '4k' | '1080p' | '720p';
     aspectRatio?: '16:9' | '9:16';
     motionPrompt?: string;
     expressiveness?: 'high' | 'medium' | 'low';
+    /** Lip-sync from HeyGen-uploaded stitched audio — omit script and voice_id. */
+    audioAssetId?: string;
+    audioUrl?: string;
+    script?: string;
+    voiceId?: string;
   }): Promise<string> {
+    const audioAssetId = params.audioAssetId?.trim();
+    const audioUrl = params.audioUrl?.trim();
+    const useAudio = !!(audioAssetId || audioUrl);
+
     const body: Record<string, unknown> = {
       type: 'avatar',
       avatar_id: params.avatarId,
-      script: params.script,
-      voice_id: params.voiceId,
       title: params.title,
       resolution: params.resolution || '1080p',
       aspect_ratio: params.aspectRatio || '9:16',
@@ -608,15 +621,39 @@ export class HeyGenVideoProvider {
     if (params.motionPrompt) body.motion_prompt = params.motionPrompt;
     if (params.expressiveness) body.expressiveness = params.expressiveness;
 
-    const res = await this.axiosV3.post<any>('/v3/videos', body);
-    const d = res.data?.data ?? res.data;
-    const videoId = d?.video_id ?? d?.id;
-    if (!videoId) {
-      console.error('[HeyGen v3] /v3/videos response:', JSON.stringify(res.data));
-      throw new Error('Failed to get video_id from HeyGen v3 /v3/videos');
+    if (useAudio) {
+      if (audioAssetId) body.audio_asset_id = audioAssetId;
+      else if (audioUrl) body.audio_url = audioUrl;
+    } else {
+      const script = (params.script || '').trim();
+      const voiceId = (params.voiceId || '').trim();
+      if (!script || !voiceId) {
+        throw new Error('HeyGen v3 TTS mode requires non-empty script and voice_id');
+      }
+      body.script = script;
+      body.voice_id = voiceId;
     }
-    console.log(`[HeyGen v3] Video job created: ${videoId}`);
-    return String(videoId);
+
+    try {
+      const res = await this.axiosV3.post<any>('/v3/videos', body);
+      const d = res.data?.data ?? res.data;
+      const videoId = d?.video_id ?? d?.id;
+      if (!videoId) {
+        console.error('[HeyGen v3] /v3/videos response:', JSON.stringify(res.data));
+        throw new Error('Failed to get video_id from HeyGen v3 /v3/videos');
+      }
+      console.log(`[HeyGen v3] Video job created: ${videoId}`);
+      return String(videoId);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const body = err?.response?.data;
+      console.error(
+        `[HeyGen v3] POST /v3/videos failed`,
+        status != null ? `HTTP ${status}` : '',
+        body != null ? JSON.stringify(body) : err?.message || err,
+      );
+      throw err;
+    }
   }
 
   /**
@@ -679,7 +716,7 @@ export class HeyGenVideoProvider {
 
   /**
    * v3 Photo Avatar pipeline: fetch image by image_key → v3 assets → v3 avatars → v3 videos.
-   * Requires non-empty script + voiceId (project voice).
+   * With `audio_asset_id`: POST /v3/videos uses audio only (no script/voice_id). Else TTS via script + voiceId.
    */
   async startAvatarIVV3PhotoAvatarPipeline(
     request: HeyGenAvatarIVRequest,
@@ -704,17 +741,42 @@ export class HeyGenVideoProvider {
       assetId,
       `Project ${ctx.projectId} ${Date.now()}`,
     );
-    const script = (ctx.fullScriptText || ' ').trim() || '.';
-    const videoId = await this.createV3AvatarVideo({
+    const uploadedAudioId = (request.audio_asset_id || ctx.audioAssetId || '').trim();
+    const uploadedAudioUrl = (request.audio_url || '').trim();
+    const modeTag = uploadedAudioId
+      ? 'v3_audio_asset'
+      : uploadedAudioUrl
+        ? 'v3_audio_url'
+        : 'v3_tts';
+    console.log(`[HeyGen v3] /v3/videos mode: ${modeTag}`);
+
+    const common = {
       avatarId,
-      script,
-      voiceId: ctx.voiceId,
       title: request.video_title || `Video ${ctx.projectId}`,
-      resolution: '1080p',
-      aspectRatio: request.video_orientation === 'landscape' ? '16:9' : '9:16',
+      resolution: '1080p' as const,
+      aspectRatio: (request.video_orientation === 'landscape' ? '16:9' : '9:16') as '16:9' | '9:16',
       motionPrompt: request.custom_motion_prompt,
-      expressiveness: 'medium',
-    });
+      expressiveness: 'medium' as const,
+    };
+
+    let videoId: string;
+    if (uploadedAudioId) {
+      videoId = await this.createV3AvatarVideo({
+        ...common,
+        audioAssetId: uploadedAudioId,
+      });
+    } else if (uploadedAudioUrl) {
+      videoId = await this.createV3AvatarVideo({
+        ...common,
+        audioUrl: uploadedAudioUrl,
+      });
+    } else {
+      videoId = await this.createV3AvatarVideo({
+        ...common,
+        script: (ctx.fullScriptText || ' ').trim() || '.',
+        voiceId: ctx.voiceId.trim(),
+      });
+    }
     return { video_id: videoId, useV3Polling: true };
   }
 
@@ -726,16 +788,20 @@ export class HeyGenVideoProvider {
     v3Context?: HeyGenAvatarIVV3Context,
   ): Promise<HeyGenAvatarIVUnifiedStart> {
     const mode = this.getAvatarPipelineMode();
+    const uploadedAudioId = (request.audio_asset_id || v3Context?.audioAssetId || '').trim();
+    const uploadedAudioUrl = (request.audio_url || '').trim();
+    const hasAudioAsset = !!(uploadedAudioId || uploadedAudioUrl);
+    const hasScript = !!v3Context?.fullScriptText?.trim()?.length;
+    const hasTtsVoice = !!v3Context?.voiceId?.trim()?.length;
     const canV3 =
       mode === 'v3_photo_avatar' &&
-      v3Context &&
-      v3Context.fullScriptText?.trim()?.length > 0 &&
-      v3Context.voiceId?.trim()?.length > 0;
+      !!v3Context &&
+      (hasAudioAsset || (hasScript && hasTtsVoice));
 
     if (!canV3) {
       if (mode === 'v3_photo_avatar') {
         console.warn(
-          '[HeyGen] HEYGEN_AVATAR_PIPELINE=v3_photo_avatar but missing script/voiceId; using legacy_av4',
+          '[HeyGen] HEYGEN_AVATAR_PIPELINE=v3_photo_avatar but need v3Context plus audio_asset_id OR audio_url OR (script + HeyGen voice_id); using legacy_av4',
         );
       }
       const legacy = await this.generateAvatarIVVideo(request);
@@ -745,7 +811,19 @@ export class HeyGenVideoProvider {
     try {
       return await this.startAvatarIVV3PhotoAvatarPipeline(request, v3Context);
     } catch (e: any) {
-      console.error('[HeyGen v3] Pipeline failed, falling back to legacy Avatar IV:', e?.message || e);
+      const detail =
+        e?.response?.data != null
+          ? JSON.stringify(e.response.data)
+          : e?.message || String(e);
+      console.error('[HeyGen v3] Pipeline failed, falling back to legacy Avatar IV:', detail);
+      const pid = v3Context?.projectId;
+      if (pid) {
+        this.projectLog
+          .logProject(pid, 'WARN', `HeyGen v3 Photo Avatar failed, using legacy AV4. ${detail}`, {
+            op: 'heygen_avatar_iv',
+          })
+          .catch(() => {});
+      }
       const legacy = await this.generateAvatarIVVideo(request);
       return { video_id: legacy.video_id, useV3Polling: false };
     }

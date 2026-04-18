@@ -1675,6 +1675,15 @@ function WorkspacePageContent() {
     setPreviewPlaybackTime(0);
   }, [currentSceneNumber]);
 
+  const previewAspectRatio = useMemo(() => {
+    const style = project?.style;
+    if (style === 'HALF_N_HALF') return '9/8';
+    if (style === 'ALTERNATE') {
+      return currentSceneNumber % 2 === 1 ? '9/8' : '9/16';
+    }
+    return '9/16';
+  }, [project?.style, currentSceneNumber]);
+
   const previewCaptionText = useMemo(() => {
     const base =
       (currentSceneText || currentAudioForScene?.voiceover || '').trim() || 'Sample caption text';
@@ -1771,7 +1780,7 @@ function WorkspacePageContent() {
       {/* Completed — dedicated full-area final video (not overlay) */}
       {workspaceMode === 'completed' && finalVideoUrl && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
-          <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
+          <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
             {/* Header Row */}
             <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0">
               {/* Left: Back + Workspace */}
@@ -1955,7 +1964,7 @@ function WorkspacePageContent() {
           "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full lg:basis-[clamp(280px,28vw,360px)] lg:min-w-[280px] lg:max-w-[360px] h-auto lg:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
           "hidden lg:flex lg:relative lg:inset-auto lg:z-auto lg:rounded-[20px]",
           "lg:translate-x-0 lg:opacity-100 lg:pointer-events-auto",
-          "fixed left-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
+          "fixed left-0 z-40 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
           leftDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "-translate-x-full opacity-0 pointer-events-none"
         )}
         style={leftDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
@@ -1991,7 +2000,7 @@ function WorkspacePageContent() {
                       "flex flex-row justify-center items-start gap-[clamp(8px,0.98vh,12px)] w-full bg-white rounded-[10px] transition-all",
                       isSelected ? "p-[clamp(12px,1.76vh,22px)]" : "p-[clamp(14px,1.95vh,24px)]"
                     )}>
-                      <div className="w-[clamp(58px,7.8vw,90px)] h-[clamp(73px,11vh,113px)] rounded-[12px] overflow-hidden flex-shrink-0 relative">
+                      <div className="h-[clamp(73px,11vh,113px)] w-auto aspect-[9/16] max-w-[clamp(58px,7.8vw,90px)] rounded-[12px] overflow-hidden flex-shrink-0 relative">
                         {workspaceMode === 'videos' && hasVideo && !isRegeneratingImage ? (
                           <video
                             src={videoUrl}
@@ -2142,13 +2151,13 @@ function WorkspacePageContent() {
               <ChevronLeft className="w-[clamp(16px,1.76vh,20px)] h-[clamp(16px,1.76vh,20px)] text-[#212121]" />
             </button>
 
-            {/* Preview image/video - 9:16 aspect ratio */}
+            {/* Preview image/video — 9:8 for half-frame styles, else 9:16 (ALTERNATE even = full bleed) */}
             <div 
               ref={previewContainerRef}
               className="relative rounded-[12px] overflow-hidden bg-gray-200 flex items-center justify-center flex-shrink-0"
               style={{ 
                 width: isTabletViewport ? 'min(340px, calc((100% - 128px)))' : 'min(260px, calc((100% - 100px)))',
-                aspectRatio: '9/16'
+                aspectRatio: previewAspectRatio
               }}
             >
               {isRegeneratingCurrentImage ? (
@@ -2292,7 +2301,7 @@ function WorkspacePageContent() {
           "flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(8px,0.98vh,10px)] w-full lg:basis-[clamp(320px,26.7vw,384px)] lg:min-w-[320px] lg:max-w-[384px] min-h-0 lg:h-full bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0",
           "hidden lg:flex lg:relative lg:inset-auto lg:z-auto lg:rounded-[20px]",
           "lg:translate-x-0 lg:opacity-100 lg:pointer-events-auto",
-          "fixed right-0 z-50 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
+          "fixed right-0 z-40 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-l-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none",
           rightDrawerOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "translate-x-full opacity-0 pointer-events-none"
         )}
         style={rightDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>

@@ -369,8 +369,13 @@ export class VideoGenerationProcessor extends WorkerHost {
         this.configService.get<string>('HEYGEN_DEFAULT_VOICE_ID') ||
         '';
       const v3Ctx =
-        fullScript.trim() && voiceId.trim()
-          ? { fullScriptText: fullScript, voiceId, projectId }
+        audioAssetId || audioUrl || (fullScript.trim() && voiceId.trim())
+          ? {
+              fullScriptText: fullScript,
+              voiceId,
+              projectId,
+              ...(audioAssetId ? { audioAssetId } : {}),
+            }
           : undefined;
 
       await job.updateProgress(35);

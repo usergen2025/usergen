@@ -15,6 +15,7 @@ import { DatabaseModule } from '../common/database/database.module';
 import { StorageModule } from '../common/storage/storage.module';
 import { QueueModule } from '../common/queue/queue.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ProjectLogModule } from '../common/logging/project-log.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     StorageModule,
     VideoModule,
     NotificationsModule,
+    ProjectLogModule,
     forwardRef(() => QueueModule),
   ],
   providers: [

@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Bold, Italic, Underline, Type, Palette, Square, ChevronDown, Check } from 'lucide-react';
 
 interface CaptionPosition {
@@ -82,7 +83,11 @@ export function DraggableResizableCaption({
 }: DraggableResizableCaptionProps) {
   const captionRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const fontDropdownRef = useRef<HTMLDivElement>(null);
+  const portalRef = useRef<HTMLDivElement>(null);
+  const fontTriggerRef = useRef<HTMLDivElement>(null);
+  const colorTextTriggerRef = useRef<HTMLDivElement>(null);
+  const colorBgTriggerRef = useRef<HTMLDivElement>(null);
+  const colorBorderTriggerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [activeHandle, setActiveHandle] = useState<ResizeHandle | null>(null);
@@ -91,6 +96,48 @@ export function DraggableResizableCaption({
   const [showToolbar, setShowToolbar] = useState(false);
   const [activeColorPicker, setActiveColorPicker] = useState<'text' | 'bg' | 'border' | null>(null);
   const [showFontDropdown, setShowFontDropdown] = useState(false);
+  const [popoutPos, setPopoutPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const popoutOpen = showFontDropdown || activeColorPicker !== null;
+
+  useLayoutEffect(() => {
+    if (!popoutOpen) return;
+
+    const update = () => {
+      let el: HTMLElement | null = null;
+      if (showFontDropdown) el = fontTriggerRef.current;
+      else if (activeColorPicker === 'text') el = colorTextTriggerRef.current;
+      else if (activeColorPicker === 'bg') el = colorBgTriggerRef.current;
+      else if (activeColorPicker === 'border') el = colorBorderTriggerRef.current;
+
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const EST_MENU_H = 160;
+      const GAP = 8;
+      const PAD = 8;
+      let top = r.bottom + GAP;
+      if (top + EST_MENU_H > window.innerHeight - PAD && r.top > EST_MENU_H + GAP) {
+        top = Math.max(PAD, r.top - EST_MENU_H - GAP);
+      }
+      let left = r.left;
+      const panelW = 140;
+      if (left + panelW > window.innerWidth - PAD) left = Math.max(PAD, window.innerWidth - panelW - PAD);
+      setPopoutPos({ top, left });
+    };
+
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [popoutOpen, showFontDropdown, activeColorPicker]);
 
   // Get widthScale with fallback for backwards compatibility
   const widthScale = position.widthScale ?? MAX_WIDTH_SCALE;
@@ -232,8 +279,9 @@ export function DraggableResizableCaption({
       const target = e.target as Node;
       const isInsideCaption = captionRef.current && captionRef.current.contains(target);
       const isInsideToolbar = toolbarRef.current && toolbarRef.current.contains(target);
-      
-      if (!isInsideCaption && !isInsideToolbar) {
+      const isInsidePortal = portalRef.current && portalRef.current.contains(target);
+
+      if (!isInsideCaption && !isInsideToolbar && !isInsidePortal) {
         setShowToolbar(false);
         setActiveColorPicker(null);
         setShowFontDropdown(false);
@@ -275,24 +323,24 @@ export function DraggableResizableCaption({
     setShowFontDropdown(false);
   };
 
-  const ColorPickerDropdown = ({ type, currentColor }: { type: 'text' | 'bg' | 'border'; currentColor: string }) => {
-    const colors = type === 'text' 
-      ? COLOR_PRESETS.filter(c => !c.isTransparent) 
-      : COLOR_PRESETS;
-    
+  const ColorPickerPanel = ({ type, currentColor }: { type: 'text' | 'bg' | 'border'; currentColor: string }) => {
+    const colors =
+      type === 'text' ? COLOR_PRESETS.filter((c) => !c.isTransparent) : COLOR_PRESETS;
+
     return (
-      <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-50 min-w-[120px]">
+      <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-2 min-w-[120px]">
         <div className="grid grid-cols-4 gap-1">
           {colors.map((color) => (
             <button
               key={color.value}
+              type="button"
               onClick={() => {
                 if (type === 'text') onStyleChange({ ...style, textColor: color.value });
                 else if (type === 'bg') onStyleChange({ ...style, backgroundColor: color.value });
                 else if (type === 'border') onStyleChange({ ...style, borderColor: color.value });
                 setActiveColorPicker(null);
               }}
-              className={`w-6 h-6 rounded border-2 ${currentColor === color.value ? 'border-orange-500' : 'border-gray-300'} ${color.isTransparent ? 'bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100' : ''}`}
+              className={`w-6 h-6 rounded border-2 ${currentColor === color.value ? 'border-orange-500 ring-1 ring-orange-400/70' : 'border-gray-300'} ${color.isTransparent ? 'bg-gradient-to-br from-gray-100 via-gray-200 to-gray-100' : ''}`}
               style={{ backgroundColor: color.isTransparent ? undefined : color.value }}
               title={color.label}
             />
@@ -302,51 +350,58 @@ export function DraggableResizableCaption({
     );
   };
 
-  // Custom Font Dropdown Component
-  const FontDropdown = () => {
-    const selectedFont = FONT_FAMILIES.find(f => f.value === style.fontFamily) || FONT_FAMILIES[0];
-    
-    return (
-      <div ref={fontDropdownRef} className="relative">
+  const FontListPanel = () => (
+    <div className="bg-white rounded-lg shadow-lg border border-gray-200 min-w-[120px] max-h-[200px] overflow-y-auto">
+      {FONT_FAMILIES.map((font) => (
         <button
-          onClick={() => setShowFontDropdown(!showFontDropdown)}
-          className="h-7 px-2 text-xs border border-gray-200 rounded flex items-center gap-1 hover:bg-gray-50 bg-white min-w-[70px] justify-between"
-          style={{ fontFamily: selectedFont.value }}
+          key={font.value}
+          type="button"
+          onClick={() => handleFontSelect(font.value)}
+          className={`w-full text-left px-3 py-2 text-xs hover:bg-orange-50 flex items-center justify-between transition-colors ${
+            style.fontFamily === font.value ? 'bg-orange-50 text-orange-600' : 'text-gray-700'
+          }`}
+          style={{ fontFamily: font.value }}
         >
-          <span className="truncate">{selectedFont.label}</span>
-          <ChevronDown className="w-3 h-3 flex-shrink-0 text-gray-500" />
+          <span>{font.label}</span>
+          {style.fontFamily === font.value && <Check className="w-3 h-3 text-orange-500 shrink-0" />}
         </button>
-        
-        {showFontDropdown && (
-          <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 z-50 min-w-[120px] max-h-[200px] overflow-y-auto">
-            {FONT_FAMILIES.map((font) => (
-              <button
-                key={font.value}
-                onClick={() => handleFontSelect(font.value)}
-                className={`w-full text-left px-3 py-2 text-xs hover:bg-orange-50 flex items-center justify-between transition-colors ${
-                  style.fontFamily === font.value ? 'bg-orange-50 text-orange-600' : 'text-gray-700'
-                }`}
-                style={{ fontFamily: font.value }}
-              >
-                <span>{font.label}</span>
-                {style.fontFamily === font.value && (
-                  <Check className="w-3 h-3 text-orange-500" />
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      ))}
+    </div>
+  );
+
+  const selectedFont = FONT_FAMILIES.find((f) => f.value === style.fontFamily) || FONT_FAMILIES[0];
+
+  const toolbarPopout =
+    mounted &&
+    popoutOpen &&
+    createPortal(
+      <div
+        ref={portalRef}
+        className="fixed z-[200] pointer-events-auto"
+        style={{ top: popoutPos.top, left: popoutPos.left }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {showFontDropdown ? (
+          <FontListPanel />
+        ) : activeColorPicker === 'text' ? (
+          <ColorPickerPanel type="text" currentColor={style.textColor} />
+        ) : activeColorPicker === 'bg' ? (
+          <ColorPickerPanel type="bg" currentColor={style.backgroundColor} />
+        ) : activeColorPicker === 'border' ? (
+          <ColorPickerPanel type="border" currentColor={style.borderColor} />
+        ) : null}
+      </div>,
+      document.body,
     );
-  };
 
   return (
     <>
+      {toolbarPopout}
       {/* Floating Toolbar - positioned above caption, width matches caption */}
       {showToolbar && !disabled && (
         <div
           ref={toolbarRef}
-          className="absolute z-20 bg-white rounded-lg shadow-lg border border-gray-200 p-1.5 flex items-center gap-1 overflow-x-auto"
+          className="absolute z-20 bg-white rounded-lg shadow-lg border border-gray-200 p-1.5 flex items-center gap-1 overflow-x-auto overflow-y-visible max-w-[min(100vw-1rem,calc(100%+2rem))]"
           style={{
             left: `${pixelX}px`,
             top: `${Math.max(0, pixelY - 45)}px`,
@@ -355,8 +410,21 @@ export function DraggableResizableCaption({
           }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          {/* Font Family - Custom Dropdown */}
-          <FontDropdown />
+          {/* Font Family */}
+          <div ref={fontTriggerRef} className="relative inline-flex shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setShowFontDropdown(!showFontDropdown);
+                setActiveColorPicker(null);
+              }}
+              className="h-7 px-2 text-xs border border-gray-200 rounded flex items-center gap-1 hover:bg-gray-50 bg-white min-w-[70px] justify-between"
+              style={{ fontFamily: selectedFont.value }}
+            >
+              <span className="truncate">{selectedFont.label}</span>
+              <ChevronDown className="w-3 h-3 flex-shrink-0 text-gray-500" />
+            </button>
+          </div>
 
           {/* Font Size */}
           <input
@@ -400,23 +468,34 @@ export function DraggableResizableCaption({
           <div className="w-px h-5 bg-gray-200 flex-shrink-0" />
 
           {/* Text Color */}
-          <div className="relative flex-shrink-0">
+          <div ref={colorTextTriggerRef} className="relative inline-flex shrink-0">
             <button
+              type="button"
               onClick={() => {
                 setActiveColorPicker(activeColorPicker === 'text' ? null : 'text');
                 setShowFontDropdown(false);
               }}
-              className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100"
+              className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 border border-transparent hover:border-gray-200"
               title="Text Color"
             >
-              <Type className="w-4 h-4" style={{ color: style.textColor }} />
+              <Type
+                className="w-4 h-4"
+                strokeWidth={2.25}
+                style={{
+                  color: style.textColor,
+                  filter:
+                    style.textColor === '#FFFFFF' || style.textColor?.toLowerCase() === '#fff'
+                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.85))'
+                      : undefined,
+                }}
+              />
             </button>
-            {activeColorPicker === 'text' && <ColorPickerDropdown type="text" currentColor={style.textColor} />}
           </div>
 
           {/* Background Color */}
-          <div className="relative flex-shrink-0">
+          <div ref={colorBgTriggerRef} className="relative inline-flex shrink-0">
             <button
+              type="button"
               onClick={() => {
                 setActiveColorPicker(activeColorPicker === 'bg' ? null : 'bg');
                 setShowFontDropdown(false);
@@ -424,14 +503,24 @@ export function DraggableResizableCaption({
               className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100"
               title="Background Color"
             >
-              <Palette className="w-4 h-4" style={{ color: style.backgroundColor === 'transparent' ? '#9CA3AF' : style.backgroundColor }} />
+              <Palette
+                className="w-4 h-4"
+                strokeWidth={2}
+                style={{
+                  color: style.backgroundColor === 'transparent' ? '#9CA3AF' : style.backgroundColor,
+                  filter:
+                    style.backgroundColor === '#FFFFFF' || style.backgroundColor?.toLowerCase() === '#fff'
+                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
+                      : undefined,
+                }}
+              />
             </button>
-            {activeColorPicker === 'bg' && <ColorPickerDropdown type="bg" currentColor={style.backgroundColor} />}
           </div>
 
           {/* Border Color */}
-          <div className="relative flex-shrink-0">
+          <div ref={colorBorderTriggerRef} className="relative inline-flex shrink-0">
             <button
+              type="button"
               onClick={() => {
                 setActiveColorPicker(activeColorPicker === 'border' ? null : 'border');
                 setShowFontDropdown(false);
@@ -439,9 +528,18 @@ export function DraggableResizableCaption({
               className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100"
               title="Border Color"
             >
-              <Square className="w-4 h-4" style={{ color: style.borderColor === 'transparent' ? '#9CA3AF' : style.borderColor }} />
+              <Square
+                className="w-4 h-4"
+                strokeWidth={2}
+                style={{
+                  color: style.borderColor === 'transparent' ? '#9CA3AF' : style.borderColor,
+                  filter:
+                    style.borderColor === '#FFFFFF' || style.borderColor?.toLowerCase() === '#fff'
+                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
+                      : undefined,
+                }}
+              />
             </button>
-            {activeColorPicker === 'border' && <ColorPickerDropdown type="border" currentColor={style.borderColor} />}
           </div>
 
           {/* Border Width */}

@@ -135,7 +135,8 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
   const positionClasses = {
     fixed: 'fixed top-0 left-0 right-0 z-50',
     sticky: 'sticky top-0 z-50',
-    relative: 'relative'
+    /** Above workspace fixed rails (z-40); dropdowns stay clickable */
+    relative: 'relative z-[100]',
   };
 
   // Define navigation items based on user role
