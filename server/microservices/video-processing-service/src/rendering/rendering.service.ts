@@ -2903,10 +2903,45 @@ export class RenderingService {
     borderColor: string;
     borderWidth: number;
   } {
-    const cs = captionSettings || {};
-    const nested = cs.style && typeof cs.style === 'object' ? cs.style : {};
+    let cs: Record<string, any> = captionSettings && typeof captionSettings === 'object' && !Array.isArray(captionSettings)
+      ? (captionSettings as Record<string, any>)
+      : {};
+    if (typeof captionSettings === 'string') {
+      try {
+        const parsed = JSON.parse(captionSettings);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          cs = parsed as Record<string, any>;
+        }
+      } catch {
+        cs = {};
+      }
+    }
 
-    const fontFamily = nested.fontFamily ?? cs.fontFamily ?? 'Arial';
+    let nested: Record<string, unknown> = {};
+    if (cs.style && typeof cs.style === 'object' && !Array.isArray(cs.style)) {
+      nested = cs.style as Record<string, unknown>;
+    } else if (typeof cs.style === 'string') {
+      try {
+        const parsed = JSON.parse(cs.style);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          nested = parsed as Record<string, unknown>;
+        }
+      } catch {
+        nested = {};
+      }
+    }
+
+    /** Prefer nested workspace `style`, fall through to legacy flat fields (same as client hydration). */
+    const pickStr = (...vals: unknown[]): string | undefined => {
+      for (const v of vals) {
+        if (v === undefined || v === null) continue;
+        const s = String(v).trim();
+        if (s !== '') return s;
+      }
+      return undefined;
+    };
+
+    const fontFamily = pickStr(nested.fontFamily, cs.fontFamily) ?? 'Arial';
     const rawSize = nested.fontSize ?? cs.fontSize;
     const fontSize =
       typeof rawSize === 'number' && rawSize > 0 ? rawSize : 48;
@@ -2925,12 +2960,10 @@ export class RenderingService {
       fontStyle = 'italic';
     }
 
-    const textColor =
-      nested.textColor ?? cs.textColor ?? '#FFFFFF';
+    const textColor = pickStr(nested.textColor, cs.textColor) ?? '#FFFFFF';
     const backgroundColor =
-      nested.backgroundColor ?? cs.backgroundColor ?? 'rgba(0,0,0,0.5)';
-    const borderColor =
-      nested.borderColor ?? cs.borderColor ?? '#000000';
+      pickStr(nested.backgroundColor, cs.backgroundColor) ?? 'rgba(0,0,0,0.5)';
+    const borderColor = pickStr(nested.borderColor, cs.borderColor) ?? '#000000';
     const borderWidth =
       typeof nested.borderWidth === 'number'
         ? nested.borderWidth
@@ -3011,8 +3044,23 @@ export class RenderingService {
     sortedAudioFiles: any[],
     captionSettings: any
   ): Promise<string | null> {
+    let cap: Record<string, any> =
+      captionSettings && typeof captionSettings === 'object' && !Array.isArray(captionSettings)
+        ? captionSettings
+        : {};
+    if (typeof captionSettings === 'string') {
+      try {
+        const parsed = JSON.parse(captionSettings);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          cap = parsed as Record<string, any>;
+        }
+      } catch {
+        cap = {};
+      }
+    }
+
     const displayMode: 'word-by-word' | 'full-sentence' =
-      captionSettings.displayMode === 'full-sentence' ? 'full-sentence' : 'word-by-word';
+      cap.displayMode === 'full-sentence' ? 'full-sentence' : 'word-by-word';
 
     const captions: Array<{ text: string; startTime: number; endTime: number }> = [];
     let currentTime = 0;
@@ -3066,7 +3114,7 @@ export class RenderingService {
       `[RenderingService] Adding ${captions.length} caption segment(s) to video (displayMode=${displayMode}, scenesWithWordTs=${filesWithWordTs})`,
     );
 
-    const gp = captionSettings.globalPosition || {};
+    const gp = cap.globalPosition || {};
     let posX = typeof gp.x === 'number' ? gp.x : 0.5;
     let posY = typeof gp.y === 'number' ? gp.y : 0.85;
     if (posX > 1) {
@@ -3078,7 +3126,7 @@ export class RenderingService {
     posX = Math.max(0, Math.min(1, posX));
     posY = Math.max(0, Math.min(1, posY));
 
-    const resolved = this.resolveCaptionStyleForBurnIn(captionSettings);
+    const resolved = this.resolveCaptionStyleForBurnIn(cap);
     let videoHeight = 1920;
     try {
       const res = await this.videoCompositor.getVideoResolution(videoPath);
@@ -3086,7 +3134,7 @@ export class RenderingService {
     } catch {
       /* keep default */
     }
-    const fontSize = this.computeAssFontSizeForBurnIn(captionSettings, videoHeight);
+    const fontSize = this.computeAssFontSizeForBurnIn(cap, videoHeight);
 
     const style = {
       fontFamily: resolved.fontFamily,

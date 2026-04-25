@@ -1457,8 +1457,8 @@ export class VideoCompositorProvider {
       !style.borderColor || style.borderColor === 'transparent'
         ? '&H00000000'
         : this.cssColorToAssOpaque(style.borderColor, '&H00000000');
-    const bgTransparent =
-      !style.backgroundColor || style.backgroundColor.trim().toLowerCase() === 'transparent';
+    const bgRaw = (style.backgroundColor || '').trim().toLowerCase();
+    const bgTransparent = !bgRaw || bgRaw === 'transparent';
     // Readable outline on varied video: dark stroke on light text, light stroke on dark text when no explicit border color
     if (
       bgTransparent &&
@@ -1470,16 +1470,16 @@ export class VideoCompositorProvider {
     }
     const backColor = bgTransparent
       ? '&HFF000000'
-      : this.cssColorToAssWithAlpha(style.backgroundColor, '&H80000000');
+      : this.cssColorToAssWithAlpha(style.backgroundColor, '&H00FFFFFF');
     const borderStyle = bgTransparent ? 1 : 3;
+    if (!bgTransparent && (!style.borderColor || style.borderColor === 'transparent')) {
+      // In boxed mode (BorderStyle=3), transparent outline can render as black on some ffmpeg builds.
+      // Align outline with the box color to keep light/dark presets visually consistent with preview.
+      outlineColor = backColor;
+    }
     const outlineAss = bgTransparent
       ? Math.max(2, style.borderWidth || 0)
-      : Math.max(
-          1,
-          typeof style.borderWidth === 'number'
-            ? style.borderWidth
-            : 2,
-        );
+      : Math.max(0, typeof style.borderWidth === 'number' ? style.borderWidth : 0);
     const shadowAss = bgTransparent ? 1 : 0;
 
     const bold = style.fontWeight === 'bold' ? -1 : 0;
@@ -1529,6 +1529,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   private parseCssColor(input: string): { r: number; g: number; b: number; a: number } | null {
     const c = (input || '').trim();
     if (!c) return null;
+    const hex8 = c.match(/^#([0-9a-f]{8})$/i);
+    if (hex8) {
+      const h = hex8[1];
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+        a: Math.min(1, Math.max(0, parseInt(h.slice(6, 8), 16) / 255)),
+      };
+    }
     const hex6 = c.match(/^#([0-9a-f]{6})$/i);
     if (hex6) {
       const h = hex6[1];
@@ -1558,7 +1568,77 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         a: m[4] !== undefined ? Math.min(1, Math.max(0, parseFloat(m[4]))) : 1,
       };
     }
+    const hsl = c.match(/^hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*(?:,\s*([\d.]+))?\s*\)$/i);
+    if (hsl) {
+      const hue = parseFloat(hsl[1]);
+      const sat = parseFloat(hsl[2]);
+      const light = parseFloat(hsl[3]);
+      const rgb = this.cssHslToRgb(hue, sat, light);
+      return {
+        ...rgb,
+        a: hsl[4] !== undefined ? Math.min(1, Math.max(0, parseFloat(hsl[4]))) : 1,
+      };
+    }
+    const hslSpaced = c.match(
+      /^hsla?\(\s*([\d.]+)\s+([\d.]+)%\s+([\d.]+)%(?:\s*\/\s*([\d.]+))?\s*\)$/i,
+    );
+    if (hslSpaced) {
+      const hue = parseFloat(hslSpaced[1]);
+      const sat = parseFloat(hslSpaced[2]);
+      const light = parseFloat(hslSpaced[3]);
+      const rgb = this.cssHslToRgb(hue, sat, light);
+      return {
+        ...rgb,
+        a:
+          hslSpaced[4] !== undefined
+            ? Math.min(1, Math.max(0, parseFloat(hslSpaced[4])))
+            : 1,
+      };
+    }
     return null;
+  }
+
+  /** CSS hsl(h, s%, l%), degrees and 0–100% channels. */
+  private cssHslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+    const hh = (((h % 360) + 360) % 360) / 60;
+    const ss = Math.min(100, Math.max(0, s)) / 100;
+    const ll = Math.min(100, Math.max(0, l)) / 100;
+    const c = (1 - Math.abs(2 * ll - 1)) * ss;
+    const x = c * (1 - Math.abs((hh % 2) - 1));
+    let rp = 0;
+    let gp = 0;
+    let bp = 0;
+    if (hh >= 0 && hh < 1) {
+      rp = c;
+      gp = x;
+      bp = 0;
+    } else if (hh < 2) {
+      rp = x;
+      gp = c;
+      bp = 0;
+    } else if (hh < 3) {
+      rp = 0;
+      gp = c;
+      bp = x;
+    } else if (hh < 4) {
+      rp = 0;
+      gp = x;
+      bp = c;
+    } else if (hh < 5) {
+      rp = x;
+      gp = 0;
+      bp = c;
+    } else {
+      rp = c;
+      gp = 0;
+      bp = x;
+    }
+    const m = ll - c / 2;
+    return {
+      r: Math.round(Math.min(255, Math.max(0, (rp + m) * 255))),
+      g: Math.round(Math.min(255, Math.max(0, (gp + m) * 255))),
+      b: Math.round(Math.min(255, Math.max(0, (bp + m) * 255))),
+    };
   }
 
   /** ASS &HAABBGGRR with AA=00 (opaque). */

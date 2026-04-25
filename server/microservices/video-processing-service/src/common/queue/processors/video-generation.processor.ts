@@ -13,6 +13,7 @@ import { VideoCompositorProvider } from '../../../rendering/providers/video-comp
 import { HeyGenVideoProvider } from '../../../rendering/providers/heygen-video.provider';
 import { PublicUrlService } from '../../storage/public-url.service';
 import { ProjectLogService } from '../../logging/project-log.service';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 import { aggregateVoiceoversFromScript } from '../../utils/script-aggregate';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -52,6 +53,7 @@ export class VideoGenerationProcessor extends WorkerHost {
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly publicUrlService: PublicUrlService,
     private readonly projectLog: ProjectLogService,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -126,6 +128,18 @@ export class VideoGenerationProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[VideoGenerationProcessor] Failed to emit WebSocket event:`, err);
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'PROCESSING_FAILED',
+          operation: 'video-generation',
+          status: 'failed',
+          title: 'Video generation failed',
+          message: `Scene ${sceneNumber} video generation failed.`,
+          data: { sceneNumber, jobId: job.id, queueType: 'video-generation', error: error.message },
+        })
+        .catch(() => {});
 
       await this.projectLog
         .logProject(projectId, 'ERROR', error?.message || 'video-generation failed', {
@@ -502,6 +516,18 @@ export class VideoGenerationProcessor extends WorkerHost {
         },
         progress: 100,
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'BROLL_VIDEO_READY',
+          operation: 'video-generation',
+          status: 'completed',
+          title: 'B-roll video ready',
+          message: `Scene ${sceneNumber} video generation completed.`,
+          data: { sceneNumber, jobId: job.id, queueType: 'video-generation', style: 'AVATAR_PRODUCT' },
+        })
+        .catch(() => {});
 
       return {
         success: true,
@@ -846,6 +872,18 @@ export class VideoGenerationProcessor extends WorkerHost {
     }).catch(err => {
       console.error(`[VideoGenerationProcessor] Failed to emit WebSocket event for job ${job.id}:`, err);
     });
+    this.userNotificationService
+      .notifyProcessingEvent({
+        userId,
+        projectId,
+        type: 'BROLL_VIDEO_READY',
+        operation: 'video-generation',
+        status: 'completed',
+        title: 'B-roll video ready',
+        message: `Scene ${sceneNumber} video generation completed.`,
+        data: { sceneNumber, jobId: job.id, queueType: 'video-generation' },
+      })
+      .catch(() => {});
 
     return { success: true, video: videoData };
     } catch (error: any) {

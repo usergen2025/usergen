@@ -2,9 +2,10 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { VideoService } from './video.service';
 import { DatabaseModule } from '../common/database/database.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule],
+  imports: [ConfigModule, DatabaseModule, NotificationsModule],
   providers: [VideoService],
   exports: [VideoService],
 })

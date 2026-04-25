@@ -85,6 +85,114 @@ function captionTextForVideoPreview(
   return words[words.length - 1].t;
 }
 
+/** Maps payment wallet GET /credits/project/:id/breakdown to export modal rows (see pricing.service getProjectCostBreakdown). */
+function buildExportBreakdownRows(breakdown: Record<string, unknown> | null | undefined): {
+  rows: { label: string; credits: number; detail?: string }[];
+  /** Sum of recorded snapshots only (generations already logged). */
+  recordedCost: number;
+  /** Total including pending final render when applicable — matches estimated charge at export. */
+  estimatedTotalCredits: number;
+  hasRows: boolean;
+} {
+  if (!breakdown || typeof breakdown !== 'object') {
+    return { rows: [], recordedCost: 0, estimatedTotalCredits: 0, hasRows: false };
+  }
+  const recordedCost =
+    typeof breakdown.totalCost === 'number' ? breakdown.totalCost : 0;
+  const finalRenderFee =
+    typeof breakdown.finalRenderFee === 'number' ? breakdown.finalRenderFee : 0;
+  const finalRenderAlreadyRecorded = Boolean(breakdown.finalRenderAlreadyRecorded);
+  let estimatedTotalCredits =
+    typeof breakdown.estimatedTotalCredits === 'number'
+      ? breakdown.estimatedTotalCredits
+      : recordedCost +
+        (!finalRenderAlreadyRecorded && finalRenderFee > 0 ? finalRenderFee : 0);
+
+  const appendPendingFinalRender = (
+    rows: { label: string; credits: number; detail?: string }[],
+  ) => {
+    if (!finalRenderAlreadyRecorded && finalRenderFee > 0) {
+      rows.push({
+        label: 'Final render',
+        credits: finalRenderFee,
+        detail: 'after successful export',
+      });
+    }
+    return rows;
+  };
+
+  const byOp = breakdown.byOperationType as
+    | Record<string, { count?: number; totalCost?: number }>
+    | undefined;
+  if (byOp && typeof byOp === 'object' && Object.keys(byOp).length > 0) {
+    const rows = Object.entries(byOp)
+      .map(([type, info]) => ({
+        label: type.replace(/_/g, ' '),
+        credits: typeof info?.totalCost === 'number' ? info.totalCost : 0,
+        detail:
+          typeof info?.count === 'number' && info.count > 1
+            ? `${info.count} operations`
+            : undefined,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    appendPendingFinalRender(rows);
+    const sumRows = rows.reduce((acc, r) => acc + r.credits, 0);
+    if (typeof breakdown.estimatedTotalCredits !== 'number') {
+      estimatedTotalCredits = sumRows;
+    }
+    return {
+      rows,
+      recordedCost,
+      estimatedTotalCredits,
+      hasRows: rows.length > 0,
+    };
+  }
+  const snapshots = breakdown.snapshots as
+    | Array<{ operationType?: string; sceneNumber?: number | null; creditCost?: number }>
+    | undefined;
+  if (Array.isArray(snapshots) && snapshots.length > 0) {
+    const rows = snapshots.map((s) => ({
+      label: `${(s.operationType ?? 'operation').replace(/_/g, ' ')}${
+        s.sceneNumber != null ? ` · Scene ${s.sceneNumber}` : ''
+      }`,
+      credits: typeof s.creditCost === 'number' ? s.creditCost : 0,
+    }));
+    appendPendingFinalRender(rows);
+    const sumRows = rows.reduce((acc, r) => acc + r.credits, 0);
+    if (typeof breakdown.estimatedTotalCredits !== 'number') {
+      estimatedTotalCredits = sumRows;
+    }
+    return {
+      rows,
+      recordedCost,
+      estimatedTotalCredits,
+      hasRows: rows.length > 0,
+    };
+  }
+
+  const pendingOnly = appendPendingFinalRender([]);
+  if (pendingOnly.length > 0) {
+    return {
+      rows: pendingOnly,
+      recordedCost,
+      estimatedTotalCredits:
+        typeof breakdown.estimatedTotalCredits === 'number'
+          ? breakdown.estimatedTotalCredits
+          : finalRenderFee,
+      hasRows: true,
+    };
+  }
+
+  return { rows: [], recordedCost, estimatedTotalCredits, hasRows: false };
+}
+
+/** Coerce API/WebSocket scene indices to number so Set/Map keys stay consistent. */
+function normalizeSceneNumber(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const n = parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Workspace mode type for better state management
 type WorkspaceMode = 'images' | 'converting' | 'videos' | 'rendering' | 'completed';
 
@@ -146,6 +254,8 @@ function WorkspacePageContent() {
     borderWidth: 0,
   });
   const [captionStylePreset, setCaptionStylePreset] = useState<'light' | 'dark' | 'transparent' | 'custom'>('dark');
+  const captionSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const captionHydratedRef = useRef(false);
   
   // Avatar overlay state (AVATAR_CUTOUT style only)
   const [avatarOverlayEnabled, setAvatarOverlayEnabled] = useState(true);
@@ -176,6 +286,13 @@ function WorkspacePageContent() {
   const [renderingProgress, setRenderingProgress] = useState(0);
   const [renderingStage, setRenderingStage] = useState<string>('pending');
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
+  const [showExportConfirm, setShowExportConfirm] = useState(false);
+  const [exportCostBreakdown, setExportCostBreakdown] = useState<any>(null);
+  const [exportConfirmLoading, setExportConfirmLoading] = useState(false);
+  const exportBreakdownDisplay = useMemo(
+    () => buildExportBreakdownRows(exportCostBreakdown),
+    [exportCostBreakdown],
+  );
   const renderingPollingRef = useRef<NodeJS.Timeout | null>(null);
   
   // B-roll selection modal state
@@ -398,9 +515,10 @@ function WorkspacePageContent() {
 
           setProject(projectData);
 
-          if (projectData.captionsEnabled && projectData.captionSettings) {
-            const caps = projectData.captionSettings as Record<string, unknown>;
-            setCaptionsEnabled(true);
+          if (projectData.captionsEnabled !== undefined || projectData.captionSettings) {
+            const caps = (projectData.captionSettings || {}) as Record<string, unknown>;
+            const enabledFromSettings = typeof caps.enabled === 'boolean' ? caps.enabled : false;
+            setCaptionsEnabled(Boolean(projectData.captionsEnabled ?? enabledFromSettings));
             if (caps.displayMode === 'full-sentence' || caps.displayMode === 'word-by-word') {
               setCaptionDisplayMode(caps.displayMode);
             }
@@ -438,6 +556,7 @@ function WorkspacePageContent() {
               else setCaptionStylePreset('custom');
             }
           }
+          captionHydratedRef.current = true;
 
           // Parse script to get scenes
           if (projectData.script) {
@@ -730,6 +849,62 @@ function WorkspacePageContent() {
       }
     }, 300);
   }, [projectId, project]);
+
+  const buildCaptionSettingsPayload = useCallback(() => ({
+    enabled: captionsEnabled,
+    displayMode: captionDisplayMode,
+    applyToAll: captionApplyToAll,
+    globalPosition: captionGlobalPosition,
+    perScenePositions: captionPerScenePositions,
+    previewContainerHeight: previewDimensions.height,
+    previewContainerWidth: previewDimensions.width,
+    style: {
+      fontFamily: captionStyle.fontFamily,
+      fontSize: captionStyle.fontSize,
+      fontWeight: captionStyle.fontWeight,
+      fontStyle: captionStyle.fontStyle,
+      textColor: captionStyle.textColor,
+      backgroundColor: captionStyle.backgroundColor,
+      borderColor: captionStyle.borderColor,
+      borderWidth: captionStyle.borderWidth,
+    },
+  }), [
+    captionsEnabled,
+    captionDisplayMode,
+    captionApplyToAll,
+    captionGlobalPosition,
+    captionPerScenePositions,
+    previewDimensions.height,
+    previewDimensions.width,
+    captionStyle,
+  ]);
+
+  useEffect(() => {
+    if (!projectId || !captionHydratedRef.current) return;
+    if (captionSaveTimeoutRef.current) clearTimeout(captionSaveTimeoutRef.current);
+    captionSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await apiClient.updateVideoProject(projectId, {
+          captionsEnabled,
+          captionSettings: buildCaptionSettingsPayload(),
+        });
+      } catch (error) {
+        console.error('[Workspace] Failed to persist caption settings:', error);
+      }
+    }, 350);
+    return () => {
+      if (captionSaveTimeoutRef.current) clearTimeout(captionSaveTimeoutRef.current);
+    };
+  }, [
+    projectId,
+    captionsEnabled,
+    captionDisplayMode,
+    captionApplyToAll,
+    captionGlobalPosition,
+    captionPerScenePositions,
+    captionStyle,
+    buildCaptionSettingsPayload,
+  ]);
 
   // Handle avatar overlay toggle
   const handleAvatarOverlayToggle = useCallback(() => {
@@ -1171,43 +1346,19 @@ function WorkspacePageContent() {
     }, 2000);
   }, [projectId, showToast]);
 
-  // Handle export - start final video rendering
-  const handleExport = async () => {
+  const startRenderAfterConfirmation = async () => {
     if (!projectId) return;
-
     setWorkspaceMode('rendering');
     setRenderingProgress(0);
     setRenderingStage('pending');
 
     try {
-      // Save caption settings to project before rendering
-      if (captionsEnabled) {
-        const captionSettingsToSave = {
-          enabled: captionsEnabled,
-          displayMode: captionDisplayMode,
-          applyToAll: captionApplyToAll,
-          globalPosition: captionGlobalPosition,
-          perScenePositions: captionPerScenePositions,
-          previewContainerHeight: previewDimensions.height,
-          previewContainerWidth: previewDimensions.width,
-          style: {
-            fontFamily: captionStyle.fontFamily,
-            fontSize: captionStyle.fontSize,
-            fontWeight: captionStyle.fontWeight,
-            fontStyle: captionStyle.fontStyle,
-            textColor: captionStyle.textColor,
-            backgroundColor: captionStyle.backgroundColor,
-            borderColor: captionStyle.borderColor,
-            borderWidth: captionStyle.borderWidth,
-          },
-        };
-        
-        await apiClient.updateVideoProject(projectId, {
-          captionsEnabled: true,
-          captionSettings: captionSettingsToSave,
-        });
-        console.log('[Workspace] Caption settings saved before rendering');
-      }
+      // Persist current caption state before rendering (enabled or disabled).
+      await apiClient.updateVideoProject(projectId, {
+        captionsEnabled,
+        captionSettings: buildCaptionSettingsPayload(),
+      });
+      console.log('[Workspace] Caption settings saved before rendering');
 
       const response = await apiClient.startVideoRendering(projectId);
       
@@ -1244,6 +1395,33 @@ function WorkspacePageContent() {
         showToast(msg, 'error');
       }
       setWorkspaceMode('videos');
+      throw error;
+    }
+  };
+
+  // Handle export - show cost confirmation before starting final rendering
+  const handleExport = async () => {
+    if (!projectId) return;
+    try {
+      const quote = await apiClient.getProjectCostBreakdown(projectId);
+      if (quote.success) {
+        setExportCostBreakdown(quote.data || null);
+      } else {
+        setExportCostBreakdown(null);
+      }
+    } catch {
+      setExportCostBreakdown(null);
+    }
+    setShowExportConfirm(true);
+  };
+
+  const confirmExportAndRender = async () => {
+    setExportConfirmLoading(true);
+    try {
+      setShowExportConfirm(false);
+      await startRenderAfterConfirmation();
+    } finally {
+      setExportConfirmLoading(false);
     }
   };
 
@@ -1451,18 +1629,28 @@ function WorkspacePageContent() {
     }
 
     if (isVideo || isComposite) {
-      if ((update.state === 'completed') && update.result?.success && update.result?.video) {
+      if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
-        const sceneNumber = video.sceneNumber;
-        
+        const sceneNumber =
+          normalizeSceneNumber(video.sceneNumber) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber) ??
+          jobToSceneRef.current.get(jobId);
+        if (sceneNumber == null) {
+          console.warn('[Workspace] Completed video missing sceneNumber', { jobId, video });
+          processedJobIdsRef.current.add(jobId);
+          unsubscribeFromJobRef.current?.(jobId);
+          jobToSceneRef.current.delete(jobId);
+          return;
+        }
+
         // Prevent duplicate processing
         if (processedJobIdsRef.current.has(jobId)) {
           console.log(`[Workspace] ⏭️ Job ${jobId} already processed, skipping duplicate update`);
           return;
         }
         processedJobIdsRef.current.add(jobId);
-        
+
         console.log('[Workspace] ✅ Processing completed video:', {
           jobId,
           sceneNumber,
@@ -1470,36 +1658,36 @@ function WorkspacePageContent() {
           localPath: video.localPath || video.local_path,
           videoUrl: video.videoUrl || video.video_url,
         });
-        
+
         // Update broll videos state
-        setBrollVideos(prev => {
-          const exists = prev.some(v => v.sceneNumber === sceneNumber);
+        setBrollVideos((prev) => {
+          const exists = prev.some((v) => normalizeSceneNumber(v.sceneNumber) === sceneNumber);
           const updatedVideo: BrollVideo = {
             ...video,
             jobId,
-            sceneNumber: typeof sceneNumber === 'number' ? sceneNumber : parseInt(String(sceneNumber), 10),
+            sceneNumber,
             localPath: video.localPath || video.local_path,
             localUrl: video.localUrl || video.local_url,
             videoUrl: video.videoUrl || video.video_url,
           };
-          
+
           if (exists) {
-            return prev.map(v => v.sceneNumber === sceneNumber ? updatedVideo : v);
+            return prev.map((v) =>
+              normalizeSceneNumber(v.sceneNumber) === sceneNumber ? updatedVideo : v,
+            );
           }
           return [...prev, updatedVideo];
         });
-        
-        // Remove from generating set
-        setGeneratingVideos(prev => {
+
+        // Remove from generating set (always use numeric scene index)
+        setGeneratingVideos((prev) => {
           const next = new Set(prev);
           next.delete(sceneNumber);
           return next;
         });
-        
-        // Unsubscribe from job
+
         unsubscribeFromJobRef.current?.(jobId);
-        
-        // Clean up job tracking
+
         const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
         if (expectedJobs) {
           expectedJobs.delete(jobId);
@@ -1508,23 +1696,35 @@ function WorkspacePageContent() {
           }
         }
         jobToSceneRef.current.delete(jobId);
-        
+
         showToast(`Video generated for Scene ${sceneNumber}`, 'success');
-      } else if (update.state === 'failed') {
+      } else if (
+        update.state === 'completed' &&
+        (isVideo || isComposite) &&
+        !(update.result?.success && update.result?.video)
+      ) {
         const jobId = update.jobId;
-        const sceneNumber = jobToSceneRef.current.get(jobId);
-        
-        if (sceneNumber) {
-          setGeneratingVideos(prev => {
+        const mapped = jobToSceneRef.current.get(jobId);
+        const sceneNumber =
+          normalizeSceneNumber(update.metadata?.sceneNumber) ??
+          normalizeSceneNumber(update.result?.video?.sceneNumber) ??
+          mapped;
+        console.warn('[Workspace] Job completed without usable video payload', {
+          jobId,
+          queueType: update.queueType,
+          success: update.result?.success,
+        });
+        if (!processedJobIdsRef.current.has(jobId)) {
+          processedJobIdsRef.current.add(jobId);
+        }
+        unsubscribeFromJobRef.current?.(jobId);
+        if (sceneNumber != null) {
+          setGeneratingVideos((prev) => {
             const next = new Set(prev);
             next.delete(sceneNumber);
             return next;
           });
-          
-          // Track failed generation
-          setFailedGenerations(prev => new Set(prev).add(sceneNumber));
-          
-          // Clean up job tracking
+          setFailedGenerations((prev) => new Set(prev).add(sceneNumber));
           const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
           if (expectedJobs) {
             expectedJobs.delete(jobId);
@@ -1532,11 +1732,35 @@ function WorkspacePageContent() {
               videoJobIdsRef.current.delete(sceneNumber);
             }
           }
-        jobToSceneRef.current.delete(jobId);
-        
-        showToast(`Video generation failed for Scene ${sceneNumber}`, 'error');
+          showToast(`Video generation finished without output for Scene ${sceneNumber}`, 'warning');
         }
-        
+        jobToSceneRef.current.delete(jobId);
+      } else if (update.state === 'failed') {
+        const jobId = update.jobId;
+        const sceneNumber =
+          normalizeSceneNumber(jobToSceneRef.current.get(jobId)) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber);
+
+        if (sceneNumber != null) {
+          setGeneratingVideos((prev) => {
+            const next = new Set(prev);
+            next.delete(sceneNumber);
+            return next;
+          });
+
+          setFailedGenerations((prev) => new Set(prev).add(sceneNumber));
+
+          const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
+          if (expectedJobs) {
+            expectedJobs.delete(jobId);
+            if (expectedJobs.size === 0) {
+              videoJobIdsRef.current.delete(sceneNumber);
+            }
+          }
+          showToast(`Video generation failed for Scene ${sceneNumber}`, 'error');
+        }
+
+        jobToSceneRef.current.delete(jobId);
         unsubscribeFromJobRef.current?.(jobId);
       }
     }
@@ -2591,6 +2815,77 @@ function WorkspacePageContent() {
             : undefined
         }
       />
+      {showExportConfirm && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white border border-[#E0E0E0] shadow-xl">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-[#212121]">Confirm Export</h3>
+              <p className="text-sm text-gray-600 mt-1">Credits are charged only after successful final render.</p>
+            </div>
+            <div className="px-5 py-4 space-y-3 max-h-[50vh] overflow-y-auto">
+              {exportBreakdownDisplay.hasRows ? (
+                <>
+                  {exportBreakdownDisplay.rows.map((row, idx) => (
+                    <div
+                      key={`${row.label}-${idx}`}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="text-gray-700 min-w-0">
+                        {row.label}
+                        {row.detail ? (
+                          <span className="text-gray-500 font-normal"> ({row.detail})</span>
+                        ) : null}
+                      </span>
+                      <span className="font-medium text-[#212121] shrink-0">{row.credits} credits</span>
+                    </div>
+                  ))}
+                  <div className="pt-2 mt-1 border-t border-gray-200 flex items-center justify-between">
+                    <span className="font-semibold text-[#212121]">Estimated total at export</span>
+                    <span className="font-semibold text-[#E86412]">
+                      {exportBreakdownDisplay.estimatedTotalCredits} credits
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 pt-1">
+                    Credits are deducted only after a successful render. This total includes the final render fee when it applies.
+                  </p>
+                </>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-gray-600">
+                    No generation charges recorded for this project yet. Export will run standard affordability checks before rendering.
+                  </p>
+                  {exportBreakdownDisplay.estimatedTotalCredits > 0 && (
+                      <p className="text-sm text-[#212121]">
+                        Estimated total at export:{' '}
+                        <span className="font-semibold text-[#E86412]">
+                          {exportBreakdownDisplay.estimatedTotalCredits} credits
+                        </span>
+                      </p>
+                    )}
+                </div>
+              )}
+            </div>
+            <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={() => setShowExportConfirm(false)}
+                disabled={exportConfirmLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-gradient-to-b from-[#E86412] to-[#F12A4C] text-white text-sm font-medium disabled:opacity-60"
+                onClick={confirmExportAndRender}
+                disabled={exportConfirmLoading}
+              >
+                {exportConfirmLoading ? 'Starting...' : 'Confirm & Export'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

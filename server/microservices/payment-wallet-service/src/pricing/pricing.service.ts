@@ -266,6 +266,16 @@ export class PricingService {
 
     const totalCost = snapshots.reduce((sum, s) => sum + s.creditCost, 0);
 
+    const finalRenderAlreadyRecorded = snapshots.some((s) => s.operationType === 'FINAL_RENDER');
+    let finalRenderFee = 0;
+    try {
+      finalRenderFee = await this.getCreditCost('FINAL_RENDER');
+    } catch {
+      finalRenderFee = DEFAULT_PRICING.find((p) => p.operationType === 'FINAL_RENDER')?.creditCost ?? 0;
+    }
+    const estimatedTotalCredits =
+      totalCost + (finalRenderAlreadyRecorded || finalRenderFee <= 0 ? 0 : finalRenderFee);
+
     // Group by operation type
     const byOperationType: Record<string, { count: number; totalCost: number }> = {};
     for (const snapshot of snapshots) {
@@ -289,7 +299,14 @@ export class PricingService {
 
     return {
       projectId,
+      /** Sum of all recorded generation-cost snapshots for this project. */
       totalCost,
+      /** Credits for one final export/render when not already present in snapshots (for modal “pending” line). */
+      finalRenderFee,
+      /** True when a FINAL_RENDER snapshot already exists (re-export / already charged once). */
+      finalRenderAlreadyRecorded,
+      /** What the user should expect to pay at minimum for this export: generations recorded + pending final render if applicable. */
+      estimatedTotalCredits,
       operationCount: snapshots.length,
       byOperationType,
       byScene,

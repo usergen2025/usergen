@@ -15,12 +15,14 @@ import { WebSocketModule } from '../websocket/websocket.module';
 import { StorageModule } from '../storage/storage.module';
 import { AssetProcessorService } from '../services/asset-processor.service';
 import { VideoModule } from '../../video/video.module';
+import { NotificationsModule } from '../../notifications/notifications.module';
 
 @Module({
   imports: [
     ConfigModule,
     DatabaseModule,
     VideoModule,
+    NotificationsModule,
     StorageModule, // Import StorageModule to access PublicUrlService
     forwardRef(() => RenderingModule),
     WebSocketModule, // Import WebSocket module to access gateway

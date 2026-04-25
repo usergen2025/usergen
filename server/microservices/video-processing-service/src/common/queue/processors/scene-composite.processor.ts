@@ -8,6 +8,7 @@ import { DatabaseService } from '../../database/database.service';
 import { VideoCompositorProvider } from '../../../rendering/providers/video-compositor.provider';
 import { PublicUrlService } from '../../storage/public-url.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 
 export interface SceneCompositeJobData {
   projectId: string;
@@ -29,6 +30,7 @@ export class SceneCompositeProcessor extends WorkerHost {
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly publicUrlService: PublicUrlService,
     private readonly jobStatusGateway: JobStatusGateway,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -194,6 +196,18 @@ export class SceneCompositeProcessor extends WorkerHost {
       result: { success: true, video: videoData },
       progress: 100,
     }).catch(() => {});
+    this.userNotificationService
+      .notifyProcessingEvent({
+        userId,
+        projectId,
+        type: 'BROLL_VIDEO_READY',
+        operation: 'scene-composite',
+        status: 'completed',
+        title: 'Scene composition complete',
+        message: `Composite scene ${sceneNumber} is ready.`,
+        data: { sceneNumber, jobId: emitJobId, queueType: 'scene-composite' },
+      })
+      .catch(() => {});
 
     return { success: true, video: videoData };
   }

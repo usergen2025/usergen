@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 import axios from 'axios';
 
 export interface StockDownloadJobData {
@@ -36,6 +37,7 @@ export class StockDownloadProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly jobStatusGateway: JobStatusGateway,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
   }
@@ -110,6 +112,18 @@ export class StockDownloadProcessor extends WorkerHost {
         }).catch(err => {
           console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
         });
+        this.userNotificationService
+          .notifyProcessingEvent({
+            userId,
+            projectId,
+            type: 'PROCESSING_FAILED',
+            operation: 'stock-download',
+            status: 'failed',
+            title: 'Stock footage not found',
+            message: `No stock footage found for scene ${sceneNumber}.`,
+            data: { sceneNumber, jobId: job.id, queueType: 'stock-download', error: 'no_results' },
+          })
+          .catch(() => {});
         
         return {
           success: false,
@@ -277,6 +291,18 @@ export class StockDownloadProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'BROLL_VIDEO_READY',
+          operation: 'stock-download',
+          status: 'completed',
+          title: 'Stock b-roll ready',
+          message: `Scene ${sceneNumber} stock video is ready.`,
+          data: { sceneNumber, jobId: job.id, queueType: 'stock-download' },
+        })
+        .catch(() => {});
 
       return result;
     } catch (error: any) {
@@ -297,6 +323,18 @@ export class StockDownloadProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[StockDownloadProcessor] Failed to emit WebSocket event:`, err);
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'PROCESSING_FAILED',
+          operation: 'stock-download',
+          status: 'failed',
+          title: 'Stock download failed',
+          message: `Stock footage download failed for scene ${sceneNumber}.`,
+          data: { sceneNumber, jobId: job.id, queueType: 'stock-download', error: error.message },
+        })
+        .catch(() => {});
 
       throw error;
     }

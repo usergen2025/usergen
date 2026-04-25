@@ -6,7 +6,7 @@ import { Bell } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
 
-const POLL_MS = 60_000;
+const POLL_MS = 20_000;
 
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
@@ -23,7 +23,12 @@ export default function NotificationBell() {
   useEffect(() => {
     load();
     const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
+    const onFocus = () => load().catch(() => {});
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [load]);
 
   useEffect(() => {

@@ -70,6 +70,8 @@ const MAX_HEIGHT_SCALE = 0.3;
 
 // Safety margin to prevent edge overflow (in pixels)
 const SAFETY_MARGIN = 4;
+const SNAP_THRESHOLD_PX = 10;
+const SNAP_RELEASE_PX = 16;
 
 export function DraggableResizableCaption({
   captionText,
@@ -94,6 +96,10 @@ export function DraggableResizableCaption({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPosition, setInitialPosition] = useState<CaptionPosition>(position);
   const [showToolbar, setShowToolbar] = useState(false);
+  const [showVerticalGuide, setShowVerticalGuide] = useState(false);
+  const [showHorizontalGuide, setShowHorizontalGuide] = useState(false);
+  const lockCenterXRef = useRef(false);
+  const lockCenterYRef = useRef(false);
   const [activeColorPicker, setActiveColorPicker] = useState<'text' | 'bg' | 'border' | null>(null);
   const [showFontDropdown, setShowFontDropdown] = useState(false);
   const [popoutPos, setPopoutPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -212,8 +218,32 @@ export function DraggableResizableCaption({
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) {
-        const newPixelX = e.clientX - dragStart.x;
-        const newPixelY = e.clientY - dragStart.y;
+        let newPixelX = e.clientX - dragStart.x;
+        let newPixelY = e.clientY - dragStart.y;
+        // Align snap targets with pixelToNormalized / clamp range (guides stay at geometric center).
+        const minPX = SAFETY_MARGIN / 2;
+        const maxPX = Math.max(0, containerWidth - captionWidth - SAFETY_MARGIN);
+        const maxPY = Math.max(0, containerHeight - captionHeight - SAFETY_MARGIN);
+        const idealCenterX = (containerWidth - captionWidth) / 2;
+        const idealCenterY = (containerHeight - captionHeight) / 2;
+        const targetCenterX = Math.max(minPX, Math.min(idealCenterX, maxPX));
+        const targetCenterY = Math.max(0, Math.min(idealCenterY, maxPY));
+        const dx = Math.abs(newPixelX - targetCenterX);
+        const dy = Math.abs(newPixelY - targetCenterY);
+        if (lockCenterXRef.current) {
+          if (dx > SNAP_RELEASE_PX) lockCenterXRef.current = false;
+        } else if (dx <= SNAP_THRESHOLD_PX) {
+          lockCenterXRef.current = true;
+        }
+        if (lockCenterYRef.current) {
+          if (dy > SNAP_RELEASE_PX) lockCenterYRef.current = false;
+        } else if (dy <= SNAP_THRESHOLD_PX) {
+          lockCenterYRef.current = true;
+        }
+        if (lockCenterXRef.current) newPixelX = targetCenterX;
+        if (lockCenterYRef.current) newPixelY = targetCenterY;
+        setShowVerticalGuide(lockCenterXRef.current);
+        setShowHorizontalGuide(lockCenterYRef.current);
         const newPosition = pixelToNormalized(newPixelX, newPixelY, position.scale, widthScale);
         onPositionChange(newPosition);
       } else if (isResizing && activeHandle) {
@@ -262,6 +292,10 @@ export function DraggableResizableCaption({
       setIsDragging(false);
       setIsResizing(false);
       setActiveHandle(null);
+      lockCenterXRef.current = false;
+      lockCenterYRef.current = false;
+      setShowVerticalGuide(false);
+      setShowHorizontalGuide(false);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -271,7 +305,7 @@ export function DraggableResizableCaption({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, isResizing, activeHandle, dragStart, initialPosition, position.scale, widthScale, containerWidth, containerHeight, pixelToNormalized, onPositionChange]);
+  }, [isDragging, isResizing, activeHandle, dragStart, initialPosition, position.scale, widthScale, containerWidth, containerHeight, pixelToNormalized, onPositionChange, captionWidth, captionHeight]);
 
   // Close toolbar and dropdowns when clicking outside
   useEffect(() => {
@@ -396,6 +430,18 @@ export function DraggableResizableCaption({
 
   return (
     <>
+      {showVerticalGuide && (
+        <div
+          className="absolute top-0 bottom-0 pointer-events-none z-10"
+          style={{ left: `${containerWidth / 2}px`, width: '1px', backgroundColor: 'rgba(232,100,18,0.75)' }}
+        />
+      )}
+      {showHorizontalGuide && (
+        <div
+          className="absolute left-0 right-0 pointer-events-none z-10"
+          style={{ top: `${containerHeight / 2}px`, height: '1px', backgroundColor: 'rgba(232,100,18,0.75)' }}
+        />
+      )}
       {toolbarPopout}
       {/* Floating Toolbar - positioned above caption, width matches caption */}
       {showToolbar && !disabled && (
@@ -406,7 +452,7 @@ export function DraggableResizableCaption({
             left: `${pixelX}px`,
             top: `${Math.max(0, pixelY - 45)}px`,
             width: `${captionWidth}px`,
-            minWidth: '200px',
+            minWidth: `${captionWidth}px`,
           }}
           onMouseDown={(e) => e.stopPropagation()}
         >

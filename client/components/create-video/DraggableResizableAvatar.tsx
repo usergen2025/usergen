@@ -33,6 +33,10 @@ export function DraggableResizableAvatar({
   const [activeHandle, setActiveHandle] = useState<ResizeHandle | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPosition, setInitialPosition] = useState<Position>(position);
+  const [showVerticalGuide, setShowVerticalGuide] = useState(false);
+  const [showHorizontalGuide, setShowHorizontalGuide] = useState(false);
+  const lockCenterXRef = useRef(false);
+  const lockCenterYRef = useRef(false);
   
   // Dynamic aspect ratio from actual image dimensions
   // Default to 9:16 (portrait) until image loads
@@ -60,6 +64,8 @@ export function DraggableResizableAvatar({
   
   // Safety margin to prevent edge overflow (in pixels)
   const SAFETY_MARGIN = 2;
+  const SNAP_THRESHOLD_PX = 10;
+  const SNAP_RELEASE_PX = 16;
   
   // Avatar dimensions based on scale and actual aspect ratio
   const avatarHeight = containerHeight * position.scale;
@@ -166,8 +172,26 @@ export function DraggableResizableAvatar({
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) {
-        const newPixelX = e.clientX - dragStart.x;
-        const newPixelY = e.clientY - dragStart.y;
+        let newPixelX = e.clientX - dragStart.x;
+        let newPixelY = e.clientY - dragStart.y;
+        const targetCenterX = Math.max(0, (containerWidth - avatarWidth) / 2);
+        const targetCenterY = Math.max(0, (containerHeight - avatarHeight) / 2);
+        const dx = Math.abs(newPixelX - targetCenterX);
+        const dy = Math.abs(newPixelY - targetCenterY);
+        if (lockCenterXRef.current) {
+          if (dx > SNAP_RELEASE_PX) lockCenterXRef.current = false;
+        } else if (dx <= SNAP_THRESHOLD_PX) {
+          lockCenterXRef.current = true;
+        }
+        if (lockCenterYRef.current) {
+          if (dy > SNAP_RELEASE_PX) lockCenterYRef.current = false;
+        } else if (dy <= SNAP_THRESHOLD_PX) {
+          lockCenterYRef.current = true;
+        }
+        if (lockCenterXRef.current) newPixelX = targetCenterX;
+        if (lockCenterYRef.current) newPixelY = targetCenterY;
+        setShowVerticalGuide(lockCenterXRef.current);
+        setShowHorizontalGuide(lockCenterYRef.current);
         const newPosition = pixelToNormalized(newPixelX, newPixelY, position.scale);
         onPositionChange(newPosition);
       } else if (isResizing && activeHandle) {
@@ -210,6 +234,10 @@ export function DraggableResizableAvatar({
       setIsDragging(false);
       setIsResizing(false);
       setActiveHandle(null);
+      lockCenterXRef.current = false;
+      lockCenterYRef.current = false;
+      setShowVerticalGuide(false);
+      setShowHorizontalGuide(false);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -219,7 +247,7 @@ export function DraggableResizableAvatar({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, isResizing, activeHandle, dragStart, initialPosition, position.scale, containerWidth, containerHeight, avatarAspectRatio, pixelToNormalized, onPositionChange]);
+  }, [isDragging, isResizing, activeHandle, dragStart, initialPosition, position.scale, containerWidth, containerHeight, avatarAspectRatio, pixelToNormalized, onPositionChange, avatarWidth, avatarHeight]);
 
   // Handle styles
   const handleBaseStyle = "absolute w-[10px] h-[10px] bg-white border-2 border-[#E86412] rounded-sm z-10";
@@ -236,37 +264,51 @@ export function DraggableResizableAvatar({
   ];
 
   return (
-    <div
-      ref={avatarRef}
-      className={`absolute select-none ${isDragging || isResizing ? 'cursor-grabbing' : 'cursor-grab'} ${disabled ? 'pointer-events-none opacity-50' : ''}`}
-      style={{
-        left: `${pixelX}px`,
-        top: `${pixelY}px`,
-        width: `${avatarWidth}px`,
-        height: `${avatarHeight}px`,
-      }}
-      onMouseDown={handleMouseDown}
-    >
-      {/* Avatar image */}
-      <img
-        src={avatarImageUrl}
-        alt="Avatar overlay"
-        className="w-full h-full object-contain pointer-events-none"
-        draggable={false}
-      />
-      
-      {/* Selection border */}
-      <div className="absolute inset-0 border-2 border-[#E86412] border-dashed pointer-events-none" />
-      
-      {/* Resize handles */}
-      {!disabled && handles.map(({ position: handlePos, style, cursor }) => (
+    <>
+      {showVerticalGuide && (
         <div
-          key={handlePos}
-          className={`${handleBaseStyle} ${style}`}
-          style={{ cursor }}
-          onMouseDown={(e) => handleResizeMouseDown(e, handlePos)}
+          className="absolute top-0 bottom-0 pointer-events-none z-10"
+          style={{ left: `${containerWidth / 2}px`, width: '1px', backgroundColor: 'rgba(232,100,18,0.75)' }}
         />
-      ))}
-    </div>
+      )}
+      {showHorizontalGuide && (
+        <div
+          className="absolute left-0 right-0 pointer-events-none z-10"
+          style={{ top: `${containerHeight / 2}px`, height: '1px', backgroundColor: 'rgba(232,100,18,0.75)' }}
+        />
+      )}
+      <div
+        ref={avatarRef}
+        className={`absolute select-none ${isDragging || isResizing ? 'cursor-grabbing' : 'cursor-grab'} ${disabled ? 'pointer-events-none opacity-50' : ''}`}
+        style={{
+          left: `${pixelX}px`,
+          top: `${pixelY}px`,
+          width: `${avatarWidth}px`,
+          height: `${avatarHeight}px`,
+        }}
+        onMouseDown={handleMouseDown}
+      >
+        {/* Avatar image */}
+        <img
+          src={avatarImageUrl}
+          alt="Avatar overlay"
+          className="w-full h-full object-contain pointer-events-none"
+          draggable={false}
+        />
+        
+        {/* Selection border */}
+        <div className="absolute inset-0 border-2 border-[#E86412] border-dashed pointer-events-none" />
+        
+        {/* Resize handles */}
+        {!disabled && handles.map(({ position: handlePos, style, cursor }) => (
+          <div
+            key={handlePos}
+            className={`${handleBaseStyle} ${style}`}
+            style={{ cursor }}
+            onMouseDown={(e) => handleResizeMouseDown(e, handlePos)}
+          />
+        ))}
+      </div>
+    </>
   );
 }

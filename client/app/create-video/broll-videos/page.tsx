@@ -35,6 +35,12 @@ interface Scene {
   voiceover?: string;
 }
 
+function normalizeSceneNumber(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const n = parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 function BrollVideosPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -75,29 +81,38 @@ function BrollVideosPageContent() {
       if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
-        const sceneNumber = video.sceneNumber;
-        
+        const normalizedSceneNumber =
+          normalizeSceneNumber(video.sceneNumber) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber) ??
+          normalizeSceneNumber(jobToSceneRef.current.get(jobId));
+
+        if (normalizedSceneNumber == null) {
+          console.warn('[BrollVideos] Completed video missing sceneNumber', { jobId, video });
+          processedJobIdsRef.current.add(jobId);
+          jobToSceneRef.current.delete(jobId);
+          return;
+        }
+
         // Prevent duplicate processing for the same job
         if (processedJobIdsRef.current.has(jobId)) {
           console.log(`[BrollVideos] ⏭️ Job ${jobId} already processed, skipping duplicate update`);
           return;
         }
         processedJobIdsRef.current.add(jobId);
-        
+
         console.log('[BrollVideos] ✅ Processing completed video:', {
           jobId,
-          sceneNumber,
-          sceneNumberType: typeof sceneNumber,
+          sceneNumber: normalizedSceneNumber,
           localUrl: video.localUrl || video.local_url,
           localPath: video.localPath || video.local_path,
           videoUrl: video.videoUrl || video.video_url,
         });
-        
-        // Verify this jobId is expected for this scene
-        const expectedJobs = activeJobsBySceneRef.current.get(sceneNumber);
+
+        const expectedJobs = activeJobsBySceneRef.current.get(normalizedSceneNumber);
         if (!expectedJobs || !expectedJobs.has(jobId)) {
-          console.warn(`[BrollVideos] ⚠️ Received update for unexpected job ${jobId} for scene ${sceneNumber}`);
-          // Still process it, but log warning
+          console.warn(
+            `[BrollVideos] ⚠️ Received update for unexpected job ${jobId} for scene ${normalizedSceneNumber}`,
+          );
         }
         
         // Update local state immediately with WebSocket data (includes localPath and localUrl)
@@ -107,11 +122,6 @@ function BrollVideosPageContent() {
           
           // Create a new array to ensure React detects the change
           const newVideos = [...prev];
-          
-          // Normalize sceneNumber from WebSocket update (ensure it's a number)
-          const normalizedSceneNumber = typeof sceneNumber === 'number' 
-            ? sceneNumber 
-            : parseInt(String(sceneNumber), 10);
           
           // Find existing video by jobId first, then by sceneNumber
           const existingIndex = newVideos.findIndex(v => {
@@ -168,28 +178,26 @@ function BrollVideosPageContent() {
           return newKey;
         });
         
-        // Remove from active jobs tracking
+        // Remove from active jobs tracking (Maps keyed by numeric scene index)
         if (expectedJobs) {
           expectedJobs.delete(jobId);
           if (expectedJobs.size === 0) {
-            activeJobsBySceneRef.current.delete(sceneNumber);
+            activeJobsBySceneRef.current.delete(normalizedSceneNumber);
           }
         }
         jobToSceneRef.current.delete(jobId);
-        
-        // Update regenerating state only if no other jobs are active for this scene
-        const remainingJobs = activeJobsBySceneRef.current.get(sceneNumber);
+
+        const remainingJobs = activeJobsBySceneRef.current.get(normalizedSceneNumber);
         if (!remainingJobs || remainingJobs.size === 0) {
-          setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
-          setGeneratingVideos(prev => {
+          setRegenerating((prev) => ({ ...prev, [normalizedSceneNumber]: false }));
+          setGeneratingVideos((prev) => {
             const next = new Set(prev);
-            next.delete(sceneNumber);
+            next.delete(normalizedSceneNumber);
             return next;
           });
         }
-        
-        // Show toast only once per job
-        showToast(`Video generated for scene ${sceneNumber}`, 'success');
+
+        showToast(`Video generated for scene ${normalizedSceneNumber}`, 'success');
 
         // For scene-composite completion, refetch project to update failedAvatarScenes
         if (update.queueType === 'scene-composite' && projectId) {
@@ -199,30 +207,63 @@ function BrollVideosPageContent() {
         }
         
         // Don't reload from DB - trust WebSocket data which includes localPath and localUrl
+      } else if (
+        update.state === 'completed' &&
+        (update.queueType === 'video-generation' ||
+          update.queueType === 'scene-composite' ||
+          update.queueType === 'stock-download') &&
+        !(update.result?.success && update.result?.video)
+      ) {
+        const jobId = update.jobId;
+        const sn =
+          normalizeSceneNumber(jobToSceneRef.current.get(jobId)) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber);
+        console.warn('[BrollVideos] Job completed without usable video payload', {
+          jobId,
+          queueType: update.queueType,
+        });
+        if (!processedJobIdsRef.current.has(jobId)) {
+          processedJobIdsRef.current.add(jobId);
+        }
+        jobToSceneRef.current.delete(jobId);
+        if (sn != null) {
+          const ej = activeJobsBySceneRef.current.get(sn);
+          if (ej) {
+            ej.delete(jobId);
+            if (ej.size === 0) {
+              activeJobsBySceneRef.current.delete(sn);
+              setRegenerating((prev) => ({ ...prev, [sn]: false }));
+              setGeneratingVideos((prev) => {
+                const next = new Set(prev);
+                next.delete(sn);
+                return next;
+              });
+            }
+          }
+          showToast(`Video generation finished without output for scene ${sn}`, 'warning');
+        }
       } else if (update.state === 'failed') {
-        // Find scene number from job mapping
-        const sceneNumber = jobToSceneRef.current.get(update.jobId);
-        
-        // Prevent duplicate failure toasts
+        const sceneNumber =
+          normalizeSceneNumber(jobToSceneRef.current.get(update.jobId)) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber);
+
         if (!processedJobIdsRef.current.has(update.jobId)) {
           processedJobIdsRef.current.add(update.jobId);
-          
-          if (sceneNumber !== undefined) {
+          if (sceneNumber != null) {
             showToast(`Video generation failed for scene ${sceneNumber}`, 'error');
           } else {
             showToast('Video generation failed', 'error');
           }
         }
-        
-        // Remove from active jobs tracking
-        if (sceneNumber !== undefined) {
+
+        if (sceneNumber != null) {
           const expectedJobs = activeJobsBySceneRef.current.get(sceneNumber);
           if (expectedJobs) {
             expectedJobs.delete(update.jobId);
             if (expectedJobs.size === 0) {
               activeJobsBySceneRef.current.delete(sceneNumber);
-              setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
-              setGeneratingVideos(prev => {
+              setRegenerating((prev) => ({ ...prev, [sceneNumber]: false }));
+              setGeneratingVideos((prev) => {
                 const next = new Set(prev);
                 next.delete(sceneNumber);
                 return next;
@@ -230,8 +271,7 @@ function BrollVideosPageContent() {
             }
           }
         }
-        
-        // Remove from job mapping
+
         jobToSceneRef.current.delete(update.jobId);
       }
     }

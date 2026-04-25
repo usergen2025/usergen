@@ -9,6 +9,8 @@ import {
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
+import { ProjectLogService } from '../common/logging/project-log.service';
+import { UserNotificationService } from '../notifications/user-notification.service';
 
 @Injectable()
 export class VideoService {
@@ -20,6 +22,8 @@ export class VideoService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
+    private readonly projectLog: ProjectLogService,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     this.aiContentServiceUrl = 
       this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 
@@ -75,6 +79,26 @@ export class VideoService {
         metadata: initialMetadata,
       },
     });
+    await this.projectLog
+      .logProject(project.id, 'INFO', 'PROJECT_STARTED', {
+        op: 'project-lifecycle',
+      })
+      .catch(() => {});
+    if (dto.style) {
+      await this.projectLog
+        .logProject(project.id, 'INFO', `STYLE_SELECTED ${dto.style}`, {
+          op: 'project-lifecycle',
+        })
+        .catch(() => {});
+    }
+    const firstAssetUrl = Array.isArray(assets) && assets.length > 0 ? assets[0]?.url : undefined;
+    if (firstAssetUrl) {
+      await this.projectLog
+        .logProject(project.id, 'INFO', `ASSET_ADDED ${firstAssetUrl}`, {
+          op: 'project-assets',
+        })
+        .catch(() => {});
+    }
 
     // Trigger asset analysis in background (non-blocking)
     if (assets && Array.isArray(assets) && assets.length > 0) {
@@ -229,15 +253,22 @@ export class VideoService {
 
     // Build update data (only include fields that are provided)
     const updateData: any = {};
+    const changedFields: string[] = [];
 
     if (dto.title !== undefined) updateData.title = dto.title;
     if (dto.description !== undefined) updateData.description = dto.description;
-    if (dto.style !== undefined) updateData.style = dto.style;
+    if (dto.style !== undefined) {
+      updateData.style = dto.style;
+      changedFields.push('style');
+    }
     if (dto.avatarId !== undefined) updateData.avatarId = dto.avatarId;
     if (dto.avatarName !== undefined) updateData.avatarName = dto.avatarName;
     if (dto.avatarUrl !== undefined) updateData.avatarUrl = dto.avatarUrl;
     if (dto.avatarMode !== undefined) updateData.avatarMode = dto.avatarMode;
-    if (dto.script !== undefined) updateData.script = dto.script;
+    if (dto.script !== undefined) {
+      updateData.script = dto.script;
+      changedFields.push('script');
+    }
     if (dto.scriptGenerated !== undefined) updateData.scriptGenerated = dto.scriptGenerated;
     if (dto.voiceId !== undefined) updateData.voiceId = dto.voiceId;
     if (dto.voiceType !== undefined) updateData.voiceType = dto.voiceType;
@@ -249,10 +280,17 @@ export class VideoService {
         dto.audioFiles
       );
       updateData.audioFiles = dto.audioFiles;
+      changedFields.push('audioFiles');
     }
     if (dto.audioGenerationConfig !== undefined) updateData.audioGenerationConfig = dto.audioGenerationConfig;
-    if (dto.bRollImages !== undefined) updateData.bRollImages = dto.bRollImages;
-    if (dto.bRollVideoTasks !== undefined) updateData.bRollVideoTasks = dto.bRollVideoTasks;
+    if (dto.bRollImages !== undefined) {
+      updateData.bRollImages = dto.bRollImages;
+      changedFields.push('bRollImages');
+    }
+    if (dto.bRollVideoTasks !== undefined) {
+      updateData.bRollVideoTasks = dto.bRollVideoTasks;
+      changedFields.push('bRollVideoTasks');
+    }
     if (dto.avatarVideos !== undefined) updateData.avatarVideos = dto.avatarVideos;
     if (dto.sceneVideos !== undefined) updateData.sceneVideos = dto.sceneVideos;
     if (dto.renderingStatus !== undefined) updateData.renderingStatus = dto.renderingStatus;
@@ -260,10 +298,19 @@ export class VideoService {
     if (dto.bRollSource !== undefined) updateData.bRollSource = dto.bRollSource;
     if (dto.bRollVideos !== undefined) updateData.bRollVideos = dto.bRollVideos;
     if (dto.bRollPrompt !== undefined) updateData.bRollPrompt = dto.bRollPrompt;
-    if (dto.captionSettings !== undefined) updateData.captionSettings = dto.captionSettings;
-    if (dto.captionsEnabled !== undefined) updateData.captionsEnabled = dto.captionsEnabled;
+    if (dto.captionSettings !== undefined) {
+      updateData.captionSettings = dto.captionSettings;
+      changedFields.push('captionSettings');
+    }
+    if (dto.captionsEnabled !== undefined) {
+      updateData.captionsEnabled = dto.captionsEnabled;
+      changedFields.push('captionsEnabled');
+    }
     if (dto.status !== undefined) updateData.status = dto.status;
-    if (dto.currentStep !== undefined) updateData.currentStep = dto.currentStep;
+    if (dto.currentStep !== undefined) {
+      updateData.currentStep = dto.currentStep;
+      changedFields.push('currentStep');
+    }
     if (dto.progress !== undefined) updateData.progress = dto.progress;
     if (dto.progressStage !== undefined) updateData.progressStage = dto.progressStage;
     if (dto.videoUrl !== undefined) updateData.videoUrl = dto.videoUrl;
@@ -275,6 +322,7 @@ export class VideoService {
         ? (existing.metadata as Record<string, unknown>)
         : {};
       updateData.metadata = { ...existingMeta, ...dto.metadata };
+      changedFields.push('metadata');
     }
     // When script or style changes, clear generated avatar image cache so it is regenerated at b-roll step
     if (dto.script !== undefined || dto.style !== undefined) {
@@ -309,6 +357,44 @@ export class VideoService {
       where: { id: projectId },
       data: updateData,
     });
+    if (changedFields.length > 0) {
+      const step = dto.currentStep ? ` step=${dto.currentStep}` : '';
+      await this.projectLog
+        .logProject(
+          projectId,
+          'INFO',
+          `PROJECT_UPDATED fields=${changedFields.join(',')}${step}`,
+          { op: 'project-lifecycle' },
+        )
+        .catch(() => {});
+    }
+    if (dto.script !== undefined) {
+      const scriptPreview = typeof dto.script === 'string' ? dto.script.slice(0, 240) : JSON.stringify(dto.script).slice(0, 240);
+      await this.projectLog
+        .logProject(projectId, 'INFO', `SCRIPT_INPUT_RECEIVED ${scriptPreview}`, {
+          op: 'script',
+        })
+        .catch(() => {});
+    }
+    if (dto.scriptGenerated === true && dto.script !== undefined) {
+      await this.projectLog
+        .logProject(projectId, 'INFO', 'SCRIPT_GENERATED successfully', {
+          op: 'script',
+        })
+        .catch(() => {});
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'SCRIPT_GENERATED',
+          operation: 'script-generation',
+          status: 'completed',
+          title: 'Script generated',
+          message: 'Your script generation is complete.',
+          data: { currentStep: dto.currentStep },
+        })
+        .catch(() => {});
+    }
 
     // Trigger asset analysis if metadata with assets was updated
     if (dto.metadata?.assets && Array.isArray(dto.metadata.assets) && dto.metadata.assets.length > 0) {

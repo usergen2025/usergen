@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { buildAudioGenerationConfig } from '../../utils/audio-config.util';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 import axios from 'axios';
 
 export interface AudioGenerationJobData {
@@ -22,6 +23,7 @@ export class AudioGenerationProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly jobStatusGateway: JobStatusGateway,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
   }
@@ -150,6 +152,18 @@ export class AudioGenerationProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[AudioGenerationProcessor] Failed to emit WebSocket event for job ${job.id}:`, err);
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'AUDIO_GENERATED',
+          operation: 'audio-generation',
+          status: 'completed',
+          title: 'Audio generation completed',
+          message: 'Voice audio is ready for your project scenes.',
+          data: { jobId: job.id, queueType: 'audio-generation' },
+        })
+        .catch(() => {});
       
       return {
         success: true,
@@ -177,6 +191,18 @@ export class AudioGenerationProcessor extends WorkerHost {
       }).catch(err => {
         console.error(`[AudioGenerationProcessor] Failed to emit WebSocket event for failed job ${job.id}:`, err);
       });
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'PROCESSING_FAILED',
+          operation: 'audio-generation',
+          status: 'failed',
+          title: 'Audio generation failed',
+          message: 'Audio generation failed. Please retry from the workspace.',
+          data: { jobId: job.id, queueType: 'audio-generation', error: error.message },
+        })
+        .catch(() => {});
 
       throw error;
     }

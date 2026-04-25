@@ -11,6 +11,7 @@ import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { PublicUrlService } from '../../storage/public-url.service';
 import { AssetProcessorService, AnalyzedAsset } from '../../services/asset-processor.service';
 import { ProjectLogService } from '../../logging/project-log.service';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 import { preWarmUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -48,6 +49,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     private readonly publicUrlService: PublicUrlService,
     private readonly assetProcessor: AssetProcessorService,
     private readonly projectLog: ProjectLogService,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -225,6 +227,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       } catch (err: any) {
         console.error(`[ImageGenerationProcessor] Failed to emit WebSocket event:`, err);
       }
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'PROCESSING_FAILED',
+          operation: 'image-generation',
+          status: 'failed',
+          title: 'Image generation failed',
+          message: `Image generation failed for scene ${sceneNumber}.`,
+          data: { sceneNumber, jobId: job.id, queueType: 'image-generation', error: errorMessage },
+        })
+        .catch(() => {});
 
       await this.projectLog
         .logProject(projectId, 'ERROR', errorMessage, {
@@ -512,6 +526,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       },
       queueType: 'image-generation',
     });
+    this.userNotificationService
+      .notifyProcessingEvent({
+        userId,
+        projectId: project.id,
+        type: 'BROLL_IMAGE_READY',
+        operation: 'image-generation',
+        status: 'completed',
+        title: 'B-roll image ready',
+        message: `Scene ${sceneNumber} image was generated successfully.`,
+        data: { sceneNumber, jobId: job.id, queueType: 'image-generation' },
+      })
+      .catch(() => {});
 
     return imageData;
   }
@@ -982,6 +1008,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       },
       progress: 100,
     });
+    this.userNotificationService
+      .notifyProcessingEvent({
+        userId,
+        projectId,
+        type: 'AVATAR_PREVIEW_READY',
+        operation: 'avatar-preview-generation',
+        status: 'completed',
+        title: 'Avatar preview ready',
+        message: `Avatar + product preview is ready for scene ${sceneNumber}.`,
+        data: { sceneNumber, jobId: job.id, queueType: 'image-generation' },
+      })
+      .catch(() => {});
 
     return imageData;
   }
@@ -1454,6 +1492,18 @@ export class ImageGenerationProcessor extends WorkerHost {
       },
       queueType: 'image-generation',
     });
+    this.userNotificationService
+      .notifyProcessingEvent({
+        userId,
+        projectId: project.id,
+        type: 'BROLL_IMAGE_READY',
+        operation: 'image-generation',
+        status: 'completed',
+        title: 'B-roll image ready',
+        message: `Scene ${sceneNumber} image was generated successfully.`,
+        data: { sceneNumber, jobId: job.id, queueType: 'image-generation' },
+      })
+      .catch(() => {});
     
     return imageData;
   }

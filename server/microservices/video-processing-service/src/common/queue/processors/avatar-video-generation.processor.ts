@@ -10,6 +10,7 @@ import { AlternateAvatarService } from '../../../rendering/alternate-avatar.serv
 import { QueueManagerService } from '../queue-manager.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { VideoService } from '../../../video/video.service';
+import { UserNotificationService } from '../../../notifications/user-notification.service';
 
 export interface AvatarVideoGenerationJobData {
   projectId: string;
@@ -33,6 +34,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     private readonly queueManager: QueueManagerService,
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly videoService: VideoService,
+    private readonly userNotificationService: UserNotificationService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
@@ -192,6 +194,18 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           sceneJobId: emitJobId,
         });
       }
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'AVATAR_PREVIEW_READY',
+          operation: 'avatar-video-generation',
+          status: 'completed',
+          title: 'Avatar preview ready',
+          message: `Avatar video is ready for scene ${sceneNumber}.`,
+          data: { sceneNumber, jobId: emitJobId, queueType: 'avatar-video-generation' },
+        })
+        .catch(() => {});
 
       return { success: true, localPath: avatarVideoPath };
     } catch (error: any) {
@@ -214,6 +228,18 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         error: error.message,
         metadata: { sceneNumber },
       }).catch(() => {});
+      this.userNotificationService
+        .notifyProcessingEvent({
+          userId,
+          projectId,
+          type: 'PROCESSING_FAILED',
+          operation: 'avatar-video-generation',
+          status: 'failed',
+          title: 'Avatar generation failed',
+          message: `Avatar video generation failed for scene ${sceneNumber}.`,
+          data: { sceneNumber, jobId: emitJobId, queueType: 'avatar-video-generation', error: error.message },
+        })
+        .catch(() => {});
 
       throw error;
     }
