@@ -902,43 +902,49 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async processMaturedLockedEarnings() {
-    const now = new Date();
-    const due = await this.databaseService.creatorEarning.findMany({
-      where: {
-        status: 'LOCKED',
-        unlockAt: { lte: now },
-      },
-      orderBy: { unlockAt: 'asc' },
-      take: 200,
-    });
-    if (!due.length) return { processed: 0 };
-    let unlocked = 0;
-    for (const row of due) {
-      await this.databaseService.creatorEarning.update({
-        where: { id: row.id },
-        data: {
-          status: 'AVAILABLE',
-          availableAt: now,
+    try {
+      const now = new Date();
+      const due = await this.databaseService.creatorEarning.findMany({
+        where: {
+          status: 'LOCKED',
+          unlockAt: { lte: now },
         },
+        orderBy: { unlockAt: 'asc' },
+        take: 200,
       });
-      await this.databaseService.walletSyncEvent.create({
-        data: {
-          eventType: 'EARNING_UNLOCKED',
-          status: 'SYNCED',
-          attempts: 1,
-          payload: {
-            campaignId: row.campaignId,
-            creatorId: row.creatorId,
-            postSubmissionId: row.postSubmissionId,
-            earningId: row.id,
-            amount: Number(row.amount),
-            unlockedAt: now.toISOString(),
+      if (!due.length) return { processed: 0 };
+      let unlocked = 0;
+      for (const row of due) {
+        await this.databaseService.creatorEarning.update({
+          where: { id: row.id },
+          data: {
+            status: 'AVAILABLE',
+            availableAt: now,
           },
-        },
-      });
-      unlocked += 1;
+        });
+        await this.databaseService.walletSyncEvent.create({
+          data: {
+            eventType: 'EARNING_UNLOCKED',
+            status: 'SYNCED',
+            attempts: 1,
+            payload: {
+              campaignId: row.campaignId,
+              creatorId: row.creatorId,
+              postSubmissionId: row.postSubmissionId,
+              earningId: row.id,
+              amount: Number(row.amount),
+              unlockedAt: now.toISOString(),
+            },
+          },
+        });
+        unlocked += 1;
+      }
+      return { processed: unlocked };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`processMaturedLockedEarnings skipped: ${message}`);
+      return { processed: 0 };
     }
-    return { processed: unlocked };
   }
 
   async getCampaignCreatorEarnings(campaignId: string, requester: { id: string; role: string }) {
