@@ -17,6 +17,8 @@ interface Campaign {
   campaignType?: string;
   payoutRate: number;
   deadlineToApply: string;
+  startDate: string;
+  endDate: string;
   totalBudget: number;
   budgetUsed: number;
   remainingBudget?: number;
@@ -135,17 +137,18 @@ export default function CreatorCampaignsPage() {
       .then((response) => {
         const rows = ((response.data || []) as VideoProjectRow[])
           .filter((project) => project.status === 'COMPLETED')
-          .map((project) => {
+          .map((project): LibraryProject | null => {
             const mediaUrl = resolveProjectVideoUrl(project);
             if (!mediaUrl) return null;
-            return {
+            const row: LibraryProject = {
               id: String(project.id),
               title: String(project.title || project.projectName || `Project ${project.id}`),
               mediaUrl,
-              thumbnailUrl: project.thumbnailUrl,
             };
+            if (project.thumbnailUrl) row.thumbnailUrl = project.thumbnailUrl;
+            return row;
           })
-          .filter((row): row is LibraryProject => Boolean(row));
+          .filter((row): row is LibraryProject => row !== null);
         setProjectLibrary(rows);
       })
       .catch(() => setProjectLibrary([]));

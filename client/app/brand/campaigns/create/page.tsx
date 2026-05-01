@@ -24,7 +24,7 @@ export default function CreateCampaignPage() {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const campaignType = searchParams.get('type') || 'REPOST_CPM';
+  const campaignType = searchParams?.get('type') || 'REPOST_CPM';
   const [formData, setFormData] = useState({
     name: '',
     description: '',
