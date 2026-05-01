@@ -85,6 +85,18 @@ module.exports = {
       out_file: './logs/payment-wallet-service-out.log'
     },
     {
+      name: 'campaign-service',
+      script: './microservices/campaign-service/dist/main.js',
+      cwd: process.cwd(),
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '400M',
+      env: { NODE_ENV: 'development' },
+      error_file: './logs/campaign-service-error.log',
+      out_file: './logs/campaign-service-out.log'
+    },
+    {
       name: 'notification-service',
       script: './microservices/notification-service/dist/main.js',
       cwd: process.cwd(),
