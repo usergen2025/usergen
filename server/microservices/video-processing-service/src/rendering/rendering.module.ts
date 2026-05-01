@@ -11,6 +11,7 @@ import { ProviderFactory } from './providers/provider-factory.service';
 import { VideoProviderFactory } from './providers/video-provider-factory.service';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
+import { HtmlCaptionLayerProvider } from './providers/html-caption-layer.provider';
 import { DatabaseModule } from '../common/database/database.module';
 import { StorageModule } from '../common/storage/storage.module';
 import { QueueModule } from '../common/queue/queue.module';
@@ -38,6 +39,7 @@ import { ProjectLogModule } from '../common/logging/project-log.module';
     VideoProviderFactory,
     HeyGenVideoProvider,
     VideoCompositorProvider,
+    HtmlCaptionLayerProvider,
   ],
   exports: [
     RenderingService,
@@ -50,6 +52,7 @@ import { ProjectLogModule } from '../common/logging/project-log.module';
     VideoProviderFactory,
     HeyGenVideoProvider,
     VideoCompositorProvider,
+    HtmlCaptionLayerProvider,
   ],
 })
 export class RenderingModule {}

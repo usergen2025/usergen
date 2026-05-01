@@ -9,14 +9,32 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   icon?: ReactNode;
   iconPosition?: 'left' | 'right';
   onIconClick?: () => void;
+  /** Tighter control for brand dense layouts */
+  fieldSize?: 'md' | 'sm';
+  variant?: 'default' | 'brandCapsule';
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, icon, iconPosition = 'right', onIconClick, className, ...props }, ref) => {
+  (
+    {
+      label,
+      error,
+      icon,
+      iconPosition = 'right',
+      onIconClick,
+      fieldSize = 'md',
+      variant = 'default',
+      className,
+      ...props
+    },
+    ref,
+  ) => {
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-text-primary mb-1">
+          <label
+            className={cn('block font-medium text-text-primary mb-1', fieldSize === 'sm' ? 'text-xs' : 'text-sm')}
+          >
             {label}
           </label>
         )}
@@ -29,14 +47,19 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
         <input
           ref={ref}
           className={cn(
-            'w-full px-4 py-2 border border-border rounded-md',
-            'bg-secondary text-text-primary',
-            'placeholder:text-text-muted',
-            'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
-            'disabled:opacity-50 disabled:cursor-not-allowed',
+            variant === 'brandCapsule'
+              ? 'brand-field-capsule disabled:opacity-60 disabled:cursor-not-allowed'
+              : [
+                  'w-full border border-border rounded-md',
+                  'bg-secondary text-text-primary',
+                  'placeholder:text-text-muted',
+                  'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
+                  fieldSize === 'sm' ? 'px-3 py-1.5 text-sm' : 'px-4 py-2',
+                ],
             error && 'border-red-500 focus:ring-red-500',
-              icon && iconPosition === 'left' && 'pl-10',
-              icon && iconPosition === 'right' && 'pr-10',
+            icon && iconPosition === 'left' && (fieldSize === 'sm' ? 'pl-9' : 'pl-10'),
+            icon && iconPosition === 'right' && (fieldSize === 'sm' ? 'pr-9' : 'pr-10'),
             className
           )}
           {...props}

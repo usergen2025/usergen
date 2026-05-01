@@ -23,30 +23,27 @@ export default function CreditDisplay({
   const { isAuthenticated, user } = useAuth();
   const [credits, setCredits] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const fetchCredits = useCallback(async () => {
     if (!isAuthenticated || !user?.id) return;
     
     setIsLoading(true);
-    setError(null);
     
     try {
       const response = await apiClient.getCreditsBalance(user.id);
       if (response.success && response.data !== undefined) {
-        setCredits(response.data.credits ?? response.data);
+        const d = response.data as { credits?: number };
+        setCredits(typeof d.credits === 'number' ? d.credits : 0);
       } else {
-        // Fallback to user credits from profile if wallet service fails
-        setCredits(user.credits ?? 0);
+        setCredits(0);
       }
     } catch (err) {
-      console.warn('Failed to fetch credits from wallet service, using profile credits:', err);
-      // Fallback to user credits from profile
-      setCredits(user.credits ?? 0);
+      console.warn('Failed to fetch credits from wallet service:', err);
+      setCredits(null);
     } finally {
       setIsLoading(false);
     }
-  }, [isAuthenticated, user?.id, user?.credits]);
+  }, [isAuthenticated, user?.id]);
 
   useEffect(() => {
     fetchCredits();
@@ -71,8 +68,6 @@ export default function CreditDisplay({
   if (!isAuthenticated) {
     return null;
   }
-
-  const displayCredits = credits ?? user?.credits ?? 0;
 
   const handleClick = () => {
     router.push('/billing');
@@ -99,8 +94,10 @@ export default function CreditDisplay({
         <span className="font-medium text-sm text-gray-700">
           {isLoading ? (
             <RefreshCw className="w-3 h-3 animate-spin" />
+          ) : credits === null ? (
+            '—'
           ) : (
-            <>₹{displayCredits.toLocaleString()}</>
+            <>₹{credits.toLocaleString()}</>
           )}
         </span>
         {showAddButton && (
@@ -138,8 +135,10 @@ export default function CreditDisplay({
                 <RefreshCw className="w-5 h-5 animate-spin" />
                 Loading...
               </span>
+            ) : credits === null ? (
+              '—'
             ) : (
-              <>₹{displayCredits.toLocaleString()}</>
+              <>₹{credits.toLocaleString()}</>
             )}
           </p>
         </div>

@@ -31,6 +31,19 @@ print_info() {
     echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
+check_required_tools() {
+    local missing=0
+    for cmd in bash node npm npx; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            print_error "Missing required command: $cmd"
+            missing=1
+        fi
+    done
+    if [ "$missing" -ne 0 ]; then
+        exit 1
+    fi
+}
+
 # Function to check if service has Prisma schema
 has_prisma_schema() {
     local service_path="$1"
@@ -90,6 +103,7 @@ services_with_prisma=(
     "payment-wallet-service"
     "workspace-service"
     "activity-service"
+    "campaign-service"
     "project-management-service"
     "analytics-service"
     "notification-service"
@@ -103,6 +117,7 @@ skip_count=0
 fail_count=0
 
 action="${1:-all}"
+check_required_tools
 
 case "$action" in
     migrate)

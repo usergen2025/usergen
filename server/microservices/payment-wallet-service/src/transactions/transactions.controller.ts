@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Param, Headers } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { TransactionType, EntityType } from '@prisma/client';
 
@@ -7,13 +7,13 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @Post('deduct')
-  async deductCredits(@Body() deductDto: any) {
-    return await this.transactionsService.deductCredits(deductDto);
+  async deductCredits(@Body() deductDto: any, @Headers('x-idempotency-key') idempotencyKey?: string) {
+    return await this.transactionsService.deductCredits({ ...deductDto, idempotencyKey });
   }
 
   @Post('add')
-  async addCredits(@Body() addDto: any) {
-    return await this.transactionsService.addCredits(addDto);
+  async addCredits(@Body() addDto: any, @Headers('x-idempotency-key') idempotencyKey?: string) {
+    return await this.transactionsService.addCredits({ ...addDto, idempotencyKey });
   }
 
   @Get('balance')

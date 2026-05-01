@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LogOut, Menu, X, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
 import CreditDisplay from '@/components/billing/CreditDisplay';
+import BrandBalanceDisplay from '@/components/billing/BrandBalanceDisplay';
 import Image from 'next/image';
 import Button from '@/components/ui/Button';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
@@ -132,6 +133,20 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
 
   const isActive = (href: string) => pathname === href;
 
+  const brandDesktopNavClass = (href: string) =>
+    cn(
+      'px-3 md:px-4 py-2 md:py-3 rounded-xl font-heading text-sm font-medium transition-colors whitespace-nowrap',
+      isActive(href)
+        ? 'text-[#E86412] bg-orange-50/90'
+        : 'text-[#0F082B] hover:text-[#E86412] hover:bg-orange-50/50',
+    );
+
+  const defaultDesktopNavClass = (href: string) =>
+    cn(
+      'px-3 md:px-4 py-2 md:py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap',
+      isActive(href) ? 'text-[#E86512] bg-orange-50' : 'text-[#0F082B] hover:text-[#E86512] hover:bg-orange-50/50',
+    );
+
   const positionClasses = {
     fixed: 'fixed top-0 left-0 right-0 z-50',
     sticky: 'sticky top-0 z-50',
@@ -159,6 +174,8 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
   const loggedInCreatorNavItems = [
     { href: '/', label: 'Home' },
     { href: '/projects', label: 'My Projects' },
+    { href: '/campaigns', label: 'Campaigns' },
+    { href: '/earnings', label: 'Earnings' },
     { href: '/pricing', label: 'Pricing' },
   ];
 
@@ -188,7 +205,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
           <div className="flex items-center justify-between">
             {/* Logo - Conditionally render based on role */}
             {userIsBrand ? (
-              <Link href="/brand/dashboard" className="flex items-start gap-2 flex-shrink-0">
+              <Link href="/brand/dashboard" className="flex items-center gap-2 flex-shrink-0">
                 {/* Logo Image */}
                 <Image 
                   src="/assets/logo.svg" 
@@ -198,10 +215,10 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                   className="w-[38px] h-[44px]"
                 />
                 {/* Text + Badge Column */}
-                <div className="flex flex-col items-center gap-0">
-                  <span className="font-heading text-2xl font-medium text-black">UserGen.ai</span>
+                <div className="flex flex-col items-start gap-0">
+                  <span className="font-heading text-2xl font-medium text-black leading-none">UserGen.ai</span>
                   {/* FOR BRANDS Badge below text - centered */}
-                  <div className="flex justify-center">
+                  <div className="flex justify-start">
                     <BrandLogo showBrandLabel={true} />
                   </div>
                 </div>
@@ -226,12 +243,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                   <Link
                     key={item.href}
                     href={item.href}
-                    className={cn(
-                      "px-3 md:px-4 py-2 md:py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap",
-                      isActive(item.href)
-                        ? "text-[#E86512] bg-orange-50"
-                        : "text-[#0F082B] hover:text-[#E86512] hover:bg-orange-50/50"
-                    )}
+                    className={userIsBrand ? brandDesktopNavClass(item.href) : defaultDesktopNavClass(item.href)}
                   >
                     {item.label}
                   </Link>
@@ -242,8 +254,11 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
             {/* Right Side Actions */}
             <div className="flex items-center gap-2">
               {isAuthenticated && !userIsBrand && <NotificationBell />}
-              {isAuthenticated && (
+              {isAuthenticated && !userIsBrand && (
                 <CreditDisplay className="hidden sm:flex" showAddButton={false} />
+              )}
+              {isAuthenticated && userIsBrand && (
+                <BrandBalanceDisplay className="hidden sm:flex" />
               )}
               {isAuthenticated ? (
                 <Dropdown
@@ -294,17 +309,25 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                       >
                         My Videos
                       </DropdownItem>
-                      <DropdownItem 
-                        onClick={() => {
-                          router.push('/brand/wallet');
-                        }}
-                        icon={<Wallet className="w-5 h-5" />}
-                      >
-                        My Wallet
-                      </DropdownItem>
-                      <DropdownItem onClick={handleLogout} icon={<LogOut className="w-5 h-5" />}>
-                        Logout
-                      </DropdownItem>
+                  <DropdownItem 
+                    onClick={() => {
+                      router.push('/brand/wallet');
+                    }}
+                    icon={<Wallet className="w-5 h-5" />}
+                  >
+                    My Wallet
+                  </DropdownItem>
+                  <DropdownItem
+                    onClick={() => {
+                      router.push('/billing');
+                    }}
+                    icon={<Receipt className="w-5 h-5" />}
+                  >
+                    Billing
+                  </DropdownItem>
+                  <DropdownItem onClick={handleLogout} icon={<LogOut className="w-5 h-5" />}>
+                    Logout
+                  </DropdownItem>
                     </>
                   ) : (
                     <>
@@ -372,10 +395,18 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                      isActive(item.href)
-                        ? "text-[#E86512] bg-orange-50"
-                        : "text-[#0F082B]"
+                      'px-4 py-3 rounded-2xl font-medium transition-colors',
+                      userIsBrand
+                        ? cn(
+                            'font-heading text-sm',
+                            isActive(item.href)
+                              ? 'text-[#E86412] bg-orange-50/90'
+                              : 'text-[#0F082B] active:bg-orange-50/50',
+                          )
+                        : cn(
+                            'text-sm',
+                            isActive(item.href) ? 'text-[#E86512] bg-orange-50' : 'text-[#0F082B]',
+                          ),
                     )}
                     onClick={() => setMobileMenuOpen(false)}
                   >

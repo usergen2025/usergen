@@ -7,6 +7,7 @@ import axios from 'axios';
 
 @Injectable()
 export class TransactionsService {
+  private readonly idempotentResponses = new Map<string, any>();
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
@@ -20,8 +21,12 @@ export class TransactionsService {
     activityName: string;
     resourceId?: string;
     metadata?: Record<string, any>;
+    idempotencyKey?: string;
   }) {
-    const { userId, workspaceId, amount, activityName, resourceId, metadata } = params;
+    const { userId, workspaceId, amount, activityName, resourceId, metadata, idempotencyKey } = params;
+    if (idempotencyKey && this.idempotentResponses.has(idempotencyKey)) {
+      return this.idempotentResponses.get(idempotencyKey);
+    }
     const contextType = workspaceId ? ContextType.TEAM : ContextType.INDIVIDUAL;
 
     // Validate workspace membership if in team context
@@ -50,7 +55,7 @@ export class TransactionsService {
     } else {
       creditsRecord = await this.databaseService.userCredits.upsert({
         where: { userId },
-        create: { userId, credits: 100 },
+        create: { userId, credits: 0 },
         update: {},
       });
       balance = creditsRecord.credits;
@@ -113,7 +118,11 @@ export class TransactionsService {
       balanceAfter,
     });
 
-    return { success: true, transactionId: transaction.id, balanceAfter, contextType };
+    const response = { success: true, transactionId: transaction.id, balanceAfter, contextType };
+    if (idempotencyKey) {
+      this.idempotentResponses.set(idempotencyKey, response);
+    }
+    return response;
   }
 
   async addCredits(params: {
@@ -123,8 +132,12 @@ export class TransactionsService {
     type: TransactionType;
     description: string;
     metadata?: Record<string, any>;
+    idempotencyKey?: string;
   }) {
-    const { userId, workspaceId, amount, type, description, metadata } = params;
+    const { userId, workspaceId, amount, type, description, metadata, idempotencyKey } = params;
+    if (idempotencyKey && this.idempotentResponses.has(idempotencyKey)) {
+      return this.idempotentResponses.get(idempotencyKey);
+    }
     const contextType = workspaceId ? ContextType.TEAM : ContextType.INDIVIDUAL;
 
     // Validate workspace if applicable
@@ -148,7 +161,7 @@ export class TransactionsService {
         })
       : await this.databaseService.userCredits.upsert({
           where: { userId },
-          create: { userId, credits: 100 },
+          create: { userId, credits: 0 },
           update: {},
         });
 
@@ -204,7 +217,11 @@ export class TransactionsService {
       balanceAfter,
     });
 
-    return { success: true, transactionId: transaction.id, balanceAfter, contextType };
+    const response = { success: true, transactionId: transaction.id, balanceAfter, contextType };
+    if (idempotencyKey) {
+      this.idempotentResponses.set(idempotencyKey, response);
+    }
+    return response;
   }
 
   async checkBalance(userId: string, workspaceId?: string) {
@@ -235,7 +252,7 @@ export class TransactionsService {
       return {
         contextType: 'INDIVIDUAL',
         userId,
-        credits: credits?.credits || 100,
+        credits: credits?.credits || 0,
       };
     }
   }

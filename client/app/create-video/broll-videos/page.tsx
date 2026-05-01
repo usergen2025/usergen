@@ -772,7 +772,7 @@ function BrollVideosPageContent() {
 
   // Helper function to normalize sceneNumber consistently
   // This ensures we use the actual scene_number from the scene object, not a default
-  const normalizeSceneNumber = (scene: Scene, index: number): number => {
+  const normalizeSceneFromObject = (scene: Scene, index: number): number => {
     // Priority: scene_number > sceneNumber > index + 1
     // Only use index + 1 if both scene_number and sceneNumber are undefined/null
     if (scene.scene_number !== undefined && scene.scene_number !== null) {
@@ -786,7 +786,7 @@ function BrollVideosPageContent() {
   };
 
   const getSceneVoiceover = (sceneNumber: number): string | undefined => {
-    const scene = scenes.find((s, idx) => normalizeSceneNumber(s, idx) === sceneNumber);
+    const scene = scenes.find((s, idx) => normalizeSceneFromObject(s, idx) === sceneNumber);
     return scene?.voiceover;
   };
 

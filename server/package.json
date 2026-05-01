@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "clear:ports": "bash scripts/clear-ports.sh",
-    "dev": "npm run clear:ports && concurrently \"npm run dev:swagger\" \"npm run dev:auth\" \"npm run dev:ai-content\" \"npm run dev:voice-audio\" \"npm run dev:media\" \"npm run dev:video\" \"npm run dev:payment\" \"npm run dev:notification\" \"npm run dev:analytics\" \"npm run dev:activity\" \"npm run dev:workspace\" \"npm run dev:iam\"",
+    "dev": "npm run clear:ports && concurrently \"npm run dev:swagger\" \"npm run dev:auth\" \"npm run dev:ai-content\" \"npm run dev:voice-audio\" \"npm run dev:media\" \"npm run dev:video\" \"npm run dev:payment\" \"npm run dev:notification\" \"npm run dev:analytics\" \"npm run dev:activity\" \"npm run dev:workspace\" \"npm run dev:iam\" \"npm run dev:campaign\"",
     "dev:safe": "npm run clear:ports && npm run dev",
     "dev:swagger": "cd microservices/swagger-aggregator-service && npm run start:dev",
     "dev:auth": "cd microservices/auth-service && npm run start:dev",
@@ -20,6 +20,7 @@
     "dev:activity": "cd microservices/activity-service && npm run start:dev",
     "dev:workspace": "cd microservices/workspace-service && npm run start:dev",
     "dev:iam": "cd microservices/iam-service && npm run start:dev",
+    "dev:campaign": "cd microservices/campaign-service && npm run start:dev",
     "env:setup": "bash scripts/env-manager.sh setup",
     "env:start": "bash scripts/env-manager.sh start",
     "env:stop": "bash scripts/env-manager.sh stop",
@@ -33,7 +34,7 @@
     "docker:stop": "bash scripts/docker-control.sh stop",
     "docker:restart": "bash scripts/docker-control.sh restart",
     "docker:status": "bash scripts/docker-control.sh status",
-    "docker:logs": "bash scripts/docker-control.sh logs",
+    "docker:logs:services": "bash scripts/docker-control.sh logs",
     "docker:clean": "bash scripts/docker-control.sh clean",
     "build": "npm run build:all",
     "build:all": "bash scripts/build-services.sh",
@@ -47,6 +48,8 @@
     "build:notification": "cd microservices/notification-service && npm run build",
     "build:project": "cd microservices/project-management-service && npm run build",
     "build:analytics": "cd microservices/analytics-service && npm run build",
+    "build:campaign": "cd microservices/campaign-service && npm run build",
+    "build:vm": "npm run install:all && npm run deploy:all",
     "test": "npm run test:all",
     "test:all": "npm run test:auth && npm run test:ai-content && npm run test:voice-audio && npm run test:media && npm run test:video && npm run test:payment && npm run test:notification && npm run test:analytics",
     "test:auth": "cd microservices/auth-service && npm run test",
@@ -70,7 +73,9 @@
     "migrate:analytics": "cd microservices/analytics-service && npm run migration:run",
     "migrate:all": "bash scripts/migrate-and-deploy.sh migrate",
     "generate:all": "bash scripts/migrate-and-deploy.sh generate",
-    "deploy:all": "bash scripts/migrate-and-deploy.sh all"
+    "deploy:all": "bash scripts/migrate-and-deploy.sh all",
+    "deploy:vm": "npm run install:all && npm run migrate:all && npm run generate:all && npm run build:all",
+    "readiness:release": "bash scripts/release-readiness.sh"
   },
   "keywords": [
     "microservices",

@@ -29,7 +29,7 @@ export default function RootLayout({
           <ToastProvider>
             <AuthExpiryProvider>
               <ConditionalHeader />
-              <main className="flex-1 min-h-0">
+              <main className="flex min-h-0 flex-1 flex-col">
                 {children}
               </main>
             </AuthExpiryProvider>

@@ -152,6 +152,30 @@ services:
               hour: 5000
               policy: local
 
+  - name: campaign-service
+    url: http://campaign-service:9011
+    routes:
+      - name: campaign-routes
+        paths:
+          - /api/campaigns
+          - /api/brands
+          - /api/creator
+          - /api/submissions
+        methods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        plugins:
+          - name: cors
+          - name: rate-limiting
+            config:
+              minute: 200
+              hour: 2000
+              policy: local
+
   - name: activity-service
     url: http://activity-service:9003
     routes:

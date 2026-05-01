@@ -1458,7 +1458,11 @@ export class VideoCompositorProvider {
         ? '&H00000000'
         : this.cssColorToAssOpaque(style.borderColor, '&H00000000');
     const bgRaw = (style.backgroundColor || '').trim().toLowerCase();
-    const bgTransparent = !bgRaw || bgRaw === 'transparent';
+    const parsedBg = this.parseCssColor(style.backgroundColor || '');
+    const bgTransparent =
+      !bgRaw ||
+      bgRaw === 'transparent' ||
+      (parsedBg !== null && parsedBg.a <= 0.01);
     // Readable outline on varied video: dark stroke on light text, light stroke on dark text when no explicit border color
     if (
       bgTransparent &&
@@ -1479,7 +1483,7 @@ export class VideoCompositorProvider {
     }
     const outlineAss = bgTransparent
       ? Math.max(2, style.borderWidth || 0)
-      : Math.max(0, typeof style.borderWidth === 'number' ? style.borderWidth : 0);
+      : Math.max(1, typeof style.borderWidth === 'number' ? style.borderWidth : 0);
     const shadowAss = bgTransparent ? 1 : 0;
 
     const bold = style.fontWeight === 'bold' ? -1 : 0;
@@ -1682,6 +1686,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
    * @param captions Array of caption entries with text and timing
    * @param style Caption styling settings
    */
+  async overlayCaptionLayerOnVideo(
+    videoPath: string,
+    captionLayerPath: string,
+    outputPath: string,
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const ffmpegCommand = `
+      ffmpeg -i "${videoPath}" -i "${captionLayerPath}" \
+      -filter_complex "[0:v][1:v]overlay=0:0:format=auto[v]" \
+      -map "[v]" -map 0:a? \
+      -c:v libx264 -preset medium -crf 20 \
+      -c:a copy \
+      -shortest \
+      -y "${outputPath}"
+    `
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+    return outputPath;
+  }
+
   async addCaptionsToVideo(
     videoPath: string,
     outputPath: string,

@@ -26,6 +26,9 @@ interface UserData {
   email: string;
   role: string;
   credits: number;
+  /** Auth DB mirror; may differ from `credits` when wallet is source of truth */
+  profileCredits?: number;
+  walletCredits?: number | null;
   isActive: boolean;
   isEmailVerified: boolean;
   createdAt: string;
@@ -171,6 +174,9 @@ function AdminUsersContent() {
       const response = await apiClient.updateUserCredits(actionUser.id, creditsAmount, addToExisting);
       if (response.success) {
         showToast('Credits updated successfully', 'success');
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('credits-refresh'));
+        }
         setShowCreditsModal(false);
         setActionUser(null);
         setCreditsAmount(0);
@@ -317,7 +323,19 @@ function AdminUsersContent() {
                     </span>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="text-white">₹{user.credits}</span>
+                    <div>
+                      <span className="text-white">₹{user.credits.toLocaleString('en-IN')}</span>
+                      {user.walletCredits === null && (
+                        <span className="ml-1 text-xs text-amber-300" title="Payment service unreachable; showing profile credits">
+                          (est.)
+                        </span>
+                      )}
+                      {user.profileCredits !== undefined &&
+                        user.walletCredits !== null &&
+                        user.profileCredits !== user.credits && (
+                          <span className="block text-xs text-gray-500">Auth: ₹{user.profileCredits.toLocaleString('en-IN')}</span>
+                        )}
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                     <span className="text-gray-400">{formatDate(user.createdAt)}</span>
@@ -450,8 +468,15 @@ function AdminUsersContent() {
                   <p className="text-white">{selectedUser.role}</p>
                 </div>
                 <div>
-                  <label className="text-sm text-gray-400">Credits</label>
-                  <p className="text-white">₹{selectedUser.credits}</p>
+                  <label className="text-sm text-gray-400">Credits (payment wallet)</label>
+                  <p className="text-white">₹{selectedUser.credits.toLocaleString('en-IN')}</p>
+                  {selectedUser.profileCredits !== undefined &&
+                    selectedUser.walletCredits !== null &&
+                    selectedUser.profileCredits !== selectedUser.credits && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Auth profile record: ₹{selectedUser.profileCredits.toLocaleString('en-IN')}
+                      </p>
+                    )}
                 </div>
                 <div>
                   <label className="text-sm text-gray-400">Status</label>

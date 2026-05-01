@@ -3,6 +3,13 @@
 set -e
 cd "$(dirname "$0")/.."
 
+for cmd in node npm; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "❌ Missing required command: $cmd"
+    exit 1
+  fi
+done
+
 SERVICES=(
   "swagger-aggregator-service"
   "auth-service"
@@ -16,6 +23,7 @@ SERVICES=(
   "analytics-service"
   "activity-service"
   "workspace-service"
+  "campaign-service"
   "project-management-service"
 )
 
@@ -32,8 +40,15 @@ for name in "${SERVICES[@]}"; do
     echo "⚠️  Skip (no package.json): $name"
     continue
   fi
+  if [ ! -f "$path/.env" ] && [ -f "$path/env.example" ]; then
+    echo "⚠️  $name has no .env (env.example exists)."
+  fi
   echo "📦 $name"
-  (cd "$path" && npm install)
+  if [ -f "$path/package-lock.json" ]; then
+    (cd "$path" && npm ci --no-audit --no-fund)
+  else
+    (cd "$path" && npm install --no-audit --no-fund)
+  fi
   echo ""
 done
 

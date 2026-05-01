@@ -1,29 +1,83 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-import Button from '@/components/ui/Button';
+import {
+  BrandStatusPill,
+  BrandIconChip,
+  BrandPrimaryButton,
+  BrandSecondaryButton,
+} from '@/components/brand';
 import Modal from '@/components/ui/Modal';
+import Textarea from '@/components/ui/Textarea';
+import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
-import { ArrowLeft, Calendar, Eye, IndianRupee, Users, Edit, ExternalLink, Trash2, Check, X } from 'lucide-react';
-
-const DUMMY_CAMPAIGNS_KEY = 'dummy_campaigns';
-const DUMMY_APPLICANTS_KEY = 'dummy_applicants';
+import {
+  ArrowLeft,
+  Calendar,
+  Eye,
+  IndianRupee,
+  Search,
+  CalendarRange,
+  Pause,
+  Play,
+  Pencil,
+  X,
+  ExternalLink,
+} from 'lucide-react';
 
 interface Applicant {
   id: string;
+  creatorId: string;
   name: string;
-  age: number;
-  gender: string;
   instagramProfileLink: string;
-  location: string;
-  followers: number;
   appliedAt: string;
-  status: 'PENDING' | 'SHORTLISTED' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'SHORTLISTED' | 'APPROVED' | 'REJECTED' | 'APPLIED' | 'SUBMITTED';
   views?: number;
   earnings?: number;
+  creatorHistory?: {
+    approvedCount: number;
+    totalSubmissions: number;
+    totalViews: number;
+    totalEarnings: number;
+  };
+}
+
+interface CampaignDetails {
+  id: string;
+  name: string;
+  status: string;
+  postedAt: string;
+  deadlineToApply: string;
+  startDate: string;
+  endDate: string;
+  description: string;
+  views: number;
+  targetViews: number;
+  budgetUsed: number;
+  totalBudget: number;
+}
+
+interface ApplicationRow {
+  id: string;
+  creatorId: string;
+  draftMediaUrl?: string;
+  platform?: 'INSTAGRAM' | 'YOUTUBE';
+  createdAt: string;
+  status: 'APPLIED' | 'APPROVED' | 'REJECTED' | 'SUBMITTED' | 'WITHDRAWN';
+}
+
+interface PostSubmission {
+  id: string;
+  campaignId: string;
+  creatorId: string;
+  postUrl: string;
+  platform: 'INSTAGRAM' | 'YOUTUBE';
+  status: 'PENDING_REVIEW' | 'VERIFIED' | 'REJECTED';
+  reviewComment?: string;
+  createdAt: string;
 }
 
 function paramSegment(
@@ -36,122 +90,220 @@ function paramSegment(
   return '';
 }
 
+type PublicStatus = 'LIVE' | 'IN_PROGRESS' | 'PAUSED' | 'DRAFT' | 'COMPLETED';
+
+function toPublicStatus(raw: string): PublicStatus {
+  const u = String(raw).toUpperCase().replace(/\s+/g, '_');
+  if (u === 'LIVE' || u === 'IN_PROGRESS' || u === 'PAUSED' || u === 'DRAFT' || u === 'COMPLETED') {
+    return u;
+  }
+  return 'IN_PROGRESS';
+}
+
 export default function CampaignDetailsPage() {
   const router = useRouter();
   const params = useParams();
   const { showToast } = useToast();
   const campaignId = paramSegment(params, 'id');
+  const getErrorMessage = (error: unknown, fallback: string) =>
+    error instanceof Error && error.message ? error.message : fallback;
   
-  const [campaign, setCampaign] = useState<any>(null);
-  const [applicants, setApplicants] = useState<Applicant[]>([]);
-  const [shortlisted, setShortlisted] = useState<Applicant[]>([]);
+  const [campaign, setCampaign] = useState<CampaignDetails | null>(null);
+  const [allApplicants, setAllApplicants] = useState<Applicant[]>([]);
+  const [postSubmissions, setPostSubmissions] = useState<PostSubmission[]>([]);
+  const [viewInputs, setViewInputs] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [showShortlistConfirm, setShowShortlistConfirm] = useState(false);
   const [selectedApplicant, setSelectedApplicant] = useState<Applicant | null>(null);
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+  const [rejectComment, setRejectComment] = useState('');
+  const [applicantSearch, setApplicantSearch] = useState('');
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [activeReviewTab, setActiveReviewTab] = useState<'applicants' | 'shortlisted' | 'rejected'>(
+    'applicants',
+  );
 
-  useEffect(() => {
-    if (campaignId) {
-      loadCampaign();
-      loadApplicants();
-    }
-  }, [campaignId]);
+  const pendingApplicants = useMemo(
+    () => allApplicants.filter((a) => a.status === 'PENDING'),
+    [allApplicants],
+  );
+  const shortlistedApplicants = useMemo(
+    () => allApplicants.filter((a) => a.status === 'APPROVED' || a.status === 'SHORTLISTED'),
+    [allApplicants],
+  );
+  const rejectedApplicants = useMemo(
+    () => allApplicants.filter((a) => a.status === 'REJECTED'),
+    [allApplicants],
+  );
 
-  const loadCampaign = () => {
+  const loadCampaign = useCallback(async () => {
     try {
-      // Load campaign from localStorage
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem(DUMMY_CAMPAIGNS_KEY);
-        if (stored) {
-          const campaigns: any[] = JSON.parse(stored);
-          const foundCampaign = campaigns.find(c => c.id === campaignId);
-          if (foundCampaign) {
-            setCampaign(foundCampaign);
-            setIsLoading(false);
-            return;
-          }
-        }
+      const response = await apiClient.getCampaign(campaignId);
+      if (response.data) {
+        setCampaign(response.data);
+        setIsLoading(false);
+        return;
       }
-      
-      // If not found, show error
       showToast('Campaign not found', 'error');
       router.push('/brand/campaigns');
-    } catch (error: any) {
-      showToast(error.message || 'Failed to load campaign', 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to load campaign'), 'error');
       setIsLoading(false);
     }
-  };
+  }, [campaignId, router, showToast]);
 
-  const loadApplicants = () => {
+  const loadApplicants = useCallback(async () => {
     try {
-      // Load applicants from localStorage
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem(`${DUMMY_APPLICANTS_KEY}_${campaignId}`);
-        if (stored) {
-          const allApplicants: Applicant[] = JSON.parse(stored);
-          setApplicants(allApplicants.filter((a: Applicant) => a.status === 'PENDING'));
-          setShortlisted(allApplicants.filter((a: Applicant) => a.status === 'SHORTLISTED' || a.status === 'APPROVED'));
-        } else {
-          // Initialize with some dummy applicants
-          const dummyApplicants: Applicant[] = [
-            {
-              id: 'app_1',
-              name: 'Sarah Johnson',
-              age: 24,
-              gender: 'Female',
-              instagramProfileLink: 'https://instagram.com/sarahj',
-              location: 'Mumbai, India',
-              followers: 45000,
-              appliedAt: new Date().toISOString(),
-              status: 'PENDING',
-            },
-            {
-              id: 'app_2',
-              name: 'Mike Chen',
-              age: 28,
-              gender: 'Male',
-              instagramProfileLink: 'https://instagram.com/mikechen',
-              location: 'Delhi, India',
-              followers: 62000,
-              appliedAt: new Date().toISOString(),
-              status: 'PENDING',
-            },
-          ];
-          localStorage.setItem(`${DUMMY_APPLICANTS_KEY}_${campaignId}`, JSON.stringify(dummyApplicants));
-          setApplicants(dummyApplicants.filter((a: Applicant) => a.status === 'PENDING'));
-          setShortlisted([]);
-        }
-      }
-    } catch (error: any) {
-      showToast(error.message || 'Failed to load applicants', 'error');
+      const response = await apiClient.getCampaignApplications(campaignId);
+      const allRows = (response.data || []) as ApplicationRow[];
+      const mapped = allRows.map((application) => ({
+        id: application.id,
+        creatorId: application.creatorId,
+        name: `Creator ${application.creatorId.slice(-6)}`,
+        instagramProfileLink: application.draftMediaUrl || '#',
+        appliedAt: application.createdAt,
+        status: (
+          application.status === 'APPLIED' || application.status === 'SUBMITTED'
+            ? 'PENDING'
+            : application.status
+        ) as Applicant['status'],
+      }));
+      setAllApplicants(mapped);
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to load applicants'), 'error');
     }
-  };
+  }, [campaignId, showToast]);
+
+  const loadPostSubmissions = useCallback(async () => {
+    try {
+      const response = await apiClient.getCampaignPostSubmissions(campaignId);
+      setPostSubmissions((response.data || []) as PostSubmission[]);
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to load final post submissions'), 'error');
+    }
+  }, [campaignId, showToast]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    let active = true;
+    apiClient
+      .getCampaign(campaignId)
+      .then((response) => {
+        if (!active) return;
+        if (response.data) {
+          setCampaign(response.data as CampaignDetails);
+          setIsLoading(false);
+          return;
+        }
+        showToast('Campaign not found', 'error');
+        router.push('/brand/campaigns');
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        showToast(getErrorMessage(error, 'Failed to load campaign'), 'error');
+        setIsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [campaignId, router, showToast]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    let active = true;
+    apiClient
+      .getCampaignApplications(campaignId)
+      .then((response) => {
+        if (!active) return;
+        const allRows = (response.data || []) as ApplicationRow[];
+        const mapped = allRows.map((application) => ({
+          id: application.id,
+          creatorId: application.creatorId,
+          name: `Creator ${application.creatorId.slice(-6)}`,
+          instagramProfileLink: application.draftMediaUrl || '#',
+          appliedAt: application.createdAt,
+          status: (
+            application.status === 'APPLIED' || application.status === 'SUBMITTED'
+              ? 'PENDING'
+              : application.status
+          ) as Applicant['status'],
+        }));
+        setAllApplicants(mapped);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        showToast(getErrorMessage(error, 'Failed to load applicants'), 'error');
+      });
+    return () => {
+      active = false;
+    };
+  }, [campaignId, showToast]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    let active = true;
+    const run = async () => {
+      try {
+        const response = await apiClient.getCampaignPostSubmissions(campaignId);
+        if (active) {
+          setPostSubmissions((response.data || []) as PostSubmission[]);
+        }
+      } catch (error: unknown) {
+        showToast(getErrorMessage(error, 'Failed to load final post submissions'), 'error');
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [campaignId, showToast]);
+
+  useEffect(() => {
+    if (isSearchExpanded) {
+      searchInputRef.current?.focus();
+    }
+  }, [isSearchExpanded]);
 
   const handleShortlist = async (applicant: Applicant) => {
     setSelectedApplicant(applicant);
     setShowShortlistConfirm(true);
   };
 
-  const confirmShortlist = () => {
+  const handleReject = (applicant: Applicant) => {
+    setSelectedApplicant(applicant);
+    setRejectComment('');
+    setShowRejectConfirm(true);
+  };
+
+  const confirmShortlist = async () => {
     if (!selectedApplicant) return;
     
     try {
-      // Update applicant status in localStorage
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem(`${DUMMY_APPLICANTS_KEY}_${campaignId}`);
-        if (stored) {
-          const allApplicants: Applicant[] = JSON.parse(stored);
-          const updatedApplicants = allApplicants.map(a => 
-            a.id === selectedApplicant.id ? { ...a, status: 'SHORTLISTED' as const } : a
-          );
-          localStorage.setItem(`${DUMMY_APPLICANTS_KEY}_${campaignId}`, JSON.stringify(updatedApplicants));
-          loadApplicants();
-          showToast('Applicant shortlisted successfully', 'success');
-        }
-      }
+      await apiClient.shortlistApplicant(campaignId, selectedApplicant.id);
+      await loadApplicants();
+      showToast('Applicant shortlisted successfully', 'success');
       setShowShortlistConfirm(false);
       setSelectedApplicant(null);
-    } catch (error: any) {
-      showToast(error.message || 'Failed to shortlist applicant', 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to shortlist applicant'), 'error');
+    }
+  };
+
+  const confirmReject = async () => {
+    if (!selectedApplicant) return;
+    try {
+      await apiClient.reviewApplication(selectedApplicant.id, {
+        status: 'REJECTED',
+        comment: rejectComment || undefined,
+      });
+      await loadApplicants();
+      showToast('Applicant rejected', 'success');
+      setShowRejectConfirm(false);
+      setSelectedApplicant(null);
+      setRejectComment('');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to reject applicant'), 'error');
     }
   };
 
@@ -169,138 +321,366 @@ export default function CampaignDetailsPage() {
 
   if (isLoading || !campaign) {
     return (
-      <div className="max-w-[1248px] mx-auto px-3 sm:px-6 md:px-[96px] py-8">
+      <div className="brand-page-shell py-8">
         <p className="text-center text-text-secondary">Loading campaign details...</p>
       </div>
     );
   }
 
   const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
-  const budgetProgress = (campaign.budgetUsed / campaign.totalBudget) * 100;
-  const viewsProgress = (campaign.views / campaign.targetViews) * 100;
+  const budgetProgress =
+    campaign.totalBudget > 0 ? (campaign.budgetUsed / campaign.totalBudget) * 100 : 0;
+
+  const tabApplicants =
+    activeReviewTab === 'applicants'
+      ? pendingApplicants
+      : activeReviewTab === 'shortlisted'
+        ? shortlistedApplicants
+        : rejectedApplicants;
+
+  const filteredApplicants = tabApplicants.filter((applicant) => {
+    const keyword = applicantSearch.trim().toLowerCase();
+    if (!keyword) return true;
+    return (
+      applicant.name.toLowerCase().includes(keyword) ||
+      applicant.creatorId.toLowerCase().includes(keyword)
+    );
+  });
+
+  const displayApplicants = filteredApplicants;
+
+  const tabTitle =
+    activeReviewTab === 'applicants'
+      ? 'Applicants'
+      : activeReviewTab === 'shortlisted'
+        ? 'Shortlisted'
+        : 'Rejected';
+
+  const emptyCopy =
+    activeReviewTab === 'applicants'
+      ? 'applicants'
+      : activeReviewTab === 'shortlisted'
+        ? 'shortlisted creators'
+        : 'rejected applicants';
 
   return (
-    <div className="max-w-[1248px] mx-auto px-3 sm:px-6 md:px-[96px]">
+    <div className="brand-page-shell">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between mb-4 sm:mb-6 md:mb-8 gap-4">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 sm:gap-4 mb-4">
-            <Link href="/brand/campaigns" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-              <ArrowLeft className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
+      <div className="mb-3 flex flex-col gap-3 sm:mb-5 md:flex-row md:items-start md:justify-between md:gap-4">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex items-start gap-2 sm:gap-3">
+            <Link
+              href="/brand/campaigns"
+              className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-white/50"
+            >
+              <ArrowLeft className="h-4 w-4 text-[#212121]" />
             </Link>
-            <div className="flex-1">
-              <h1 className="font-heading text-xl sm:text-2xl md:text-3xl font-medium text-black mb-2">
-                {campaign.name}
-                <ExternalLink className="w-4 h-4 sm:w-5 sm:h-5 inline-block ml-2 text-gray-400" />
-              </h1>
-              <div className="flex flex-wrap items-center gap-4">
-                <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded-lg text-xs font-medium">
-                  {campaign.status === 'IN_PROGRESS' ? 'IN PROGRESS' : campaign.status}
+            <h1 className="brand-campaign-page-title min-w-0 flex-1 truncate text-[#212121]">{campaign.name}</h1>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <BrandStatusPill status={toPublicStatus(campaign.status)} />
+            <span className="brand-campaign-meta text-text-secondary">Posted: {formatDate(campaign.postedAt)}</span>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:gap-6">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+                <BrandIconChip size="sm">
+                  <Eye className="h-3 w-3" strokeWidth={1.8} />
+                </BrandIconChip>
+                <span>
+                  {campaign.views.toLocaleString()} / {campaign.targetViews.toLocaleString()} views
                 </span>
-                <span className="text-sm text-text-secondary">
-                  Posted on: {formatDate(campaign.postedAt)}
+              </div>
+              <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+                <BrandIconChip size="sm">
+                  <Calendar className="h-3 w-3" strokeWidth={1.8} />
+                </BrandIconChip>
+                <span className={cn(daysRemaining < 0 && 'text-red-600')}>
+                  {formatDate(campaign.deadlineToApply)}
+                  {daysRemaining >= 0 && ` · ${daysRemaining}d left`}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex min-w-0 sm:justify-end md:text-right">
+              <div className="inline-flex max-w-full items-center gap-1.5 brand-campaign-row text-[#212121]">
+                <BrandIconChip size="sm">
+                  <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
+                </BrandIconChip>
+                <span className="min-w-0 truncate">
+                  {formatDate(campaign.startDate)} – {formatDate(campaign.endDate)}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-4 md:gap-6 mb-4">
-            <div className="flex items-center gap-2">
-              <IndianRupee className="w-4 h-4 text-[#E86512]" />
-              <Eye className="w-4 h-4 text-[#E86512]" />
-              <span className="text-sm text-black">
-                ₹ {campaign.views.toLocaleString()} / {campaign.targetViews.toLocaleString()} views
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-[#E86512]" />
-              <span className={cn('text-sm text-black', daysRemaining < 0 && 'text-red-600')}>
-                {formatDate(campaign.deadlineToApply)}
-                {daysRemaining >= 0 && ` - ${daysRemaining} days to go!`}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-[#E86512]" />
-              <span className="text-sm text-black">
-                Campaign Timeline: {formatDate(campaign.startDate)} - {formatDate(campaign.endDate)}
-              </span>
-            </div>
-          </div>
-
-          <p className="text-sm text-text-secondary mb-4">{campaign.description}</p>
+          <p className="brand-campaign-meta line-clamp-3 leading-relaxed text-text-secondary">{campaign.description}</p>
         </div>
 
-        <div className="flex gap-2">
-          <Button variant="primary" size="md" onClick={() => {}}>
-            Pause Campaign
-          </Button>
-          <Link href={`/brand/campaigns/${campaignId}/edit`}>
-            <Button variant="secondary" size="md">
-              <Edit className="w-4 h-4 mr-2" />
-              Edit
-            </Button>
+        <div className="flex shrink-0 gap-2 self-start md:pt-0.5">
+          <BrandPrimaryButton
+            type="button"
+            className="!h-10 !min-h-10 !w-10 !rounded-full !px-0 !py-0 !shadow-[0_8px_22px_rgba(242,126,53,0.35)]"
+            title={toPublicStatus(campaign.status) === 'PAUSED' ? 'Resume campaign' : 'Pause campaign'}
+            aria-label={toPublicStatus(campaign.status) === 'PAUSED' ? 'Resume campaign' : 'Pause campaign'}
+            onClick={async () => {
+              try {
+                if (toPublicStatus(campaign.status) === 'PAUSED') {
+                  await apiClient.resumeCampaign(campaignId);
+                  showToast('Campaign resumed successfully', 'success');
+                } else {
+                  await apiClient.pauseCampaign(campaignId);
+                  showToast('Campaign paused successfully', 'success');
+                }
+                await loadCampaign();
+              } catch (error: unknown) {
+                showToast(getErrorMessage(error, 'Failed to update campaign status'), 'error');
+              }
+            }}
+          >
+            {toPublicStatus(campaign.status) === 'PAUSED' ? (
+              <Play className="h-4 w-4" aria-hidden />
+            ) : (
+              <Pause className="h-4 w-4" aria-hidden />
+            )}
+          </BrandPrimaryButton>
+          <Link
+            href={`/brand/campaigns/${campaignId}/edit`}
+            className="brand-cta-secondary inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full !border-2 !min-h-10 !min-w-10 !px-0 !py-0 !shadow-sm"
+            title="Edit campaign"
+            aria-label="Edit campaign"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4 md:gap-6 mb-4 sm:mb-6 md:mb-8">
-        <StatCard
-          icon={<Eye className="w-5 h-5 text-[#E86512]" />}
-          label="Total Views"
-          value={campaign.views.toLocaleString()}
-        />
-        <StatCard
-          icon={<IndianRupee className="w-5 h-5 text-[#E86512]" />}
-          label="Budget Used"
-          value={`₹ ${campaign.budgetUsed.toLocaleString()} / ₹ ${campaign.totalBudget.toLocaleString()}`}
-          progress={budgetProgress}
-        />
-        <StatCard
-          icon={<Calendar className="w-5 h-5 text-[#E86512]" />}
-          label="Campaign Timeline"
-          value={`${Math.floor((new Date().getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} / ${Math.floor((new Date(campaign.endDate).getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} days`}
-        />
+      <div className="mb-3 brand-gradient-frame p-2.5 sm:mb-5 sm:p-3">
+        <div className="grid grid-cols-1 gap-2 sm:gap-3 md:grid-cols-3">
+          <DetailStatTile
+            label="Total views"
+            value={campaign.views.toLocaleString('en-IN')}
+            icon={<Eye className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
+          />
+          <DetailStatTile
+            label="Budget used"
+            value={`${campaign.budgetUsed.toLocaleString('en-IN')} / ${campaign.totalBudget.toLocaleString('en-IN')}`}
+            icon={<IndianRupee className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
+            progress={budgetProgress}
+          />
+          <DetailStatTile
+            label="Duration"
+            value={`${Math.floor((new Date().getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} / ${Math.floor((new Date(campaign.endDate).getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} d`}
+            icon={<CalendarRange className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
+          />
+        </div>
       </div>
 
-      {/* Shortlisted Section */}
-      {shortlisted.length > 0 && (
-        <div className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8 mb-4 sm:mb-6">
-          <h2 className="font-heading text-lg sm:text-xl md:text-2xl font-medium text-black mb-4 flex items-center gap-2">
-            <Check className="w-5 h-5 text-green-600" />
-            Shortlisted
-          </h2>
-          <div className="space-y-4">
-            {shortlisted.map((applicant) => (
-              <ApplicantCard key={applicant.id} applicant={applicant} onShortlist={handleShortlist} />
-            ))}
+      <div className="brand-gradient-frame mb-3 flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
+      <div className="rounded-[18px] bg-white/95 p-3 shadow-sm sm:p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex w-fit max-w-full rounded-[28px] p-[2px]" style={{ background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }}>
+            <div className="inline-flex items-center gap-1 overflow-x-auto rounded-[26px] bg-white p-1" role="tablist" aria-label="Applicant review tabs">
+              <button
+                type="button"
+                className="brand-campaigns-tab"
+                role="tab"
+                aria-selected={activeReviewTab === 'applicants'}
+                onClick={() => setActiveReviewTab('applicants')}
+              >
+                Applicants ({pendingApplicants.length})
+              </button>
+              <button
+                type="button"
+                className="brand-campaigns-tab"
+                role="tab"
+                aria-selected={activeReviewTab === 'shortlisted'}
+                onClick={() => setActiveReviewTab('shortlisted')}
+              >
+                Shortlisted ({shortlistedApplicants.length})
+              </button>
+              <button
+                type="button"
+                className="brand-campaigns-tab"
+                role="tab"
+                aria-selected={activeReviewTab === 'rejected'}
+                onClick={() => setActiveReviewTab('rejected')}
+              >
+                Rejected ({rejectedApplicants.length})
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-row-reverse flex-wrap items-center justify-end gap-1 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsSearchExpanded((prev) => !prev);
+                if (!isSearchExpanded) {
+                  requestAnimationFrame(() => searchInputRef.current?.focus());
+                }
+              }}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60"
+              aria-label={isSearchExpanded ? 'Collapse search' : 'Search creators'}
+            >
+              {isSearchExpanded ? (
+                <X className="h-4 w-4 text-[#E86512]" />
+              ) : (
+                <Search className="h-4 w-4 text-[#E86512]" />
+              )}
+            </button>
+            <div
+              className={cn(
+                'brand-search-shell overflow-hidden transition-[width,opacity,padding] duration-200 ease-out',
+                isSearchExpanded ? 'w-[min(18.75rem,64vw)] px-2.5 py-1.5 opacity-100' : 'w-0 px-0 py-0 opacity-0',
+              )}
+            >
+              <input
+                ref={searchInputRef}
+                value={applicantSearch}
+                onChange={(event) => setApplicantSearch(event.target.value)}
+                placeholder="Search creators"
+                aria-label="Search creators"
+                className="w-full min-w-0 border-0 bg-transparent font-heading text-[clamp(0.8rem,1.1vw,0.92rem)] text-[#212121] outline-none placeholder:text-[#9E9E9E]"
+                onBlur={() => {
+                  if (!applicantSearch.trim()) setIsSearchExpanded(false);
+                }}
+              />
+            </div>
           </div>
         </div>
-      )}
 
-      {/* Applicants Section */}
-      <div className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-heading text-lg sm:text-xl md:text-2xl font-medium text-black flex items-center gap-2">
-            <Users className="w-5 h-5 text-[#E86512]" />
-            Applicants ({applicants.length})
-          </h2>
-          <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors">
-            Sort
-          </button>
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="brand-page-section-title text-[#212121]">{tabTitle}</h2>
+          <div />
         </div>
 
-        {applicants.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-text-secondary">No Applicants yet, check back in some time.</p>
+        {displayApplicants.length === 0 ? (
+          <div className="py-8 text-center text-sm text-text-secondary">
+            No {emptyCopy} found for current filter.
           </div>
         ) : (
-          <div className="space-y-4">
-            {applicants.map((applicant) => (
-              <ApplicantCard key={applicant.id} applicant={applicant} onShortlist={handleShortlist} />
+          <div className="space-y-2">
+            {displayApplicants.map((applicant) => (
+              <ApplicantCard
+                key={applicant.id}
+                applicant={applicant}
+                allowReviewActions={activeReviewTab === 'applicants'}
+                onShortlist={handleShortlist}
+                onReject={handleReject}
+              />
             ))}
           </div>
         )}
+      </div>
+      </div>
+
+      <div className="brand-gradient-frame flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
+      <div className="rounded-[18px] bg-white/95 p-3 shadow-sm sm:p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="brand-page-section-title text-[#212121]">Final post submissions</h2>
+          <span className="text-xs text-text-secondary">{postSubmissions.length} total</span>
+        </div>
+        {postSubmissions.length === 0 ? (
+          <div className="py-8 text-center text-sm text-text-secondary">No final post links submitted yet.</div>
+        ) : (
+          <div className="space-y-2">
+            {postSubmissions.map((submission) => (
+              <div key={submission.id} className="rounded-lg border border-[#E8E2DB] bg-white p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={submission.postUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate text-sm text-blue-600 hover:underline"
+                    >
+                      {submission.postUrl}
+                    </a>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      {submission.platform} · {new Date(submission.createdAt).toLocaleString()}
+                    </p>
+                    <p className="mt-1 text-xs">
+                      Status: <span className="font-medium">{submission.status}</span>
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {submission.status === 'PENDING_REVIEW' ? (
+                      <>
+                        <BrandPrimaryButton
+                          type="button"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              await apiClient.reviewPostSubmission(submission.id, { status: 'VERIFIED' });
+                              await loadPostSubmissions();
+                              showToast('Final post verified', 'success');
+                            } catch (error: unknown) {
+                              showToast(getErrorMessage(error, 'Failed to verify post'), 'error');
+                            }
+                          }}
+                        >
+                          Verify
+                        </BrandPrimaryButton>
+                        <BrandSecondaryButton
+                          type="button"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              await apiClient.reviewPostSubmission(submission.id, { status: 'REJECTED' });
+                              await loadPostSubmissions();
+                              showToast('Final post rejected', 'success');
+                            } catch (error: unknown) {
+                              showToast(getErrorMessage(error, 'Failed to reject post'), 'error');
+                            }
+                          }}
+                        >
+                          Reject
+                        </BrandSecondaryButton>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+                {submission.status === 'VERIFIED' ? (
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      value={viewInputs[submission.id] || ''}
+                      onChange={(event) =>
+                        setViewInputs((prev) => ({ ...prev, [submission.id]: event.target.value.replace(/[^0-9]/g, '') }))
+                      }
+                      placeholder="Current views"
+                      className="brand-field-capsule w-full sm:w-40"
+                    />
+                    <BrandPrimaryButton
+                      type="button"
+                      size="sm"
+                      onClick={async () => {
+                        const currentViews = Number(viewInputs[submission.id] || 0);
+                        if (!Number.isFinite(currentViews) || currentViews < 0) {
+                          showToast('Enter a valid view count', 'error');
+                          return;
+                        }
+                        try {
+                          await apiClient.verifyPostViews(submission.id, { currentViews });
+                          await loadCampaign();
+                          await loadPostSubmissions();
+                          showToast('Views verified and earnings accrued/locked', 'success');
+                        } catch (error: unknown) {
+                          showToast(getErrorMessage(error, 'Failed to verify views'), 'error');
+                        }
+                      }}
+                    >
+                      Update views
+                    </BrandPrimaryButton>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       </div>
 
       {/* Shortlist Confirmation Modal */}
@@ -312,33 +692,58 @@ export default function CampaignDetailsPage() {
         }}
         className="max-w-md"
       >
-        <div className="p-6">
-          <h3 className="font-heading text-xl font-medium text-black mb-2">
-            Are you sure you want to shortlist {selectedApplicant?.name}?
-          </h3>
-          <p className="text-sm text-text-secondary mb-6">
-            This action can't be undone.
+        <div className="p-4 sm:p-5">
+          <h3 className="brand-page-section-title mb-1.5">Are you sure you want to shortlist {selectedApplicant?.name}?</h3>
+          <p className="mb-4 text-xs sm:text-sm text-text-secondary">
+            This action can&apos;t be undone.
           </p>
-          <div className="flex gap-3">
-            <Button
-              variant="secondary"
-              size="md"
+            <div className="flex gap-2">
+            <BrandSecondaryButton
+              type="button"
+              size="sm"
               onClick={() => {
                 setShowShortlistConfirm(false);
                 setSelectedApplicant(null);
               }}
               className="flex-1"
             >
-              Go Back
-            </Button>
-            <Button
-              variant="primary"
-              size="md"
-              onClick={confirmShortlist}
-              className="flex-1"
-            >
+              Go back
+            </BrandSecondaryButton>
+            <BrandPrimaryButton type="button" size="sm" onClick={confirmShortlist} className="flex-1">
               Shortlist
-            </Button>
+            </BrandPrimaryButton>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showRejectConfirm}
+        onClose={() => {
+          setShowRejectConfirm(false);
+          setSelectedApplicant(null);
+          setRejectComment('');
+        }}
+        className="max-w-md"
+      >
+        <div className="p-4 sm:p-5">
+          <h3 className="brand-page-section-title mb-1.5">Reject {selectedApplicant?.name}?</h3>
+          <p className="text-xs sm:text-sm text-text-secondary mb-3">
+            You can add an optional reason that will be attached to the review.
+          </p>
+          <Textarea
+            value={rejectComment}
+            onChange={(event) => setRejectComment(event.target.value)}
+            rows={3}
+            placeholder="Optional rejection comment"
+            className="mb-3 text-sm"
+          />
+          <div className="flex gap-2">
+            <BrandSecondaryButton type="button" size="sm" onClick={() => setShowRejectConfirm(false)} className="flex-1">
+              Cancel
+            </BrandSecondaryButton>
+            <BrandPrimaryButton type="button" size="sm" onClick={confirmReject} className="flex-1">
+              Reject
+            </BrandPrimaryButton>
           </div>
         </div>
       </Modal>
@@ -346,94 +751,120 @@ export default function CampaignDetailsPage() {
   );
 }
 
-function ApplicantCard({ applicant, onShortlist }: { applicant: Applicant; onShortlist: (applicant: Applicant) => void }) {
+function ApplicantCard({
+  applicant,
+  allowReviewActions,
+  onShortlist,
+  onReject,
+}: {
+  applicant: Applicant;
+  allowReviewActions?: boolean;
+  onShortlist: (applicant: Applicant) => void;
+  onReject: (applicant: Applicant) => void;
+}) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   return (
-    <div className="border border-gray-200 rounded-xl p-4 md:p-6 hover:shadow-md transition-shadow">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div className="flex items-start gap-4 flex-1">
-          <div className="w-12 h-12 bg-gradient-to-br from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center text-white font-heading font-medium text-lg">
+    <div className="rounded-lg border border-gray-200/90 bg-white/60 p-2.5 transition-shadow hover:shadow-sm sm:p-3.5">
+      <div className="flex flex-col gap-2 sm:gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#E86412] to-[#F12A4C] font-heading text-xs font-medium text-white sm:h-9 sm:w-9 sm:text-sm">
             {applicant.name.charAt(0).toUpperCase()}
           </div>
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <h3 className="font-heading text-lg font-medium text-black">{applicant.name}</h3>
-              <span className="text-sm text-text-secondary">
-                | Applied on: {formatDate(applicant.appliedAt)}
-              </span>
+          <div className="min-w-0 flex-1">
+            <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <h3 className="font-heading text-[clamp(0.875rem,1.2vh,1rem)] font-semibold leading-tight text-[#212121]">
+                {applicant.name}
+              </h3>
+              <span className="text-[0.7rem] text-text-secondary sm:text-xs">· {formatDate(applicant.appliedAt)}</span>
             </div>
-            <div className="flex flex-wrap gap-4 md:gap-6 text-sm text-text-secondary mb-2">
-              <span className="flex items-center gap-1">
-                <ExternalLink className="w-4 h-4" />
-                {applicant.instagramProfileLink}
-              </span>
-              <span>{applicant.age} | {applicant.gender}</span>
-              <span>{applicant.location}</span>
-              <span className="flex items-center gap-1">
-                <Users className="w-4 h-4" />
-                {applicant.followers.toLocaleString()} Followers
+            <div className="mb-1 truncate text-xs text-text-secondary sm:text-sm">
+              <span className="inline-flex min-w-0 items-center gap-0.5">
+                <ExternalLink className="h-3 w-3 shrink-0" />
+                {applicant.creatorId}
               </span>
             </div>
             {applicant.views !== undefined && applicant.earnings !== undefined && (
-              <div className="flex gap-4 text-sm">
-                <span className="flex items-center gap-1">
-                  <Eye className="w-4 h-4 text-[#E86512]" />
+              <div className="flex flex-wrap gap-2 text-xs sm:gap-3 sm:text-sm">
+                <span className="inline-flex items-center gap-0.5">
+                  <Eye className="h-3 w-3 text-[#E86512]" />
                   {applicant.views.toLocaleString()} views
                 </span>
-                <span className="flex items-center gap-1">
-                  <IndianRupee className="w-4 h-4 text-[#E86512]" />
-                  ₹ {applicant.earnings.toLocaleString()}
+                <span className="inline-flex items-center gap-0.5">
+                  <IndianRupee className="h-3 w-3 text-[#E86512]" />
+                  {applicant.earnings.toLocaleString('en-IN')}
                 </span>
               </div>
+            )}
+            {applicant.creatorHistory && (
+              <p className="mt-1 text-[0.7rem] leading-snug text-text-secondary">
+                {applicant.creatorHistory.approvedCount} approved / {applicant.creatorHistory.totalSubmissions} submissions ·{' '}
+                {applicant.creatorHistory.totalViews.toLocaleString()} views · {applicant.creatorHistory.totalEarnings.toLocaleString('en-IN')} earned
+              </p>
             )}
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5 md:items-end shrink-0 w-full md:w-auto">
           <a
             href={applicant.instagramProfileLink}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 text-sm text-blue-600 hover:underline"
+            className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
           >
-            Go to Instagram Profile
-            <ExternalLink className="w-4 h-4" />
+            Open link
+            <ExternalLink className="h-3.5 w-3.5" />
           </a>
-          {applicant.status === 'PENDING' && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => onShortlist(applicant)}
-            >
-              Shortlist
-            </Button>
-          )}
+          {allowReviewActions && applicant.status === 'PENDING' ? (
+            <div className="flex items-center gap-1.5">
+              <BrandPrimaryButton type="button" size="sm" onClick={() => onShortlist(applicant)}>
+                Approve
+              </BrandPrimaryButton>
+              <BrandSecondaryButton type="button" size="sm" onClick={() => onReject(applicant)}>
+                Reject
+              </BrandSecondaryButton>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
-function StatCard({ icon, label, value, progress }: { icon: React.ReactNode; label: string; value: string; progress?: number }) {
+function DetailStatTile({
+  label,
+  value,
+  icon,
+  progress,
+}: {
+  label: string;
+  value: string;
+  icon: ReactNode;
+  progress?: number;
+}) {
+  const pct = progress !== undefined && !Number.isNaN(progress) ? Math.min(progress, 100) : null;
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-3 sm:p-4 md:p-6">
-      <div className="flex items-center gap-2 sm:gap-3 mb-2">
-        {icon}
-        <h3 className="font-heading text-xs sm:text-sm font-medium text-text-secondary">{label}</h3>
+    <div className="relative flex min-h-[52px] min-w-0 items-center overflow-hidden rounded-lg border border-[#F0E5DC] bg-white p-2.5 shadow-[0_1px_2px_rgba(20,20,20,0.05)] sm:min-h-[56px] sm:p-3">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+        <BrandIconChip size="sm">{icon}</BrandIconChip>
+        <p className="m-0 max-w-full min-w-0 break-words text-[clamp(12px,1.1vw,0.875rem)] font-medium leading-[1.3] text-[#212121]">
+          {value}
+        </p>
+        <span className="min-w-0 text-left text-[clamp(12px,1.1vw,0.875rem)] font-medium leading-[1.3] text-[#212121]">
+          {label}
+        </span>
       </div>
-      <p className="font-heading text-lg sm:text-xl md:text-2xl font-medium text-black mb-2">{value}</p>
-      {progress !== undefined && (
-        <div className="w-full bg-gray-200 rounded-full h-2">
+      {pct !== null ? (
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-1.5 overflow-hidden bg-[#EDE7E1]">
           <div
-            className="bg-gradient-to-r from-[#E86412] to-[#F12A4C] h-2 rounded-full transition-all"
-            style={{ width: `${Math.min(progress, 100)}%` }}
+            className="h-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all"
+            style={{ width: `${pct}%` }}
           />
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

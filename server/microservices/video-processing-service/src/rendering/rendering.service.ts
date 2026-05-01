@@ -9,6 +9,7 @@ import {
   HeyGenVideoStatus,
 } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
+import { HtmlCaptionLayerProvider } from './providers/html-caption-layer.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { getRenderingRollbackStep } from '../common/constants/video-steps';
@@ -31,6 +32,7 @@ export class RenderingService {
     private readonly bytePlusProvider: BytePlusProvider,
     private readonly heygenVideoProvider: HeyGenVideoProvider,
     private readonly videoCompositor: VideoCompositorProvider,
+    private readonly htmlCaptionLayerProvider: HtmlCaptionLayerProvider,
     private readonly publicUrlService: PublicUrlService,
     private readonly queueManager: QueueManagerService,
     private readonly userNotificationService: UserNotificationService,
@@ -3117,6 +3119,7 @@ export class RenderingService {
     const gp = cap.globalPosition || {};
     let posX = typeof gp.x === 'number' ? gp.x : 0.5;
     let posY = typeof gp.y === 'number' ? gp.y : 0.85;
+    let widthScale = typeof gp.widthScale === 'number' ? gp.widthScale : 0.8;
     if (posX > 1) {
       posX = posX / 100;
     }
@@ -3125,11 +3128,14 @@ export class RenderingService {
     }
     posX = Math.max(0, Math.min(1, posX));
     posY = Math.max(0, Math.min(1, posY));
+    widthScale = Math.max(0.3, Math.min(0.9, widthScale));
 
     const resolved = this.resolveCaptionStyleForBurnIn(cap);
+    let videoWidth = 1080;
     let videoHeight = 1920;
     try {
       const res = await this.videoCompositor.getVideoResolution(videoPath);
+      if (res?.width) videoWidth = res.width;
       if (res?.height) videoHeight = res.height;
     } catch {
       /* keep default */
@@ -3146,11 +3152,44 @@ export class RenderingService {
       borderColor: resolved.borderColor,
       borderWidth: resolved.borderWidth,
       position: { x: posX, y: posY },
+      widthScale,
     };
 
     const captionedVideoPath = path.join(userDir, `final_captioned_${projectId}_${Date.now()}.mp4`);
+    const useHtmlCaptionLayer = this.configService.get<string>('CAPTION_RENDERER_MODE') !== 'ass';
 
-    await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
+    if (useHtmlCaptionLayer) {
+      try {
+        const durationSec = await this.videoCompositor.getVideoDuration(videoPath);
+        const captionLayerPath = path.join(userDir, `caption_layer_${projectId}_${Date.now()}.webm`);
+        await this.htmlCaptionLayerProvider.renderCaptionLayer({
+          captions,
+          style,
+          width: videoWidth,
+          height: videoHeight,
+          durationSec,
+          outputPath: captionLayerPath,
+          fps: Number(this.configService.get<string>('CAPTION_LAYER_FPS') || 12),
+        });
+        await this.videoCompositor.overlayCaptionLayerOnVideo(
+          videoPath,
+          captionLayerPath,
+          captionedVideoPath,
+        );
+        try {
+          if (fs.existsSync(captionLayerPath)) fs.unlinkSync(captionLayerPath);
+        } catch {
+          // no-op
+        }
+      } catch (htmlError: any) {
+        console.warn(
+          `[RenderingService] HTML caption layer failed, falling back to ASS burn-in: ${htmlError?.message || htmlError}`,
+        );
+        await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
+      }
+    } else {
+      await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
+    }
 
     if (fs.existsSync(captionedVideoPath)) {
       console.log(`[RenderingService] ✅ Captions added successfully: ${captionedVideoPath}`);

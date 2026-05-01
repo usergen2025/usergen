@@ -78,6 +78,7 @@ async function bootstrap() {
         - **Analytics Service** (Port 9008) - Analytics & reporting
         - **Media Management Service** (Port 9009) - Media file management
         - **IAM Service** (Port 9010) - Identity & Access Management
+        - **Campaign Service** (Port 9011) - Campaign, submission, and earnings lifecycle
         
         ## 🔧 Server Selection
         Use the "Servers" dropdown above to select:

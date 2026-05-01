@@ -6,10 +6,11 @@ import { cn } from '@/lib/utils/cn';
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string;
+  variant?: 'default' | 'brandCapsule';
 }
 
 const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ label, error, className, ...props }, ref) => {
+  ({ label, error, variant = 'default', className, ...props }, ref) => {
     return (
       <div className="w-full">
         {label && (
@@ -20,12 +21,16 @@ const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         <textarea
           ref={ref}
           className={cn(
-            'w-full px-4 py-2 border border-border rounded-md',
-            'bg-secondary text-text-primary',
-            'placeholder:text-text-muted',
-            'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
-            'disabled:opacity-50 disabled:cursor-not-allowed',
-            'resize-none',
+            variant === 'brandCapsule'
+              ? 'brand-field-capsule brand-field-capsule--textarea disabled:opacity-60 disabled:cursor-not-allowed'
+              : [
+                  'w-full px-4 py-2 border border-border rounded-md',
+                  'bg-secondary text-text-primary',
+                  'placeholder:text-text-muted',
+                  'focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
+                  'resize-none',
+                ],
             error && 'border-red-500 focus:ring-red-500',
             className
           )}

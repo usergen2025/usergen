@@ -9,7 +9,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Ports used by microservices
-PORTS=(9000 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9090)
+PORTS=(9000 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9090)
 
 echo -e "${YELLOW}🧹 Clearing ports before starting services...${NC}"
 echo ""

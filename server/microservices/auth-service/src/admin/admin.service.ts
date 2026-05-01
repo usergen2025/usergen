@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -12,7 +13,29 @@ import axios from 'axios';
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(private databaseService: DatabaseService) {}
+
+  /** Read live credits from payment-wallet; null if the service is unreachable. */
+  private async getPaymentWalletBalance(userId: string): Promise<number | null> {
+    const baseUrl = (process.env.PAYMENT_SERVICE_URL || 'http://localhost:9005/api').replace(/\/$/, '');
+    try {
+      const res = await axios.get<{ success?: boolean; data?: { credits?: number } }>(
+        `${baseUrl}/transactions/balance`,
+        { params: { userId }, timeout: 8000 },
+      );
+      if (typeof res.data?.data?.credits === 'number' && !Number.isNaN(res.data.data.credits)) {
+        return res.data.data.credits;
+      }
+      return 0;
+    } catch (err) {
+      this.logger.warn(
+        `Could not load payment wallet balance for user ${userId}. Admin list may fall back to profile credits.`,
+      );
+      return null;
+    }
+  }
 
   async getUsers(query: ListUsersQueryDto) {
     const page = query.page || 1;
@@ -36,7 +59,7 @@ export class AdminService {
       where.role = query.role;
     }
 
-    const [users, total] = await Promise.all([
+    const [userRows, total] = await Promise.all([
       this.databaseService.user.findMany({
         where,
         skip,
@@ -57,6 +80,24 @@ export class AdminService {
       }),
       this.databaseService.user.count({ where }),
     ]);
+
+    const walletByUserId: Record<string, number | null> = {};
+    await Promise.all(
+      userRows.map(async (u) => {
+        walletByUserId[u.id] = await this.getPaymentWalletBalance(u.id);
+      }),
+    );
+
+    const users = userRows.map((u) => {
+      const wallet = walletByUserId[u.id];
+      return {
+        ...u,
+        profileCredits: u.credits,
+        // Canonical display comes from payment-wallet ledger.
+        credits: wallet ?? 0,
+        walletCredits: wallet,
+      };
+    });
 
     return {
       users,
@@ -97,7 +138,13 @@ export class AdminService {
       throw new NotFoundException('User not found');
     }
 
-    return user;
+    const wallet = await this.getPaymentWalletBalance(userId);
+    return {
+      ...user,
+      profileCredits: user.credits,
+      credits: wallet ?? 0,
+      walletCredits: wallet,
+    };
   }
 
   /** Up to 100 ids; returns id, email, name for admin UI (e.g. generation list). */
@@ -162,9 +209,12 @@ export class AdminService {
       throw new NotFoundException('User not found');
     }
 
-    const newCredits = dto.addToExisting
-      ? user.credits + dto.credits
-      : dto.credits;
+    // "Add to existing" must be relative to the live wallet balance, not a stale profile field.
+    const currentWallet = await this.getPaymentWalletBalance(userId);
+    if (dto.addToExisting && currentWallet === null) {
+      throw new ServiceUnavailableException('Wallet service unavailable. Please retry credit update.');
+    }
+    const newCredits = dto.addToExisting ? (currentWallet ?? 0) + dto.credits : dto.credits;
 
     const previousCredits = user.credits;
 

@@ -85,6 +85,18 @@ function captionTextForVideoPreview(
   return words[words.length - 1].t;
 }
 
+function firstCaptionWord(
+  sceneText: string,
+  wordTimestamps: WordTimestamp[] | undefined,
+): string {
+  const timed = (wordTimestamps || [])
+    .map((w) => (w.word ?? w.text ?? '').trim())
+    .find((w) => w.length > 0);
+  if (timed) return timed;
+  const fromText = sceneText.trim().split(/\s+/).find((w) => w.length > 0);
+  return fromText || sceneText;
+}
+
 /** Maps payment wallet GET /credits/project/:id/breakdown to export modal rows (see pricing.service getProjectCostBreakdown). */
 function buildExportBreakdownRows(breakdown: Record<string, unknown> | null | undefined): {
   rows: { label: string; credits: number; detail?: string }[];
@@ -1911,8 +1923,10 @@ function WorkspacePageContent() {
   const previewCaptionText = useMemo(() => {
     const base =
       (currentSceneText || currentAudioForScene?.voiceover || '').trim() || 'Sample caption text';
-    if (!currentBrollVideoUrl) return base;
     if (captionDisplayMode === 'full-sentence') return base;
+    if (!currentBrollVideoUrl) {
+      return firstCaptionWord(base, currentAudioForScene?.wordTimestamps);
+    }
     const sceneDur =
       currentAudioForScene?.duration && isFinite(currentAudioForScene.duration) && currentAudioForScene.duration > 0
         ? currentAudioForScene.duration

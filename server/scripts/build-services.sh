@@ -26,6 +26,7 @@ services=(
   "payment-wallet-service"
   "notification-service"
   "workspace-service"
+  "campaign-service"
   "project-management-service"
   "analytics-service"
   "media-management-service"

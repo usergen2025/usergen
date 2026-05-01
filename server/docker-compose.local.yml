@@ -179,6 +179,31 @@ services:
     volumes:
       - ./logs:/app/logs
 
+  campaign-service:
+    build:
+      context: ./microservices/campaign-service
+      dockerfile: Dockerfile
+    container_name: usergen-campaign-service
+    environment:
+      - NODE_ENV=local
+      - SERVICE_NAME=campaign-service
+      - SERVICE_PORT=9011
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/usergen_campaigns
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=SFVBJIK@67289416VYUQVDUQVCHU=BCHUDB567UJCNUEHJB.
+      - PAYMENT_SERVICE_URL=http://payment-wallet-service:9005/api
+    ports:
+      - "9011:9011"
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - usergen-network
+    volumes:
+      - ./logs:/app/logs
+
   ai-content-service:
     build:
       context: ./microservices/ai-content-service
@@ -200,6 +225,7 @@ services:
       - mongodb
       - rabbitmq
       - payment-wallet-service
+      - campaign-service
     networks:
       - usergen-network
     volumes:

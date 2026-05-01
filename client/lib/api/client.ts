@@ -21,6 +21,22 @@ export interface ApiResponse<T = any> {
   timestamp?: string;
 }
 
+/**
+ * campaign-service often returns raw JSON (arrays, DTOs) without an ApiResponse envelope.
+ * Brand and admin UIs expect `response.data` — normalize so all campaign-service calls are consistent.
+ */
+function normalizeCampaignServiceResponse<T>(body: unknown): ApiResponse<T> {
+  if (body === null || body === undefined) {
+    return { success: false, error: 'Empty response' };
+  }
+  if (typeof body === 'object' && !Array.isArray(body) && 'success' in (body as object)) {
+    if ('data' in (body as object)) {
+      return body as ApiResponse<T>;
+    }
+  }
+  return { success: true, data: body as T };
+}
+
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
@@ -77,7 +93,13 @@ class ApiClient {
         if (error.response) {
           // Server responded with error status
           const errorData = error.response.data;
-          const errorMessage = errorData?.message || errorData?.error || `HTTP ${error.response.status}`;
+          const rawMessage = errorData?.message || errorData?.error || `HTTP ${error.response.status}`;
+          const normalizedRaw = Array.isArray(rawMessage) ? rawMessage[0] : rawMessage;
+          const errorMessage =
+            typeof normalizedRaw === 'string' &&
+            /insufficient|balance|required|wallet/i.test(normalizedRaw)
+              ? 'Insufficient credits in your wallet. Please top up and try again.'
+              : normalizedRaw;
           // Create a custom error that preserves response status
           const customError: any = new Error(errorMessage);
           customError.response = error.response;
@@ -1116,7 +1138,7 @@ class ApiClient {
     if (params?.page) queryParams.append('page', params.page.toString());
     if (params?.limit) queryParams.append('limit', params.limit.toString());
 
-    const response = await axios.get<ApiResponse<any[]>>(
+    const response = await axios.get(
       `${campaignServiceUrl}/campaigns${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
       {
         headers: {
@@ -1125,29 +1147,30 @@ class ApiClient {
       }
     );
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any[]>(response.data);
   }
 
   async getCampaign(campaignId: string): Promise<ApiResponse<any>> {
     const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
     const token = this.getToken();
 
-    const response = await axios.get<ApiResponse<any>>(
-      `${campaignServiceUrl}/campaigns/${campaignId}`,
-      {
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      }
-    );
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any>(response.data);
   }
 
   async createCampaign(data: {
     name: string;
     description: string;
     brandAssetsUrl?: string;
+    campaignType?: string;
+    industry?: string;
+    platformTarget?: string;
+    regionFilter?: string;
     deadlineToApply: string;
     startDate: string;
     endDate: string;
@@ -1157,18 +1180,31 @@ class ApiClient {
     const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
     const token = this.getToken();
 
-    const response = await axios.post<ApiResponse<any>>(
-      `${campaignServiceUrl}/campaigns`,
-      data,
+    const response = await axios.post(`${campaignServiceUrl}/campaigns`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async uploadCampaignBrandAsset(file: File): Promise<ApiResponse<{ url: string }>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post<{ url?: string } & Record<string, unknown>>(
+      `${campaignServiceUrl}/campaigns/assets/upload`,
+      formData,
       {
         headers: {
-          'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-      }
+      },
     );
-
-    return response.data;
+    return normalizeCampaignServiceResponse<{ url: string }>(response.data);
   }
 
   async updateCampaign(campaignId: string, data: Partial<{
@@ -1184,25 +1220,21 @@ class ApiClient {
     const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
     const token = this.getToken();
 
-    const response = await axios.put<ApiResponse<any>>(
-      `${campaignServiceUrl}/campaigns/${campaignId}`,
-      data,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      }
-    );
+    const response = await axios.put(`${campaignServiceUrl}/campaigns/${campaignId}`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any>(response.data);
   }
 
   async pauseCampaign(campaignId: string): Promise<ApiResponse<any>> {
     const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
     const token = this.getToken();
 
-    const response = await axios.post<ApiResponse<any>>(
+    const response = await axios.post(
       `${campaignServiceUrl}/campaigns/${campaignId}/pause`,
       {},
       {
@@ -1212,7 +1244,59 @@ class ApiClient {
       }
     );
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async resumeCampaign(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/resume`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async publishCampaign(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/publish`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async topUpCampaign(campaignId: string, amount: number): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/top-up`,
+      { amount },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return normalizeCampaignServiceResponse<any>(response.data);
   }
 
   async getCampaignApplicants(campaignId: string, params?: { status?: string }): Promise<ApiResponse<any[]>> {
@@ -1221,7 +1305,7 @@ class ApiClient {
     const queryParams = new URLSearchParams();
     if (params?.status) queryParams.append('status', params.status);
 
-    const response = await axios.get<ApiResponse<any[]>>(
+    const response = await axios.get(
       `${campaignServiceUrl}/campaigns/${campaignId}/applicants${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
       {
         headers: {
@@ -1230,14 +1314,25 @@ class ApiClient {
       }
     );
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getCampaignApplications(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/applications`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
   }
 
   async shortlistApplicant(campaignId: string, applicantId: string): Promise<ApiResponse<any>> {
     const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
     const token = this.getToken();
 
-    const response = await axios.post<ApiResponse<any>>(
+    const response = await axios.post(
       `${campaignServiceUrl}/campaigns/${campaignId}/applicants/${applicantId}/shortlist`,
       {},
       {
@@ -1247,7 +1342,47 @@ class ApiClient {
       }
     );
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async reviewSubmission(
+    submissionId: string,
+    data: { status: 'APPROVED' | 'REJECTED'; comment?: string }
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/submissions/${submissionId}/review`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async reviewApplication(
+    applicationId: string,
+    data: { status: 'APPROVED' | 'REJECTED'; comment?: string }
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/applications/${applicationId}/review`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
   }
 
   async getBrandDashboardStats(params?: { dateRange?: string }): Promise<ApiResponse<any>> {
@@ -1256,7 +1391,7 @@ class ApiClient {
     const queryParams = new URLSearchParams();
     if (params?.dateRange) queryParams.append('dateRange', params.dateRange);
 
-    const response = await axios.get<ApiResponse<any>>(
+    const response = await axios.get(
       `${campaignServiceUrl}/brands/dashboard/stats${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
       {
         headers: {
@@ -1265,7 +1400,351 @@ class ApiClient {
       }
     );
 
-    return response.data;
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCreatorCampaigns(params?: { search?: string }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const queryParams = new URLSearchParams();
+    if (params?.search) queryParams.append('search', params.search);
+
+    const response = await axios.get(
+      `${campaignServiceUrl}/creator/campaigns${queryParams.toString() ? `?${queryParams.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async applyToCampaign(
+    campaignId: string,
+    data: {
+      draftMediaUrl: string;
+      platform: 'INSTAGRAM' | 'YOUTUBE';
+      termsAccepted: boolean;
+      note?: string;
+      sourceType?: 'PROJECT_LIBRARY' | 'UPLOAD' | 'EXTERNAL_URL';
+      projectId?: string;
+    }
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/apply`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async uploadCreatorDraftAsset(file: File): Promise<ApiResponse<{ url: string }>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/drafts/upload`,
+      formData,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<{ url: string }>(response.data);
+  }
+
+  async getCreatorCampaignStates(): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/creator/campaign-states`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async submitFinalPostLink(
+    campaignId: string,
+    data: { postUrl: string; platform: 'INSTAGRAM' | 'YOUTUBE' },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/post-submissions`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignPostSubmissions(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/post-submissions`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async reviewPostSubmission(
+    submissionId: string,
+    data: { status: 'VERIFIED' | 'REJECTED'; comment?: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/review`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async verifyPostViews(
+    submissionId: string,
+    data: { currentViews: number; note?: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/verify-views`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignCreatorEarnings(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/creator-earnings`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async processLockedEarningsUnlock(): Promise<ApiResponse<{ processed: number }>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/creator-earnings/process-unlock`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<{ processed: number }>(response.data);
+  }
+
+  async reverseLockedEarning(earningId: string, reason?: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/creator-earnings/${earningId}/reverse`,
+      { reason },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async submitCampaignContent(
+    campaignId: string,
+    data: {
+      contentUrl: string;
+      platform: 'INSTAGRAM' | 'YOUTUBE';
+      creatorName?: string;
+      creatorHandle?: string;
+    }
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/submissions`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCreatorEarnings(): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/creator/earnings`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async requestCreatorWithdrawal(amount: number): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/creator/withdrawals`,
+      { amount },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignWalletSyncEvents(params?: {
+    status?: 'SYNCED' | 'RETRY_PENDING' | 'FAILED';
+    eventType?: string;
+    limit?: number;
+    cursor?: string | null;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<ApiResponse<{ items: any[]; nextCursor: string | null; hasMore: boolean }>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const query = new URLSearchParams();
+    if (params?.status) query.append('status', params.status);
+    if (params?.eventType) query.append('eventType', params.eventType);
+    if (params?.limit) query.append('limit', String(params.limit));
+    if (params?.cursor) query.append('cursor', params.cursor);
+    if (params?.startDate) query.append('startDate', params.startDate);
+    if (params?.endDate) query.append('endDate', params.endDate);
+    const response = await axios.get(
+      `${campaignServiceUrl}/wallet-sync-events${query.toString() ? `?${query.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<{ items: any[]; nextCursor: string | null; hasMore: boolean }>(
+      response.data
+    );
+  }
+
+  async getCampaignWalletSyncSummary(): Promise<
+    ApiResponse<{
+      syncedCount: number;
+      retryPendingCount: number;
+      failedCount: number;
+      totalCount: number;
+      eventTypes: string[];
+    }>
+  > {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/wallet-sync-events/summary`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<{
+      syncedCount: number;
+      retryPendingCount: number;
+      failedCount: number;
+      totalCount: number;
+      eventTypes: string[];
+    }>(response.data);
+  }
+
+  async retryCampaignWalletSyncEvent(eventId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/wallet-sync-events/${eventId}/retry`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async retryCampaignWalletSyncEvents(
+    statuses: Array<'RETRY_PENDING' | 'FAILED'> = ['RETRY_PENDING', 'FAILED'],
+  ): Promise<ApiResponse<{ processed: number; synced: number; failed: number; skipped: number }>> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/wallet-sync-events/retry-all`,
+      { statuses },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+    return normalizeCampaignServiceResponse<{
+      processed: number;
+      synced: number;
+      failed: number;
+      skipped: number;
+    }>(response.data);
+  }
+
+  async exportCampaignWalletSyncEventsCsv(params?: {
+    status?: 'SYNCED' | 'RETRY_PENDING' | 'FAILED';
+    eventType?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<Blob> {
+    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const token = this.getToken();
+    const query = new URLSearchParams();
+    if (params?.status) query.append('status', params.status);
+    if (params?.eventType) query.append('eventType', params.eventType);
+    if (params?.startDate) query.append('startDate', params.startDate);
+    if (params?.endDate) query.append('endDate', params.endDate);
+    const response = await axios.get(
+      `${campaignServiceUrl}/wallet-sync-events/export${query.toString() ? `?${query.toString()}` : ''}`,
+      {
+        responseType: 'blob',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return response.data as Blob;
   }
 
   // Speech-to-Speech (Voice Transformation) API methods

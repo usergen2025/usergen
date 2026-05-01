@@ -1,34 +1,61 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import Button from '@/components/ui/Button';
+import { BrandPrimaryButton, BrandSecondaryButton, BrandDatePicker } from '@/components/brand';
+import Input from '@/components/ui/Input';
+import Textarea from '@/components/ui/Textarea';
+import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
-import { ArrowLeft, Calendar, IndianRupee, Info, Wallet, Paperclip } from 'lucide-react';
+import { ArrowLeft, Info, Paperclip, Send, ChevronDown } from 'lucide-react';
+import { addDays, parse as parseDate, startOfDay } from 'date-fns';
 
-const DUMMY_CAMPAIGNS_KEY = 'dummy_campaigns';
+function cmpYmd(a: string, b: string): number {
+  const da = parseDate(a, 'yyyy-MM-dd', new Date());
+  const db = parseDate(b, 'yyyy-MM-dd', new Date());
+  return da.getTime() - db.getTime();
+}
 
 export default function CreateCampaignPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { showToast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const campaignType = searchParams.get('type') || 'REPOST_CPM';
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     brandAssetsUrl: '',
+    industry: '',
+    platformTarget: 'INSTAGRAM',
+    regionFilter: '',
     deadlineToApply: '',
     startDate: '',
-    endDate: '',
     payoutRate: '',
     totalBudget: '',
   });
+  const assetFileInputRef = useRef<HTMLInputElement>(null);
+  const platformDropdownRef = useRef<HTMLDivElement>(null);
+  const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
 
-  // Dummy wallet balance - in real app, fetch from backend
-  const walletBalance = 50000;
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (platformDropdownRef.current && !platformDropdownRef.current.contains(event.target as Node)) {
+        setPlatformDropdownOpen(false);
+      }
+    };
+    if (platformDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [platformDropdownOpen]);
+
   const budgetValue = parseFloat(formData.totalBudget) || 0;
-  const isBalanceSufficient = budgetValue <= walletBalance && budgetValue > 0;
+  const getErrorMessage = (error: unknown, fallback: string) =>
+    error instanceof Error && error.message ? error.message : fallback;
 
   // Validation helper
   const validateForm = () => {
@@ -56,12 +83,8 @@ export default function CreateCampaignPage() {
       showToast('Campaign start date is required', 'error');
       return false;
     }
-    if (!formData.endDate) {
-      showToast('Campaign end date is required', 'error');
-      return false;
-    }
-    if (new Date(formData.startDate) >= new Date(formData.endDate)) {
-      showToast('End date must be after start date', 'error');
+    if (cmpYmd(formData.deadlineToApply, formData.startDate) > 0) {
+      showToast('Campaign start must be on or after the apply deadline.', 'error');
       return false;
     }
     if (!formData.payoutRate || parseFloat(formData.payoutRate) <= 0) {
@@ -72,15 +95,11 @@ export default function CreateCampaignPage() {
       showToast('Valid total budget is required', 'error');
       return false;
     }
-    if (!isBalanceSufficient) {
-      showToast('Insufficient wallet balance. Please add funds.', 'error');
-      return false;
-    }
     return true;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault();
     
     if (!validateForm()) {
       return;
@@ -88,41 +107,32 @@ export default function CreateCampaignPage() {
 
     setIsLoading(true);
     try {
-      // Create dummy campaign object
-      const newCampaign = {
-        id: `camp_${Date.now()}`,
+      const computedEndDate = addDays(parseDate(formData.startDate, 'yyyy-MM-dd', new Date()), 30)
+        .toISOString()
+        .slice(0, 10);
+      const created = await apiClient.createCampaign({
         name: formData.name,
         description: formData.description,
-        status: 'LIVE' as const,
-        postedAt: new Date().toISOString().split('T')[0],
+        brandAssetsUrl: formData.brandAssetsUrl || undefined,
+        campaignType,
+        industry: formData.industry || undefined,
+        platformTarget: formData.platformTarget,
+        regionFilter: formData.regionFilter || undefined,
         deadlineToApply: formData.deadlineToApply,
         startDate: formData.startDate,
-        endDate: formData.endDate,
+        endDate: computedEndDate,
         payoutRate: parseFloat(formData.payoutRate),
         totalBudget: parseFloat(formData.totalBudget),
-        budgetUsed: 0,
-        views: 0,
-        targetViews: Math.floor(parseFloat(formData.totalBudget) / parseFloat(formData.payoutRate) * 1000),
-        applicantsCount: 0,
-        shortlistedCount: 0,
-        brandAssetsUrl: formData.brandAssetsUrl || undefined,
-      };
-
-      // Add to dummy campaigns array
-      let campaigns: any[] = [];
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem(DUMMY_CAMPAIGNS_KEY);
-        if (stored) {
-          campaigns = JSON.parse(stored);
-        }
-        campaigns.push(newCampaign);
-        localStorage.setItem(DUMMY_CAMPAIGNS_KEY, JSON.stringify(campaigns));
+      });
+      const newId = created.data?.id as string | undefined;
+      if (!newId) {
+        showToast('Campaign was created but no id was returned.', 'error');
+        return;
       }
-
-      showToast('Campaign created successfully!', 'success');
+      showToast('Campaign draft created. Publish it from My Campaigns when ready.', 'success');
       router.push('/brand/campaigns');
-    } catch (error: any) {
-      showToast(error.message || 'Failed to create campaign', 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to create campaign'), 'error');
     } finally {
       setIsLoading(false);
     }
@@ -134,249 +144,352 @@ export default function CreateCampaignPage() {
       return;
     }
 
-    // Save draft logic here
-    const draft = {
-      ...formData,
-      id: `draft_${Date.now()}`,
-      status: 'DRAFT' as const,
-    };
-    
-    const drafts = JSON.parse(localStorage.getItem('campaign_drafts') || '[]');
-    drafts.push(draft);
-    localStorage.setItem('campaign_drafts', JSON.stringify(drafts));
-    
-    showToast('Draft saved successfully', 'success');
+    setIsLoading(true);
+    const baseDate = new Date().toISOString().slice(0, 10);
+    apiClient
+      .createCampaign({
+        name: formData.name,
+        description: formData.description,
+        brandAssetsUrl: formData.brandAssetsUrl || undefined,
+        campaignType,
+        industry: formData.industry || undefined,
+        platformTarget: formData.platformTarget,
+        regionFilter: formData.regionFilter || undefined,
+        deadlineToApply: formData.deadlineToApply || baseDate,
+        startDate: formData.startDate || baseDate,
+        endDate: addDays(parseDate(formData.startDate || baseDate, 'yyyy-MM-dd', new Date()), 30).toISOString().slice(0, 10),
+        payoutRate: parseFloat(formData.payoutRate) || 1,
+        totalBudget: parseFloat(formData.totalBudget) || 1,
+      })
+      .then((res) => {
+        if (res.data?.id) {
+          showToast('Draft saved. You can find it under Drafts in My Campaigns.', 'success');
+        } else {
+          showToast('Draft saved successfully', 'success');
+        }
+      })
+      .catch((error: unknown) => showToast(getErrorMessage(error, 'Failed to save draft'), 'error'))
+      .finally(() => setIsLoading(false));
   };
 
+  const payoutValue = Math.max(parseFloat(formData.payoutRate) || 0, 0);
+  const effectivePayout = Math.max(payoutValue, 1);
+  const maxBudgetForSlider = Math.max(500_000, Math.ceil(budgetValue || 0));
+  const sliderPercent =
+    maxBudgetForSlider > 0
+      ? Math.min(100, Math.max(0, Math.round((budgetValue / maxBudgetForSlider) * 100)))
+      : 0;
+  const estimatedViews = Math.floor((budgetValue / effectivePayout) * 1000);
+
+  const todayStart = startOfDay(new Date());
+  const deadlineMin = todayStart;
+  const deadlineMax = formData.startDate
+    ? parseDate(formData.startDate, 'yyyy-MM-dd', new Date())
+    : undefined;
+  const startMin = formData.deadlineToApply
+    ? parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date())
+    : todayStart;
+
   return (
-    <div className="max-w-[1248px] mx-auto px-3 sm:px-6 md:px-[96px]">
+    <div className="brand-page-shell flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 sm:mb-6 md:mb-8 gap-4">
-        <div className="flex items-center gap-2 sm:gap-4">
-          <Link href="/brand/campaigns" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-            <ArrowLeft className="w-4 h-4 sm:w-5 sm:h-5 text-black" />
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 sm:mb-5 gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Link href="/brand/campaigns" className="rounded-lg p-1.5 transition-colors hover:bg-gray-100">
+            <ArrowLeft className="h-4 w-4 text-[#212121]" />
           </Link>
-          <h1 className="font-heading text-xl sm:text-2xl md:text-3xl font-medium text-black">Create a Campaign</h1>
+          <h1 className="brand-campaign-page-title">Create a Campaign</h1>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            size="md"
+        <div className="flex flex-wrap gap-2">
+          <BrandSecondaryButton
+            type="button"
             onClick={handleSaveDraft}
             disabled={isLoading}
-            className="w-full md:w-auto"
+            className="w-full sm:w-auto"
           >
-            Save as Draft
-          </Button>
-          <Button
-            variant="primary"
-            size="md"
+            Save as draft
+          </BrandSecondaryButton>
+          <BrandPrimaryButton
+            type="button"
             onClick={handleSubmit}
             disabled={isLoading}
-            className="w-full md:w-auto"
+            className="w-full sm:w-auto"
+            icon={<Send className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />}
           >
-            Launch Campaign
-          </Button>
+            Create draft
+          </BrandPrimaryButton>
         </div>
       </div>
 
       {/* Form */}
-      <form onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6">
-        {/* Campaign Name */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="font-heading text-sm font-medium text-black">
-              Name of the Campaign
-            </label>
-            <span className="text-xs text-text-secondary">{formData.name.length} / 75 characters</span>
-          </div>
-          <input
-            value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value.slice(0, 75) })}
-            placeholder="Enter campaign name"
-            maxLength={75}
-            required
-            className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-          />
-        </div>
-
-        {/* Description */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="font-heading text-sm font-medium text-black">
-              Description of the Campaign
-            </label>
-            <span className="text-xs text-text-secondary">{formData.description.length} / 300 characters</span>
-          </div>
-          <textarea
-            value={formData.description}
-            onChange={(e) => setFormData({ ...formData, description: e.target.value.slice(0, 300) })}
-            placeholder="Give a brief of the importance of AI and how you can gain best of AI tools knowledge to earn in lakhs."
-            maxLength={300}
-            rows={4}
-            required
-            className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent resize-none"
-          />
-        </div>
-
-        {/* Brand Assets URL */}
-        <div>
-          <label className="font-heading text-sm font-medium text-black mb-2 block">
-            Attach URL with Brand Assets
-          </label>
-          <p className="text-xs text-text-secondary mb-2">
-            (Please upload your assets/guidelines to google drive and make it accessible to public)
-          </p>
-          <div className="relative">
-            <input
-              value={formData.brandAssetsUrl}
-              onChange={(e) => setFormData({ ...formData, brandAssetsUrl: e.target.value })}
-              placeholder="<google drive link>"
-              type="url"
-              className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-            />
-            <Paperclip className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-          </div>
-        </div>
-
-        {/* Deadline to Apply */}
-        <div>
-          <label className="font-heading text-sm font-medium text-black mb-2 block">
-            Deadline to Apply
-          </label>
-          <div className="relative">
-            <input
-              value={formData.deadlineToApply}
-              onChange={(e) => setFormData({ ...formData, deadlineToApply: e.target.value })}
-              type="date"
-              min={new Date().toISOString().split('T')[0]}
-              required
-              className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-            />
-            <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
-          </div>
-        </div>
-
-        {/* Campaign Start & End Date */}
-        <div>
-          <label className="font-heading text-sm font-medium text-black mb-2 block">
-            Add Campaign Start & End Date
-          </label>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="relative">
-              <input
-                value={formData.startDate}
-                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
-                placeholder="Start Date"
-                type="date"
-                min={formData.deadlineToApply || new Date().toISOString().split('T')[0]}
-                required
-                className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-              />
-              <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
-            </div>
-            <div className="relative">
-              <input
-                value={formData.endDate}
-                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
-                placeholder="End Date"
-                type="date"
-                min={formData.startDate || new Date().toISOString().split('T')[0]}
-                required
-                className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-              />
-              <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-        </div>
-
-        {/* Payout Rate */}
-        <div>
-          <label className="font-heading text-sm font-medium text-black mb-2 block">
-            Payout Rate
-          </label>
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-medium">₹</span>
-            <input
-              value={formData.payoutRate}
-              onChange={(e) => {
-                const value = e.target.value.replace(/[^0-9.]/g, '');
-                setFormData({ ...formData, payoutRate: value });
-              }}
-              placeholder="500"
-              type="text"
-              required
-              className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-            />
-            <span className="text-sm text-text-secondary">/ 1000 views</span>
-          </div>
-        </div>
-
-        {/* Total Budget */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <label className="font-heading text-sm font-medium text-black">
-              Total Budget of the Campaign
-            </label>
-            <div className="relative group">
-              <Info className="w-4 h-4 text-gray-400 cursor-help" />
-              <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                Once the budget is exhausted the campaign will end.
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-lg font-medium">₹</span>
-            <input
-              value={formData.totalBudget}
-              onChange={(e) => {
-                const value = e.target.value.replace(/[^0-9.]/g, '');
-                setFormData({ ...formData, totalBudget: value });
-              }}
-              placeholder="50,000"
-              type="text"
-              required
-              className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl text-sm font-heading font-normal text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#E86512] focus:border-transparent"
-            />
-          </div>
-        </div>
-
-        {/* Wallet Section */}
-        <div className={cn(
-          "rounded-xl p-4 md:p-6 border",
-          isBalanceSufficient 
-            ? "bg-green-50 border-green-200" 
-            : "bg-red-50 border-red-200"
-        )}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Wallet className={cn("w-5 h-5", isBalanceSufficient ? "text-green-600" : "text-red-600")} />
-              <span className="font-heading text-base font-medium text-black">My Wallet</span>
-            </div>
-            <div className="text-right">
-              {isBalanceSufficient ? (
-                <p className="text-green-600 font-medium">Good to go!</p>
-              ) : budgetValue > walletBalance ? (
-                <p className="text-red-600 font-medium">Insufficient Balance!</p>
-              ) : (
-                <p className="text-gray-600 font-medium">Enter budget amount</p>
-              )}
-              <p className="text-sm text-text-secondary mt-1">
-                Current Balance: ₹ {walletBalance.toLocaleString('en-IN')}
+      <div className="brand-gradient-frame flex min-h-0 flex-1 rounded-[20px] p-3 sm:p-4 p-[2px]">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] bg-white/95 p-3 shadow-sm sm:p-4 md:p-5">
+          <form onSubmit={handleSubmit} className="min-h-0 w-full flex-1 space-y-4 overflow-y-auto pr-1 sm:space-y-5">
+            <div className="bg-orange-50 border border-orange-100 rounded-xl p-3">
+              <p className="text-xs sm:text-sm text-[#9A460C]">
+                Campaign Type: <span className="font-medium">{campaignType === 'REPOST_CPM' ? 'Repost / CPM Campaign' : campaignType}</span>
               </p>
             </div>
-          </div>
-          {budgetValue > walletBalance && (
-            <Link
-              href="/brand/wallet"
-              className="mt-4 inline-flex items-center gap-2 text-[#E86512] hover:underline text-sm font-medium"
-            >
-              <Wallet className="w-4 h-4" />
-              Make Payment
-            </Link>
-          )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="font-heading brand-campaign-row font-medium text-[#212121]">
+                      Name of the Campaign
+                    </label>
+                    <span className="text-xs text-text-secondary">{formData.name.length} / 75 characters</span>
+                  </div>
+                  <Input
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value.slice(0, 75) })}
+                    placeholder="Enter campaign name"
+                    maxLength={75}
+                    required
+                    variant="brandCapsule"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">Campaign Industry</label>
+                  <Input
+                    value={formData.industry}
+                    onChange={(e) => setFormData({ ...formData, industry: e.target.value })}
+                    placeholder="Fashion, FMCG, SaaS..."
+                    variant="brandCapsule"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">Platform Target</label>
+                  <div ref={platformDropdownRef} className="relative">
+                    <button
+                      type="button"
+                      className="brand-field-shell w-full"
+                      onClick={() => setPlatformDropdownOpen((prev) => !prev)}
+                    >
+                      <span className="brand-field-shell__input text-left">
+                        {formData.platformTarget === 'INSTAGRAM' ? 'Instagram' : 'YouTube Shorts'}
+                      </span>
+                      <span className="brand-field-shell__suffix pointer-events-none">
+                        <ChevronDown className={cn('h-4 w-4 transition-transform', platformDropdownOpen && 'rotate-180')} />
+                      </span>
+                    </button>
+                    {platformDropdownOpen ? (
+                      <div className="absolute z-20 mt-1.5 w-full overflow-hidden rounded-xl border border-[#DED4CB] bg-white shadow-[0_10px_24px_-10px_rgba(15,8,43,0.28)]">
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2.5 text-left font-heading text-[clamp(12px,1.37vh,14px)] text-[#212121] hover:bg-gray-50"
+                          onClick={() => {
+                            setFormData({ ...formData, platformTarget: 'INSTAGRAM' });
+                            setPlatformDropdownOpen(false);
+                          }}
+                        >
+                          Instagram
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2.5 text-left font-heading text-[clamp(12px,1.37vh,14px)] text-[#212121] hover:bg-gray-50"
+                          onClick={() => {
+                            setFormData({ ...formData, platformTarget: 'YOUTUBE' });
+                            setPlatformDropdownOpen(false);
+                          }}
+                        >
+                          YouTube Shorts
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="font-heading brand-campaign-row font-medium text-[#212121]">
+                    Description of the Campaign
+                  </label>
+                  <span className="text-xs text-text-secondary">{formData.description.length} / 300 characters</span>
+                </div>
+                <Textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value.slice(0, 300) })}
+                  placeholder="Give a brief of the campaign and the expected creator output."
+                  maxLength={300}
+                  rows={8}
+                  required
+                  variant="brandCapsule"
+                  className="lg:h-[calc(3*42px+7rem)] lg:min-h-[calc(3*42px+7rem)]"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
+                Attach URL with Brand Assets
+              </label>
+              <p className="text-xs text-text-secondary mb-2">
+                Please upload your assets/guidelines to Google Drive and make them publicly accessible.
+              </p>
+              <Input
+                value={formData.brandAssetsUrl}
+                onChange={(e) => setFormData({ ...formData, brandAssetsUrl: e.target.value })}
+                placeholder="<google drive link>"
+                type="url"
+                icon={<Paperclip className="h-4 w-4 text-[#9E9E9E]" />}
+                iconPosition="right"
+                variant="brandCapsule"
+                onIconClick={() => assetFileInputRef.current?.click()}
+              />
+              <input
+                ref={assetFileInputRef}
+                type="file"
+                accept="image/*,video/*,.pdf,.zip"
+                className="hidden"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const uploadRes = await apiClient.uploadCampaignBrandAsset(file);
+                    const uploadUrl = uploadRes.data?.url;
+                    if (uploadUrl) {
+                      setFormData((prev) => ({ ...prev, brandAssetsUrl: uploadUrl }));
+                      showToast('Asset uploaded and link attached.', 'success');
+                    } else {
+                      showToast('Upload completed but URL was unavailable. Please paste the link manually.', 'error');
+                    }
+                  } catch (err: unknown) {
+                    showToast(
+                      err instanceof Error && err.message
+                        ? err.message
+                        : 'Could not upload asset. Check the file size (max 50MB) or try again.',
+                      'error',
+                    );
+                  } finally {
+                    event.target.value = '';
+                  }
+                }}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="space-y-4">
+                <div>
+                  <label className="font-heading brand-campaign-row mb-2 block font-medium text-[#212121]">
+                    Deadline to Apply
+                  </label>
+                  <BrandDatePicker
+                    value={formData.deadlineToApply}
+                    onChange={(next) => setFormData({ ...formData, deadlineToApply: next })}
+                    minDate={deadlineMin}
+                    maxDate={deadlineMax}
+                    placeholder="Choose deadline"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-heading brand-campaign-row mb-2 block font-medium text-[#212121]">
+                    Campaign Start Date
+                  </label>
+                  <BrandDatePicker
+                    value={formData.startDate}
+                    onChange={(next) => setFormData({ ...formData, startDate: next })}
+                    minDate={startMin}
+                    placeholder="Choose start date"
+                  />
+                </div>
+                <div>
+                  <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
+                    Region Filter (optional)
+                  </label>
+                  <Input
+                    value={formData.regionFilter}
+                    onChange={(e) => setFormData({ ...formData, regionFilter: e.target.value })}
+                    placeholder="India, Mumbai, South India..."
+                    variant="brandCapsule"
+                  />
+                </div>
+
+              </div>
+
+              <div className="space-y-4">
+                {campaignType === 'REPOST_CPM' && (
+                  <div>
+                    <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
+                      Payout Rate
+                    </label>
+                    <div className="brand-field-shell">
+                      <span className="brand-field-shell__prefix">₹</span>
+                      <input
+                        value={formData.payoutRate}
+                        onChange={(e) => {
+                          const value = e.target.value.replace(/[^0-9.]/g, '');
+                          setFormData({ ...formData, payoutRate: value });
+                        }}
+                        placeholder="500"
+                        type="text"
+                        required
+                        className="brand-field-shell__input"
+                      />
+                      <span className="brand-field-shell__suffix">/ 1000 views</span>
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="font-heading brand-campaign-row font-medium text-[#212121]">
+                      Total Budget of the Campaign
+                    </label>
+                    <div className="relative group">
+                      <Info className="w-4 h-4 text-gray-400 cursor-help" />
+                      <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
+                        Once the budget is exhausted the campaign will end.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="brand-field-shell">
+                    <span className="brand-field-shell__prefix">₹</span>
+                    <input
+                      value={formData.totalBudget}
+                      onChange={(e) => {
+                        const value = e.target.value.replace(/[^0-9.]/g, '');
+                        setFormData({ ...formData, totalBudget: value });
+                      }}
+                      placeholder="50,000"
+                      type="text"
+                      required
+                      className="brand-field-shell__input"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="font-heading brand-campaign-row font-medium text-[#212121]">Estimated Reach</p>
+                    <p className="text-xs text-text-secondary">
+                      ~{estimatedViews.toLocaleString()} views
+                    </p>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={sliderPercent}
+                    onChange={(e) => {
+                      const nextValue = Number(e.target.value);
+                      if (!Number.isFinite(nextValue)) return;
+                      const nextBudget = Math.round((nextValue / 100) * maxBudgetForSlider);
+                      setFormData((prev) => ({ ...prev, totalBudget: String(Math.max(nextBudget, 0)) }));
+                    }}
+                    className="w-full accent-[#E86512]"
+                  />
+                </div>
+              </div>
+            </div>
+
+          </form>
         </div>
-      </form>
+      </div>
     </div>
   );
 }

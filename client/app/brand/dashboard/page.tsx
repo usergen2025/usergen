@@ -1,193 +1,178 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import Button from '@/components/ui/Button';
 import { useAuth } from '@/hooks/useAuth';
-import { cn } from '@/lib/utils/cn';
-import { Briefcase, Megaphone, Eye, IndianRupee, TrendingUp } from 'lucide-react';
+import { apiClient } from '@/lib/api/client';
+import { Inbox, Megaphone, Eye, IndianRupee, TrendingUp, Plus, ChevronDown } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-
-const DUMMY_CAMPAIGNS_KEY = 'dummy_campaigns';
+import { BrandStatStrip, BrandPrimaryButton, BrandSecondaryButton } from '@/components/brand';
+import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 
 export default function BrandDashboardPage() {
   const { user } = useAuth();
   const router = useRouter();
   const [dateRange, setDateRange] = useState('7d');
+  const [liveWalletBalance, setLiveWalletBalance] = useState<number | null>(null);
+  const dateRangeLabel =
+    dateRange === '7d' ? 'Last 7 days' : dateRange === '30d' ? 'Last 30 days' : 'Last 90 days';
   const [stats, setStats] = useState({
     totalCampaigns: 0,
     liveCampaigns: 0,
     totalViews: 0,
     spentSoFar: 0,
-    walletBalance: 50000,
+    walletBalance: 0,
   });
 
   useEffect(() => {
-    calculateStats();
+    let active = true;
+    apiClient
+      .getBrandDashboardStats({ dateRange })
+      .then((response) => {
+        if (active && response.data) {
+          setStats(response.data);
+        }
+      })
+      .catch((error) => {
+        console.error('Error calculating stats:', error);
+      });
+    return () => {
+      active = false;
+    };
   }, [dateRange]);
 
-  const calculateStats = () => {
-    try {
-      // Load campaigns from localStorage
-      let allCampaigns: any[] = [];
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem(DUMMY_CAMPAIGNS_KEY);
-        if (stored) {
-          allCampaigns = JSON.parse(stored);
+  useEffect(() => {
+    const onRefresh = () => {
+      void apiClient.getBrandDashboardStats({ dateRange }).then((response) => {
+        if (response.data) {
+          setStats(response.data);
         }
-      }
-
-      // Calculate stats based on campaigns
-      const totalCampaigns = allCampaigns.length;
-      const liveCampaigns = allCampaigns.filter(c => c.status === 'LIVE' || c.status === 'IN_PROGRESS').length;
-      const totalViews = allCampaigns.reduce((sum, c) => sum + (c.views || 0), 0);
-      const spentSoFar = allCampaigns.reduce((sum, c) => sum + (c.budgetUsed || 0), 0);
-      
-      // Wallet balance (could also be stored separately)
-      const walletBalance = 50000 - spentSoFar;
-
-      setStats({
-        totalCampaigns,
-        liveCampaigns,
-        totalViews,
-        spentSoFar,
-        walletBalance: Math.max(0, walletBalance),
       });
-    } catch (error) {
-      console.error('Error calculating stats:', error);
-    }
-  };
+      if (user?.id) {
+        void apiClient.getCreditsBalance(user.id).then((response) => {
+          const credits = (response.data as { credits?: number } | undefined)?.credits;
+          if (typeof credits === 'number' && !Number.isNaN(credits)) {
+            setLiveWalletBalance(credits);
+          }
+        });
+      }
+    };
+    window.addEventListener('credits-refresh', onRefresh);
+    return () => window.removeEventListener('credits-refresh', onRefresh);
+  }, [dateRange, user?.id]);
 
-  const brandName = (user as any)?.brandName || user?.name || 'Brand';
+  useEffect(() => {
+    if (!user?.id) return;
+    apiClient
+      .getCreditsBalance(user.id)
+      .then((response) => {
+        const credits = (response.data as { credits?: number } | undefined)?.credits;
+        if (typeof credits === 'number' && !Number.isNaN(credits)) {
+          setLiveWalletBalance(credits);
+        }
+      })
+      .catch(() => {
+        setLiveWalletBalance(null);
+      });
+  }, [user?.id]);
+
+  const brandName = ((user as { brandName?: string; name?: string } | null)?.brandName) || user?.name || 'Brand';
+
+  const viewK =
+    stats.totalViews >= 1000 ? `${(stats.totalViews / 1000).toFixed(1)}k` : String(stats.totalViews);
+
+  const statItems = [
+    { value: stats.totalCampaigns.toString(), label: 'Total Campaigns', Icon: Inbox },
+    { value: String(stats.liveCampaigns).padStart(2, '0'), label: 'Live Campaigns', Icon: Megaphone },
+    { value: viewK, label: 'Total Views', Icon: Eye },
+    { value: stats.spentSoFar.toLocaleString('en-IN'), label: 'Spent So Far', Icon: IndianRupee },
+  ];
 
   return (
-    <div className="max-w-[1248px] mx-auto px-3 sm:px-6 md:px-[96px]">
-      {/* Welcome Section */}
-      <div className="mb-4 sm:mb-6 md:mb-8">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 flex items-center justify-center bg-gradient-to-b from-[#E86412] to-[#F12A4C] rounded-full text-white font-heading font-medium text-lg sm:text-xl md:text-2xl">
+    <div className="brand-page-shell">
+      <section className="mb-4 flex flex-col gap-4 sm:mb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#E86412] to-[#F12A4C] font-heading text-sm font-medium text-white sm:h-12 sm:w-12 sm:text-base">
             {brandName.charAt(0).toUpperCase()}
           </div>
           <div>
-            <h1 className="font-heading text-xl sm:text-2xl md:text-3xl font-normal text-black">
-              Hello {brandName},
-            </h1>
-            <p className="font-heading text-base sm:text-lg md:text-xl text-black">Welcome to UserGen!</p>
+            <p className="text-[#212121] font-heading text-[clamp(14px,2.34vh,24px)] font-medium leading-[1.2]">Hello {brandName},</p>
+            <p className="brand-campaign-meta text-[#212121]">Welcome back!</p>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Dashboard Stats Section */}
-      <div className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8 mb-4 sm:mb-6 md:mb-8">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 sm:mb-6">
-          <h2 className="font-heading text-lg sm:text-xl md:text-2xl font-medium text-black mb-4 md:mb-0">
-            Dashboard Stats
-          </h2>
-          <div className="flex items-center gap-2">
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-              className="px-4 py-2 border border-border-light rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E86512]"
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-3 shrink-0 gap-3 sm:mb-4">
+        <h2 className="brand-page-section-title">Dashboard stats</h2>
+        <Dropdown
+          align="right"
+          className="!min-w-[12rem]"
+          trigger={
+            <button
+              type="button"
+              className="brand-field-shell w-[12rem] max-w-full"
+              aria-label="Date range for dashboard stats"
             >
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-            </select>
-          </div>
-        </div>
+              <span className="brand-field-shell__input text-left">{dateRangeLabel}</span>
+              <span className="brand-field-shell__suffix pointer-events-none">
+                <ChevronDown className="h-4 w-4 text-[#9E9E9E]" />
+              </span>
+            </button>
+          }
+        >
+          <DropdownItem onClick={() => setDateRange('7d')}>Last 7 days</DropdownItem>
+          <DropdownItem onClick={() => setDateRange('30d')}>Last 30 days</DropdownItem>
+          <DropdownItem onClick={() => setDateRange('90d')}>Last 90 days</DropdownItem>
+        </Dropdown>
+      </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 md:gap-6 mb-4 sm:mb-6 md:mb-8">
-          <StatCard
-            icon={<Briefcase className="w-5 h-5 md:w-6 md:h-6 text-[#E86512]" />}
-            value={stats.totalCampaigns.toString()}
-            label="Total Campaigns"
-          />
-          <StatCard
-            icon={<Megaphone className="w-5 h-5 md:w-6 md:h-6 text-[#E86512]" />}
-            value={stats.liveCampaigns.toString()}
-            label="Live Campaigns"
-          />
-          <StatCard
-            icon={<Eye className="w-5 h-5 md:w-6 md:h-6 text-[#E86512]" />}
-            value={`${(stats.totalViews / 1000).toFixed(1)}k`}
-            label="Total Views"
-          />
-          <StatCard
-            icon={<IndianRupee className="w-5 h-5 md:w-6 md:h-6 text-[#E86512]" />}
-            value={`₹ ${stats.spentSoFar.toLocaleString('en-IN')}`}
-            label="Spent So Far"
-          />
-        </div>
+      <div className="brand-gradient-frame mb-3 shrink-0 p-3 sm:mb-4 sm:p-4">
+        <BrandStatStrip items={statItems} layout="inline" />
+      </div>
 
-        {/* Create Campaign CTA */}
-        <div className="flex justify-center">
-          <Button
-            variant="primary"
-            size="lg"
-            onClick={() => router.push('/brand/campaigns/create')}
-            className="w-full md:w-auto"
-          >
+      <div className="mb-3 flex justify-center sm:mb-5">
+        <BrandPrimaryButton
+          type="button"
+          icon={<Plus className="h-5 w-5 shrink-0" strokeWidth={2.2} aria-hidden />}
+          onClick={() => router.push('/brand/campaigns/create?type=REPOST_CPM')}
+          className="w-full sm:w-auto"
+        >
+          Create a Campaign
+        </BrandPrimaryButton>
+      </div>
+
+      <div className="brand-gradient-frame mb-3 flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:mb-5 sm:p-4 p-[2px]">
+        <div className="rounded-[18px] bg-white/95 p-4 shadow-sm sm:p-5">
+          <div className="mb-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <span>Create your first Campaign</span>
+              <IndianRupee className="h-4 w-4 shrink-0 text-[#E86512]" />
+              <h3 className="brand-page-section-title">My wallet</h3>
             </div>
-          </Button>
-        </div>
-      </div>
-
-      {/* Wallet Section */}
-      <div className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8 mb-4 sm:mb-6 md:mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <IndianRupee className="w-4 h-4 sm:w-5 sm:h-5 text-[#E86512]" />
-            <h3 className="font-heading text-base sm:text-lg md:text-xl font-medium text-black">My Wallet</h3>
+            <BrandSecondaryButton
+              type="button"
+              size="sm"
+              onClick={() => router.push('/brand/wallet')}
+              className="!min-h-9"
+            >
+              Add funds
+            </BrandSecondaryButton>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => router.push('/brand/wallet')}
-          >
-            Add Funds
-          </Button>
-        </div>
-        <div className="text-xl sm:text-2xl md:text-3xl font-heading font-medium text-black">
-          Current Balance: ₹ {stats.walletBalance.toLocaleString('en-IN')}
-        </div>
-      </div>
-
-      {/* Chart Placeholder */}
-      <div className="bg-white rounded-2xl shadow-card p-4 sm:p-6 md:p-8">
-        <h3 className="font-heading text-base sm:text-lg md:text-xl font-medium text-black mb-4">
-          Campaign Performance
-        </h3>
-        <div className="h-48 sm:h-64 md:h-80 flex items-center justify-center bg-gray-50 rounded-xl">
-          <div className="text-center">
-            <TrendingUp className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 text-gray-400 mx-auto mb-2" />
-            <p className="text-sm sm:text-base text-text-secondary">Chart will be displayed here</p>
+          <div className="font-heading text-[clamp(0.875rem,1.2vh,1rem)] font-medium leading-snug text-[#212121]">
+            Current balance: ₹{Number(liveWalletBalance ?? stats.walletBalance ?? 0).toLocaleString('en-IN')}
           </div>
         </div>
       </div>
-    </div>
-  );
-}
 
-interface StatCardProps {
-  icon: React.ReactNode;
-  value: string;
-  label: string;
-}
-
-function StatCard({ icon, value, label }: StatCardProps) {
-  return (
-    <div className="bg-gradient-to-br from-orange-50 to-pink-50 rounded-xl p-3 sm:p-4 md:p-6">
-      <div className="flex items-center gap-2 sm:gap-3 mb-2">
-        {icon}
-        <h3 className="font-heading text-base sm:text-lg md:text-2xl font-medium text-black">
-          {value}
-        </h3>
+      <div className="brand-gradient-frame flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
+        <div className="rounded-[18px] bg-white/95 p-4 shadow-sm sm:p-5">
+          <h3 className="brand-page-section-title mb-3">Campaign performance</h3>
+          <div className="flex h-40 sm:h-48 items-center justify-center rounded-xl bg-gray-50">
+            <div className="text-center">
+              <TrendingUp className="mx-auto mb-1.5 h-7 w-7 text-gray-400 sm:h-8 sm:w-8" />
+              <p className="brand-campaign-meta text-text-secondary">Chart will be displayed here</p>
+            </div>
+          </div>
+        </div>
       </div>
-      <p className="font-sans text-xs sm:text-sm md:text-base text-text-secondary">
-        {label}
-      </p>
     </div>
   );
 }

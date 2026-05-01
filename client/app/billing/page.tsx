@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, Suspense, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   ArrowLeft, 
@@ -12,12 +12,16 @@ import {
   Mic,
   Play,
   RefreshCw,
-  FileText
+  FileText,
+  IndianRupee,
+  Megaphone
 } from 'lucide-react';
+import Link from 'next/link';
 import { apiClient } from '@/lib/api/client';
 import { useAuth } from '@/hooks/useAuth';
 import CreditDisplay from '@/components/billing/CreditDisplay';
 import Button from '@/components/ui/Button';
+import { BrandPageHeader, BrandStatStrip, BrandPrimaryButton, BrandStatusPill } from '@/components/brand';
 import { cn } from '@/lib/utils/cn';
 
 interface ProjectCost {
@@ -45,7 +49,7 @@ interface VideoProject {
   title?: string;
   status?: string;
   step?: string;
-  scenes?: any[];
+  scenes?: unknown[];
   createdAt?: string;
   updatedAt?: string;
 }
@@ -66,7 +70,7 @@ interface CostBreakdown {
   totalCost: number;
   operationCount: number;
   byOperationType: Record<string, { count: number; totalCost: number }>;
-  byScene: Record<number, { operations: any[]; totalCost: number }>;
+  byScene: Record<number, { operations: unknown[]; totalCost: number }>;
   snapshots: Array<{
     id: string;
     sceneNumber: number | null;
@@ -74,7 +78,7 @@ interface CostBreakdown {
     operationName: string;
     creditCost: number;
     createdAt: string;
-    metadata: any;
+    metadata: unknown;
   }>;
 }
 
@@ -146,6 +150,187 @@ function OperationTypeSkeleton() {
   );
 }
 
+interface BrandCampaignRow {
+  id: string;
+  name: string;
+  status: string;
+  totalBudget: number;
+  budgetUsed: number;
+  views: number;
+}
+
+function BrandBillingView() {
+  const router = useRouter();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const [campaigns, setCampaigns] = useState<BrandCampaignRow[]>([]);
+  const [stats, setStats] = useState<{
+    totalCampaigns?: number;
+    spentSoFar?: number;
+    walletBalance?: number;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push('/login?redirect=/billing');
+    }
+  }, [isAuthenticated, authLoading, router]);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cRes, sRes] = await Promise.all([apiClient.getCampaigns(), apiClient.getBrandDashboardStats()]);
+      const list = cRes.data;
+      setCampaigns(Array.isArray(list) ? (list as BrandCampaignRow[]) : []);
+      if (sRes.data) {
+        setStats(sRes.data);
+      }
+    } catch (e) {
+      console.error('Failed to load brand billing:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void loadData();
+  }, [isAuthenticated, loadData]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const onRefresh = () => {
+      void loadData();
+    };
+    window.addEventListener('credits-refresh', onRefresh);
+    return () => window.removeEventListener('credits-refresh', onRefresh);
+  }, [isAuthenticated, loadData]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen">
+        <div className="brand-page-shell pt-8 md:pt-12">
+          <div className="h-8 w-40 bg-gray-200 rounded animate-pulse mb-8" />
+          <div className="h-32 bg-white rounded-2xl shadow-sm animate-pulse mb-6" />
+          <div className="h-64 bg-white rounded-2xl shadow-sm animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="brand-page-shell brand-page-shell--campaigns pt-2 md:pt-4">
+      <BrandPageHeader
+        title="Billing"
+        className="mb-3 sm:mb-3 shrink-0"
+        backHref="/brand/dashboard"
+      />
+      <p className="brand-campaign-meta mb-3 text-text-secondary sm:mb-4">
+        Campaign wallet and spend by campaign. Video creation credits for creators are separate from this view.
+      </p>
+
+        {loading ? (
+          <div className="space-y-4">
+            <div className="h-32 bg-white rounded-2xl shadow-sm animate-pulse" />
+            <div className="h-64 bg-white rounded-2xl shadow-sm animate-pulse" />
+          </div>
+        ) : (
+          <>
+            <div className="brand-gradient-frame mb-3 shrink-0 p-3 sm:mb-4 sm:p-4">
+              <BrandStatStrip
+                columns={3}
+                layout="inline"
+                items={[
+                  {
+                    value:
+                      stats?.walletBalance !== undefined
+                        ? `₹${stats.walletBalance.toLocaleString('en-IN')}`
+                        : '—',
+                    label: 'Wallet balance (ledger)',
+                    Icon: IndianRupee,
+                  },
+                  {
+                    value: String(stats?.totalCampaigns ?? campaigns.length),
+                    label: 'Campaigns',
+                    Icon: Megaphone,
+                  },
+                  {
+                    value:
+                      stats?.spentSoFar !== undefined
+                        ? `₹${stats.spentSoFar.toLocaleString('en-IN')}`
+                        : '—',
+                    label: 'Total campaign spend',
+                    Icon: Wallet,
+                  },
+                ]}
+              />
+            </div>
+
+            <div className="brand-gradient-frame flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
+              <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[18px] bg-white/95 shadow-sm">
+              <div className="shrink-0 border-b border-[#EFE8E3] p-3 sm:p-4">
+                <h2 className="brand-page-section-title text-[#212121]">Spending by campaign</h2>
+                <p className="brand-campaign-meta mt-1 text-text-secondary">
+                  Reserved and spent budget tracked per campaign in the campaign service.
+                </p>
+              </div>
+              {campaigns.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-[#FAF7F3] text-[#616161]">
+                      <tr>
+                        <th className="px-4 py-3 font-heading text-[clamp(12px,1.2vh,13px)] font-medium">Campaign</th>
+                        <th className="px-4 py-3 font-heading text-[clamp(12px,1.2vh,13px)] font-medium">Status</th>
+                        <th className="px-4 py-3 font-heading text-[clamp(12px,1.2vh,13px)] font-medium text-right">Views</th>
+                        <th className="px-4 py-3 font-heading text-[clamp(12px,1.2vh,13px)] font-medium text-right">Spent / budget</th>
+                        <th className="px-4 py-3 font-heading text-[clamp(12px,1.2vh,13px)] font-medium" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#F1ECE7]">
+                      {campaigns.map((c) => (
+                        <tr key={c.id} className="hover:bg-[#FCFAF8]">
+                          <td className="px-4 py-3.5 font-heading text-[clamp(12px,1.25vh,14px)] font-medium text-[#212121]">{c.name}</td>
+                          <td className="px-4 py-3.5">
+                            <BrandStatusPill status={String(c.status).toUpperCase() as 'LIVE' | 'IN_PROGRESS' | 'PAUSED' | 'DRAFT' | 'COMPLETED'} />
+                          </td>
+                          <td className="px-4 py-3.5 text-right font-heading text-[clamp(12px,1.25vh,14px)] text-[#212121]">
+                            {Number(c.views).toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-4 py-3.5 text-right font-heading text-[clamp(12px,1.25vh,14px)] text-[#212121]">
+                            ₹{Number(c.budgetUsed).toLocaleString('en-IN')}
+                            <span className="text-[#757575]"> / ₹{Number(c.totalBudget).toLocaleString('en-IN')}</span>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <Link
+                              href={`/brand/campaigns/${c.id}`}
+                              className="font-heading text-[clamp(12px,1.2vh,13px)] font-medium text-[#E86512] hover:underline"
+                            >
+                              Open
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="px-6 py-12 text-center">
+                  <Megaphone className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-gray-700 mb-2">No campaigns yet</h3>
+                  <p className="text-gray-500 mb-4">Create a campaign to see spend here.</p>
+                  <BrandPrimaryButton type="button" onClick={() => router.push('/brand/campaigns')}>
+                    Go to My Campaigns
+                  </BrandPrimaryButton>
+                </div>
+              )}
+              </div>
+            </div>
+          </>
+        )}
+    </div>
+  );
+}
+
 function ProjectListSkeleton() {
   return (
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -175,7 +360,7 @@ function ProjectListSkeleton() {
 
 function BillingContent() {
   const router = useRouter();
-  const { isAuthenticated, user, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, user, isLoading: authLoading, isBrand: isBrandFn } = useAuth();
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([]);
   const [mergedProjects, setMergedProjects] = useState<MergedProject[]>([]);
@@ -211,7 +396,7 @@ function BillingContent() {
         } else {
           setSummary({
             userId: user.id,
-            currentBalance: user.credits ?? 100,
+            currentBalance: user.credits ?? 0,
             totalSpent: 0,
             projectCount: 0,
             operationCount: 0,
@@ -228,7 +413,7 @@ function BillingContent() {
         console.error('Failed to fetch billing data:', error);
         setSummary({
           userId: user.id,
-          currentBalance: user.credits ?? 100,
+          currentBalance: user.credits ?? 0,
           totalSpent: 0,
           projectCount: 0,
           operationCount: 0,
@@ -364,6 +549,10 @@ function BillingContent() {
         </div>
       </div>
     );
+  }
+
+  if (isBrandFn()) {
+    return <BrandBillingView />;
   }
 
   return (
@@ -529,20 +718,27 @@ function BillingContent() {
                                       </span>
                                     </div>
                                     <div className="space-y-2">
-                                      {sceneData.operations.map((op, idx) => (
-                                        <div
-                                          key={idx}
-                                          className="flex items-center justify-between text-sm"
-                                        >
-                                          <div className="flex items-center gap-2">
-                                            {operationIcons[op.operationType] || (
-                                              <RefreshCw className="w-3 h-3 text-gray-400" />
-                                            )}
-                                            <span className="text-gray-600">{op.operationName}</span>
+                                      {sceneData.operations.map((op, idx) => {
+                                        const operation = op as {
+                                          operationType?: string;
+                                          operationName?: string;
+                                          creditCost?: number;
+                                        };
+                                        return (
+                                          <div
+                                            key={idx}
+                                            className="flex items-center justify-between text-sm"
+                                          >
+                                            <div className="flex items-center gap-2">
+                                              {operationIcons[operation.operationType || ''] || (
+                                                <RefreshCw className="w-3 h-3 text-gray-400" />
+                                              )}
+                                              <span className="text-gray-600">{operation.operationName || 'Operation'}</span>
+                                            </div>
+                                            <span className="text-gray-500">₹{operation.creditCost ?? 0}</span>
                                           </div>
-                                          <span className="text-gray-500">₹{op.creditCost}</span>
-                                        </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 )

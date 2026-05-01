@@ -69,6 +69,478 @@ body {
   background-attachment: fixed;
 }
 
+/* Shared responsive shell for brand surfaces based on 1440px Figma frames. */
+.brand-page-shell {
+  width: min(1248px, 100%);
+  margin-inline: auto;
+  padding-inline: clamp(12px, 3vw, 96px);
+  /* Breathing room below last module — matches across brand routes + /billing */
+  padding-bottom: clamp(1.25rem, 4vh, 2.5rem);
+}
+
+.brand-page-shell--campaigns {
+  @apply flex flex-1 min-h-0 flex-col;
+}
+
+.brand-gradient-frame {
+  background:
+    linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%),
+    linear-gradient(
+      114.13deg,
+      rgba(232, 100, 18, 0.34) 32%,
+      rgba(254, 89, 191, 0.24) 48.81%,
+      rgba(231, 57, 19, 0.24) 64.75%,
+      rgba(254, 201, 89, 0.24) 83.76%,
+      rgba(232, 100, 18, 0.24) 93.57%
+    );
+  border-radius: 12px;
+  /* Left edge: prevents gradient from vanishing on warm page background */
+  box-shadow:
+    inset 0 0 0 0 rgba(232, 100, 18, 0.28),
+    0 0 0 1px rgba(232, 100, 18, 0.08);
+}
+
+/* Heavier outer ring — align with My Campaigns list container presence */
+.brand-gradient-frame--heavy {
+  border-radius: 20px;
+  box-shadow:
+    inset 0 0 0 1px rgba(232, 100, 18, 0.22),
+    0 0 0 3px rgba(232, 100, 18, 0.12);
+}
+
+.brand-surface-card {
+  background: #fff;
+  border: 1px solid #e8e2db;
+  border-radius: 20px;
+  box-shadow: 0 8px 26px rgba(185, 152, 126, 0.12);
+}
+
+/* Denser brand surfaces (list rows, modals) — Figma / user-side parity */
+.brand-surface-card--compact {
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(185, 152, 126, 0.1);
+}
+
+.brand-metric-label {
+  font-size: 0.6875rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #616161;
+}
+
+.brand-metric-value {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #212121;
+  font-family: var(--font-heading, Outfit, system-ui, sans-serif);
+}
+
+@media (min-width: 640px) {
+  .brand-metric-value {
+    font-size: 1.25rem;
+  }
+}
+
+/* Figma Desktop 216 — stat tile: dominant number, then icon + label row */
+.brand-stat-tile {
+  @apply flex flex-col items-stretch justify-between gap-2.5 p-3 min-h-[5.5rem] sm:min-h-[6.5rem] rounded-lg bg-white border border-[#F0E5DC];
+}
+
+.brand-stat-tile__value {
+  @apply font-heading font-semibold text-[#212121] w-full;
+  font-size: clamp(1.625rem, 2.6vw, 2.25rem);
+  line-height: 1.08;
+}
+
+.brand-stat-tile__footer {
+  @apply flex items-center gap-2.5 w-full;
+}
+
+/* My Campaigns: single row per tile — icon, value, label */
+.brand-stat-tile--inline {
+  @apply flex flex-row items-center gap-2 sm:gap-2.5 p-2.5 sm:p-3 min-h-0 rounded-lg bg-white border border-[#F0E5DC] min-w-0;
+}
+
+.brand-stat-tile__value--inline {
+  @apply shrink-0 w-auto m-0;
+  /* Same scale as label — one responsive line (My Campaigns) */
+  font-size: clamp(12px, 1.1vw, 0.875rem);
+  line-height: 1.3;
+  font-weight: 500;
+}
+
+.brand-stat-tile__label-inline {
+  font-size: clamp(12px, 1.1vw, 0.875rem);
+  line-height: 1.3;
+  font-weight: 500;
+}
+
+.brand-metric-icon-chip {
+  @apply h-8 w-8 shrink-0 rounded-full flex items-center justify-center;
+  background: linear-gradient(180deg, #e86412 0%, #f12a4c 100%);
+  box-shadow: 0 1px 2px rgba(232, 100, 18, 0.2);
+}
+
+.brand-metric-icon-chip svg {
+  @apply h-4 w-4 text-white;
+}
+
+/* Compact row chip — ~20px outer, ~12px icon (matches 12–14px type) */
+.brand-metric-icon-chip.brand-metric-icon-chip--sm {
+  @apply h-5 w-5 shrink-0;
+  box-shadow: 0 0.5px 1.5px rgba(232, 100, 18, 0.2);
+}
+.brand-metric-icon-chip.brand-metric-icon-chip--sm svg {
+  @apply h-3 w-3;
+}
+
+/* Applicants / shortlist — no circle; single accent between gradient stops */
+.brand-campaign-metric-stroke {
+  color: #e85a1f;
+  flex-shrink: 0;
+}
+
+/* 32px row icon — inline metric rows on campaign cards */
+.brand-metric-icon-chip--row {
+  @apply h-8 w-8 shrink-0;
+}
+
+/* Segmented control (toolbar) */
+.brand-segmented {
+  @apply flex p-1 rounded-[28px] bg-white border border-[#E5DDD7] w-full sm:w-auto sm:min-w-0 sm:inline-flex;
+}
+
+.brand-segmented__tab {
+  @apply px-3 sm:px-4 py-1.5 rounded-3xl font-heading font-medium whitespace-nowrap text-[#212121] transition-all;
+  font-size: clamp(0.78rem, 1.2vw, 0.92rem);
+  border: 1px solid transparent;
+}
+
+.brand-segmented__tab[aria-pressed="true"] {
+  @apply text-white shadow-sm;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  border-color: rgba(255, 255, 255, 0.52);
+}
+
+/* My Campaigns tabs inside 2px gradient ring (ai-chat pattern) */
+.brand-campaigns-tab {
+  @apply rounded-3xl font-heading font-medium whitespace-nowrap text-[#212121] transition-all;
+  @apply flex-shrink-0 border border-transparent;
+  @apply px-2.5 py-1.5 sm:px-3.5;
+  font-size: clamp(0.75rem, 1.1vw, 0.88rem);
+}
+.brand-campaigns-tab:hover {
+  @apply bg-gray-50/80;
+}
+.brand-campaigns-tab[aria-pressed="true"] {
+  @apply text-white shadow-sm;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.brand-campaigns-tab[aria-selected="true"] {
+  @apply text-white shadow-sm;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Status pills (Figma) */
+.brand-status-pill {
+  @apply inline-flex items-center justify-center px-2 rounded-[2px] font-heading uppercase;
+  height: 18px;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 9px;
+  background: linear-gradient(180deg, #ffd3b7 0%, #f6a6a6 100%);
+  letter-spacing: 0.24em;
+  color: #212121;
+}
+
+.brand-status-pill--live {
+  background: linear-gradient(180deg, #e86412 0%, #f12a4c 100%);
+  color: #ffffff;
+  min-width: 59px;
+}
+
+.brand-status-pill--draft {
+  @apply bg-[#9E9E9E];
+  color: #ffffff;
+  background-image: none;
+  min-width: 106px;
+}
+
+.brand-status-pill--in-progress {
+  min-width: 144px;
+}
+
+.brand-status-pill--paused {
+  min-width: 92px;
+}
+
+.brand-status-pill--completed {
+  min-width: 112px;
+  color: #1f7a4f;
+  background: linear-gradient(180deg, #d7f4e5 0%, #b9e8d0 100%);
+}
+
+/* Compact campaign text sizing (card name = step above CTA; body = CTA label scale) */
+.brand-campaign-title {
+  font-size: clamp(0.875rem, 1.2vh, 1rem);
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.brand-campaign-page-title {
+  @apply font-heading font-medium text-[#212121];
+  font-size: clamp(14px, 2.34vh, 24px);
+  /* >1 line-height so descenders (g, y, p) are not clipped; do not match font-size 1:1 */
+  line-height: 1.22;
+}
+
+/* h2 / section titles on brand routes (subordinate to page title) */
+.brand-page-section-title {
+  @apply font-heading font-medium text-[#212121];
+  font-size: clamp(0.875rem, 1.15vh, 1rem);
+  line-height: 1.35;
+}
+
+.brand-campaign-meta {
+  font-size: clamp(12px, 1.37vh, 14px);
+  line-height: 1.35;
+}
+
+.brand-campaign-row {
+  font-size: clamp(12px, 1.37vh, 14px);
+  line-height: 1.4;
+}
+
+.brand-search-shell {
+  @apply rounded-full border border-[#E8E2DB] bg-white relative;
+  transition: width 220ms ease, opacity 220ms ease, background-color 160ms ease, border-color 160ms ease;
+  box-shadow: none;
+}
+
+.brand-search-shell::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 9999px;
+  padding: 1px;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.brand-search-shell:focus-within {
+  border-color: transparent;
+}
+
+.brand-search-shell:focus-within::before {
+  opacity: 1;
+}
+
+.brand-campaign-cta {
+  @apply inline-flex items-center justify-center gap-[clamp(6px,0.69vw,8px)] rounded-[26px] font-heading font-semibold text-white transition-opacity;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  min-height: clamp(2.25rem, 3.3vh, 2.5rem);
+  padding-inline: clamp(12px, 1.39vw, 20px);
+  padding-block: clamp(8px, 1.17vh, 12px);
+  font-size: clamp(12px, 1.37vh, 14px);
+  line-height: 1;
+  box-shadow: 0px 13.38px 35.679px rgba(242, 126, 53, 0.4);
+}
+
+.brand-campaign-cta:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+/* Underlined text controls (Sort / Filter) */
+.brand-text-link {
+  @apply inline-flex items-center gap-1.5 font-heading font-medium text-[#212121] underline underline-offset-2 decoration-[#212121] hover:opacity-80;
+  font-size: clamp(12px, 1.3vh, 14px);
+}
+
+/* Primary CTA — must match .brand-campaign-cta / My Campaigns header button */
+.brand-cta-primary {
+  @apply inline-flex items-center justify-center gap-[clamp(6px,0.69vw,8px)] rounded-[26px] font-heading font-semibold text-white transition-opacity;
+  min-height: clamp(2.25rem, 3.3vh, 2.5rem);
+  padding-inline: clamp(12px, 1.39vw, 20px);
+  padding-block: clamp(8px, 1.17vh, 12px);
+  font-size: clamp(12px, 1.37vh, 14px);
+  line-height: 1;
+  background: linear-gradient(90deg, #e86412 0%, #f12a4c 100%);
+  box-shadow: 0px 13.38px 35.679px rgba(242, 126, 53, 0.4);
+}
+.brand-cta-primary:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+.brand-cta-primary:hover:not(:disabled) {
+  @apply opacity-95;
+}
+
+/* Compact primary (toolbar / icon-only circles still use rounded-full via class override) */
+.brand-cta-primary.brand-cta-primary--sm {
+  @apply min-h-9 px-3 py-1.5 font-semibold rounded-[22px] gap-1.5;
+  font-size: clamp(12px, 1.26vh, 13px);
+  padding-block: 6px;
+  box-shadow: 0 4px 14px rgba(242, 126, 53, 0.25);
+}
+
+/* Secondary outline — same silhouette as primary for paired header CTAs */
+.brand-cta-secondary {
+  @apply inline-flex items-center justify-center gap-[clamp(6px,0.69vw,8px)] rounded-[26px] font-heading font-medium text-[#212121] border-2 border-[#E0E0E0] bg-white hover:bg-gray-50 transition-colors;
+  min-height: clamp(2.25rem, 3.3vh, 2.5rem);
+  padding-inline: clamp(12px, 1.39vw, 20px);
+  padding-block: clamp(8px, 1.17vh, 12px);
+  font-size: clamp(12px, 1.37vh, 14px);
+  line-height: 1;
+}
+
+.brand-cta-secondary.brand-cta-secondary--sm {
+  @apply min-h-9 px-3 py-1.5 rounded-[22px];
+  font-size: clamp(12px, 1.26vh, 13px);
+  padding-block: 6px;
+}
+
+/* Figma campaign list card */
+.brand-campaign-card-figma {
+  @apply border-2 border-[#E0E0E0] bg-white p-3 sm:p-3.5 rounded-[20px];
+}
+
+/* Single-line pill inputs — full capsule ends; textarea uses --textarea variant */
+.brand-field-capsule {
+  @apply w-full rounded-full border border-[#DED4CB] bg-white font-heading text-[clamp(12px,1.37vh,14px)] text-[#616161] shadow-[0_1px_2px_rgba(20,20,20,0.05)];
+  min-height: 40px;
+  padding-inline: 14px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.brand-field-capsule::placeholder {
+  color: #9e9e9e;
+}
+
+.brand-field-capsule:focus,
+.brand-field-capsule:focus-visible {
+  outline: none;
+  border-color: #e86512;
+  box-shadow: 0 0 0 2px rgba(232, 101, 18, 0.16);
+  background-color: #fffdfa;
+}
+
+.brand-field-capsule--textarea {
+  @apply resize-none rounded-2xl;
+  border-radius: 14px;
+  min-height: 126px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.brand-field-shell {
+  @apply relative flex items-center w-full rounded-full border border-[#DED4CB] bg-white;
+  min-height: 40px;
+  padding-inline: 14px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.brand-field-shell:focus-within {
+  border-color: #e86512;
+  box-shadow: 0 0 0 2px rgba(232, 101, 18, 0.16);
+  background-color: #fffdfa;
+}
+
+.brand-field-shell__input {
+  @apply w-full min-w-0 bg-transparent border-0 font-heading text-[clamp(12px,1.37vh,14px)] text-[#212121] placeholder:text-[#9E9E9E];
+  outline: none;
+}
+
+.brand-field-shell__prefix,
+.brand-field-shell__suffix {
+  @apply shrink-0 font-heading text-[clamp(12px,1.37vh,14px)] text-[#616161];
+}
+
+.brand-field-shell__prefix {
+  margin-right: 8px;
+}
+
+.brand-field-shell__suffix {
+  margin-left: 8px;
+}
+
+/* Hide native calendar picker icon when using custom trigger */
+.brand-hide-date-picker::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  display: none;
+}
+
+.brand-hide-date-picker::-webkit-inner-spin-button,
+.brand-hide-date-picker::-webkit-clear-button {
+  display: none;
+}
+
+/* Custom campaign date picker (react-day-picker) */
+.brand-date-picker-popover .brand-day-picker__root {
+  --rdp-accent-color: #e86412;
+  --rdp-background-color: #fffdfa;
+}
+
+.brand-day-picker__months {
+  position: relative;
+  width: 100%;
+}
+
+.brand-day-picker__month {
+  padding-bottom: 0.25rem;
+  width: 100%;
+}
+
+.brand-day-picker__caption {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding-inline: 2.25rem;
+}
+
+.brand-day-picker__nav {
+  position: absolute;
+  inset-inline: 0;
+  top: 2px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  padding-inline: 0.125rem;
+}
+
+.brand-day-picker__nav-btn {
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
+}
+
+.brand-date-picker-popover .rdp-month_grid {
+  width: 100%;
+}
+
+.brand-date-picker-popover .rdp-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.brand-date-picker-popover .rdp-weekday {
+  width: auto;
+}
+
+.brand-day-picker__nav-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* Gradient Utilities */
 .gradient-primary {
   background: linear-gradient(90deg, var(--color-primary-start) 0%, var(--color-primary-end) 100%);

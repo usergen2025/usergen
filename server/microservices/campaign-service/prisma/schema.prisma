@@ -1,0 +1,225 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CampaignStatus {
+  DRAFT
+  LIVE
+  IN_PROGRESS
+  PAUSED
+  COMPLETED
+}
+
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ApplicationStatus {
+  APPLIED
+  APPROVED
+  REJECTED
+  SUBMITTED
+  WITHDRAWN
+}
+
+enum PostSubmissionStatus {
+  PENDING_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum EarningStatus {
+  LOCKED
+  AVAILABLE
+  REVERSED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum WalletSyncStatus {
+  RETRY_PENDING
+  FAILED
+  SYNCED
+}
+
+model Campaign {
+  id              String         @id @default(cuid())
+  brandId         String
+  name            String
+  description     String
+  status          CampaignStatus @default(DRAFT)
+  deadlineToApply DateTime
+  startDate       DateTime
+  endDate         DateTime
+  payoutRate      Decimal
+  totalBudget     Decimal
+  budgetUsed      Decimal        @default(0)
+  views           Int            @default(0)
+  targetViews     Int            @default(0)
+  brandAssetsUrl  String?
+  campaignType    String         @default("REPOST_CPM")
+  industry        String?
+  platformTarget  String?
+  regionFilter    String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  submissions     Submission[]
+  applications    CampaignApplication[]
+  postSubmissions CampaignPostSubmission[]
+  earnings        CampaignEarningSnapshot[]
+  creatorEarnings CreatorEarning[]
+}
+
+model Submission {
+  id          String           @id @default(cuid())
+  campaignId  String
+  creatorId   String
+  creatorName String
+  creatorHandle String
+  contentUrl  String
+  platform    String
+  status      SubmissionStatus @default(PENDING)
+  views       Int              @default(0)
+  earnings    Decimal          @default(0)
+  comment     String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  campaign    Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  reviews          SubmissionReview[]
+  earningSnapshots CampaignEarningSnapshot[]
+
+  @@index([campaignId])
+  @@index([creatorId])
+}
+
+model CampaignApplication {
+  id         String            @id @default(cuid())
+  campaignId String
+  creatorId  String
+  status     ApplicationStatus @default(APPLIED)
+  draftMediaUrl String?
+  platform   String?
+  termsAccepted Boolean        @default(false)
+  termsAcceptedAt DateTime?
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewComment String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  campaign   Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  postSubmissions CampaignPostSubmission[]
+
+  @@unique([campaignId, creatorId])
+  @@index([creatorId])
+}
+
+model CampaignPostSubmission {
+  id            String               @id @default(cuid())
+  campaignId    String
+  creatorId     String
+  applicationId String?
+  postUrl       String
+  platform      String
+  status        PostSubmissionStatus @default(PENDING_REVIEW)
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  reviewComment String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  campaign      Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  application   CampaignApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  creatorEarnings CreatorEarning[]
+
+  @@index([campaignId, creatorId])
+  @@index([status, createdAt])
+}
+
+model CreatorEarning {
+  id               String        @id @default(cuid())
+  campaignId       String
+  creatorId        String
+  postSubmissionId String
+  viewsDelta       Int           @default(0)
+  cpmRate          Decimal
+  amount           Decimal
+  status           EarningStatus @default(LOCKED)
+  earnedAt         DateTime      @default(now())
+  unlockAt         DateTime
+  availableAt      DateTime?
+  reversedAt       DateTime?
+  lockReason       String?
+  metadata         Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  campaign         Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  postSubmission   CampaignPostSubmission @relation(fields: [postSubmissionId], references: [id], onDelete: Cascade)
+
+  @@index([creatorId, status, unlockAt])
+  @@index([campaignId, createdAt])
+}
+
+model SubmissionReview {
+  id           String           @id @default(cuid())
+  submissionId String
+  reviewerId   String
+  status       SubmissionStatus
+  comment      String?
+  createdAt    DateTime         @default(now())
+  submission   Submission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([reviewerId])
+}
+
+model CampaignEarningSnapshot {
+  id           String     @id @default(cuid())
+  campaignId   String
+  submissionId String
+  creatorId    String
+  views        Int        @default(0)
+  cpmRate      Decimal
+  earnings     Decimal
+  createdAt    DateTime   @default(now())
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([creatorId])
+}
+
+model WithdrawalRequest {
+  id         String           @id @default(cuid())
+  creatorId  String
+  amount     Decimal
+  status     WithdrawalStatus @default(PENDING)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([creatorId, status])
+}
+
+model WalletSyncEvent {
+  id         String           @id @default(cuid())
+  eventType  String
+  status     WalletSyncStatus @default(RETRY_PENDING)
+  attempts   Int              @default(0)
+  payload    Json
+  lastError  String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([status, createdAt])
+  @@index([eventType])
+}

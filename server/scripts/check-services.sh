@@ -17,6 +17,7 @@ services=(
   "analytics-service:9008"
   "media-management-service:9009"
   "iam-service:9010"
+  "campaign-service:9011"
   "swagger-aggregator:9090"
 )
 
@@ -57,7 +58,7 @@ done
 echo ""
 echo "📊 Summary:"
 echo "   Running services: $running_count/${#services[@]}"
-echo "   Services with Swagger: $swagger_available_count/11"
+echo "   Services with Swagger: $swagger_available_count/12"
 
 if [ "$running_count" -lt "${#services[@]}" ]; then
   echo ""

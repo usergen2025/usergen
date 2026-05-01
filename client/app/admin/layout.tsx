@@ -10,6 +10,8 @@ import {
   DollarSign, 
   Shield, 
   Settings,
+  RefreshCcw,
+  Briefcase,
   LogOut,
   Menu,
   X,
@@ -24,6 +26,8 @@ const adminNavItems = [
   { href: '/admin/generations', label: 'Generations', icon: Video },
   { href: '/admin/pricing', label: 'Pricing', icon: DollarSign },
   { href: '/admin/iam', label: 'IAM', icon: Shield },
+  { href: '/admin/campaign-sync', label: 'Campaign Sync', icon: RefreshCcw },
+  { href: '/admin/campaigns', label: 'Campaigns', icon: Briefcase },
   { href: '/admin/settings', label: 'Settings', icon: Settings },
 ];
 

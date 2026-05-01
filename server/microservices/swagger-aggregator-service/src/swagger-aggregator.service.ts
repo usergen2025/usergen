@@ -63,6 +63,7 @@ export class SwaggerAggregatorService implements OnModuleInit, OnModuleDestroy {
       { name: 'analytics-service', url: baseUrl('ANALYTICS', '9008'), swaggerPath: '/api/docs-json', enabled: true },
       { name: 'media-management-service', url: baseUrl('MEDIA_MANAGEMENT', '9009'), swaggerPath: '/api/docs-json', enabled: true },
       { name: 'iam-service', url: baseUrl('IAM', '9010'), swaggerPath: '/api/docs-json', enabled: true },
+      { name: 'campaign-service', url: baseUrl('CAMPAIGN', '9011'), swaggerPath: '/api/docs-json', enabled: true },
     ];
   }
 
