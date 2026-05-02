@@ -1,0 +1,10 @@
+-- Optional: copy legacy rows from video-processing DB into notification-service DB.
+-- After applying notification-service Prisma migrations on `usergen_notification`, you can:
+--
+-- 1) pg_dump only the table from the old DB and restore into the new DB:
+--    pg_dump -h localhost -U postgres -t user_notifications usergen_video_processing \
+--      | psql -h localhost -U postgres usergen_notification
+--
+-- 2) Or use INSERT ... SELECT via a temporary FDW / manual CSV export/import.
+--
+-- IDs are cuid strings; avoid duplicates if you already have rows in the target table.

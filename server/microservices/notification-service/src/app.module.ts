@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { NotificationController } from './notification/notification.controller';
 import { NotificationService } from './notification/notification.service';
 import { EmailModule } from './email/email.module';
+import { DatabaseModule } from './common/database/database.module';
+import { InAppModule } from './in-app/in-app.module';
 
 @Module({
   imports: [
@@ -14,6 +16,8 @@ import { EmailModule } from './email/email.module';
       ],
       expandVariables: true,
     }),
+    DatabaseModule,
+    InAppModule,
     EmailModule,
   ],
   controllers: [NotificationController],

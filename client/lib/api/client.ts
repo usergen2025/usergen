@@ -4,10 +4,14 @@
  */
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
+import { getCampaignServiceApiRoot } from '@/lib/campaign-media';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 const AUTH_SERVICE_URL = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:9000/api';
 const VIDEO_SERVICE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:9004/api';
+/** In-app bell notifications (notification-service, port 9006) */
+const NOTIFICATION_SERVICE_URL =
+  process.env.NEXT_PUBLIC_NOTIFICATION_SERVICE_URL || 'http://localhost:9006/api';
 const AI_CONTENT_SERVICE_URL = process.env.NEXT_PUBLIC_AI_CONTENT_SERVICE_URL || 'http://localhost:9001/api';
 const VOICE_SERVICE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:9002/api';
 const PAYMENT_SERVICE_URL = process.env.NEXT_PUBLIC_PAYMENT_SERVICE_URL || 'http://localhost:9005/api';
@@ -35,6 +39,76 @@ function normalizeCampaignServiceResponse<T>(body: unknown): ApiResponse<T> {
     }
   }
   return { success: true, data: body as T };
+}
+
+function extractCampaignAssetId(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const record = body as Record<string, unknown>;
+  if (typeof record.assetId === 'string' && record.assetId.trim()) return record.assetId;
+  if (typeof record.id === 'string' && record.id.trim()) return record.id;
+  if (record.data && typeof record.data === 'object') {
+    return extractCampaignAssetId(record.data);
+  }
+  if (record.asset && typeof record.asset === 'object') {
+    return extractCampaignAssetId(record.asset);
+  }
+  return undefined;
+}
+
+function normalizeCampaignAssetResponse(body: unknown): ApiResponse<{ assetId: string }> {
+  const normalized = normalizeCampaignServiceResponse<unknown>(body);
+  const assetId = extractCampaignAssetId(normalized.data) ?? extractCampaignAssetId(body);
+  if (assetId) {
+    return { success: true, data: { assetId } };
+  }
+  // Brand upload returns `{ url: ".../api/uploads/campaign-assets/..." }` — easy to mistake for creator draft upload.
+  const raw = normalized.data ?? body;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const url = (raw as Record<string, unknown>).url;
+    if (typeof url === 'string' && url.includes('/campaign-assets/')) {
+      return {
+        success: false,
+        error:
+          'Unexpected response: got a brand campaign-asset URL instead of a creator draft id. Use POST /campaigns/drafts/upload on campaign-service (creator flow).',
+      };
+    }
+  }
+  return {
+    success: false,
+    error: normalized.error || 'Campaign media asset id missing from response',
+  };
+}
+
+function logCampaignDraftAxiosError(context: string, error: unknown): void {
+  if (process.env.NODE_ENV !== 'development') return;
+  if (!axios.isAxiosError(error)) return;
+  console.warn(`[apiClient] ${context}`, {
+    status: error.response?.status,
+    url: error.config?.url,
+    data: error.response?.data,
+  });
+}
+
+function throwCampaignDraftHttpError(context: string, error: unknown): never {
+  logCampaignDraftAxiosError(context, error);
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const url = String(error.config?.url ?? '');
+    if (status === 404) {
+      throw new Error(
+        `${context}: endpoint returned 404. Confirm NEXT_PUBLIC_CAMPAIGN_SERVICE_URL targets campaign-service (e.g. http://localhost:9011 — /api is appended automatically). Request: ${url}`,
+      );
+    }
+    const data = error.response?.data;
+    let detail = '';
+    if (typeof data === 'string') detail = data;
+    else if (data && typeof data === 'object' && 'message' in data) {
+      const m = (data as { message?: unknown }).message;
+      detail = Array.isArray(m) ? m.map(String).join(', ') : typeof m === 'string' ? m : '';
+    }
+    throw new Error(detail || error.message || `${context} failed (HTTP ${status ?? '?'})`);
+  }
+  throw error instanceof Error ? error : new Error(String(error));
 }
 
 export interface AuthTokens {
@@ -1131,7 +1205,7 @@ class ApiClient {
 
   // Campaign endpoints (will connect to campaign service once backend is ready)
   async getCampaigns(params?: { status?: string; page?: number; limit?: number }): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const queryParams = new URLSearchParams();
     if (params?.status) queryParams.append('status', params.status);
@@ -1151,7 +1225,7 @@ class ApiClient {
   }
 
   async getCampaign(campaignId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}`, {
@@ -1177,7 +1251,7 @@ class ApiClient {
     payoutRate: number;
     totalBudget: number;
   }): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(`${campaignServiceUrl}/campaigns`, data, {
@@ -1191,7 +1265,7 @@ class ApiClient {
   }
 
   async uploadCampaignBrandAsset(file: File): Promise<ApiResponse<{ url: string }>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const formData = new FormData();
     formData.append('file', file);
@@ -1217,7 +1291,7 @@ class ApiClient {
     payoutRate: number;
     totalBudget: number;
   }>): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.put(`${campaignServiceUrl}/campaigns/${campaignId}`, data, {
@@ -1231,7 +1305,7 @@ class ApiClient {
   }
 
   async pauseCampaign(campaignId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1248,7 +1322,7 @@ class ApiClient {
   }
 
   async resumeCampaign(campaignId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1265,7 +1339,7 @@ class ApiClient {
   }
 
   async publishCampaign(campaignId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1282,7 +1356,7 @@ class ApiClient {
   }
 
   async topUpCampaign(campaignId: string, amount: number): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1300,7 +1374,7 @@ class ApiClient {
   }
 
   async getCampaignApplicants(campaignId: string, params?: { status?: string }): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const queryParams = new URLSearchParams();
     if (params?.status) queryParams.append('status', params.status);
@@ -1318,7 +1392,7 @@ class ApiClient {
   }
 
   async getCampaignApplications(campaignId: string): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/applications`, {
       headers: {
@@ -1329,7 +1403,7 @@ class ApiClient {
   }
 
   async shortlistApplicant(campaignId: string, applicantId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1349,7 +1423,7 @@ class ApiClient {
     submissionId: string,
     data: { status: 'APPROVED' | 'REJECTED'; comment?: string }
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1370,7 +1444,7 @@ class ApiClient {
     applicationId: string,
     data: { status: 'APPROVED' | 'REJECTED'; comment?: string }
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/applications/${applicationId}/review`,
@@ -1386,7 +1460,7 @@ class ApiClient {
   }
 
   async getBrandDashboardStats(params?: { dateRange?: string }): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const queryParams = new URLSearchParams();
     if (params?.dateRange) queryParams.append('dateRange', params.dateRange);
@@ -1404,7 +1478,7 @@ class ApiClient {
   }
 
   async getCreatorCampaigns(params?: { search?: string }): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const queryParams = new URLSearchParams();
     if (params?.search) queryParams.append('search', params.search);
@@ -1423,7 +1497,8 @@ class ApiClient {
   async applyToCampaign(
     campaignId: string,
     data: {
-      draftMediaUrl: string;
+      draftMediaUrl?: string;
+      draftAssetId?: string;
       platform: 'INSTAGRAM' | 'YOUTUBE';
       termsAccepted: boolean;
       note?: string;
@@ -1431,7 +1506,7 @@ class ApiClient {
       projectId?: string;
     }
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1447,25 +1522,111 @@ class ApiClient {
     return normalizeCampaignServiceResponse<any>(response.data);
   }
 
-  async uploadCreatorDraftAsset(file: File): Promise<ApiResponse<{ url: string }>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+  async uploadCreatorDraftAsset(
+    file: File,
+    params?: { campaignId?: string },
+  ): Promise<ApiResponse<{ assetId: string }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const formData = new FormData();
     formData.append('file', file);
+    const q = new URLSearchParams();
+    if (params?.campaignId) q.set('campaignId', params.campaignId);
+    const query = q.toString() ? `?${q.toString()}` : '';
+    const uploadUrl = `${campaignServiceUrl}/campaigns/drafts/upload${query}`;
+    try {
+      const response = await axios.post(uploadUrl, formData, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[apiClient] uploadCreatorDraftAsset raw response', response.data);
+      }
+      return normalizeCampaignAssetResponse(response.data);
+    } catch (e) {
+      throwCampaignDraftHttpError('uploadCreatorDraftAsset', e);
+    }
+  }
+
+  async ingestCreatorDraftFromUrl(
+    url: string,
+    params?: { campaignId?: string },
+  ): Promise<ApiResponse<{ assetId: string }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
     const response = await axios.post(
-      `${campaignServiceUrl}/campaigns/drafts/upload`,
-      formData,
+      `${campaignServiceUrl}/campaigns/drafts/ingest-url`,
+      { url, campaignId: params?.campaignId },
       {
         headers: {
+          'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       },
     );
-    return normalizeCampaignServiceResponse<{ url: string }>(response.data);
+    return normalizeCampaignAssetResponse(response.data);
+  }
+
+  async ingestCreatorDraftFromProject(
+    projectId: string,
+    params: { campaignId: string },
+  ): Promise<ApiResponse<{ assetId: string }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const url = `${campaignServiceUrl}/campaigns/drafts/from-project`;
+    try {
+      const response = await axios.post(
+        url,
+        { projectId, campaignId: params.campaignId },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        },
+      );
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[apiClient] ingestCreatorDraftFromProject raw response', response.data);
+      }
+      return normalizeCampaignAssetResponse(response.data);
+    } catch (e) {
+      throwCampaignDraftHttpError('ingestCreatorDraftFromProject', e);
+    }
+  }
+
+  async getCreatorCampaignDetail(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/creator/campaigns/${campaignId}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async replacePendingApplicationDraft(
+    campaignId: string,
+    draftAssetId: string,
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/creator/campaigns/${campaignId}/replace-draft`,
+      { draftAssetId },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
   }
 
   async getCreatorCampaignStates(): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/creator/campaign-states`, {
       headers: {
@@ -1479,7 +1640,7 @@ class ApiClient {
     campaignId: string,
     data: { postUrl: string; platform: 'INSTAGRAM' | 'YOUTUBE' },
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/campaigns/${campaignId}/post-submissions`,
@@ -1495,7 +1656,7 @@ class ApiClient {
   }
 
   async getCampaignPostSubmissions(campaignId: string): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/post-submissions`, {
       headers: {
@@ -1509,7 +1670,7 @@ class ApiClient {
     submissionId: string,
     data: { status: 'VERIFIED' | 'REJECTED'; comment?: string },
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/review`, data, {
       headers: {
@@ -1524,7 +1685,7 @@ class ApiClient {
     submissionId: string,
     data: { currentViews: number; note?: string },
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/verify-views`, data, {
       headers: {
@@ -1536,7 +1697,7 @@ class ApiClient {
   }
 
   async getCampaignCreatorEarnings(campaignId: string): Promise<ApiResponse<any[]>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/creator-earnings`, {
       headers: {
@@ -1547,7 +1708,7 @@ class ApiClient {
   }
 
   async processLockedEarningsUnlock(): Promise<ApiResponse<{ processed: number }>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/creator-earnings/process-unlock`,
@@ -1562,7 +1723,7 @@ class ApiClient {
   }
 
   async reverseLockedEarning(earningId: string, reason?: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/creator-earnings/${earningId}/reverse`,
@@ -1586,7 +1747,7 @@ class ApiClient {
       creatorHandle?: string;
     }
   ): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
 
     const response = await axios.post(
@@ -1603,7 +1764,7 @@ class ApiClient {
   }
 
   async getCreatorEarnings(): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/creator/earnings`, {
       headers: {
@@ -1614,7 +1775,7 @@ class ApiClient {
   }
 
   async requestCreatorWithdrawal(amount: number): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/creator/withdrawals`,
@@ -1637,7 +1798,7 @@ class ApiClient {
     startDate?: string;
     endDate?: string;
   }): Promise<ApiResponse<{ items: any[]; nextCursor: string | null; hasMore: boolean }>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const query = new URLSearchParams();
     if (params?.status) query.append('status', params.status);
@@ -1668,7 +1829,7 @@ class ApiClient {
       eventTypes: string[];
     }>
   > {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.get(`${campaignServiceUrl}/wallet-sync-events/summary`, {
       headers: {
@@ -1685,7 +1846,7 @@ class ApiClient {
   }
 
   async retryCampaignWalletSyncEvent(eventId: string): Promise<ApiResponse<any>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/wallet-sync-events/${eventId}/retry`,
@@ -1702,7 +1863,7 @@ class ApiClient {
   async retryCampaignWalletSyncEvents(
     statuses: Array<'RETRY_PENDING' | 'FAILED'> = ['RETRY_PENDING', 'FAILED'],
   ): Promise<ApiResponse<{ processed: number; synced: number; failed: number; skipped: number }>> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const response = await axios.post(
       `${campaignServiceUrl}/wallet-sync-events/retry-all`,
@@ -1728,7 +1889,7 @@ class ApiClient {
     startDate?: string;
     endDate?: string;
   }): Promise<Blob> {
-    const campaignServiceUrl = process.env.NEXT_PUBLIC_CAMPAIGN_SERVICE_URL || 'http://localhost:9011/api';
+    const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
     const query = new URLSearchParams();
     if (params?.status) query.append('status', params.status);
@@ -2328,7 +2489,7 @@ class ApiClient {
   async getNotifications(): Promise<ApiResponse<{ notifications: any[] }>> {
     const token = this.getToken();
     const response = await axios.get<ApiResponse<{ notifications: any[] }>>(
-      `${VIDEO_SERVICE_URL}/notifications`,
+      `${NOTIFICATION_SERVICE_URL}/notifications`,
       {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -2341,7 +2502,7 @@ class ApiClient {
   async markNotificationRead(id: string): Promise<ApiResponse<void>> {
     const token = this.getToken();
     const response = await axios.patch<ApiResponse<void>>(
-      `${VIDEO_SERVICE_URL}/notifications/${id}/read`,
+      `${NOTIFICATION_SERVICE_URL}/notifications/${id}/read`,
       {},
       {
         headers: {
@@ -2356,7 +2517,7 @@ class ApiClient {
   async postVideoPresence(projectId: string | null): Promise<ApiResponse<void>> {
     const token = this.getToken();
     const response = await axios.post<ApiResponse<void>>(
-      `${VIDEO_SERVICE_URL}/notifications/presence`,
+      `${NOTIFICATION_SERVICE_URL}/notifications/presence`,
       { projectId },
       {
         headers: {

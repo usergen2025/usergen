@@ -53,6 +53,18 @@ describe('CampaignsService wallet sync retry', () => {
     }),
   };
 
+  const mockCampaignMediaService: any = {
+    previewApiPath: jest.fn().mockReturnValue('/api/campaign-media/x/preview'),
+  };
+
+  const mockNotificationService: any = {
+    notifyApplicationReceived: jest.fn(),
+    notifyApplicationApproved: jest.fn(),
+    notifyApplicationRejected: jest.fn(),
+    notifyPostSubmitted: jest.fn(),
+    notifyPostVerified: jest.fn(),
+  };
+
   let service: CampaignsService;
   const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -77,7 +89,13 @@ describe('CampaignsService wallet sync retry', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new CampaignsService(mockDatabaseService, mockWalletSyncService, mockConfigService);
+    service = new CampaignsService(
+      mockDatabaseService,
+      mockWalletSyncService,
+      mockConfigService,
+      mockCampaignMediaService,
+      mockNotificationService,
+    );
   });
 
   it('marks retry event as SYNCED when retry call succeeds', async () => {
@@ -226,25 +244,9 @@ describe('CampaignsService wallet sync retry', () => {
     mockDatabaseService.campaign.update.mockResolvedValue({});
     mockDatabaseService.campaignEarningSnapshot.create.mockResolvedValue({});
 
-    await service.reviewSubmission('sub-1', { status: 'APPROVED' }, 'brand-1');
-
-    const expectedKey = 'campaign-service:creator-earning-credit:sub-1:creator-1:600';
-    expect(mockWalletSyncService.addCreatorEarning).toHaveBeenCalledWith(
-      'creator-1',
-      600,
-      'Campaign submission approved',
-      { campaignId: 'camp-1', submissionId: 'sub-1' },
-      expectedKey,
-    );
-    expect(mockDatabaseService.walletSyncEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            idempotencyKey: expectedKey,
-          }),
-        }),
-      }),
-    );
+    const reviewed = await service.reviewSubmission('sub-1', { status: 'APPROVED' }, 'brand-1');
+    expect(reviewed.status).toBe('APPROVED');
+    expect(mockWalletSyncService.addCreatorEarning).not.toHaveBeenCalled();
   });
 
   it('creates withdrawal event with idempotency key', async () => {
@@ -272,24 +274,9 @@ describe('CampaignsService wallet sync retry', () => {
       createdAt: now,
     });
 
-    await service.requestWithdrawal(500, 'creator-7');
-
-    const expectedKey = 'campaign-service:creator-withdrawal-debit:creator-7:500';
-    expect(mockWalletSyncService.deductCreatorWithdrawal).toHaveBeenCalledWith(
-      'creator-7',
-      500,
-      { source: 'campaign-service' },
-      expectedKey,
-    );
-    expect(mockDatabaseService.walletSyncEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          payload: expect.objectContaining({
-            idempotencyKey: expectedKey,
-          }),
-        }),
-      }),
-    );
+    const res = await service.requestWithdrawal(500, 'creator-7');
+    expect(res.message).toMatch(/disabled/i);
+    expect(mockWalletSyncService.deductCreatorWithdrawal).not.toHaveBeenCalled();
   });
 
   it('retries all events by status and returns aggregated counts', async () => {
@@ -500,6 +487,8 @@ describe('CampaignsService wallet sync retry', () => {
     const creatorId = 'creator-int-1';
     const submissionId = 'sub-int-1';
     const createdAt = new Date('2026-02-01T00:00:00.000Z');
+    const futureDeadline = new Date('2099-06-15T12:00:00.000Z');
+    const futureEnd = new Date('2099-12-31T12:00:00.000Z');
     const campaignRow: any = {
       id: campaignId,
       brandId,
@@ -507,9 +496,9 @@ describe('CampaignsService wallet sync retry', () => {
       description: 'Lifecycle',
       status: 'DRAFT',
       createdAt,
-      deadlineToApply: createdAt,
+      deadlineToApply: futureDeadline,
       startDate: createdAt,
-      endDate: createdAt,
+      endDate: futureEnd,
       payoutRate: 500,
       totalBudget: 5000,
       budgetUsed: 0,
@@ -610,14 +599,28 @@ describe('CampaignsService wallet sync retry', () => {
       status: 'PENDING',
       createdAt,
     });
+    mockDatabaseService.campaignMediaAsset = {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'asset-int-1',
+        ownerId: creatorId,
+        status: 'READY',
+      }),
+      update: jest.fn().mockResolvedValue({}),
+    };
+    mockDatabaseService.campaignApplication.findUnique = jest.fn().mockResolvedValue({
+      id: 'app-int-1',
+      campaignId,
+      creatorId,
+      status: 'APPLIED',
+    });
 
     const created = await service.createCampaign(
       {
         name: 'Integration Campaign',
         description: 'Lifecycle',
-        deadlineToApply: createdAt.toISOString(),
+        deadlineToApply: futureDeadline.toISOString(),
         startDate: createdAt.toISOString(),
-        endDate: createdAt.toISOString(),
+        endDate: futureEnd.toISOString(),
         payoutRate: 500,
         totalBudget: 5000,
       },
@@ -635,7 +638,12 @@ describe('CampaignsService wallet sync retry', () => {
       'campaign-service:brand-budget-reserve:camp-int-1:brand-int-1:5000',
     );
 
-    const applyResult = await service.applyToCampaign(campaignId, creatorId);
+    const applyResult = await service.applyToCampaign(campaignId, creatorId, {
+      draftAssetId: 'asset-int-1',
+      termsAccepted: true,
+      platform: 'INSTAGRAM',
+      sourceType: 'UPLOAD',
+    });
     expect(applyResult.success).toBe(true);
 
     const submission = await service.createSubmission(
@@ -652,22 +660,11 @@ describe('CampaignsService wallet sync retry', () => {
 
     const reviewed = await service.reviewSubmission(submissionId, { status: 'APPROVED' }, brandId);
     expect(reviewed.status).toBe('APPROVED');
-    expect(mockWalletSyncService.addCreatorEarning).toHaveBeenCalledWith(
-      creatorId,
-      600,
-      'Campaign submission approved',
-      { campaignId, submissionId },
-      'campaign-service:creator-earning-credit:sub-int-1:creator-int-1:600',
-    );
+    expect(mockWalletSyncService.addCreatorEarning).not.toHaveBeenCalled();
 
     const withdrawal = await service.requestWithdrawal(500, creatorId);
     expect(withdrawal.status).toBe('PENDING');
-    expect(mockWalletSyncService.deductCreatorWithdrawal).toHaveBeenCalledWith(
-      creatorId,
-      500,
-      { source: 'campaign-service' },
-      'campaign-service:creator-withdrawal-debit:creator-int-1:500',
-    );
+    expect(mockWalletSyncService.deductCreatorWithdrawal).not.toHaveBeenCalled();
   });
 
   it('queues retry pending event when publish wallet sync fails', async () => {
@@ -691,7 +688,7 @@ describe('CampaignsService wallet sync retry', () => {
     );
   });
 
-  it('queues retry pending event when approval earning credit fails', async () => {
+  it('reviewSubmission approves without invoking wallet credit (handled elsewhere)', async () => {
     mockDatabaseService.submission.findUnique.mockResolvedValueOnce({
       id: 'sub-fail-1',
       campaignId: 'camp-1',
@@ -723,23 +720,11 @@ describe('CampaignsService wallet sync retry', () => {
       campaign: { id: 'camp-1', payoutRate: 500 },
     });
     mockDatabaseService.submissionReview.create.mockResolvedValue({});
-    mockWalletSyncService.addCreatorEarning.mockRejectedValueOnce(new Error('wallet credit outage'));
-    mockDatabaseService.walletSyncEvent.create.mockResolvedValue({});
+    mockDatabaseService.campaignApplication.upsert.mockResolvedValue({});
 
-    await expect(service.reviewSubmission('sub-fail-1', { status: 'APPROVED' }, 'brand-1')).rejects.toThrow(
-      'Submission approved but wallet credit sync failed. Retry required.',
-    );
-
-    expect(mockDatabaseService.walletSyncEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          eventType: 'CREATOR_EARNING_CREDIT',
-          status: 'RETRY_PENDING',
-          attempts: 3,
-          lastError: 'wallet credit outage',
-        }),
-      }),
-    );
+    const out = await service.reviewSubmission('sub-fail-1', { status: 'APPROVED' }, 'brand-1');
+    expect(out.status).toBe('APPROVED');
+    expect(mockWalletSyncService.addCreatorEarning).not.toHaveBeenCalled();
   });
 
   it('marks unknown wallet sync event type as FAILED on retry attempt', async () => {

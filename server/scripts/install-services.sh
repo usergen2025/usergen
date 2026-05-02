@@ -49,6 +49,12 @@ for name in "${SERVICES[@]}"; do
   else
     (cd "$path" && npm install --no-audit --no-fund)
   fi
+  if [ -f "$path/prisma/schema.prisma" ]; then
+    echo "   🔧 prisma generate ($name)"
+    if ! (cd "$path" && npx prisma generate); then
+      echo "⚠️  prisma generate failed for $name — fix DATABASE_URL or run: npm run deploy:all"
+    fi
+  fi
   echo ""
 done
 

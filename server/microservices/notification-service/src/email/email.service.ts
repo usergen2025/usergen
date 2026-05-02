@@ -53,24 +53,31 @@ export class EmailService {
 
     let subject: string;
     let html: string;
+    let otpPurpose: string;
 
     switch (type) {
       case 'EMAIL_VERIFICATION':
         subject = `Verify your email - ${appName}`;
-        html = this.getOTPEmailTemplate(otp, 'email verification');
+        otpPurpose = 'email verification';
+        html = this.getOTPEmailTemplate(appName, otp, otpPurpose);
         break;
       case 'LOGIN':
         subject = `Your login OTP - ${appName}`;
-        html = this.getOTPEmailTemplate(otp, 'login');
+        otpPurpose = 'login';
+        html = this.getOTPEmailTemplate(appName, otp, otpPurpose);
         break;
       case 'PASSWORD_RESET':
         subject = `Password Reset OTP - ${appName}`;
-        html = this.getOTPEmailTemplate(otp, 'password reset');
+        otpPurpose = 'password reset';
+        html = this.getOTPEmailTemplate(appName, otp, otpPurpose);
         break;
       default:
         subject = `Your OTP - ${appName}`;
-        html = this.getOTPEmailTemplate(otp, 'verification');
+        otpPurpose = 'verification';
+        html = this.getOTPEmailTemplate(appName, otp, otpPurpose);
     }
+
+    const text = this.getOTPTextBody(appName, otp, otpPurpose);
 
     try {
       const info = await this.transporter.sendMail({
@@ -78,6 +85,7 @@ export class EmailService {
         to,
         subject,
         html,
+        text,
       });
 
       this.logger.log(`✅ OTP email sent successfully to ${to}. Message ID: ${info.messageId}`);
@@ -107,7 +115,37 @@ export class EmailService {
     }
   }
 
-  private getOTPEmailTemplate(otp: string, purpose: string): string {
+  /** Minimal escaping for interpolated HTML email fields */
+  private escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  private getOTPTextBody(appName: string, otp: string, purpose: string): string {
+    const year = new Date().getFullYear();
+    return [
+      appName,
+      '',
+      `OTP for ${purpose}`,
+      '',
+      `Your code: ${otp}`,
+      '',
+      'This OTP will expire in 10 minutes. Do not share this code with anyone.',
+      '',
+      "If you didn't request this OTP, please ignore this email.",
+      '',
+      `© ${year} ${appName}. All rights reserved.`,
+    ].join('\n');
+  }
+
+  private getOTPEmailTemplate(appName: string, otp: string, purpose: string): string {
+    const safeApp = this.escapeHtml(appName);
+    const safeOtp = this.escapeHtml(otp);
+    const safePurpose = this.escapeHtml(purpose);
+    const year = new Date().getFullYear();
     return `
 <!DOCTYPE html>
 <html>
@@ -123,18 +161,18 @@ export class EmailService {
         <table role="presentation" style="width: 600px; border-collapse: collapse; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
           <tr>
             <td style="padding: 40px 30px; text-align: center; background-color: #000000; border-radius: 8px 8px 0 0;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 28px;">UserGen.ai</h1>
+              <h1 style="margin: 0; color: #ffffff; font-size: 28px;">${safeApp}</h1>
             </td>
           </tr>
           <tr>
             <td style="padding: 40px 30px;">
-              <h2 style="margin: 0 0 20px 0; color: #333333; font-size: 24px;">OTP for ${purpose}</h2>
+              <h2 style="margin: 0 0 20px 0; color: #333333; font-size: 24px;">OTP for ${safePurpose}</h2>
               <p style="margin: 0 0 30px 0; color: #666666; font-size: 16px; line-height: 1.5;">
-                Use the following One-Time Password (OTP) to complete your ${purpose}:
+                Use the following One-Time Password (OTP) to complete your ${safePurpose}:
               </p>
               <div style="text-align: center; margin: 30px 0;">
                 <div style="display: inline-block; padding: 20px 40px; background-color: #f8f9fa; border: 2px dashed #dee2e6; border-radius: 8px;">
-                  <p style="margin: 0; font-size: 36px; font-weight: bold; color: #000000; letter-spacing: 8px;">${otp}</p>
+                  <p style="margin: 0; font-size: 36px; font-weight: bold; color: #000000; letter-spacing: 8px;">${safeOtp}</p>
                 </div>
               </div>
               <p style="margin: 30px 0 0 0; color: #999999; font-size: 14px; line-height: 1.5;">
@@ -148,7 +186,7 @@ export class EmailService {
           <tr>
             <td style="padding: 20px 30px; text-align: center; background-color: #f8f9fa; border-radius: 0 0 8px 8px;">
               <p style="margin: 0; color: #999999; font-size: 12px;">
-                © ${new Date().getFullYear()} UserGen.ai. All rights reserved.
+                © ${year} ${safeApp}. All rights reserved.
               </p>
             </td>
           </tr>

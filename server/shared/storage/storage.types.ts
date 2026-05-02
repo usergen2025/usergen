@@ -5,7 +5,7 @@
 /**
  * Service identifiers for bucket path segregation
  */
-export type StorageService = 'ai-content' | 'video-processing' | 'voice-audio' | 'media';
+export type StorageService = 'ai-content' | 'video-processing' | 'voice-audio' | 'media' | 'campaign';
 
 /**
  * Result of a storage upload operation

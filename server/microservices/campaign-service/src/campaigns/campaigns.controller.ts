@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -6,6 +7,7 @@ import {
   Patch,
   Post,
   Put,
+  Headers,
   Query,
   Res,
   UploadedFile,
@@ -15,8 +17,12 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import { CampaignsService } from './campaigns.service';
+import { CampaignMediaService } from './campaign-media.service';
 import {
   ApplyToCampaignDto,
+  DraftFromProjectDto,
+  IngestDraftUrlDto,
+  ReplaceApplicationDraftDto,
   CreatePostSubmissionDto,
   CreateCampaignDto,
   CreateSubmissionDto,
@@ -35,7 +41,10 @@ import { Response } from 'express';
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class CampaignsController {
-  constructor(private readonly campaignsService: CampaignsService) {}
+  constructor(
+    private readonly campaignsService: CampaignsService,
+    private readonly campaignMediaService: CampaignMediaService,
+  ) {}
 
   @Get('campaigns')
   @Roles('BRAND', 'ADMIN', 'OWNER')
@@ -71,10 +80,39 @@ export class CampaignsController {
     }),
   )
   uploadCreatorDraftAsset(
-    @UploadedFile() file: { buffer?: Buffer; originalname?: string; size?: number } | undefined,
+    @UploadedFile() file: { buffer?: Buffer; originalname?: string; size?: number; mimetype?: string } | undefined,
     @CurrentUser() user: { id: string },
+    @Query('campaignId') campaignId?: string,
   ) {
-    return this.campaignsService.uploadBrandAsset(file ?? {}, user.id);
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No file uploaded');
+    }
+    return this.campaignMediaService.createFromUpload(
+      { buffer: file.buffer, originalname: file.originalname, mimetype: file.mimetype, size: file.size },
+      user.id,
+      campaignId,
+    );
+  }
+
+  @Post('campaigns/drafts/ingest-url')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  ingestDraftUrl(@Body() dto: IngestDraftUrlDto, @CurrentUser() user: { id: string }) {
+    return this.campaignMediaService.createFromExternalUrl(dto.url, user.id, dto.campaignId);
+  }
+
+  @Post('campaigns/drafts/from-project')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  draftFromProject(
+    @Body() dto: DraftFromProjectDto,
+    @CurrentUser() user: { id: string },
+    @Headers('authorization') authorization?: string,
+  ) {
+    return this.campaignMediaService.createFromProject(
+      dto.projectId,
+      user.id,
+      dto.campaignId,
+      authorization,
+    );
   }
 
   @Get('campaigns/:id')
@@ -229,6 +267,22 @@ export class CampaignsController {
   @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
   getCreatorCampaigns(@Query('search') search?: string) {
     return this.campaignsService.getCreatorCampaigns(search);
+  }
+
+  @Get('creator/campaigns/:id')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getCreatorCampaignById(@Param('id') id: string, @CurrentUser() user: { id: string }) {
+    return this.campaignsService.getCampaignDetailForCreator(id, user.id);
+  }
+
+  @Post('creator/campaigns/:campaignId/replace-draft')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  replaceApplicationDraft(
+    @Param('campaignId') campaignId: string,
+    @Body() dto: ReplaceApplicationDraftDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.campaignsService.replaceApplicationDraft(campaignId, user.id, dto.draftAssetId);
   }
 
   @Get('creator/earnings')

@@ -6,6 +6,7 @@
 set +e  # Don't exit on error - we'll handle errors manually
 
 cd "$(dirname "$0")/.."  # Go to server root
+SERVER_ROOT="$(pwd)"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -50,29 +51,30 @@ has_prisma_schema() {
     [ -f "$service_path/prisma/schema.prisma" ]
 }
 
-# Function to get DATABASE_URL from service .env or root .env
+# Resolve DATABASE_URL for Prisma. Migrate/generate always run with cwd = microservices/<service>,
+# so we read ./.env there first, then fall back to server-root .env.
 get_database_url() {
     local service_name="$1"
-    local service_path="microservices/$service_name"
-    
-    # Try service-specific .env first
-    if [ -f "$service_path/.env" ]; then
-        local db_url=$(grep "^DATABASE_URL=" "$service_path/.env" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+    local db_url=""
+    local env_here=".env"
+    local env_root="$SERVER_ROOT/.env"
+
+    if [ -f "$env_here" ]; then
+        db_url=$(grep "^DATABASE_URL=" "$env_here" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
         if [ -n "$db_url" ]; then
             echo "$db_url"
             return
         fi
-        
-        # Try alternative database URL env vars
+
         case "$service_name" in
             video-processing-service)
-                local db_url=$(grep "^DATABASE_URL_VIDEO_PROCESSING=\|^DATABASE_URL_VIDEO=" "$service_path/.env" 2>/dev/null | head -1 | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+                db_url=$(grep "^DATABASE_URL_VIDEO_PROCESSING=\|^DATABASE_URL_VIDEO=" "$env_here" 2>/dev/null | head -1 | cut -d '=' -f2- | tr -d '"' | tr -d "'")
                 ;;
             auth-service)
-                local db_url=$(grep "^DATABASE_URL_AUTH=" "$service_path/.env" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+                db_url=$(grep "^DATABASE_URL_AUTH=" "$env_here" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
                 ;;
-            *)
-                local db_url=""
+            notification-service)
+                db_url=$(grep "^DATABASE_URL_NOTIFICATION=" "$env_here" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
                 ;;
         esac
         if [ -n "$db_url" ]; then
@@ -80,18 +82,33 @@ get_database_url() {
             return
         fi
     fi
-    
-    # Try root .env
-    if [ -f ".env" ]; then
-        local db_url=$(grep "^DATABASE_URL=" ".env" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+
+    if [ -f "$env_root" ]; then
+        db_url=$(grep "^DATABASE_URL=" "$env_root" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
         if [ -n "$db_url" ]; then
             echo "$db_url"
             return
         fi
+        if [ "$service_name" = "notification-service" ]; then
+            db_url=$(grep "^DATABASE_URL_NOTIFICATION=" "$env_root" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'")
+            if [ -n "$db_url" ]; then
+                echo "$db_url"
+                return
+            fi
+        fi
     fi
-    
-    # Default fallback
-    echo "postgresql://postgres:password@localhost:5432/usergen_dev"
+
+    case "$service_name" in
+        notification-service)
+            echo "postgresql://postgres:password@localhost:5432/usergen_notification"
+            ;;
+        video-processing-service)
+            echo "postgresql://postgres:password@localhost:5432/usergen_video_processing"
+            ;;
+        *)
+            echo "postgresql://postgres:password@localhost:5432/usergen_dev"
+            ;;
+    esac
 }
 
 # Array of all services with Prisma
@@ -143,6 +160,10 @@ case "$action" in
             
             print_info "Migrating $service..."
             cd "$service_path"
+
+            if [ "$service" = "notification-service" ]; then
+                print_info "notification-service: ensure PostgreSQL database usergen_notification exists (migrate deploy creates tables only, not CREATE DATABASE)"
+            fi
             
             # Get DATABASE_URL
             db_url=$(get_database_url "$service")

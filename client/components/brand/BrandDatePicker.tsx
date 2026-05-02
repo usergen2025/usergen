@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DayPicker } from 'react-day-picker';
+import { DayPicker, DayFlag, SelectionState, UI } from 'react-day-picker';
 import { format, isAfter, isBefore, parse } from 'date-fns';
 import { Calendar } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
@@ -146,6 +146,7 @@ export function BrandDatePicker({
         >
           <DayPicker
             mode="single"
+            required={false}
             selected={selected}
             onSelect={(d) => {
               if (!d) return;
@@ -156,26 +157,30 @@ export function BrandDatePicker({
             showOutsideDays
             className="brand-day-picker"
             classNames={{
-              root: 'brand-day-picker__root',
-              months: 'brand-day-picker__months',
-              month: 'brand-day-picker__month',
-              caption: 'brand-day-picker__caption',
-              caption_label: 'brand-day-picker__caption font-heading text-sm font-semibold text-[#212121]',
-              nav: 'brand-day-picker__nav',
-              button_previous:
-                'brand-day-picker__nav-btn rounded-full p-1.5 text-[#E86512] hover:bg-orange-50',
-              button_next:
-                'brand-day-picker__nav-btn rounded-full p-1.5 text-[#E86512] hover:bg-orange-50',
-              head_cell:
-                'brand-day-picker__weekday w-9 text-center text-[0.65rem] font-medium uppercase tracking-wide text-[#9E9E9E]',
-              day: 'brand-day-picker__day',
-              day_button:
-                'brand-day-picker__day-btn mx-auto flex h-9 w-9 items-center justify-center rounded-full font-heading text-sm text-[#212121] hover:bg-orange-50',
-              selected:
+              [UI.Root]: 'brand-day-picker__root rdp-root',
+              [UI.Months]: 'brand-day-picker__months rdp-months',
+              [UI.Month]: 'brand-day-picker__month rdp-month',
+              [UI.MonthCaption]: 'brand-day-picker__caption rdp-month_caption',
+              [UI.CaptionLabel]:
+                'brand-day-picker__caption font-heading text-sm font-semibold text-[#212121]',
+              [UI.Nav]: 'brand-day-picker__nav rdp-nav',
+              [UI.PreviousMonthButton]:
+                'brand-day-picker__nav-btn rdp-button_previous rounded-full p-1.5 text-[#E86512] hover:bg-orange-50',
+              [UI.NextMonthButton]:
+                'brand-day-picker__nav-btn rdp-button_next rounded-full p-1.5 text-[#E86512] hover:bg-orange-50',
+              [UI.Weekdays]: 'brand-day-picker__weekdays rdp-weekdays',
+              [UI.Weekday]:
+                'brand-day-picker__weekday rdp-weekday text-center text-[0.65rem] font-medium uppercase tracking-wide text-[#9E9E9E]',
+              [UI.Weeks]: 'brand-day-picker__weeks rdp-weeks',
+              [UI.Week]: 'brand-day-picker__week rdp-week',
+              [UI.Day]: 'brand-day-picker__day rdp-day',
+              [UI.DayButton]:
+                'brand-day-picker__day-btn rdp-day_button mx-auto flex h-9 w-9 items-center justify-center rounded-full font-heading text-sm text-[#212121] hover:bg-orange-50',
+              [SelectionState.selected]:
                 'brand-day-picker__selected text-white hover:text-white [&_button]:bg-gradient-to-br [&_button]:from-[#E86412] [&_button]:to-[#F12A4C] [&_button]:shadow-sm',
-              today: 'brand-day-picker__today font-semibold text-[#E86512]',
-              disabled: 'brand-day-picker__disabled opacity-35',
-              outside: 'brand-day-picker__outside opacity-40',
+              [DayFlag.today]: 'brand-day-picker__today font-semibold text-[#E86512]',
+              [DayFlag.disabled]: 'brand-day-picker__disabled opacity-35',
+              [DayFlag.outside]: 'brand-day-picker__outside opacity-40',
             }}
           />
         </div>

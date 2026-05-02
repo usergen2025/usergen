@@ -25,14 +25,18 @@ import {
   Play,
   Pencil,
   X,
-  ExternalLink,
+  Check,
 } from 'lucide-react';
+import Tooltip from '@/components/ui/Tooltip';
+import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
+import { parseDraftMediaAssetId } from '@/lib/campaign-media';
 
 interface Applicant {
   id: string;
   creatorId: string;
   name: string;
-  instagramProfileLink: string;
+  /** Resolved campaign-media asset for watermarked preview */
+  draftAssetId?: string;
   appliedAt: string;
   status: 'PENDING' | 'SHORTLISTED' | 'APPROVED' | 'REJECTED' | 'APPLIED' | 'SUBMITTED';
   views?: number;
@@ -64,6 +68,7 @@ interface ApplicationRow {
   id: string;
   creatorId: string;
   draftMediaUrl?: string;
+  draftMediaAssetId?: string;
   platform?: 'INSTAGRAM' | 'YOUTUBE';
   createdAt: string;
   status: 'APPLIED' | 'APPROVED' | 'REJECTED' | 'SUBMITTED' | 'WITHDRAWN';
@@ -123,6 +128,7 @@ export default function CampaignDetailsPage() {
   const [activeReviewTab, setActiveReviewTab] = useState<'applicants' | 'shortlisted' | 'rejected'>(
     'applicants',
   );
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
 
   const pendingApplicants = useMemo(
     () => allApplicants.filter((a) => a.status === 'PENDING'),
@@ -161,7 +167,8 @@ export default function CampaignDetailsPage() {
         id: application.id,
         creatorId: application.creatorId,
         name: `Creator ${application.creatorId.slice(-6)}`,
-        instagramProfileLink: application.draftMediaUrl || '#',
+        draftAssetId:
+          parseDraftMediaAssetId(application.draftMediaUrl, application.draftMediaAssetId) || undefined,
         appliedAt: application.createdAt,
         status: (
           application.status === 'APPLIED' || application.status === 'SUBMITTED'
@@ -221,7 +228,8 @@ export default function CampaignDetailsPage() {
           id: application.id,
           creatorId: application.creatorId,
           name: `Creator ${application.creatorId.slice(-6)}`,
-          instagramProfileLink: application.draftMediaUrl || '#',
+          draftAssetId:
+            parseDraftMediaAssetId(application.draftMediaUrl, application.draftMediaAssetId) || undefined,
           appliedAt: application.createdAt,
           status: (
             application.status === 'APPLIED' || application.status === 'SUBMITTED'
@@ -570,6 +578,7 @@ export default function CampaignDetailsPage() {
                 allowReviewActions={activeReviewTab === 'applicants'}
                 onShortlist={handleShortlist}
                 onReject={handleReject}
+                onPreviewDraft={(assetId) => setPreviewAssetId(assetId)}
               />
             ))}
           </div>
@@ -747,6 +756,13 @@ export default function CampaignDetailsPage() {
           </div>
         </div>
       </Modal>
+
+      <CampaignWatermarkedPreviewModal
+        isOpen={Boolean(previewAssetId)}
+        onClose={() => setPreviewAssetId(null)}
+        assetId={previewAssetId}
+        title="Applicant draft preview"
+      />
     </div>
   );
 }
@@ -756,11 +772,13 @@ function ApplicantCard({
   allowReviewActions,
   onShortlist,
   onReject,
+  onPreviewDraft,
 }: {
   applicant: Applicant;
   allowReviewActions?: boolean;
   onShortlist: (applicant: Applicant) => void;
   onReject: (applicant: Applicant) => void;
+  onPreviewDraft: (assetId: string) => void;
 }) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -782,10 +800,7 @@ function ApplicantCard({
               <span className="text-[0.7rem] text-text-secondary sm:text-xs">· {formatDate(applicant.appliedAt)}</span>
             </div>
             <div className="mb-1 truncate text-xs text-text-secondary sm:text-sm">
-              <span className="inline-flex min-w-0 items-center gap-0.5">
-                <ExternalLink className="h-3 w-3 shrink-0" />
-                {applicant.creatorId}
-              </span>
+              Creator ID: <span className="font-mono text-[0.7rem]">{applicant.creatorId}</span>
             </div>
             {applicant.views !== undefined && applicant.earnings !== undefined && (
               <div className="flex flex-wrap gap-2 text-xs sm:gap-3 sm:text-sm">
@@ -808,26 +823,41 @@ function ApplicantCard({
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5 md:items-end shrink-0 w-full md:w-auto">
-          <a
-            href={applicant.instagramProfileLink}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
-          >
-            Open link
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-          {allowReviewActions && applicant.status === 'PENDING' ? (
-            <div className="flex items-center gap-1.5">
-              <BrandPrimaryButton type="button" size="sm" onClick={() => onShortlist(applicant)}>
-                Approve
-              </BrandPrimaryButton>
-              <BrandSecondaryButton type="button" size="sm" onClick={() => onReject(applicant)}>
-                Reject
-              </BrandSecondaryButton>
-            </div>
-          ) : null}
+        <div className="flex items-center gap-2 shrink-0">
+          {applicant.draftAssetId ? (
+            <BrandSecondaryButton
+              type="button"
+              size="sm"
+              onClick={() => onPreviewDraft(applicant.draftAssetId!)}
+            >
+              <Eye className="mr-1 h-3.5 w-3.5" />
+              Preview draft
+            </BrandSecondaryButton>
+          ) : (
+            <span className="text-xs text-text-secondary">No draft attached</span>
+          )}
+          {allowReviewActions && applicant.status === 'PENDING' && (
+            <>
+              <Tooltip content="Approve" position="top">
+                <button
+                  type="button"
+                  onClick={() => onShortlist(applicant)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-green-500 text-white transition-colors hover:bg-green-600"
+                >
+                  <Check className="h-4 w-4" strokeWidth={2.5} />
+                </button>
+              </Tooltip>
+              <Tooltip content="Reject" position="top">
+                <button
+                  type="button"
+                  onClick={() => onReject(applicant)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-red-500 text-white transition-colors hover:bg-red-600"
+                >
+                  <X className="h-4 w-4" strokeWidth={2.5} />
+                </button>
+              </Tooltip>
+            </>
+          )}
         </div>
       </div>
     </div>

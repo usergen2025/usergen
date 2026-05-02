@@ -153,19 +153,3 @@ enum VideoCreationStep {
   COMPLETED          // All steps completed
 }
 
-/// In-app notifications (bell). Presence for suppress-on-page is in-memory per instance (see UserPresenceService).
-model UserNotification {
-  id        String   @id @default(cuid())
-  userId    String
-  type      String
-  title     String
-  message   String
-  data      Json?
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
-
-  @@index([userId, read])
-  @@index([createdAt])
-  @@map("user_notifications")
-}
-

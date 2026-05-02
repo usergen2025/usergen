@@ -103,9 +103,20 @@ body {
 /* Heavier outer ring — align with My Campaigns list container presence */
 .brand-gradient-frame--heavy {
   border-radius: 20px;
+  padding: 3px;
+  background:
+    linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.6) 58.96%),
+    linear-gradient(
+      114.13deg,
+      rgba(232, 100, 18, 0.55) 32%,
+      rgba(254, 89, 191, 0.4) 48.81%,
+      rgba(231, 57, 19, 0.4) 64.75%,
+      rgba(254, 201, 89, 0.4) 83.76%,
+      rgba(232, 100, 18, 0.4) 93.57%
+    );
   box-shadow:
-    inset 0 0 0 1px rgba(232, 100, 18, 0.22),
-    0 0 0 3px rgba(232, 100, 18, 0.12);
+    inset 0 0 0 1px rgba(232, 100, 18, 0.25),
+    0 0 0 1px rgba(232, 100, 18, 0.15);
 }
 
 .brand-surface-card {
@@ -482,23 +493,24 @@ body {
   display: none;
 }
 
-/* Custom campaign date picker (react-day-picker) */
+/* Custom campaign date picker (react-day-picker v9) — strict 7-column grid */
 .brand-date-picker-popover .brand-day-picker__root {
   --rdp-accent-color: #e86412;
   --rdp-background-color: #fffdfa;
+  width: 100%;
 }
 
-.brand-day-picker__months {
+.brand-date-picker-popover .brand-day-picker__months {
   position: relative;
   width: 100%;
 }
 
-.brand-day-picker__month {
+.brand-date-picker-popover .brand-day-picker__month {
   padding-bottom: 0.25rem;
   width: 100%;
 }
 
-.brand-day-picker__caption {
+.brand-date-picker-popover .brand-day-picker__caption {
   position: relative;
   display: flex;
   align-items: center;
@@ -507,7 +519,7 @@ body {
   padding-inline: 2.25rem;
 }
 
-.brand-day-picker__nav {
+.brand-date-picker-popover .brand-day-picker__nav {
   position: absolute;
   inset-inline: 0;
   top: 2px;
@@ -517,23 +529,62 @@ body {
   padding-inline: 0.125rem;
 }
 
-.brand-day-picker__nav-btn {
+.brand-date-picker-popover .brand-day-picker__nav-btn {
   pointer-events: auto;
   position: relative;
   z-index: 1;
 }
 
+/* Shared 7-column track for weekday labels and day rows */
 .brand-date-picker-popover .rdp-month_grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0;
+}
+
+.brand-date-picker-popover .rdp-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  width: 100%;
+  margin: 0;
+  padding: 0 0 0.35rem;
+  list-style: none;
+}
+
+.brand-date-picker-popover .rdp-weekday {
+  width: auto;
+  min-width: 0;
+  padding: 0.15rem 0;
+  text-align: center;
+}
+
+.brand-date-picker-popover .rdp-weeks {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
   width: 100%;
 }
 
 .brand-date-picker-popover .rdp-week {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.brand-date-picker-popover .rdp-weekday {
-  width: auto;
+.brand-date-picker-popover .rdp-day {
+  min-width: 0;
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brand-date-picker-popover .rdp-day_button {
+  max-width: 100%;
 }
 
 .brand-day-picker__nav-btn[disabled] {

@@ -54,6 +54,19 @@ enum WalletSyncStatus {
   SYNCED
 }
 
+enum CampaignMediaSourceType {
+  PROJECT_LIBRARY
+  UPLOAD
+  EXTERNAL_URL
+}
+
+enum CampaignMediaStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
 model Campaign {
   id              String         @id @default(cuid())
   brandId         String
@@ -80,6 +93,31 @@ model Campaign {
   postSubmissions CampaignPostSubmission[]
   earnings        CampaignEarningSnapshot[]
   creatorEarnings CreatorEarning[]
+  mediaAssets     CampaignMediaAsset[]
+}
+
+model CampaignMediaAsset {
+  id                   String                 @id @default(cuid())
+  ownerId              String
+  campaignId           String?
+  sourceType           CampaignMediaSourceType
+  projectId            String?
+  originalSourceUrl    String?
+  originalLocalPath    String?
+  originalGcsUrl       String?
+  watermarkedLocalPath String?
+  watermarkedGcsUrl    String?
+  mimeType             String?
+  sizeBytes            Int?
+  status               CampaignMediaStatus      @default(PENDING)
+  error                String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  campaign             Campaign?                @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  applicationDraft     CampaignApplication?     @relation("ApplicationDraftMedia")
+
+  @@index([ownerId, createdAt])
+  @@index([campaignId])
 }
 
 model Submission {
@@ -110,6 +148,7 @@ model CampaignApplication {
   creatorId  String
   status     ApplicationStatus @default(APPLIED)
   draftMediaUrl String?
+  draftMediaAssetId String?   @unique
   platform   String?
   termsAccepted Boolean        @default(false)
   termsAcceptedAt DateTime?
@@ -119,6 +158,7 @@ model CampaignApplication {
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
   campaign   Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  draftMediaAsset CampaignMediaAsset? @relation("ApplicationDraftMedia", fields: [draftMediaAssetId], references: [id], onDelete: SetNull)
   postSubmissions CampaignPostSubmission[]
 
   @@unique([campaignId, creatorId])

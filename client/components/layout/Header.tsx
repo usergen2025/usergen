@@ -253,7 +253,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
 
             {/* Right Side Actions */}
             <div className="flex items-center gap-2">
-              {isAuthenticated && !userIsBrand && <NotificationBell />}
+              {isAuthenticated && <NotificationBell />}
               {isAuthenticated && !userIsBrand && (
                 <CreditDisplay className="hidden sm:flex" showAddButton={false} />
               )}

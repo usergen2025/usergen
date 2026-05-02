@@ -4,6 +4,7 @@ import "./globals.css";
 import Header from "@/components/layout/Header";
 import { ToastProvider } from "@/lib/toast/toast";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
+import { CampaignEventsProvider } from "@/contexts/CampaignEventsContext";
 import ConditionalHeader from "@/components/layout/ConditionalHeader";
 import { AuthExpiryProvider } from "@/contexts/AuthExpiryContext";
 
@@ -26,14 +27,16 @@ export default function RootLayout({
     <html lang="en" className="h-full">
       <body className={`${inter.variable} app-global-gradient antialiased h-full flex flex-col`}>
         <WebSocketProvider>
-          <ToastProvider>
-            <AuthExpiryProvider>
-              <ConditionalHeader />
-              <main className="flex min-h-0 flex-1 flex-col">
-                {children}
-              </main>
-            </AuthExpiryProvider>
-          </ToastProvider>
+          <CampaignEventsProvider>
+            <ToastProvider>
+              <AuthExpiryProvider>
+                <ConditionalHeader />
+                <main className="flex min-h-0 flex-1 flex-col">
+                  {children}
+                </main>
+              </AuthExpiryProvider>
+            </ToastProvider>
+          </CampaignEventsProvider>
         </WebSocketProvider>
       </body>
     </html>

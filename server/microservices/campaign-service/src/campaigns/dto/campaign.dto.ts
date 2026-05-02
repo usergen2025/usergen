@@ -1,4 +1,16 @@
-import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUrl, MaxLength, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 
 export class CreateCampaignDto {
   @IsString()
@@ -123,9 +135,19 @@ export class CreateSubmissionDto {
 }
 
 export class ApplyToCampaignDto {
+  /** Legacy: public http(s) URL. Omit when using draftAssetId. */
+  @ValidateIf((o: ApplyToCampaignDto) => !o.draftAssetId)
+  @IsOptional()
   @IsString()
   @IsUrl()
-  draftMediaUrl!: string;
+  draftMediaUrl?: string;
+
+  /** New: ID from POST /campaigns/drafts/upload | ingest-url | from-project */
+  @ValidateIf((o: ApplyToCampaignDto) => !o.draftMediaUrl?.trim())
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  draftAssetId?: string;
 
   @IsOptional()
   @IsString()
@@ -147,6 +169,32 @@ export class ApplyToCampaignDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class IngestDraftUrlDto {
+  @IsString()
+  @IsUrl()
+  url!: string;
+
+  @IsOptional()
+  @IsString()
+  campaignId?: string;
+}
+
+export class DraftFromProjectDto {
+  @IsString()
+  @IsNotEmpty()
+  projectId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  campaignId!: string;
+}
+
+export class ReplaceApplicationDraftDto {
+  @IsString()
+  @IsNotEmpty()
+  draftAssetId!: string;
 }
 
 export class CreatePostSubmissionDto {

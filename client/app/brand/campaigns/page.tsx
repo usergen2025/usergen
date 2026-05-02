@@ -185,7 +185,7 @@ export default function CampaignsPage() {
         <BrandStatStrip items={statItems} layout="inline" />
       </div>
 
-      <div className="brand-gradient-frame p-3 sm:p-4 flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px] p-[2px]">
+      <div className="brand-gradient-frame brand-gradient-frame--heavy flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px]">
         <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[18px] bg-white/95 shadow-sm">
         <div className="shrink-0 space-y-3 border-b border-[#EFE8E3] p-3 sm:p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between lg:gap-4">

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Bell } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
+import { useCampaignEventsContext } from '@/contexts/CampaignEventsContext';
 
 const POLL_MS = 20_000;
 
@@ -12,6 +13,7 @@ export default function NotificationBell() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<any[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const { addGlobalHandler } = useCampaignEventsContext();
 
   const load = useCallback(async () => {
     const res = await apiClient.getNotifications();
@@ -19,6 +21,13 @@ export default function NotificationBell() {
       setItems(res.data.notifications);
     }
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = addGlobalHandler(() => {
+      load().catch(() => {});
+    });
+    return unsubscribe;
+  }, [addGlobalHandler, load]);
 
   useEffect(() => {
     load();
@@ -80,6 +89,22 @@ export default function NotificationBell() {
             ) : (
               items.map((n) => {
                 const pid = n.data?.projectId as string | undefined;
+                const cid = n.data?.campaignId as string | undefined;
+                const isCampaignNotification = n.type?.startsWith('CAMPAIGN_');
+                const isBrandNotification =
+                  n.type === 'CAMPAIGN_APPLICATION_RECEIVED' ||
+                  n.type === 'CAMPAIGN_POST_SUBMITTED';
+
+                const getCampaignLink = () => {
+                  if (!cid) return null;
+                  if (isBrandNotification) {
+                    return `/brand/campaigns/${cid}`;
+                  }
+                  return `/campaigns/${cid}`;
+                };
+
+                const campaignLink = getCampaignLink();
+
                 return (
                   <div
                     key={n.id}
@@ -98,6 +123,15 @@ export default function NotificationBell() {
                           onClick={() => onMarkRead(n.id)}
                         >
                           Open project
+                        </Link>
+                      )}
+                      {campaignLink && (
+                        <Link
+                          href={campaignLink}
+                          className="text-xs font-medium text-[#E86412] hover:underline"
+                          onClick={() => onMarkRead(n.id)}
+                        >
+                          {isBrandNotification ? 'View applicants' : 'View campaign'}
                         </Link>
                       )}
                       {!n.read && (

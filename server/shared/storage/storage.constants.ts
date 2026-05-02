@@ -27,6 +27,7 @@ export const SERVICE_PREFIXES: Record<StorageService, string> = {
   'video-processing': 'video-processing',
   'voice-audio': 'voice-audio',
   'media': 'media',
+  'campaign': 'campaign',
 };
 
 /**

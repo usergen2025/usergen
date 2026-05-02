@@ -23,6 +23,9 @@ import {
 } from './dto/campaign.dto';
 import { DatabaseService } from '../common/database/database.service';
 import { WalletSyncService } from './wallet-sync.service';
+import { CampaignMediaService } from './campaign-media.service';
+import { CampaignNotificationService } from './campaign-notification.service';
+import { isAfterCampaignEndDay, isOnOrBeforeDeadlineDay } from './utils/date-compare.util';
 
 export type CampaignStatus = 'LIVE' | 'IN_PROGRESS' | 'COMPLETED' | 'PAUSED' | 'DRAFT';
 export type SubmissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -73,6 +76,7 @@ export interface CampaignApplicationView {
   creatorId: string;
   status: 'APPLIED' | 'APPROVED' | 'REJECTED' | 'SUBMITTED' | 'WITHDRAWN';
   draftMediaUrl?: string;
+  draftMediaAssetId?: string;
   platform?: 'INSTAGRAM' | 'YOUTUBE';
   termsAccepted: boolean;
   termsAcceptedAt?: string;
@@ -108,6 +112,8 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     private readonly databaseService: DatabaseService,
     private readonly walletSyncService: WalletSyncService,
     private readonly configService: ConfigService,
+    private readonly campaignMediaService: CampaignMediaService,
+    private readonly notificationService: CampaignNotificationService,
   ) {}
 
   private getIdempotencyKey(scope: string, ids: Array<string | number>) {
@@ -166,8 +172,10 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     brandId?: string;
     status?: CampaignStatus;
     search?: string;
+    deadlineNotPassed?: boolean;
   }): Promise<Campaign[]> {
-    const { brandId, status, search } = options;
+    const { brandId, status, search, deadlineNotPassed } = options;
+    const now = new Date();
     const rows = await this.databaseService.campaign.findMany({
       where: {
         NOT: {
@@ -175,6 +183,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
         ...(brandId ? { brandId } : {}),
         ...(status ? { status } : {}),
+        ...(deadlineNotPassed ? { deadlineToApply: { gte: now } } : {}),
         ...(search
           ? {
               OR: [
@@ -406,12 +415,40 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Applications are allowed only on active campaigns');
     }
     const now = new Date();
-    if (new Date(campaign.deadlineToApply) < now) {
+    if (!isOnOrBeforeDeadlineDay(campaign.deadlineToApply, now)) {
       throw new BadRequestException('Application deadline has passed');
     }
     if (!dto?.termsAccepted) {
       throw new BadRequestException('Terms must be accepted before applying');
     }
+
+    const urlFromLegacy = dto?.draftMediaUrl?.trim();
+    const assetId = dto?.draftAssetId?.trim();
+    if (!urlFromLegacy && !assetId) {
+      throw new BadRequestException('Provide draftMediaUrl or draftAssetId');
+    }
+
+    let resolvedDraftUrl = urlFromLegacy || '';
+    let resolvedDraftAssetId: string | undefined;
+
+    if (assetId) {
+      const asset = await this.databaseService.campaignMediaAsset.findUnique({
+        where: { id: assetId },
+      });
+      if (!asset || asset.ownerId !== creatorId) {
+        throw new BadRequestException('Invalid draft asset');
+      }
+      if (asset.status !== 'READY') {
+        throw new BadRequestException('Draft asset is not ready yet');
+      }
+      await this.databaseService.campaignMediaAsset.update({
+        where: { id: assetId },
+        data: { campaignId },
+      });
+      resolvedDraftAssetId = assetId;
+      resolvedDraftUrl = this.campaignMediaService.previewApiPath(assetId);
+    }
+
     await this.databaseService.campaignApplication.upsert({
       where: {
         campaignId_creatorId: {
@@ -421,7 +458,8 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       },
       update: {
         status: 'APPLIED',
-        draftMediaUrl: dto?.draftMediaUrl,
+        draftMediaUrl: resolvedDraftUrl,
+        draftMediaAssetId: resolvedDraftAssetId ?? null,
         platform: dto?.platform || 'INSTAGRAM',
         termsAccepted: true,
         termsAcceptedAt: now,
@@ -430,11 +468,15 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         campaignId,
         creatorId,
         status: 'APPLIED',
-        draftMediaUrl: dto?.draftMediaUrl,
+        draftMediaUrl: resolvedDraftUrl,
+        draftMediaAssetId: resolvedDraftAssetId ?? null,
         platform: dto?.platform || 'INSTAGRAM',
         termsAccepted: true,
         termsAcceptedAt: now,
       },
+    });
+    const application = await this.databaseService.campaignApplication.findUnique({
+      where: { campaignId_creatorId: { campaignId, creatorId } },
     });
     await this.databaseService.walletSyncEvent.create({
       data: {
@@ -450,6 +492,15 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+
+    void this.notificationService.notifyApplicationReceived({
+      brandId: campaign.brandId || '',
+      creatorId,
+      campaignId,
+      campaignName: campaign.name,
+      applicationId: application?.id || '',
+    });
+
     return { success: true, message: 'Application received' };
   }
 
@@ -459,7 +510,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Submissions are allowed only on active campaigns');
     }
     const now = new Date();
-    if (new Date(campaign.endDate) < now) {
+    if (isAfterCampaignEndDay(campaign.endDate, now)) {
       throw new BadRequestException('Campaign has already ended');
     }
     const application = await this.databaseService.campaignApplication.findUnique({
@@ -622,6 +673,26 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+
+    if (updated.status === 'APPROVED') {
+      void this.notificationService.notifyApplicationApproved({
+        brandId: application.campaign.brandId,
+        creatorId: application.creatorId,
+        campaignId: application.campaignId,
+        campaignName: application.campaign.name,
+        applicationId,
+      });
+    } else if (updated.status === 'REJECTED') {
+      void this.notificationService.notifyApplicationRejected({
+        brandId: application.campaign.brandId,
+        creatorId: application.creatorId,
+        campaignId: application.campaignId,
+        campaignName: application.campaign.name,
+        applicationId,
+        comment: dto.comment,
+      });
+    }
+
     return this.mapApplication(updated);
   }
 
@@ -633,6 +704,10 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     const campaign = await this.getCampaign(campaignId);
     if (campaign.status !== 'LIVE' && campaign.status !== 'IN_PROGRESS') {
       throw new BadRequestException('Campaign is not active');
+    }
+    const now = new Date();
+    if (isAfterCampaignEndDay(campaign.endDate, now)) {
+      throw new BadRequestException('Campaign has already ended');
     }
     const application = await this.databaseService.campaignApplication.findUnique({
       where: {
@@ -667,6 +742,16 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+
+    void this.notificationService.notifyPostSubmitted({
+      brandId: campaign.brandId || '',
+      creatorId,
+      campaignId,
+      campaignName: campaign.name,
+      postId: created.id,
+      postUrl: dto.postUrl,
+    });
+
     return this.mapPostSubmission(created);
   }
 
@@ -901,6 +986,58 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     }));
   }
 
+  async getCampaignDetailForCreator(campaignId: string, creatorId: string) {
+    const row = await this.databaseService.campaign.findUnique({ where: { id: campaignId } });
+    if (!row) {
+      throw new NotFoundException('Campaign not found');
+    }
+    const application = await this.databaseService.campaignApplication.findUnique({
+      where: { campaignId_creatorId: { campaignId, creatorId } },
+    });
+    const postSubmissions = await this.databaseService.campaignPostSubmission.findMany({
+      where: { campaignId, creatorId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return {
+      campaign: this.mapCampaign(row),
+      application: application ? this.mapApplication(application) : null,
+      postSubmissions: postSubmissions.map((p) => this.mapPostSubmission(p)),
+    };
+  }
+
+  async replaceApplicationDraft(campaignId: string, creatorId: string, draftAssetId: string) {
+    const application = await this.databaseService.campaignApplication.findUnique({
+      where: { campaignId_creatorId: { campaignId, creatorId } },
+    });
+    if (!application) {
+      throw new NotFoundException('Application not found');
+    }
+    if (application.status !== 'APPLIED') {
+      throw new BadRequestException('You can only replace a draft while status is APPLIED');
+    }
+    if (application.reviewedAt) {
+      throw new BadRequestException('Application is already under review');
+    }
+    const asset = await this.databaseService.campaignMediaAsset.findUnique({ where: { id: draftAssetId } });
+    if (!asset || asset.ownerId !== creatorId || asset.status !== 'READY') {
+      throw new BadRequestException('Invalid draft asset');
+    }
+    await this.databaseService.campaignMediaAsset.update({
+      where: { id: draftAssetId },
+      data: { campaignId },
+    });
+    const previewUrl = this.campaignMediaService.previewApiPath(draftAssetId);
+    const updated = await this.databaseService.campaignApplication.update({
+      where: { id: application.id },
+      data: {
+        draftMediaUrl: previewUrl,
+        draftMediaAssetId: draftAssetId,
+      },
+    });
+    return this.mapApplication(updated);
+  }
+
   async processMaturedLockedEarnings() {
     try {
       const now = new Date();
@@ -1037,7 +1174,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getCreatorCampaigns(search?: string) {
-    return this.queryCampaigns({ status: 'LIVE', search });
+    return this.queryCampaigns({ status: 'LIVE', search, deadlineNotPassed: true });
   }
 
   async getCreatorEarnings(creatorId: string) {
@@ -1418,6 +1555,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       creatorId: row.creatorId,
       status: row.status,
       draftMediaUrl: row.draftMediaUrl || undefined,
+      draftMediaAssetId: row.draftMediaAssetId || undefined,
       platform: row.platform || undefined,
       termsAccepted: Boolean(row.termsAccepted),
       termsAcceptedAt: row.termsAcceptedAt ? row.termsAcceptedAt.toISOString() : undefined,

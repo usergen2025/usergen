@@ -47,6 +47,17 @@ export class SwaggerAggregatorService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Full URL for OpenAPI JSON (global prefix /api + docs-json). Accepts base either http://host:port or http://host:port/api. */
+  private resolveSwaggerJsonUrl(baseUrl: string, swaggerPath: string): string {
+    const trimmed = baseUrl.replace(/\/+$/, '');
+    const path = swaggerPath.startsWith('/') ? swaggerPath : `/${swaggerPath}`;
+    if (path.startsWith('/api')) {
+      const origin = trimmed.replace(/\/api\/?$/, '');
+      return `${origin}${path}`;
+    }
+    return `${trimmed}${path}`;
+  }
+
   private initializeServices() {
     const baseUrl = (serviceName: string, port: string) => 
       this.configService.get<string>(`${serviceName}_SERVICE_URL`, `http://localhost:${port}`);
@@ -96,7 +107,7 @@ export class SwaggerAggregatorService implements OnModuleInit, OnModuleDestroy {
   private async fetchSwaggerSpec(service: ServiceConfig): Promise<void> {
     try {
       const swaggerPath = service.swaggerPath || '/api/docs-json';
-      const url = `${service.url}${swaggerPath}`;
+      const url = this.resolveSwaggerJsonUrl(service.url, swaggerPath);
       
       this.logger.debug(`Fetching Swagger from ${url}`);
       

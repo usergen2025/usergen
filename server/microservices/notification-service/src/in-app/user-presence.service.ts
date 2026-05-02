@@ -2,8 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 /**
  * Tracks which video project page a user is currently on (heartbeat from the client).
- * Used to skip push-style in-app notifications when they are already viewing that project.
- * In-memory only: multiple app instances each keep their own map (acceptable tradeoff for v1).
+ * In-memory only per notification-service instance.
  */
 @Injectable()
 export class UserPresenceService {
