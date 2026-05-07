@@ -1913,9 +1913,9 @@ function WorkspacePageContent() {
 
   const previewAspectRatio = useMemo(() => {
     const style = project?.style;
-    if (style === 'HALF_N_HALF') return '9/8';
+    if (style === 'HALF_N_HALF') return '9/16';
     if (style === 'ALTERNATE') {
-      return currentSceneNumber % 2 === 1 ? '9/8' : '9/16';
+      return currentSceneNumber % 2 === 1 ? '9/16' : '9/16';
     }
     return '9/16';
   }, [project?.style, currentSceneNumber]);

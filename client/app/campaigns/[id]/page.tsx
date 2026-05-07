@@ -112,7 +112,7 @@ export default function CreatorCampaignDetailPage() {
       </div>
 
       {/* Campaign Info Card */}
-      <div className="brand-gradient-frame brand-gradient-frame--heavy mb-5 rounded-[20px] p-[3px] shadow-card sm:mb-6">
+      <div className="brand-gradient-frame mb-5 rounded-[20px] shadow-card sm:mb-6 p-3 sm:mb-4 sm:p-4">
         <div className="rounded-[17px] bg-white/95 p-4 sm:p-6">
           <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="inline-flex items-center gap-1.5 brand-campaign-row text-[#212121]">
