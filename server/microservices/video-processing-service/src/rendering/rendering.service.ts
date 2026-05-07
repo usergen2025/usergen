@@ -3347,7 +3347,7 @@ export class RenderingService {
         return videoWithVoicePath;
       }
       const out = path.join(userDir, `final_with_bgm_${projectId}_${Date.now()}.mp4`);
-      const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.1, 0, 1);
+      const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.05, 0, 1);
       const voiceVol = this.clampBgMusicNumber(bgm.voiceDuckTo, 1.0, 0, 1);
       const fadeInMs = this.clampBgMusicNumber(bgm.fadeInMs, 500, 0, 5000);
       const fadeOutMs = this.clampBgMusicNumber(bgm.fadeOutMs, 1500, 0, 5000);
