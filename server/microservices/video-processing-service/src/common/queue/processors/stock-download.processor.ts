@@ -49,7 +49,8 @@ export class StockDownloadProcessor extends WorkerHost {
 
     try {
       // Get media-management-service URL
-      const mediaServiceUrl = this.configService.get<string>('MEDIA_MANAGEMENT_SERVICE_URL') || 'http://localhost:9005/api';
+      const mediaServiceUrl =
+        this.configService.get<string>('MEDIA_MANAGEMENT_SERVICE_URL') || 'http://localhost:9009/api';
       
       await job.updateProgress(10);
 

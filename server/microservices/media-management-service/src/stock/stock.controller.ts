@@ -7,6 +7,95 @@ import { StockService, StockSearchRequest } from './stock.service';
 export class StockController {
   constructor(private readonly stockService: StockService) {}
 
+  @Get('music/search')
+  @ApiOperation({
+    summary: 'Search Magnific Music catalog',
+    description:
+      'Search background music via Magnific API with linear relax fallback when no results.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'genre', required: false, description: 'Comma-separated genre names' })
+  @ApiQuery({ name: 'mood', required: false, description: 'Comma-separated mood names' })
+  @ApiQuery({ name: 'includePremium', required: false })
+  @ApiQuery({ name: 'time_range', required: false, enum: ['7d', '30d', '90d'] })
+  @ApiQuery({ name: 'order_by', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'offset', required: false })
+  async searchMusic(
+    @Query('q') q?: string,
+    @Query('genre') genreCsv?: string,
+    @Query('mood') moodCsv?: string,
+    @Query('include-premium') includePremiumDashed?: string,
+    @Query('includePremium') includePremium?: string,
+    @Query('time_range') timeRange?: '7d' | '30d' | '90d',
+    @Query('order_by') orderBy?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    try {
+      const genre = genreCsv
+        ? genreCsv
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const mood = moodCsv
+        ? moodCsv
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+
+      const data = await this.stockService.searchMusic({
+        q,
+        genre,
+        mood,
+        includePremium:
+          includePremiumDashed === 'true' ||
+          includePremiumDashed === '1' ||
+          includePremium === 'true' ||
+          includePremium === '1',
+        timeRange,
+        orderBy,
+        limit: limit ? parseInt(limit, 10) : undefined,
+        offset: offset ? parseInt(offset, 10) : undefined,
+      });
+
+      return { success: true, data };
+    } catch (error: any) {
+      if (error.message?.includes('not configured')) {
+        throw new HttpException(error.message, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Get('music/:musicId/download')
+  @ApiOperation({ summary: 'Download Magnific music track to GCS/local' })
+  @ApiParam({ name: 'musicId', description: 'Magnific numeric music id' })
+  @ApiQuery({ name: 'projectId', required: false })
+  async downloadMusic(
+    @Param('musicId') musicId: string,
+    @Query('projectId') projectId?: string,
+  ) {
+    const idNum = parseInt(musicId, 10);
+    if (Number.isNaN(idNum) || idNum < 1) {
+      throw new HttpException('Invalid music id', HttpStatus.BAD_REQUEST);
+    }
+    try {
+      const data = await this.stockService.downloadMusicItem(idNum, projectId);
+      return { success: true, data };
+    } catch (error: any) {
+      if (error.message?.includes('not configured')) {
+        throw new HttpException(error.message, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      if (error.response?.status === 404) {
+        throw new HttpException('Music not found', HttpStatus.NOT_FOUND);
+      }
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
   @Get('search')
   @ApiOperation({
     summary: 'Search stock media',

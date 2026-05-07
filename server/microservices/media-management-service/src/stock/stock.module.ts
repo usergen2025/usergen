@@ -3,11 +3,12 @@ import { ConfigModule } from '@nestjs/config';
 import { StockController } from './stock.controller';
 import { StockService } from './stock.service';
 import { FreepikProvider } from './providers/freepik.provider';
+import { MagnificMusicProvider } from './providers/magnific-music.provider';
 
 @Module({
   imports: [ConfigModule],
   controllers: [StockController],
-  providers: [StockService, FreepikProvider],
+  providers: [StockService, FreepikProvider, MagnificMusicProvider],
   exports: [StockService],
 })
 export class StockModule {}

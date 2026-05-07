@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
@@ -55,6 +55,37 @@ interface AudioFile {
   publicUrl?: string;   // Preferred public URL (GCS if available, fallback to backend)
   wordTimestamps?: WordTimestamp[];
 }
+
+type MusicSearchItem = {
+  id: string;
+  source: 'magnific';
+  externalId: number;
+  title: string;
+  artistName?: string;
+  genres?: string[];
+  moods?: string[];
+  coverUrl?: string | null;
+  previewUrl?: string | null;
+  seconds?: number;
+  time?: string;
+  isPremium?: boolean;
+};
+
+type BackgroundMusicConfig = {
+  enabled: boolean;
+  source?: 'magnific' | 'upload';
+  externalId?: number;
+  title?: string;
+  artist?: string;
+  durationSeconds?: number;
+  publicUrl?: string;
+  gcsUrl?: string;
+  searchSeed?: { query?: string; genres?: string[]; moods?: string[] };
+  mixVolume?: number;
+  voiceDuckTo?: number;
+  fadeInMs?: number;
+  fadeOutMs?: number;
+};
 
 function captionTextForVideoPreview(
   mode: 'word-by-word' | 'full-sentence',
@@ -243,8 +274,23 @@ function WorkspacePageContent() {
   const [durations, setDurations] = useState<Record<number, number>>({});
   const [selectedSceneIndex, setSelectedSceneIndex] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [backgroundMusicEnabled, setBackgroundMusicEnabled] = useState(true);
+  const [backgroundMusicEnabled, setBackgroundMusicEnabled] = useState(false);
   const [musicTab, setMusicTab] = useState<'library' | 'upload'>('library');
+  const [musicLibraryItems, setMusicLibraryItems] = useState<MusicSearchItem[]>([]);
+  const [musicSearchInput, setMusicSearchInput] = useState('');
+  const [musicSearchExpanded, setMusicSearchExpanded] = useState(false);
+  const [musicLoading, setMusicLoading] = useState(false);
+  const [musicRelaxLevel, setMusicRelaxLevel] = useState(0);
+  const [musicSelected, setMusicSelected] = useState<BackgroundMusicConfig | null>(null);
+  const [musicUploading, setMusicUploading] = useState(false);
+  const [musicError, setMusicError] = useState<string | null>(null);
+  const [musicPreviewPlayingId, setMusicPreviewPlayingId] = useState<number | null>(null);
+  const [musicSearchSeed, setMusicSearchSeed] = useState<{ query?: string; genres?: string[]; moods?: string[] } | null>(null);
+  const musicPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const musicSearchInputRef = useRef<HTMLInputElement>(null);
+  const musicHydratedRef = useRef(false);
+  const musicSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const musicCacheKeyRef = useRef<string>('');
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [musicExpanded, setMusicExpanded] = useState(true);
   const [captionsExpanded, setCaptionsExpanded] = useState(true);
@@ -568,7 +614,14 @@ function WorkspacePageContent() {
               else setCaptionStylePreset('custom');
             }
           }
+          const bgm = (projectData.backgroundMusic || {}) as BackgroundMusicConfig;
+          if (bgm && typeof bgm === 'object') {
+            setBackgroundMusicEnabled(Boolean(bgm.enabled));
+            setMusicSelected(bgm.publicUrl || bgm.externalId ? bgm : null);
+            setMusicSearchSeed(bgm.searchSeed || null);
+          }
           captionHydratedRef.current = true;
+          musicHydratedRef.current = true;
 
           // Parse script to get scenes
           if (projectData.script) {
@@ -727,6 +780,104 @@ function WorkspacePageContent() {
 
     loadProject();
   }, [projectId, isAuthenticated, authLoading, router, showToast]);
+
+  const musicHeaders = useCallback(() => {
+    const t = typeof window !== 'undefined'
+      ? localStorage.getItem('authToken') || sessionStorage.getItem('authToken')
+      : null;
+    const headers: Record<string, string> = {};
+    if (t) headers.Authorization = `Bearer ${t}`;
+    return headers;
+  }, []);
+
+  const fetchMusicLibrary = useCallback(async (opts?: { query?: string; useSeed?: boolean }) => {
+    setMusicLoading(true);
+    setMusicError(null);
+    try {
+      const params = new URLSearchParams();
+      const q = (opts?.query || '').trim();
+      if (q) {
+        params.set('q', q);
+      } else if (opts?.useSeed !== false && musicSearchSeed) {
+        if (musicSearchSeed.query) params.set('q', musicSearchSeed.query);
+        if (musicSearchSeed.genres?.length) params.set('genre', musicSearchSeed.genres.join(','));
+        if (musicSearchSeed.moods?.length) params.set('mood', musicSearchSeed.moods.join(','));
+      }
+      params.set('limit', '20');
+      params.set('offset', '0');
+      params.set('includePremium', 'false');
+      const cacheKey = `musicLibrary:${projectId || 'none'}:${params.toString()}`;
+      musicCacheKeyRef.current = cacheKey;
+      if (typeof window !== 'undefined') {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed?.results) {
+            setMusicLibraryItems(parsed.results as MusicSearchItem[]);
+            setMusicRelaxLevel(Number(parsed.relaxLevel || 0));
+            setMusicLoading(false);
+            return;
+          }
+        }
+      }
+      const res = await fetch(`/api/music/search?${params.toString()}`, { headers: musicHeaders() });
+      const json = await res.json();
+      if (!res.ok || !json?.success) throw new Error(json?.message || json?.error || 'Music search failed');
+      setMusicLibraryItems((json.data?.results || []) as MusicSearchItem[]);
+      setMusicRelaxLevel(Number(json.data?.relaxLevel || 0));
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          cacheKey,
+          JSON.stringify({ results: json.data?.results || [], relaxLevel: Number(json.data?.relaxLevel || 0) }),
+        );
+      }
+    } catch (e: any) {
+      setMusicError(e?.message || 'Failed to load music library');
+      setMusicLibraryItems([]);
+    } finally {
+      setMusicLoading(false);
+    }
+  }, [musicSearchSeed, musicHeaders, projectId]);
+
+  const persistBackgroundMusic = useCallback(async (patch?: Partial<BackgroundMusicConfig>) => {
+    if (!projectId || !musicHydratedRef.current) return;
+    const payload: BackgroundMusicConfig = {
+      enabled: backgroundMusicEnabled,
+      searchSeed: musicSearchSeed || undefined,
+      mixVolume: 0.25,
+      voiceDuckTo: 0.85,
+      fadeInMs: 500,
+      fadeOutMs: 1500,
+      ...(musicSelected || {}),
+      ...(patch || {}),
+    };
+    if (musicSaveTimeoutRef.current) clearTimeout(musicSaveTimeoutRef.current);
+    musicSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await apiClient.updateVideoProject(projectId, { backgroundMusic: payload });
+      } catch (err) {
+        console.error('[Workspace] Failed to persist background music:', err);
+      }
+    }, 350);
+  }, [projectId, backgroundMusicEnabled, musicSearchSeed, musicSelected]);
+
+  useEffect(() => {
+    if (!musicHydratedRef.current) return;
+    persistBackgroundMusic();
+  }, [backgroundMusicEnabled, persistBackgroundMusic]);
+
+  useEffect(() => {
+    if (
+      backgroundMusicEnabled &&
+      musicExpanded &&
+      musicTab === 'library' &&
+      musicLibraryItems.length === 0 &&
+      !musicLoading &&
+      !musicError
+    ) {
+      fetchMusicLibrary({ useSeed: true });
+    }
+  }, [backgroundMusicEnabled, musicExpanded, musicTab, musicLibraryItems.length, musicLoading, musicError, fetchMusicLibrary]);
 
   useEffect(() => {
     if (!isAuthenticated || !projectId) return;
@@ -2634,22 +2785,235 @@ function WorkspacePageContent() {
                     </button>
                   </div>
 
-                  {/* Music list - scrollable */}
                   {musicTab === 'library' && (
-                    <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
-                      {['Commercial Music', 'Advertisement Music', 'Motivation Music', 'Nature Music'].map((category, index) => (
-                        <div key={index} className="flex flex-row items-center gap-[clamp(10px,1.17vh,12px)] w-full h-[clamp(50px,5.15vh,66px)] rounded-[8px] flex-shrink-0">
-                          <button className="w-[clamp(32px,3.9vw,40px)] h-[clamp(32px,3.9vw,40px)] bg-[#E0E0E0] rounded-full flex items-center justify-center flex-shrink-0">
-                            <Play className="w-[clamp(14px,1.56vh,16px)] h-[clamp(14px,1.56vh,16px)] text-[#212121]" />
+                    <>
+                      {/* Search Bar - Brand Campaigns Style */}
+                      <div className="flex items-center justify-between gap-2 w-full">
+                        <div className="flex flex-row-reverse items-center justify-start gap-2 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMusicSearchExpanded((prev) => !prev);
+                              if (!musicSearchExpanded) {
+                                requestAnimationFrame(() => musicSearchInputRef.current?.focus());
+                              }
+                            }}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60 transition-colors"
+                            aria-label={musicSearchExpanded ? 'Collapse search' : 'Search music'}
+                          >
+                            {musicSearchExpanded ? (
+                              <X className="h-4 w-4 text-[#E86512]" />
+                            ) : (
+                              <Search className="h-4 w-4 text-[#E86512]" />
+                            )}
                           </button>
-                          <div className="flex flex-col justify-center items-start flex-1 min-w-0">
-                            <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121] truncate w-full">{category}</span>
-                          </div>
-                          <div className="flex flex-col items-center p-[clamp(3px,0.39vh,4px)] w-[clamp(260px,27.1vw,278px)] h-[clamp(8px,0.98vh,10px)] bg-white rounded-[18px] flex-shrink-0">
-                            <div className="w-[clamp(6px,0.65vw,8px)] h-[clamp(6px,0.65vw,8px)] bg-white rounded-full" />
+                          <div
+                            className={`overflow-hidden transition-all duration-200 ease-in-out rounded-full border border-[#E8E2DB] bg-white ${
+                              musicSearchExpanded ? 'flex-1 opacity-100 px-3 py-1.5' : 'w-0 opacity-0 px-0 py-0 border-0'
+                            }`}
+                          >
+                            <input
+                              ref={musicSearchInputRef}
+                              value={musicSearchInput}
+                              onChange={(e) => setMusicSearchInput(e.target.value)}
+                              placeholder="Search music..."
+                              aria-label="Search music"
+                              className="w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[clamp(12px,1.3vh,14px)] text-[#212121] placeholder:text-[#9E9E9E]"
+                              onBlur={() => {
+                                if (!musicSearchInput.trim()) setMusicSearchExpanded(false);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  fetchMusicLibrary({ query: musicSearchInput, useSeed: false });
+                                } else if (e.key === 'Escape') {
+                                  if (!musicSearchInput.trim()) {
+                                    setMusicSearchExpanded(false);
+                                  } else {
+                                    setMusicSearchInput('');
+                                    fetchMusicLibrary({ useSeed: true });
+                                  }
+                                }
+                              }}
+                            />
                           </div>
                         </div>
-                      ))}
+                        {musicSearchInput.trim() && (
+                          <button
+                            onClick={() => {
+                              setMusicSearchInput('');
+                              setMusicSearchExpanded(false);
+                              fetchMusicLibrary({ useSeed: true });
+                            }}
+                            className="text-xs text-[#E86512] hover:underline shrink-0"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      {musicRelaxLevel > 0 && (
+                        <div className="text-[11px] text-[#616161]">Showing relaxed results</div>
+                      )}
+                      {musicError && <div className="text-[11px] text-red-500">{musicError}</div>}
+
+                      {/* Music List - Voice Selection Style */}
+                      <div className="flex flex-col gap-[clamp(8px,1vh,12px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
+                        {musicLoading && (
+                          <div className="flex items-center justify-center py-6">
+                            <Loader2 className="w-5 h-5 animate-spin text-[#E86512]" />
+                            <span className="ml-2 text-sm text-[#616161]">Loading music...</span>
+                          </div>
+                        )}
+                        {!musicLoading && musicLibraryItems.length === 0 && (
+                          <div className="text-center py-6 text-sm text-[#616161]">No music found</div>
+                        )}
+                        {musicLibraryItems.map((item) => {
+                          const isSelected = musicSelected?.externalId === item.externalId;
+                          const isPlaying = musicPreviewPlayingId === item.externalId;
+                          return (
+                            <div
+                              key={item.id}
+                              onClick={async () => {
+                                if (!projectId) return;
+                                try {
+                                  const res = await fetch(`/api/music/${item.externalId}/download?projectId=${encodeURIComponent(projectId)}`, { headers: musicHeaders() });
+                                  const json = await res.json();
+                                  if (!res.ok || !json?.success) throw new Error(json?.message || 'Failed to select track');
+                                  const selected: BackgroundMusicConfig = {
+                                    enabled: true,
+                                    source: 'magnific',
+                                    externalId: item.externalId,
+                                    title: item.title,
+                                    artist: item.artistName,
+                                    durationSeconds: item.seconds,
+                                    publicUrl: json.data?.publicUrl || json.data?.url,
+                                    gcsUrl: json.data?.gcsUrl,
+                                    searchSeed: musicSearchSeed || undefined,
+                                    mixVolume: 0.25,
+                                    voiceDuckTo: 0.85,
+                                    fadeInMs: 500,
+                                    fadeOutMs: 1500,
+                                  };
+                                  setBackgroundMusicEnabled(true);
+                                  setMusicSelected(selected);
+                                  await persistBackgroundMusic(selected);
+                                  showToast('Background music selected', 'success');
+                                } catch (e: any) {
+                                  showToast(e?.message || 'Could not select music', 'error');
+                                }
+                              }}
+                              className={`w-full flex items-center justify-between p-3 rounded-lg border-2 transition-all duration-200 cursor-pointer ${
+                                isSelected
+                                  ? 'border-[#E86512] bg-[#E86512]/10 shadow-md ring-2 ring-[#E86512]/20'
+                                  : 'border-[#E0E0E0] hover:bg-[#FFF5F0] hover:border-[#E86512]/50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <div className="flex flex-col flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-medium text-[#212121] truncate">{item.title}</span>
+                                    {isSelected && (
+                                      <Check className="w-4 h-4 text-[#E86512] shrink-0" />
+                                    )}
+                                  </div>
+                                  <span className="text-xs text-[#616161] truncate">
+                                    {item.artistName || 'Unknown artist'} {item.time ? `• ${item.time}` : ''}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    if (!item.previewUrl) return;
+                                    if (musicPreviewAudioRef.current && isPlaying) {
+                                      musicPreviewAudioRef.current.pause();
+                                      musicPreviewAudioRef.current = null;
+                                      setMusicPreviewPlayingId(null);
+                                      return;
+                                    }
+                                    if (musicPreviewAudioRef.current) {
+                                      musicPreviewAudioRef.current.pause();
+                                    }
+                                    const a = new Audio(item.previewUrl);
+                                    musicPreviewAudioRef.current = a;
+                                    setMusicPreviewPlayingId(item.externalId);
+                                    a.onended = () => setMusicPreviewPlayingId(null);
+                                    a.play().catch(() => setMusicPreviewPlayingId(null));
+                                  } catch {
+                                    setMusicPreviewPlayingId(null);
+                                  }
+                                }}
+                                className={`ml-3 p-2 rounded-full transition-all duration-200 shrink-0 ${
+                                  isPlaying
+                                    ? 'bg-[#E86512] text-white hover:bg-[#D55A10]'
+                                    : 'bg-white border border-[#E0E0E0] text-[#212121] hover:bg-[#FFF5F0] hover:border-[#E86512] hover:text-[#E86512]'
+                                }`}
+                                disabled={!item.previewUrl}
+                                title={item.previewUrl ? 'Play preview' : 'No preview available'}
+                              >
+                                {isPlaying ? (
+                                  <Pause className="w-4 h-4" />
+                                ) : (
+                                  <Play className="w-4 h-4 fill-current" />
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                  {musicTab === 'upload' && (
+                    <div className="flex flex-col gap-2 w-full">
+                      <input
+                        type="file"
+                        accept=".mp3,.wav,.aac,.ogg,audio/mpeg,audio/wav,audio/aac,audio/ogg"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file || !projectId) return;
+                          if (file.size > 25 * 1024 * 1024) {
+                            showToast('Max upload size is 25MB', 'error');
+                            return;
+                          }
+                          try {
+                            setMusicUploading(true);
+                            const form = new FormData();
+                            form.append('file', file);
+                            const r = await fetch(`/api/video/${encodeURIComponent(projectId)}/upload-music`, {
+                              method: 'POST',
+                              headers: musicHeaders(),
+                              body: form,
+                            });
+                            const j = await r.json();
+                            if (!r.ok || !j?.success) throw new Error(j?.message || 'Upload failed');
+                            const selected: BackgroundMusicConfig = {
+                              enabled: true,
+                              source: 'upload',
+                              title: j.data?.originalName || file.name,
+                              durationSeconds: j.data?.durationSeconds,
+                              publicUrl: j.data?.publicUrl || j.data?.url,
+                              gcsUrl: j.data?.gcsUrl,
+                              searchSeed: musicSearchSeed || undefined,
+                              mixVolume: 0.25,
+                              voiceDuckTo: 0.85,
+                              fadeInMs: 500,
+                              fadeOutMs: 1500,
+                            };
+                            setBackgroundMusicEnabled(true);
+                            setMusicSelected(selected);
+                            await persistBackgroundMusic(selected);
+                            showToast('Background music uploaded', 'success');
+                          } catch (err: any) {
+                            showToast(err?.message || 'Music upload failed', 'error');
+                          } finally {
+                            setMusicUploading(false);
+                          }
+                        }}
+                        className="text-sm"
+                      />
+                      <span className="text-[11px] text-[#616161]">Supported: mp3, wav, aac, ogg (max 25MB)</span>
+                      {musicUploading && <span className="text-sm text-gray-500">Uploading...</span>}
+                      {musicSelected?.title && <span className="text-sm text-[#212121]">Selected: {musicSelected.title}</span>}
                     </div>
                   )}
                 </div>

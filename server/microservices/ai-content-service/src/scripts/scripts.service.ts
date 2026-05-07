@@ -74,6 +74,56 @@ export interface SceneRegenerationResponse {
 /** Video styles that use an avatar and require avatar_image_prompt in the script. */
 const AVATAR_VIDEO_STYLES: readonly string[] = ['HALF_N_HALF', 'ALTERNATE', 'AVATAR_CUTOUT', 'AVATAR_ONLY', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'];
 
+/** Magnific Music API enums (exact spelling) — used to whitelist script output */
+const MAGNIFIC_MUSIC_GENRES: readonly string[] = [
+  'Acoustic',
+  'Afrobeat',
+  'Ambient',
+  'Blues',
+  'Children',
+  'Cinematic',
+  'Classical',
+  'Corporate',
+  'Country',
+  'Disco',
+  'Electronic',
+  'Funk',
+  'Hip Hop',
+  'Jazz',
+  'Latin',
+  'Lofi',
+  'Lounge',
+  'Pop',
+  'Reggae',
+  'RnB',
+  'Rock',
+  'Soul',
+  'Synthwave',
+  'World',
+];
+const MAGNIFIC_MUSIC_MOODS: readonly string[] = [
+  'Dark',
+  'Dramatic',
+  'Elegant',
+  'Energetic',
+  'Epic',
+  'Exciting',
+  'Groovy',
+  'Happy',
+  'Hopeful',
+  'Laid Back',
+  'Melancholic',
+  'Peaceful',
+  'Playful',
+  'Sad',
+  'Sentimental',
+  'Soulful',
+  'Tension',
+  'Upbeat',
+];
+const MAGNIFIC_GENRE_SET = new Set(MAGNIFIC_MUSIC_GENRES.map((g) => g.toLowerCase()));
+const MAGNIFIC_MOOD_SET = new Set(MAGNIFIC_MUSIC_MOODS.map((m) => m.toLowerCase()));
+
 /** Thrown when the chat model refuses script generation (caller may retry text-only without images). */
 export class OpenAIScriptRefusalError extends Error {
   constructor(message: string) {
@@ -1260,6 +1310,13 @@ CRITICAL VIDEO TOPIC / GLOBAL CONTEXT RULE:
 - EVERY scene's broll_visual_description, broll_image_prompt, and broll_video_prompt must clearly tie to this topic so that no scene could be mistaken for a generic unrelated image.
 - Example: if the topic is "work from home", a scene about family should show "parent at home with family, home office or work-from-home context visible", NOT a generic "family in village".
 - The scene-specific part of each prompt must reference or imply the video topic so the global context is never lost.
+
+CRITICAL BACKGROUND MUSIC SEARCH SEED (stock music catalog):
+- You MUST include a top-level object "background_music" with:
+  - "query": string, 2–6 words for music search (match energy of the video; may overlap with video_topic).
+  - "genres": array of one or more strings chosen ONLY from this exact list (spell exactly): Acoustic, Afrobeat, Ambient, Blues, Children, Cinematic, Classical, Corporate, Country, Disco, Electronic, Funk, Hip Hop, Jazz, Latin, Lofi, Lounge, Pop, Reggae, RnB, Rock, Soul, Synthwave, World
+  - "moods": array of one or more strings chosen ONLY from this exact list (spell exactly): Dark, Dramatic, Elegant, Energetic, Epic, Exciting, Groovy, Happy, Hopeful, Laid Back, Melancholic, Peaceful, Playful, Sad, Sentimental, Soulful, Tension, Upbeat
+- Align genres/moods with visual_style_guide.mood and video_topic. Invalid spellings will be dropped server-side.
 `;
 
   const SPECIFICITY_RULE = `
@@ -1323,6 +1380,11 @@ Structure Your Output in This JSON Format:
     "recurring_elements": "List any visual elements that should appear consistently (e.g., 'Indian street vendors, markets, urban infrastructure')"
   },
   "avatar_image_prompt": "Only include this key when the video uses an avatar. Full prompt string for the avatar image, e.g. 'Waist-up portrait, neutral gray background, soft lighting matching the video theme, person centered for lower half of frame'.",
+  "background_music": {
+    "query": "upbeat corporate promo",
+    "genres": ["Corporate", "Pop"],
+    "moods": ["Upbeat", "Happy"]
+  },
   "scenes": [
     {
       "scene_number": 1,
@@ -1429,6 +1491,11 @@ Output Format:
     "recurring_elements": "List any visual elements that should appear consistently"
   },
   "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. close-up, person at streaming desk, neutral background, soft lighting).",
+  "background_music": {
+    "query": "soft emotional cinematic",
+    "genres": ["Cinematic", "Ambient"],
+    "moods": ["Hopeful", "Peaceful"]
+  },
   "scene_plan": [
     {
       "scene_number": 1,
@@ -1535,6 +1602,11 @@ Output Format:
     "recurring_elements": "List any visual elements that should appear consistently in backgrounds"
   },
   "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. waist-up portrait, neutral background, soft lighting for cutout overlay).",
+  "background_music": {
+    "query": "documentary ambient india",
+    "genres": ["Ambient", "World"],
+    "moods": ["Peaceful", "Hopeful"]
+  },
   "scenes": [
     {
       "scene_number": 1,
@@ -2270,6 +2342,7 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
     if (!styleParams || !styleParams.colorPalette) {
       // If no style guide, return as-is (AI should have created it, but handle gracefully)
       this.logger.warn('No visual_style_guide found in script, skipping normalization', 'ScriptsService');
+      this.attachBackgroundMusicSearchSeed(scriptData);
       return scriptData;
     }
 
@@ -2338,7 +2411,123 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
       }
     });
 
+    this.attachBackgroundMusicSearchSeed(scriptData);
     return scriptData;
+  }
+
+  /**
+   * Normalize LLM `background_music` / legacy notes into script.backgroundMusic.searchSeed
+   * for workspace + Magnific search (whitelist enums).
+   */
+  private attachBackgroundMusicSearchSeed(scriptData: any): void {
+    if (!scriptData || typeof scriptData !== 'object') return;
+
+    const filterGenres = (arr: unknown): string[] => {
+      if (!Array.isArray(arr)) return [];
+      const out: string[] = [];
+      for (const item of arr) {
+        const s = typeof item === 'string' ? item.trim() : (item as any)?.name?.trim?.();
+        if (!s) continue;
+        if (MAGNIFIC_GENRE_SET.has(s.toLowerCase())) {
+          const canon = MAGNIFIC_MUSIC_GENRES.find((g) => g.toLowerCase() === s.toLowerCase());
+          if (canon && !out.includes(canon)) out.push(canon);
+        }
+      }
+      return out;
+    };
+
+    const filterMoods = (arr: unknown): string[] => {
+      if (!Array.isArray(arr)) return [];
+      const out: string[] = [];
+      for (const item of arr) {
+        const s = typeof item === 'string' ? item.trim() : (item as any)?.name?.trim?.();
+        if (!s) continue;
+        if (MAGNIFIC_MOOD_SET.has(s.toLowerCase())) {
+          const canon = MAGNIFIC_MUSIC_MOODS.find((m) => m.toLowerCase() === s.toLowerCase());
+          if (canon && !out.includes(canon)) out.push(canon);
+        }
+      }
+      return out;
+    };
+
+    const rawBlock = scriptData.background_music;
+    const existingBm =
+      scriptData.backgroundMusic && typeof scriptData.backgroundMusic === 'object'
+        ? scriptData.backgroundMusic
+        : {};
+
+    let query =
+      (typeof rawBlock?.query === 'string' && rawBlock.query.trim()) ||
+      (typeof existingBm?.searchSeed?.query === 'string' && existingBm.searchSeed.query.trim()) ||
+      '';
+
+    let genres = filterGenres(rawBlock?.genres);
+    let moods = filterMoods(rawBlock?.moods);
+    if (genres.length === 0) genres = filterGenres(existingBm?.searchSeed?.genres);
+    if (moods.length === 0) moods = filterMoods(existingBm?.searchSeed?.moods);
+
+    const notesMusic = scriptData.notes?.music_or_mood;
+    if (!query && typeof notesMusic === 'string' && notesMusic.trim()) {
+      query = notesMusic.trim().slice(0, 200);
+    }
+
+    const videoTopic = String(scriptData.video_topic || scriptData.theme_context || '').trim();
+    if (!query && videoTopic) {
+      query = videoTopic.slice(0, 200);
+    }
+
+    const vsMood = scriptData.visual_style_guide?.mood;
+    if (moods.length === 0 && typeof vsMood === 'string' && vsMood.trim()) {
+      moods = this.inferMagnificMoodsFromFreeText(vsMood);
+    }
+    if (genres.length === 0 && (videoTopic || query)) {
+      genres = this.inferMagnificGenresFromFreeText(`${videoTopic} ${query}`);
+    }
+
+    const searchSeed = {
+      query: (query || 'background music').slice(0, 200),
+      genres,
+      moods,
+    };
+
+    scriptData.backgroundMusic = {
+      ...existingBm,
+      searchSeed,
+    };
+
+    if (scriptData.background_music !== undefined) {
+      delete scriptData.background_music;
+    }
+  }
+
+  private inferMagnificMoodsFromFreeText(text: string): string[] {
+    const t = (text || '').toLowerCase();
+    const hits: string[] = [];
+    for (const m of MAGNIFIC_MUSIC_MOODS) {
+      if (t.includes(m.toLowerCase())) {
+        hits.push(m);
+        if (hits.length >= 6) break;
+      }
+    }
+    return hits;
+  }
+
+  private inferMagnificGenresFromFreeText(text: string): string[] {
+    const t = (text || '').toLowerCase();
+    const hits: string[] = [];
+    for (const g of MAGNIFIC_MUSIC_GENRES) {
+      if (t.includes(g.toLowerCase())) {
+        hits.push(g);
+        if (hits.length >= 6) break;
+      }
+    }
+    if (hits.length === 0 && /\b(tech|software|saas|startup|business|office)\b/i.test(text)) {
+      return ['Corporate'];
+    }
+    if (hits.length === 0 && /\b(calm|relax|meditat|sleep|nature)\b/i.test(text)) {
+      return ['Ambient'];
+    }
+    return hits;
   }
 
   /**

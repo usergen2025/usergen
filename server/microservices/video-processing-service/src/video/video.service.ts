@@ -306,6 +306,10 @@ export class VideoService {
       updateData.captionsEnabled = dto.captionsEnabled;
       changedFields.push('captionsEnabled');
     }
+    if (dto.backgroundMusic !== undefined) {
+      updateData.backgroundMusic = dto.backgroundMusic;
+      changedFields.push('backgroundMusic');
+    }
     if (dto.status !== undefined) updateData.status = dto.status;
     if (dto.currentStep !== undefined) {
       updateData.currentStep = dto.currentStep;
@@ -337,6 +341,26 @@ export class VideoService {
           const prompt = scriptObj?.avatar_image_prompt;
           if (typeof prompt === 'string' && prompt.trim()) {
             meta.avatarImagePrompt = prompt.trim();
+          }
+          // Merge music search seed from script when client is not sending full backgroundMusic in the same request
+          const seed = scriptObj?.backgroundMusic?.searchSeed;
+          if (
+            seed &&
+            typeof seed === 'object' &&
+            (dto as any).backgroundMusic === undefined &&
+            (typeof seed.query === 'string' ||
+              (Array.isArray(seed.genres) && seed.genres.length > 0) ||
+              (Array.isArray(seed.moods) && seed.moods.length > 0))
+          ) {
+            const prev =
+              existing.backgroundMusic && typeof existing.backgroundMusic === 'object'
+                ? (existing.backgroundMusic as Record<string, unknown>)
+                : {};
+            updateData.backgroundMusic = {
+              ...prev,
+              searchSeed: seed,
+            };
+            changedFields.push('backgroundMusic');
           }
         } catch {
           // ignore parse errors

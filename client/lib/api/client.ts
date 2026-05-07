@@ -25,6 +25,28 @@ export interface ApiResponse<T = any> {
   timestamp?: string;
 }
 
+export interface BackgroundMusicSearchSeed {
+  query?: string;
+  genres?: string[];
+  moods?: string[];
+}
+
+export interface BackgroundMusicConfig {
+  enabled: boolean;
+  source?: 'magnific' | 'upload';
+  externalId?: number;
+  title?: string;
+  artist?: string;
+  durationSeconds?: number;
+  publicUrl?: string;
+  gcsUrl?: string;
+  searchSeed?: BackgroundMusicSearchSeed;
+  mixVolume?: number;
+  voiceDuckTo?: number;
+  fadeInMs?: number;
+  fadeOutMs?: number;
+}
+
 /**
  * campaign-service often returns raw JSON (arrays, DTOs) without an ApiResponse envelope.
  * Brand and admin UIs expect `response.data` — normalize so all campaign-service calls are consistent.
@@ -585,7 +607,7 @@ class ApiClient {
     return response.data;
   }
 
-  async getVideoProject(projectId: string): Promise<ApiResponse<any>> {
+  async getVideoProject(projectId: string): Promise<ApiResponse<any & { backgroundMusic?: BackgroundMusicConfig }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
@@ -601,7 +623,10 @@ class ApiClient {
     return response.data;
   }
 
-  async updateVideoProject(projectId: string, data: any): Promise<ApiResponse<any>> {
+  async updateVideoProject(
+    projectId: string,
+    data: any & { backgroundMusic?: BackgroundMusicConfig },
+  ): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

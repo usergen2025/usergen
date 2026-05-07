@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FreepikProvider } from './providers/freepik.provider';
+import {
+  MagnificMusicProvider,
+  MagnificMusicListItem,
+  MagnificMusicSearchParams,
+} from './providers/magnific-music.provider';
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -70,6 +75,54 @@ export interface TargetDimensions {
   height: number;
 }
 
+/** Client-facing music search row (stable id string for UI) */
+export interface MusicSearchResultItem {
+  id: string;
+  source: 'magnific';
+  externalId: number;
+  title: string;
+  artistName?: string;
+  genres: string[];
+  moods: string[];
+  coverUrl?: string | null;
+  previewUrl?: string | null;
+  seconds?: number;
+  time?: string;
+  isPremium?: boolean;
+}
+
+export interface MusicSearchRequest {
+  q?: string;
+  genre?: string[];
+  mood?: string[];
+  includePremium?: boolean;
+  timeRange?: '7d' | '30d' | '90d';
+  orderBy?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface MusicSearchResponse {
+  results: MusicSearchResultItem[];
+  count: number;
+  limit: number;
+  offset: number;
+  /** 0 = full params, 1 = dropped mood, 2 = dropped genre, 3 = query-only */
+  relaxLevel: number;
+}
+
+export interface MusicDownloadResult {
+  localPath: string;
+  localUrl: string;
+  gcsUrl?: string;
+  publicUrl: string;
+  filename: string;
+  externalId: number;
+  title: string;
+  artistName?: string;
+  durationSeconds?: number;
+}
+
 @Injectable()
 export class StockService {
   private readonly unifiedStorage: UnifiedStorageService;
@@ -77,6 +130,7 @@ export class StockService {
   constructor(
     private readonly configService: ConfigService,
     private readonly freepikProvider: FreepikProvider,
+    private readonly magnificMusicProvider: MagnificMusicProvider,
   ) {
     // Initialize unified storage for GCS uploads
     const gcsConfig: GCSConfig = {
@@ -458,6 +512,218 @@ export class StockService {
       filename: finalFilename,
       ...processingResult,
     };
+  }
+
+  /**
+   * Search Magnific Music catalog with linear relax fallback (no recursion).
+   */
+  async searchMusic(request: MusicSearchRequest): Promise<MusicSearchResponse> {
+    if (!this.magnificMusicProvider.isConfigured()) {
+      throw new Error('Magnific Music API is not configured');
+    }
+
+    const limit = Math.min(1000, Math.max(1, request.limit ?? 20));
+    const offset = Math.max(0, request.offset ?? 0);
+    const includePremium = request.includePremium === true;
+    const timeRange = request.timeRange;
+    const orderBy = request.orderBy;
+
+    const q = request.q?.trim();
+    const genre = request.genre?.filter(Boolean) ?? [];
+    const mood = request.mood?.filter(Boolean) ?? [];
+
+    const attempts: Array<{ relaxLevel: number; params: MagnificMusicSearchParams }> = [];
+
+    attempts.push({
+      relaxLevel: 0,
+      params: {
+        q,
+        genre: genre.length ? genre : undefined,
+        mood: mood.length ? mood : undefined,
+        includePremium,
+        timeRange,
+        orderBy,
+        limit,
+        offset,
+      },
+    });
+
+    if (mood.length) {
+      attempts.push({
+        relaxLevel: 1,
+        params: {
+          q,
+          genre: genre.length ? genre : undefined,
+          mood: undefined,
+          includePremium,
+          timeRange,
+          orderBy,
+          limit,
+          offset,
+        },
+      });
+    }
+
+    if (genre.length) {
+      attempts.push({
+        relaxLevel: 2,
+        params: {
+          q,
+          genre: undefined,
+          mood: undefined,
+          includePremium,
+          timeRange,
+          orderBy,
+          limit,
+          offset,
+        },
+      });
+    }
+
+    if (q) {
+      attempts.push({
+        relaxLevel: 3,
+        params: {
+          q: undefined,
+          genre: undefined,
+          mood: undefined,
+          includePremium,
+          timeRange,
+          orderBy: orderBy || '-popularity',
+          limit,
+          offset,
+        },
+      });
+    }
+
+    let lastCount = 0;
+    let lastResults: MagnificMusicListItem[] = [];
+
+    for (const attempt of attempts) {
+      const resp = await this.magnificMusicProvider.searchMusic(attempt.params);
+      lastCount = resp.count;
+      lastResults = resp.results;
+      if (lastResults.length > 0) {
+        return {
+          results: lastResults.map((r) => this.mapMagnificMusicItem(r)),
+          count: lastCount,
+          limit,
+          offset,
+          relaxLevel: attempt.relaxLevel,
+        };
+      }
+    }
+
+    return {
+      results: [],
+      count: lastCount,
+      limit,
+      offset,
+      relaxLevel: attempts[attempts.length - 1]?.relaxLevel ?? 0,
+    };
+  }
+
+  private mapMagnificMusicItem(r: MagnificMusicListItem): MusicSearchResultItem {
+    const externalId = r.id;
+    return {
+      id: `magnific-music-${externalId}`,
+      source: 'magnific',
+      externalId,
+      title: r.title || 'Untitled',
+      artistName: r.artist?.name,
+      genres: (r.genres || []).map((g) => g.name || '').filter(Boolean),
+      moods: (r.moods || []).map((m) => m.name || '').filter(Boolean),
+      coverUrl: r.cover_url,
+      previewUrl: r.preview_url || r.file_url || null,
+      seconds: r.seconds,
+      time: r.time,
+      isPremium: r.is_premium,
+    };
+  }
+
+  /**
+   * Download Magnific track to local + GCS (same pattern as stock download).
+   */
+  async downloadMusicItem(
+    musicId: number,
+    projectId?: string,
+  ): Promise<MusicDownloadResult> {
+    if (!this.magnificMusicProvider.isConfigured()) {
+      throw new Error('Magnific Music API is not configured');
+    }
+
+    const meta = await this.magnificMusicProvider.getMusicDetail(musicId).catch(() => ({})) as Record<string, any>;
+    const title = (meta?.title as string) || `track-${musicId}`;
+    const artistObj = meta?.artist as { name?: string } | null | undefined;
+    const artistName = artistObj?.name;
+
+    const dl = await this.magnificMusicProvider.downloadMusic(musicId);
+    const downloadUrl = dl.download_url;
+    if (!downloadUrl) {
+      throw new Error('Magnific did not return download_url');
+    }
+
+    const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+    const uploadDir = path.join(process.cwd(), 'uploads', 'music', projectId || 'general');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    const ext = this.guessAudioExtension(downloadUrl, response.headers['content-type'] as string);
+    const filename = `music_${musicId}_${Date.now()}${ext}`;
+    const finalLocalPath = path.join(uploadDir, filename);
+    fs.writeFileSync(finalLocalPath, response.data);
+
+    let gcsUrl: string | undefined;
+    let publicUrl: string;
+    const localUrl = `/uploads/music/${projectId || 'general'}/${filename}`;
+
+    try {
+      const subPath = `music/${projectId || 'general'}`;
+      const contentType = getContentType(filename);
+
+      const uploadResult = await this.unifiedStorage.uploadFromPath({
+        localPath: finalLocalPath,
+        filename,
+        contentType,
+        subPath,
+        service: 'media',
+        makePublic: true,
+      });
+
+      gcsUrl = uploadResult.gcsUrl;
+      publicUrl = uploadResult.publicUrl || gcsUrl || localUrl;
+    } catch (error: any) {
+      console.warn(`[StockService] GCS upload failed for music, using local: ${error.message}`);
+      publicUrl = localUrl;
+    }
+
+    const durationSeconds =
+      typeof meta?.seconds === 'number' ? (meta.seconds as number) : undefined;
+
+    return {
+      localPath: finalLocalPath,
+      localUrl,
+      gcsUrl,
+      publicUrl,
+      filename,
+      externalId: musicId,
+      title: dl.title || title,
+      artistName,
+      durationSeconds,
+    };
+  }
+
+  private guessAudioExtension(url: string, contentType?: string): string {
+    const lower = (url || '').split('?')[0].toLowerCase();
+    if (lower.endsWith('.wav')) return '.wav';
+    if (lower.endsWith('.aac')) return '.aac';
+    if (lower.endsWith('.ogg')) return '.ogg';
+    if (lower.endsWith('.m4a')) return '.m4a';
+    if (contentType?.includes('wav')) return '.wav';
+    if (contentType?.includes('aac')) return '.aac';
+    if (contentType?.includes('ogg')) return '.ogg';
+    return '.mp3';
   }
 
   private mapOrientation(orientation: 'horizontal' | 'vertical' | 'square'): string {

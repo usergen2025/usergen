@@ -1251,6 +1251,65 @@ export class VideoCompositorProvider {
   }
 
   /**
+   * Mix existing voice track from a video file with a background music file.
+   * Short BGM is looped via -stream_loop; long BGM is trimmed to video duration (atrim).
+   */
+  async mixVoiceWithBackgroundMusic(
+    videoWithVoicePath: string,
+    bgmPath: string,
+    outputPath: string,
+    opts?: {
+      mixVolume?: number;
+      voiceDuckTo?: number;
+      fadeInSec?: number;
+      fadeOutSec?: number;
+    },
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const durationSec = await this.getVideoDuration(videoWithVoicePath);
+    if (!durationSec || durationSec <= 0) {
+      throw new Error('Could not read video duration for BGM mix');
+    }
+
+    const mixVolume = Math.min(1, Math.max(0, opts?.mixVolume ?? 0.25));
+    const voiceVol = Math.min(1, Math.max(0, opts?.voiceDuckTo ?? 0.85));
+    const fadeIn = Math.min(5, Math.max(0, opts?.fadeInSec ?? 0.5));
+    const fadeOut = Math.min(5, Math.max(0, opts?.fadeOutSec ?? 1.5));
+    const fadeOutStart = Math.max(0, durationSec - fadeOut);
+
+    const escV = videoWithVoicePath.replace(/"/g, '\\"');
+    const escB = bgmPath.replace(/"/g, '\\"');
+    const escO = outputPath.replace(/"/g, '\\"');
+
+    const filter = `[1:a]atrim=0:${durationSec},asetpts=N/SR/TB,volume=${mixVolume},afade=t=in:st=0:d=${fadeIn},afade=t=out:st=${fadeOutStart}:d=${fadeOut}[bgm];[0:a]volume=${voiceVol}[vo];[vo][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`;
+
+    console.log(`[VideoCompositor] Mixing BGM: duration=${durationSec.toFixed(2)}s mixVol=${mixVolume} voiceVol=${voiceVol}`);
+
+    try {
+      const ffmpegCommand = (
+        `ffmpeg -y -i "${escV}" -stream_loop -1 -i "${escB}" ` +
+        `-filter_complex "${filter}" ` +
+        `-map 0:v:0 -map "[aout]" -c:v copy -c:a aac -b:a 192k -shortest "${escO}"`
+      )
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      execSync(ffmpegCommand, { stdio: 'inherit', maxBuffer: 50 * 1024 * 1024 });
+      console.log(`[VideoCompositor] BGM mix complete: ${outputPath}`);
+      return outputPath;
+    } catch (error: any) {
+      console.error(`[VideoCompositor] FFmpeg BGM mix error:`, error.message);
+      throw new Error(`Failed to mix background music: ${error.message}`);
+    }
+  }
+
+  /**
    * Apply fade-out to audio file
    * @param audioPath Path to input audio file
    * @param outputPath Path for output audio file with fade-out

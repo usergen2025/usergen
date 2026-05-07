@@ -1958,6 +1958,112 @@ export class VideoController {
     };
   }
 
+  @Post(':projectId/upload-music')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Project ID' })
+  @ApiOperation({
+    summary: 'Upload background music file',
+    description: 'Upload audio (mp3/wav/aac/ogg) for use as project background music; returns public URL and duration.',
+  })
+  @ApiResponse({ status: 201, description: 'Music uploaded' })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 25 * 1024 * 1024 },
+    }),
+  )
+  async uploadMusic(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @UploadedFile() file: Multer.File,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+    if (!file || !file.buffer) {
+      throw new BadRequestException('File is required');
+    }
+
+    const allowed = new Set([
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/wave',
+      'audio/aac',
+      'audio/x-aac',
+      'audio/ogg',
+      'audio/webm',
+    ]);
+    const mime = (file.mimetype || '').toLowerCase();
+    if (!allowed.has(mime)) {
+      throw new BadRequestException(
+        `Unsupported audio type: ${mime || 'unknown'}. Allowed: mp3, wav, aac, ogg, webm.`,
+      );
+    }
+
+    const uploadsDir = this.configService.get<string>('UPLOADS_DIR') || join(process.cwd(), 'uploads');
+    const musicDir = join(uploadsDir, 'music', userId, projectId);
+    if (!fs.existsSync(musicDir)) {
+      fs.mkdirSync(musicDir, { recursive: true });
+    }
+    const ext =
+      path.extname(file.originalname || '') ||
+      (mime.includes('wav') ? '.wav' : mime.includes('ogg') ? '.ogg' : mime.includes('aac') ? '.aac' : '.mp3');
+    const filename = `music_${Date.now()}${ext}`;
+    const filePath = join(musicDir, filename);
+    fs.writeFileSync(filePath, file.buffer);
+    const localUrl = `/uploads/music/${userId}/${projectId}/${filename}`;
+
+    let durationSeconds: number | undefined;
+    try {
+      const raw = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+        { encoding: 'utf8' },
+      ).trim();
+      const d = parseFloat(raw);
+      if (!Number.isNaN(d) && d > 0) durationSeconds = d;
+    } catch {
+      // optional
+    }
+
+    let publicUrl: string | undefined;
+    let gcsUrl: string | undefined;
+    try {
+      const mimeType =
+        file.mimetype ||
+        (ext === '.wav' ? 'audio/wav' : ext === '.ogg' ? 'audio/ogg' : ext === '.aac' ? 'audio/aac' : 'audio/mpeg');
+      const result = await this.publicUrlService.uploadFromPath(
+        filePath,
+        `music/${userId}/${projectId}`,
+        filename,
+        mimeType,
+      );
+      publicUrl = result.publicUrl;
+      gcsUrl = result.gcsUrl;
+    } catch (err: any) {
+      console.warn(`[VideoController] upload-music GCS upload failed: ${err?.message}`);
+    }
+
+    const canonical = publicUrl || localUrl;
+    return {
+      success: true,
+      data: {
+        url: canonical,
+        publicUrl: publicUrl || undefined,
+        localUrl: publicUrl ? undefined : localUrl,
+        gcsUrl,
+        durationSeconds,
+        originalName: file.originalname || filename,
+      },
+      message: 'Music file uploaded successfully',
+    };
+  }
+
   @Post(':projectId/process-custom-broll')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Project ID' })

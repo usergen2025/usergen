@@ -60,6 +60,9 @@ model VideoProject {
   // Caption Configuration
   captionSettings   Json?            // CaptionSettings object
   captionsEnabled   Boolean          @default(false)
+
+  // Background music (Magnific library or user upload): enabled, source, publicUrl, searchSeed, mix volumes, etc.
+  backgroundMusic   Json?
   
   // Video Generation Status
   status            VideoProjectStatus @default(DRAFT)

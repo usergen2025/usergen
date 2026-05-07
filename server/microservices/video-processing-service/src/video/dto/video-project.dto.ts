@@ -304,6 +304,11 @@ export class UpdateVideoProjectDto {
   @IsBoolean()
   captionsEnabled?: boolean;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  backgroundMusic?: any;
+
   @ApiPropertyOptional({ enum: VideoProjectStatusDto })
   @IsOptional()
   @IsEnum(VideoProjectStatusDto)

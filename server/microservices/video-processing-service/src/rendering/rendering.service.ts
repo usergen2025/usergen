@@ -1178,10 +1178,17 @@ export class RenderingService {
     const finalVideoWithAudioPath = path.join(userDir, `final_with_audio_${projectId}_${Date.now()}.mp4`);
     await this.videoCompositor.addAudioToVideo(finalVideoPath, stitchedAudioPath, finalVideoWithAudioPath);
 
+    const withBgmPath = await this.applyBackgroundMusicIfEnabled(
+      project,
+      finalVideoWithAudioPath,
+      userDir,
+      projectId,
+    );
+
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    let pathForUpload = finalVideoWithAudioPath;
+    let pathForUpload = withBgmPath;
     if (project.captionsEnabled && project.captionSettings) {
       try {
         console.log(`[RenderingService] HALF_N_HALF: Adding captions to final video...`);
@@ -1927,7 +1934,12 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    let pathForUploadCutout = finalVideoPath;
+    let pathForUploadCutout = await this.applyBackgroundMusicIfEnabled(
+      project,
+      finalVideoPath,
+      userDir,
+      projectId,
+    );
     const sortedAudioForCutout = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
     if (project.captionsEnabled && project.captionSettings) {
       try {
@@ -2243,7 +2255,12 @@ export class RenderingService {
     }
 
     // Final video already has all audio, no need to add stitched audio again
-    let finalVideoWithAudioPath = finalVideoPath;
+    let finalVideoWithAudioPath = await this.applyBackgroundMusicIfEnabled(
+      project,
+      finalVideoPath,
+      userDir,
+      projectId,
+    );
 
     // Add captions if enabled
     if (project.captionsEnabled && project.captionSettings) {
@@ -2427,7 +2444,12 @@ export class RenderingService {
     // Calculate total duration
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
 
-    let pathForUploadAvatarOnly = avatarVideoPath;
+    let pathForUploadAvatarOnly = await this.applyBackgroundMusicIfEnabled(
+      project,
+      avatarVideoPath,
+      userDir,
+      projectId,
+    );
     if (project.captionsEnabled && project.captionSettings) {
       try {
         console.log(`[RenderingService] AVATAR_ONLY: Adding captions to final video...`);
@@ -2618,6 +2640,8 @@ export class RenderingService {
     // Add stitched audio to stitched video
     let finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
     await this.videoCompositor.addAudioToVideo(stitchedBrollPath, stitchedAudioPath, finalVideoPath);
+
+    finalVideoPath = await this.applyBackgroundMusicIfEnabled(project, finalVideoPath, userDir, projectId);
 
     // Calculate total duration and scene start times for captions
     const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
@@ -3197,6 +3221,100 @@ export class RenderingService {
     }
 
     return null;
+  }
+
+  private isBackgroundMusicMixEnabled(): boolean {
+    return this.configService.get<string>('BACKGROUND_MUSIC_ENABLED') !== 'false';
+  }
+
+  private clampBgMusicNumber(n: unknown, fallback: number, lo: number, hi: number): number {
+    const x = typeof n === 'number' && !Number.isNaN(n) ? n : fallback;
+    return Math.min(hi, Math.max(lo, x));
+  }
+
+  /**
+   * Download remote BGM URL to a temp file, or resolve /uploads/... path on disk.
+   */
+  private async resolveBackgroundMusicToLocalPath(
+    publicUrl: string,
+    userId: string,
+    projectId: string,
+  ): Promise<string | null> {
+    if (!publicUrl || typeof publicUrl !== 'string') return null;
+    if (publicUrl.startsWith('http://') || publicUrl.startsWith('https://')) {
+      const dest = path.join(this.uploadsDir, 'videos', userId, `bgm_dl_${projectId}_${Date.now()}.mp3`);
+      const dir = path.dirname(dest);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const resp = await axios.get(publicUrl, {
+        responseType: 'arraybuffer',
+        maxContentLength: 50 * 1024 * 1024,
+        timeout: 120000,
+      });
+      fs.writeFileSync(dest, Buffer.from(resp.data));
+      return dest;
+    }
+    if (publicUrl.startsWith('/uploads/')) {
+      const rel = publicUrl.replace(/^\/uploads\//, '');
+      const inVideo = path.join(this.uploadsDir, rel);
+      if (fs.existsSync(inVideo)) return inVideo;
+      const serverRoot = path.join(process.cwd(), '..', '..');
+      const mediaMusic = path.join(serverRoot, 'microservices', 'media-management-service', 'uploads', rel);
+      if (fs.existsSync(mediaMusic)) return mediaMusic;
+    }
+    if (publicUrl.startsWith('/')) {
+      const p = path.join(process.cwd(), publicUrl.replace(/^\//, ''));
+      if (fs.existsSync(p)) return p;
+    }
+    return null;
+  }
+
+  /**
+   * When project.backgroundMusic has a public URL and mixing is enabled, mux BGM under the voice track.
+   */
+  private async applyBackgroundMusicIfEnabled(
+    project: { backgroundMusic?: unknown; userId?: string },
+    videoWithVoicePath: string,
+    userDir: string,
+    projectId: string,
+  ): Promise<string> {
+    if (!this.isBackgroundMusicMixEnabled()) return videoWithVoicePath;
+    const bgm = project.backgroundMusic as Record<string, unknown> | null | undefined;
+    if (!bgm || bgm.enabled === false) return videoWithVoicePath;
+    const url = (bgm.publicUrl || bgm.gcsUrl) as string | undefined;
+    if (!url) return videoWithVoicePath;
+
+    const userId = (project as any).userId as string;
+    let localBgm: string | null = null;
+    try {
+      localBgm = await this.resolveBackgroundMusicToLocalPath(url, userId, projectId);
+      if (!localBgm) {
+        console.warn(`[RenderingService] BGM: could not resolve local file from ${url.slice(0, 120)}`);
+        return videoWithVoicePath;
+      }
+      const out = path.join(userDir, `final_with_bgm_${projectId}_${Date.now()}.mp4`);
+      const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.25, 0, 1);
+      const voiceVol = this.clampBgMusicNumber(bgm.voiceDuckTo, 0.85, 0, 1);
+      const fadeInMs = this.clampBgMusicNumber(bgm.fadeInMs, 500, 0, 5000);
+      const fadeOutMs = this.clampBgMusicNumber(bgm.fadeOutMs, 1500, 0, 5000);
+      await this.videoCompositor.mixVoiceWithBackgroundMusic(videoWithVoicePath, localBgm, out, {
+        mixVolume: mixVol,
+        voiceDuckTo: voiceVol,
+        fadeInSec: fadeInMs / 1000,
+        fadeOutSec: fadeOutMs / 1000,
+      });
+      return out;
+    } catch (e: any) {
+      console.warn(`[RenderingService] BGM mix failed, using voice-only: ${e?.message || e}`);
+      return videoWithVoicePath;
+    } finally {
+      try {
+        if (localBgm && localBgm.includes(`bgm_dl_${projectId}`) && fs.existsSync(localBgm)) {
+          fs.unlinkSync(localBgm);
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private async updateRenderingStatus(
