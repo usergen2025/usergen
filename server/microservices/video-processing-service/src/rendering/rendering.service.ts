@@ -3271,6 +3271,31 @@ export class RenderingService {
   /**
    * When project.backgroundMusic has a public URL and mixing is enabled, mux BGM under the voice track.
    */
+  private async downloadMagnificMusicAtExport(
+    externalId: number,
+    projectId: string,
+  ): Promise<{ publicUrl: string; gcsUrl?: string }> {
+    const base =
+      this.configService.get<string>('MEDIA_MANAGEMENT_SERVICE_URL') ||
+      process.env.MEDIA_MANAGEMENT_SERVICE_URL ||
+      'http://localhost:9009/api';
+    const downloadUrl = `${String(base).replace(/\/$/, '')}/stock/music/${externalId}/download`;
+    const response = await axios.get(downloadUrl, {
+      params: { projectId },
+      timeout: 180000,
+      maxContentLength: 50 * 1024 * 1024,
+    });
+    if (!response.data?.success) {
+      throw new Error(response.data?.message || response.data?.error || 'Music download failed');
+    }
+    const d = response.data.data || {};
+    const publicUrl = d.publicUrl || d.url;
+    if (!publicUrl || typeof publicUrl !== 'string') {
+      throw new Error('Music download response missing publicUrl');
+    }
+    return { publicUrl, gcsUrl: d.gcsUrl as string | undefined };
+  }
+
   private async applyBackgroundMusicIfEnabled(
     project: { backgroundMusic?: unknown; userId?: string },
     videoWithVoicePath: string,
@@ -3280,7 +3305,37 @@ export class RenderingService {
     if (!this.isBackgroundMusicMixEnabled()) return videoWithVoicePath;
     const bgm = project.backgroundMusic as Record<string, unknown> | null | undefined;
     if (!bgm || bgm.enabled === false) return videoWithVoicePath;
-    const url = (bgm.publicUrl || bgm.gcsUrl) as string | undefined;
+
+    let url = (bgm.publicUrl || bgm.gcsUrl) as string | undefined;
+    const rawExt = bgm.externalId;
+    const externalId =
+      typeof rawExt === 'number' && !Number.isNaN(rawExt)
+        ? rawExt
+        : typeof rawExt === 'string'
+          ? parseInt(rawExt, 10)
+          : NaN;
+    const source = bgm.source;
+
+    if (!url && Number.isFinite(externalId) && externalId >= 1 && source === 'magnific') {
+      console.log(`[RenderingService] BGM: downloading Magnific track ${externalId} at export time...`);
+      try {
+        const downloaded = await this.downloadMagnificMusicAtExport(externalId, projectId);
+        url = downloaded.publicUrl;
+        const merged = {
+          ...bgm,
+          publicUrl: downloaded.publicUrl,
+          gcsUrl: downloaded.gcsUrl ?? bgm.gcsUrl,
+        };
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: { backgroundMusic: merged } as any,
+        });
+      } catch (dlError: any) {
+        console.warn(`[RenderingService] BGM: deferred download failed: ${dlError?.message || dlError}`);
+        return videoWithVoicePath;
+      }
+    }
+
     if (!url) return videoWithVoicePath;
 
     const userId = (project as any).userId as string;
@@ -3292,8 +3347,8 @@ export class RenderingService {
         return videoWithVoicePath;
       }
       const out = path.join(userDir, `final_with_bgm_${projectId}_${Date.now()}.mp4`);
-      const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.25, 0, 1);
-      const voiceVol = this.clampBgMusicNumber(bgm.voiceDuckTo, 0.85, 0, 1);
+      const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.1, 0, 1);
+      const voiceVol = this.clampBgMusicNumber(bgm.voiceDuckTo, 1.0, 0, 1);
       const fadeInMs = this.clampBgMusicNumber(bgm.fadeInMs, 500, 0, 5000);
       const fadeOutMs = this.clampBgMusicNumber(bgm.fadeOutMs, 1500, 0, 5000);
       await this.videoCompositor.mixVoiceWithBackgroundMusic(videoWithVoicePath, localBgm, out, {

@@ -78,6 +78,8 @@ type BackgroundMusicConfig = {
   title?: string;
   artist?: string;
   durationSeconds?: number;
+  /** Magnific preview URL for in-browser playback only (not used at export). */
+  previewUrl?: string;
   publicUrl?: string;
   gcsUrl?: string;
   searchSeed?: { query?: string; genres?: string[]; moods?: string[] };
@@ -844,8 +846,8 @@ function WorkspacePageContent() {
     const payload: BackgroundMusicConfig = {
       enabled: backgroundMusicEnabled,
       searchSeed: musicSearchSeed || undefined,
-      mixVolume: 0.25,
-      voiceDuckTo: 0.85,
+      mixVolume: 0.1,
+      voiceDuckTo: 1.0,
       fadeInMs: 500,
       fadeOutMs: 1500,
       ...(musicSelected || {}),
@@ -2872,34 +2874,26 @@ function WorkspacePageContent() {
                           return (
                             <div
                               key={item.id}
-                              onClick={async () => {
+                              onClick={() => {
                                 if (!projectId) return;
-                                try {
-                                  const res = await fetch(`/api/music/${item.externalId}/download?projectId=${encodeURIComponent(projectId)}`, { headers: musicHeaders() });
-                                  const json = await res.json();
-                                  if (!res.ok || !json?.success) throw new Error(json?.message || 'Failed to select track');
-                                  const selected: BackgroundMusicConfig = {
-                                    enabled: true,
-                                    source: 'magnific',
-                                    externalId: item.externalId,
-                                    title: item.title,
-                                    artist: item.artistName,
-                                    durationSeconds: item.seconds,
-                                    publicUrl: json.data?.publicUrl || json.data?.url,
-                                    gcsUrl: json.data?.gcsUrl,
-                                    searchSeed: musicSearchSeed || undefined,
-                                    mixVolume: 0.25,
-                                    voiceDuckTo: 0.85,
-                                    fadeInMs: 500,
-                                    fadeOutMs: 1500,
-                                  };
-                                  setBackgroundMusicEnabled(true);
-                                  setMusicSelected(selected);
-                                  await persistBackgroundMusic(selected);
-                                  showToast('Background music selected', 'success');
-                                } catch (e: any) {
-                                  showToast(e?.message || 'Could not select music', 'error');
-                                }
+                                const selected: BackgroundMusicConfig = {
+                                  enabled: true,
+                                  source: 'magnific',
+                                  externalId: item.externalId,
+                                  title: item.title,
+                                  artist: item.artistName,
+                                  durationSeconds: item.seconds,
+                                  previewUrl: item.previewUrl || undefined,
+                                  searchSeed: musicSearchSeed || undefined,
+                                  mixVolume: 0.1,
+                                  voiceDuckTo: 1.0,
+                                  fadeInMs: 500,
+                                  fadeOutMs: 1500,
+                                };
+                                setBackgroundMusicEnabled(true);
+                                setMusicSelected(selected);
+                                void persistBackgroundMusic(selected);
+                                showToast('Background music selected', 'success');
                               }}
                               className={`w-full flex items-center justify-between p-3 rounded-lg border-2 transition-all duration-200 cursor-pointer ${
                                 isSelected
@@ -2921,34 +2915,53 @@ function WorkspacePageContent() {
                                 </div>
                               </div>
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (!item.previewUrl) {
+                                    showToast('Preview not available for this track', 'info');
+                                    return;
+                                  }
                                   try {
-                                    if (!item.previewUrl) return;
                                     if (musicPreviewAudioRef.current && isPlaying) {
                                       musicPreviewAudioRef.current.pause();
+                                      musicPreviewAudioRef.current.src = '';
                                       musicPreviewAudioRef.current = null;
                                       setMusicPreviewPlayingId(null);
                                       return;
                                     }
                                     if (musicPreviewAudioRef.current) {
                                       musicPreviewAudioRef.current.pause();
+                                      musicPreviewAudioRef.current.src = '';
+                                      musicPreviewAudioRef.current = null;
                                     }
                                     const a = new Audio(item.previewUrl);
                                     musicPreviewAudioRef.current = a;
                                     setMusicPreviewPlayingId(item.externalId);
-                                    a.onended = () => setMusicPreviewPlayingId(null);
-                                    a.play().catch(() => setMusicPreviewPlayingId(null));
+                                    a.onended = () => {
+                                      setMusicPreviewPlayingId(null);
+                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
+                                    };
+                                    a.onerror = () => {
+                                      showToast('Could not play preview (network or format)', 'error');
+                                      setMusicPreviewPlayingId(null);
+                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
+                                    };
+                                    void a.play().catch(() => {
+                                      showToast('Could not play preview', 'error');
+                                      setMusicPreviewPlayingId(null);
+                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
+                                    });
                                   } catch {
                                     setMusicPreviewPlayingId(null);
+                                    showToast('Could not play preview', 'error');
                                   }
                                 }}
                                 className={`ml-3 p-2 rounded-full transition-all duration-200 shrink-0 ${
                                   isPlaying
                                     ? 'bg-[#E86512] text-white hover:bg-[#D55A10]'
                                     : 'bg-white border border-[#E0E0E0] text-[#212121] hover:bg-[#FFF5F0] hover:border-[#E86512] hover:text-[#E86512]'
-                                }`}
-                                disabled={!item.previewUrl}
+                                } ${!item.previewUrl ? 'opacity-50 cursor-not-allowed' : ''}`}
                                 title={item.previewUrl ? 'Play preview' : 'No preview available'}
                               >
                                 {isPlaying ? (
@@ -2994,8 +3007,8 @@ function WorkspacePageContent() {
                               publicUrl: j.data?.publicUrl || j.data?.url,
                               gcsUrl: j.data?.gcsUrl,
                               searchSeed: musicSearchSeed || undefined,
-                              mixVolume: 0.25,
-                              voiceDuckTo: 0.85,
+                              mixVolume: 0.1,
+                              voiceDuckTo: 1.0,
                               fadeInMs: 500,
                               fadeOutMs: 1500,
                             };

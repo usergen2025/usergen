@@ -1277,7 +1277,7 @@ export class VideoCompositorProvider {
       throw new Error('Could not read video duration for BGM mix');
     }
 
-    const mixVolume = Math.min(1, Math.max(0, opts?.mixVolume ?? 0.25));
+    const mixVolume = Math.min(1, Math.max(0, opts?.mixVolume ?? 0.1));
     const voiceVol = Math.min(1, Math.max(0, opts?.voiceDuckTo ?? 0.85));
     const fadeIn = Math.min(5, Math.max(0, opts?.fadeInSec ?? 0.5));
     const fadeOut = Math.min(5, Math.max(0, opts?.fadeOutSec ?? 1.5));

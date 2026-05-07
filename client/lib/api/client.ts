@@ -38,6 +38,8 @@ export interface BackgroundMusicConfig {
   title?: string;
   artist?: string;
   durationSeconds?: number;
+  /** Magnific preview URL for in-browser playback only (not used at export). */
+  previewUrl?: string;
   publicUrl?: string;
   gcsUrl?: string;
   searchSeed?: BackgroundMusicSearchSeed;
