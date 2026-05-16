@@ -123,6 +123,14 @@ export interface MusicDownloadResult {
   durationSeconds?: number;
 }
 
+export interface MusicPreviewResult {
+  previewUrl: string | null;
+  fileUrl: string | null;
+  title: string;
+  artistName?: string;
+  durationSeconds?: number;
+}
+
 @Injectable()
 export class StockService {
   private readonly unifiedStorage: UnifiedStorageService;
@@ -711,6 +719,67 @@ export class StockService {
       title: dl.title || title,
       artistName,
       durationSeconds,
+    };
+  }
+
+  /**
+   * Get preview URL for a music track by fetching its detail.
+   * The list endpoint often doesn't include preview_url, so we fetch detail on-demand.
+   */
+  async getMusicPreviewInfo(musicId: number): Promise<MusicPreviewResult> {
+    if (!this.magnificMusicProvider.isConfigured()) {
+      throw new Error('Magnific Music API is not configured');
+    }
+
+    const detail = await this.magnificMusicProvider.getMusicDetail(musicId);
+    const title = (detail?.title as string) || `Track ${musicId}`;
+    const artistObj = detail?.artist as { name?: string } | null | undefined;
+    const artistName = artistObj?.name;
+    const durationSeconds =
+      typeof detail?.seconds === 'number' ? (detail.seconds as number) : undefined;
+
+    return {
+      previewUrl: (detail?.preview_url as string) || null,
+      fileUrl: (detail?.file_url as string) || null,
+      title,
+      artistName,
+      durationSeconds,
+    };
+  }
+
+  /**
+   * Stream music preview audio through backend (bypasses CORS).
+   * Returns a readable stream and content-type.
+   */
+  async streamMusicPreview(
+    musicId: number,
+  ): Promise<{ stream: NodeJS.ReadableStream; contentType: string; contentLength?: number }> {
+    if (!this.magnificMusicProvider.isConfigured()) {
+      throw new Error('Magnific Music API is not configured');
+    }
+
+    const detail = await this.magnificMusicProvider.getMusicDetail(musicId);
+    const previewUrl = (detail?.preview_url as string) || (detail?.file_url as string);
+    if (!previewUrl) {
+      throw new Error('No preview URL available for this track');
+    }
+
+    const response = await axios.get(previewUrl, {
+      responseType: 'stream',
+      timeout: 60000,
+      maxContentLength: 50 * 1024 * 1024,
+    });
+
+    const contentType =
+      (response.headers['content-type'] as string) || 'audio/mpeg';
+    const contentLength = response.headers['content-length']
+      ? parseInt(response.headers['content-length'] as string, 10)
+      : undefined;
+
+    return {
+      stream: response.data as NodeJS.ReadableStream,
+      contentType,
+      contentLength,
     };
   }
 

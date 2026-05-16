@@ -1,5 +1,6 @@
-import { Controller, Get, Query, Param, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Query, Param, HttpException, HttpStatus, Res } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiParam } from '@nestjs/swagger';
+import { Response } from 'express';
 import { StockService, StockSearchRequest } from './stock.service';
 
 @ApiTags('Stock Media')
@@ -93,6 +94,76 @@ export class StockController {
         throw new HttpException('Music not found', HttpStatus.NOT_FOUND);
       }
       throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Get('music/:musicId/preview-info')
+  @ApiOperation({
+    summary: 'Get preview URL info for a Magnific music track',
+    description:
+      'Fetches the track detail to retrieve preview_url and file_url (list endpoint may not include these).',
+  })
+  @ApiParam({ name: 'musicId', description: 'Magnific numeric music id' })
+  async getMusicPreviewInfo(@Param('musicId') musicId: string) {
+    const idNum = parseInt(musicId, 10);
+    if (Number.isNaN(idNum) || idNum < 1) {
+      throw new HttpException('Invalid music id', HttpStatus.BAD_REQUEST);
+    }
+    try {
+      const data = await this.stockService.getMusicPreviewInfo(idNum);
+      return { success: true, data };
+    } catch (error: any) {
+      if (error.message?.includes('not configured')) {
+        throw new HttpException(error.message, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      if (error.response?.status === 404) {
+        throw new HttpException('Music not found', HttpStatus.NOT_FOUND);
+      }
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Get('music/:musicId/preview')
+  @ApiOperation({
+    summary: 'Stream music preview audio (CORS bypass)',
+    description:
+      'Streams the preview audio through the backend to bypass CORS restrictions on the original URL.',
+  })
+  @ApiParam({ name: 'musicId', description: 'Magnific numeric music id' })
+  async streamMusicPreview(
+    @Param('musicId') musicId: string,
+    @Res() res: Response,
+  ) {
+    const idNum = parseInt(musicId, 10);
+    if (Number.isNaN(idNum) || idNum < 1) {
+      throw new HttpException('Invalid music id', HttpStatus.BAD_REQUEST);
+    }
+    try {
+      const { stream, contentType, contentLength } =
+        await this.stockService.streamMusicPreview(idNum);
+
+      res.setHeader('Content-Type', contentType);
+      if (contentLength) {
+        res.setHeader('Content-Length', contentLength);
+      }
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+
+      stream.pipe(res);
+    } catch (error: any) {
+      if (error.message?.includes('not configured')) {
+        throw new HttpException(error.message, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      if (error.message?.includes('No preview URL')) {
+        throw new HttpException(error.message, HttpStatus.NOT_FOUND);
+      }
+      if (error.response?.status === 404) {
+        throw new HttpException('Music not found', HttpStatus.NOT_FOUND);
+      }
+      throw new HttpException(
+        error.message || 'Failed to stream preview',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
   }
 

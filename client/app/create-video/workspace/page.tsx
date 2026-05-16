@@ -287,12 +287,14 @@ function WorkspacePageContent() {
   const [musicUploading, setMusicUploading] = useState(false);
   const [musicError, setMusicError] = useState<string | null>(null);
   const [musicPreviewPlayingId, setMusicPreviewPlayingId] = useState<number | null>(null);
+  const [musicPreviewLoading, setMusicPreviewLoading] = useState<number | null>(null);
   const [musicSearchSeed, setMusicSearchSeed] = useState<{ query?: string; genres?: string[]; moods?: string[] } | null>(null);
   const musicPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
   const musicSearchInputRef = useRef<HTMLInputElement>(null);
   const musicHydratedRef = useRef(false);
   const musicSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const musicCacheKeyRef = useRef<string>('');
+  const musicPreviewUrlCache = useRef<Record<number, string>>({});
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [musicExpanded, setMusicExpanded] = useState(true);
   const [captionsExpanded, setCaptionsExpanded] = useState(true);
@@ -840,6 +842,111 @@ function WorkspacePageContent() {
       setMusicLoading(false);
     }
   }, [musicSearchSeed, musicHeaders, projectId]);
+
+  /**
+   * Play music preview with multiple fallbacks:
+   * 1. Use cached URL if available
+   * 2. Try previewUrl from search results
+   * 3. Fetch preview-info endpoint for the actual URL
+   * 4. Use proxied stream endpoint as final fallback (bypasses CORS)
+   */
+  const handleMusicPreview = useCallback(async (item: MusicSearchItem, isCurrentlyPlaying: boolean) => {
+    if (isCurrentlyPlaying) {
+      if (musicPreviewAudioRef.current) {
+        musicPreviewAudioRef.current.pause();
+        musicPreviewAudioRef.current.src = '';
+        musicPreviewAudioRef.current = null;
+      }
+      setMusicPreviewPlayingId(null);
+      return;
+    }
+
+    if (musicPreviewAudioRef.current) {
+      musicPreviewAudioRef.current.pause();
+      musicPreviewAudioRef.current.src = '';
+      musicPreviewAudioRef.current = null;
+    }
+
+    const externalId = item.externalId;
+    setMusicPreviewLoading(externalId);
+
+    const tryPlayUrl = (url: string): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const audio = new Audio(url);
+        musicPreviewAudioRef.current = audio;
+        setMusicPreviewPlayingId(externalId);
+
+        audio.oncanplaythrough = () => {
+          setMusicPreviewLoading(null);
+          audio.play().catch(() => {
+            setMusicPreviewPlayingId(null);
+            resolve(false);
+          });
+        };
+
+        audio.onended = () => {
+          setMusicPreviewPlayingId(null);
+          if (musicPreviewAudioRef.current === audio) musicPreviewAudioRef.current = null;
+        };
+
+        audio.onerror = () => {
+          setMusicPreviewPlayingId(null);
+          if (musicPreviewAudioRef.current === audio) musicPreviewAudioRef.current = null;
+          resolve(false);
+        };
+
+        audio.onplay = () => resolve(true);
+        audio.load();
+
+        setTimeout(() => {
+          if (musicPreviewPlayingId !== externalId) resolve(false);
+        }, 10000);
+      });
+    };
+
+    try {
+      if (musicPreviewUrlCache.current[externalId]) {
+        const cached = musicPreviewUrlCache.current[externalId];
+        const success = await tryPlayUrl(cached);
+        if (success) return;
+      }
+
+      if (item.previewUrl) {
+        const success = await tryPlayUrl(item.previewUrl);
+        if (success) {
+          musicPreviewUrlCache.current[externalId] = item.previewUrl;
+          return;
+        }
+      }
+
+      const infoRes = await fetch(`/api/music/${externalId}/preview-info`, { headers: musicHeaders() });
+      if (infoRes.ok) {
+        const infoJson = await infoRes.json();
+        const fetchedUrl = infoJson?.data?.previewUrl || infoJson?.data?.fileUrl;
+        if (fetchedUrl) {
+          const success = await tryPlayUrl(fetchedUrl);
+          if (success) {
+            musicPreviewUrlCache.current[externalId] = fetchedUrl;
+            return;
+          }
+        }
+      }
+
+      const proxyUrl = `/api/music/${externalId}/preview`;
+      const success = await tryPlayUrl(proxyUrl);
+      if (success) {
+        musicPreviewUrlCache.current[externalId] = proxyUrl;
+        return;
+      }
+
+      showToast('Could not play preview for this track', 'error');
+    } catch (err) {
+      console.error('[Music Preview] Error:', err);
+      showToast('Could not play preview', 'error');
+    } finally {
+      setMusicPreviewLoading(null);
+    }
+  }, [musicHeaders, musicPreviewPlayingId, showToast]);
 
   const persistBackgroundMusic = useCallback(async (patch?: Partial<BackgroundMusicConfig>) => {
     if (!projectId || !musicHydratedRef.current) return;
@@ -2871,6 +2978,7 @@ function WorkspacePageContent() {
                         {musicLibraryItems.map((item) => {
                           const isSelected = musicSelected?.externalId === item.externalId;
                           const isPlaying = musicPreviewPlayingId === item.externalId;
+                          const isLoadingPreview = musicPreviewLoading === item.externalId;
                           return (
                             <div
                               key={item.id}
@@ -2918,53 +3026,22 @@ function WorkspacePageContent() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (!item.previewUrl) {
-                                    showToast('Preview not available for this track', 'info');
-                                    return;
-                                  }
-                                  try {
-                                    if (musicPreviewAudioRef.current && isPlaying) {
-                                      musicPreviewAudioRef.current.pause();
-                                      musicPreviewAudioRef.current.src = '';
-                                      musicPreviewAudioRef.current = null;
-                                      setMusicPreviewPlayingId(null);
-                                      return;
-                                    }
-                                    if (musicPreviewAudioRef.current) {
-                                      musicPreviewAudioRef.current.pause();
-                                      musicPreviewAudioRef.current.src = '';
-                                      musicPreviewAudioRef.current = null;
-                                    }
-                                    const a = new Audio(item.previewUrl);
-                                    musicPreviewAudioRef.current = a;
-                                    setMusicPreviewPlayingId(item.externalId);
-                                    a.onended = () => {
-                                      setMusicPreviewPlayingId(null);
-                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
-                                    };
-                                    a.onerror = () => {
-                                      showToast('Could not play preview (network or format)', 'error');
-                                      setMusicPreviewPlayingId(null);
-                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
-                                    };
-                                    void a.play().catch(() => {
-                                      showToast('Could not play preview', 'error');
-                                      setMusicPreviewPlayingId(null);
-                                      if (musicPreviewAudioRef.current === a) musicPreviewAudioRef.current = null;
-                                    });
-                                  } catch {
-                                    setMusicPreviewPlayingId(null);
-                                    showToast('Could not play preview', 'error');
-                                  }
+                                  if (isLoadingPreview) return;
+                                  void handleMusicPreview(item, isPlaying);
                                 }}
+                                disabled={isLoadingPreview}
                                 className={`ml-3 p-2 rounded-full transition-all duration-200 shrink-0 ${
                                   isPlaying
                                     ? 'bg-[#E86512] text-white hover:bg-[#D55A10]'
-                                    : 'bg-white border border-[#E0E0E0] text-[#212121] hover:bg-[#FFF5F0] hover:border-[#E86512] hover:text-[#E86512]'
-                                } ${!item.previewUrl ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                title={item.previewUrl ? 'Play preview' : 'No preview available'}
+                                    : isLoadingPreview
+                                      ? 'bg-gray-100 border border-gray-300 text-gray-400'
+                                      : 'bg-white border border-[#E0E0E0] text-[#212121] hover:bg-[#FFF5F0] hover:border-[#E86512] hover:text-[#E86512]'
+                                }`}
+                                title={isLoadingPreview ? 'Loading preview...' : isPlaying ? 'Pause' : 'Play preview'}
                               >
-                                {isPlaying ? (
+                                {isLoadingPreview ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : isPlaying ? (
                                   <Pause className="w-4 h-4" />
                                 ) : (
                                   <Play className="w-4 h-4 fill-current" />
