@@ -3418,6 +3418,11 @@ export class RenderingService {
       throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
     }
 
+    const metadata =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+
     return {
       success: true,
       data: {
@@ -3426,7 +3431,9 @@ export class RenderingService {
         progressStage: project.progressStage,
         status: project.status,
         videoUrl: project.videoUrl,
+        thumbnailUrl: project.thumbnailUrl,
         errorMessage: project.errorMessage,
+        metadata,
       },
     };
   }

@@ -15,7 +15,9 @@ import {
   UploadedFile,
   BadRequestException,
   ServiceUnavailableException,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } from '@nestjs/swagger';
 import { VideoService } from './video.service';
 import { RenderingService } from '../rendering/rendering.service';
@@ -249,6 +251,81 @@ export class VideoController {
         default: 'video-model-1',
       },
     };
+  }
+
+  @Get(':projectId/download-url')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Get clean final video download URL',
+    description:
+      'Returns a short-lived signed GCS URL or same-origin proxy path for browser download',
+  })
+  @ApiResponse({ status: 200, description: 'Download URL' })
+  @ApiResponse({ status: 404, description: 'Video not found' })
+  async getFinalVideoDownloadUrl(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+    const data = await this.videoService.getFinalVideoDownloadUrl(
+      projectId,
+      userId,
+    );
+    return { success: true, data };
+  }
+
+  @Get(':projectId/download')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Download clean final video',
+    description: 'Streams the final rendered video (no preview watermark) as an attachment',
+  })
+  @ApiResponse({ status: 200, description: 'Video stream' })
+  @ApiResponse({ status: 404, description: 'Video not found' })
+  async downloadFinalVideo(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Query('disposition') disposition: string | undefined,
+    @Res() res: Response,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+    const mode = disposition === 'inline' ? 'inline' : 'attachment';
+    await this.videoService.streamFinalVideoDownload(projectId, userId, res, mode);
+  }
+
+  @Post(':projectId/regenerate-preview')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Regenerate watermarked preview',
+    description: 'Enqueues preview-derivatives job with forceRegenerate',
+  })
+  async regeneratePreview(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+    const projectResult = await this.videoService.getProject(projectId, userId);
+    const project = projectResult.data;
+    if (!project.videoUrl) {
+      throw new BadRequestException('Project has no final video to build preview from');
+    }
+    await this.queueManager.addPreviewDerivativesJob({
+      projectId,
+      userId,
+      videoUrl: project.videoUrl,
+      forceRegenerate: true,
+    });
+    return { success: true, message: 'Preview regeneration queued' };
   }
 
   @Get(':projectId')

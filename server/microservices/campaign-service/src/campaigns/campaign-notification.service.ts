@@ -12,7 +12,11 @@ export type CampaignNotificationType =
   | 'CAMPAIGN_POST_REJECTED'
   | 'CAMPAIGN_DEADLINE_APPROACHING'
   | 'CAMPAIGN_EARNINGS_ACCRUED'
-  | 'CAMPAIGN_EARNINGS_AVAILABLE';
+  | 'CAMPAIGN_EARNINGS_AVAILABLE'
+  | 'CAMPAIGN_FINALIZED_BRAND'
+  | 'CAMPAIGN_FINALIZED_CREATOR_WIN'
+  | 'CAMPAIGN_FINALIZED_CREATOR_DROPPED'
+  | 'CAMPAIGN_REFUNDED_EXCEPTION';
 
 interface NotificationPayload {
   userId: string;
@@ -266,6 +270,172 @@ export class CampaignNotificationService {
       title: 'Earnings Available',
       message: `₹${amount.toLocaleString('en-IN')} is now available for withdrawal`,
       data: { amount },
+    });
+  }
+
+  /**
+   * Emit a leaderboard update on the campaign room. Listeners are encouraged to refetch
+   * `/leaderboard` rather than rely on a payload-only diff, to keep this lightweight.
+   */
+  emitLeaderboardUpdated(params: {
+    campaignId: string;
+    campaignName?: string;
+    qualifiersCount?: number;
+    approvedCount?: number;
+    triggeredBy: string;
+  }) {
+    const event: CampaignEvent = {
+      type: 'campaign:leaderboard:updated',
+      campaignId: params.campaignId,
+      campaignName: params.campaignName,
+      message: `Leaderboard updated (${params.triggeredBy})`,
+      data: {
+        qualifiersCount: params.qualifiersCount,
+        approvedCount: params.approvedCount,
+        triggeredBy: params.triggeredBy,
+      },
+      timestamp: new Date().toISOString(),
+    };
+    this.campaignEventsGateway.notifyCampaign(params.campaignId, event);
+  }
+
+  emitViewsUpdated(params: {
+    campaignId: string;
+    campaignName?: string;
+    creatorId: string;
+    postSubmissionId: string;
+    previousViews: number;
+    newViews: number;
+  }) {
+    const event: CampaignEvent = {
+      type: 'campaign:views:updated',
+      campaignId: params.campaignId,
+      campaignName: params.campaignName,
+      creatorId: params.creatorId,
+      postId: params.postSubmissionId,
+      data: {
+        previousViews: params.previousViews,
+        newViews: params.newViews,
+      },
+      timestamp: new Date().toISOString(),
+    };
+    this.campaignEventsGateway.notifyCampaign(params.campaignId, event);
+  }
+
+  emitPostDisqualified(params: {
+    campaignId: string;
+    campaignName?: string;
+    creatorId: string;
+    postSubmissionId: string;
+    reason: string;
+  }) {
+    const event: CampaignEvent = {
+      type: 'campaign:post:disqualified',
+      campaignId: params.campaignId,
+      campaignName: params.campaignName,
+      creatorId: params.creatorId,
+      postId: params.postSubmissionId,
+      data: { reason: params.reason },
+      timestamp: new Date().toISOString(),
+    };
+    this.campaignEventsGateway.notifyCampaign(params.campaignId, event);
+    this.campaignEventsGateway.notifyUser(params.creatorId, event);
+  }
+
+  async notifyCampaignFinalized(params: {
+    brandId: string;
+    campaignId: string;
+    campaignName: string;
+    qualifiersCount: number;
+    droppedCount: number;
+    distributedAmountRupees: number;
+    qualifyingCreators: Array<{ creatorId: string; rank: number; payoutAmountRupees: number; unlockAt: string }>;
+    droppedCreators: Array<{ creatorId: string; reason: string }>;
+    unlockAt: string;
+  }) {
+    const {
+      brandId,
+      campaignId,
+      campaignName,
+      qualifiersCount,
+      droppedCount,
+      distributedAmountRupees,
+      qualifyingCreators,
+      droppedCreators,
+      unlockAt,
+    } = params;
+
+    this.campaignEventsGateway.notifyCampaign(campaignId, {
+      type: 'campaign:finalized',
+      campaignId,
+      campaignName,
+      data: { qualifiersCount, droppedCount, distributedAmountRupees, unlockAt },
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.createInAppNotification({
+      userId: brandId,
+      type: 'CAMPAIGN_FINALIZED_BRAND',
+      title: 'Campaign finalized',
+      message:
+        `Pool of ₹${distributedAmountRupees.toLocaleString('en-IN')} on "${campaignName}" was distributed across ${qualifiersCount} creator(s)` +
+        (droppedCount > 0 ? `; ${droppedCount} dropped at validation.` : '.'),
+      data: { campaignId, qualifiersCount, droppedCount, distributedAmountRupees, unlockAt },
+    });
+
+    for (const winner of qualifyingCreators) {
+      this.campaignEventsGateway.notifyUser(winner.creatorId, {
+        type: 'campaign:rank:changed',
+        campaignId,
+        campaignName,
+        creatorId: winner.creatorId,
+        data: {
+          rank: winner.rank,
+          payoutAmountRupees: winner.payoutAmountRupees,
+          unlockAt: winner.unlockAt,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      await this.createInAppNotification({
+        userId: winner.creatorId,
+        type: 'CAMPAIGN_FINALIZED_CREATOR_WIN',
+        title: `You earned ₹${winner.payoutAmountRupees.toLocaleString('en-IN')}!`,
+        message: `Final rank #${winner.rank} on "${campaignName}". Earnings unlock on ${new Date(winner.unlockAt).toLocaleDateString('en-IN')}.`,
+        data: { campaignId, rank: winner.rank, payoutAmountRupees: winner.payoutAmountRupees, unlockAt: winner.unlockAt },
+      });
+    }
+
+    for (const dropped of droppedCreators) {
+      await this.createInAppNotification({
+        userId: dropped.creatorId,
+        type: 'CAMPAIGN_FINALIZED_CREATOR_DROPPED',
+        title: `Campaign "${campaignName}" finalized`,
+        message: `You did not qualify for the prize pool. Reason: ${dropped.reason}`,
+        data: { campaignId, reason: dropped.reason },
+      });
+    }
+  }
+
+  async notifyPoolRefundedException(params: {
+    brandId: string;
+    campaignId: string;
+    campaignName: string;
+    refundAmountRupees: number;
+  }) {
+    const { brandId, campaignId, campaignName, refundAmountRupees } = params;
+    this.campaignEventsGateway.notifyUser(brandId, {
+      type: 'campaign:refunded:exception',
+      campaignId,
+      campaignName,
+      data: { refundAmountRupees },
+      timestamp: new Date().toISOString(),
+    });
+    await this.createInAppNotification({
+      userId: brandId,
+      type: 'CAMPAIGN_REFUNDED_EXCEPTION',
+      title: 'Pool refund issued',
+      message: `No creators qualified for "${campaignName}". ₹${refundAmountRupees.toLocaleString('en-IN')} has been refunded to your wallet.`,
+      data: { campaignId, refundAmountRupees },
     });
   }
 

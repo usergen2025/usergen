@@ -16,6 +16,7 @@ import { StorageModule } from '../storage/storage.module';
 import { AssetProcessorService } from '../services/asset-processor.service';
 import { VideoModule } from '../../video/video.module';
 import { NotificationsModule } from '../../notifications/notifications.module';
+import { PreviewModule } from '../../preview/preview.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { NotificationsModule } from '../../notifications/notifications.module';
     VideoModule,
     NotificationsModule,
     StorageModule, // Import StorageModule to access PublicUrlService
+    PreviewModule,
     forwardRef(() => RenderingModule),
     WebSocketModule, // Import WebSocket module to access gateway
     // Register queues for different task types
@@ -48,7 +50,7 @@ import { NotificationsModule } from '../../notifications/notifications.module';
     PreviewDerivativesProcessor,
     AssetProcessorService,
   ],
-  exports: [QueueManagerService],
+  exports: [QueueManagerService, PreviewModule],
 })
 export class QueueModule {}
 

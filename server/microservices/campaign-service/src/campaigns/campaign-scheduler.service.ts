@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DatabaseService } from '../common/database/database.service';
 import { CampaignNotificationService } from './campaign-notification.service';
+import { CampaignsService } from './campaigns.service';
+import { CampaignFinalizationService } from './campaign-finalization.service';
 
 @Injectable()
 export class CampaignSchedulerService {
@@ -10,6 +12,8 @@ export class CampaignSchedulerService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly notificationService: CampaignNotificationService,
+    private readonly campaignsService: CampaignsService,
+    private readonly campaignFinalizationService: CampaignFinalizationService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
@@ -96,46 +100,67 @@ export class CampaignSchedulerService {
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async processEarningsMaturity() {
     this.logger.log('Running earnings maturity check...');
-
-    const now = new Date();
-    const maturityThreshold = new Date(now);
-    maturityThreshold.setDate(maturityThreshold.getDate() - 14);
-
     try {
-      const maturedEarnings = await this.databaseService.creatorEarning.findMany({
+      const now = new Date();
+      const dueEarnings = await this.databaseService.creatorEarning.findMany({
         where: {
           status: 'LOCKED',
-          earnedAt: { lte: maturityThreshold },
+          unlockAt: { lte: now },
         },
-        include: {
-          campaign: true,
-        },
+        select: { id: true, creatorId: true, amount: true },
       });
-
       const creatorTotals = new Map<string, number>();
-
-      for (const earning of maturedEarnings) {
-        await this.databaseService.creatorEarning.update({
-          where: { id: earning.id },
-          data: { status: 'AVAILABLE' },
-        });
-
+      for (const earning of dueEarnings) {
         const current = creatorTotals.get(earning.creatorId) || 0;
         creatorTotals.set(earning.creatorId, current + Number(earning.amount));
       }
 
+      const result = await this.campaignsService.processMaturedLockedEarnings();
+
       for (const [creatorId, amount] of creatorTotals) {
         if (amount > 0) {
-          await this.notificationService.notifyEarningsAvailable({
-            creatorId,
-            amount,
-          });
+          try {
+            await this.notificationService.notifyEarningsAvailable({ creatorId, amount });
+          } catch (notifyErr: any) {
+            this.logger.warn(
+              `Earnings-available notification failed for ${creatorId}: ${notifyErr?.message}`,
+            );
+          }
         }
       }
 
-      this.logger.log(`Processed ${maturedEarnings.length} matured earnings`);
+      this.logger.log(`Processed ${result.processed} matured earnings (wallet-credited)`);
     } catch (error: any) {
       this.logger.error(`Earnings maturity check failed: ${error?.message}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async finalizePoolCampaigns() {
+    this.logger.log('Running POOL campaign finalization sweep...');
+    try {
+      const due = await this.campaignFinalizationService.findCampaignsDueForFinalization(20);
+      if (!due.length) {
+        return;
+      }
+      this.logger.log(`Found ${due.length} POOL campaign(s) due for finalization`);
+      for (const campaign of due) {
+        if (!this.campaignFinalizationService.isPastFinalizationWindow(campaign)) {
+          continue;
+        }
+        try {
+          await this.campaignFinalizationService.finalizeCampaign(
+            campaign.id,
+            { id: 'cron', role: 'CRON' },
+          );
+        } catch (err: any) {
+          this.logger.error(
+            `Auto-finalization failed for campaign ${campaign.id}: ${err?.message ?? err}`,
+          );
+        }
+      }
+    } catch (error: any) {
+      this.logger.error(`POOL finalization sweep failed: ${error?.message}`);
     }
   }
 }

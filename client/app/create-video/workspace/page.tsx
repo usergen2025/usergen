@@ -5,8 +5,17 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
 import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
+import {
+  getFinalVideoUrl,
+  getPreviewPlaybackUrl,
+  hasFinalVideo,
+  hasPreviewGenerationError,
+  isFinalReady,
+  isPreviewReady,
+} from '@/lib/video-urls';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useDownloadFinalVideo } from '@/hooks/useDownloadFinalVideo';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils/cn';
 import { DraggableResizableAvatar } from '@/components/create-video/DraggableResizableAvatar';
@@ -256,6 +265,7 @@ interface BrollVideo {
 
 const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:3003';
 const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:3002';
+const VIDEO_SERVICE_ORIGIN = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
 
 /** Matches Tailwind `lg` — left/right rails fixed from this width; drawers below. */
 const WORKSPACE_SIDEBAR_BREAKPOINT_PX = 1024;
@@ -269,6 +279,13 @@ function WorkspacePageContent() {
 
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
+  const {
+    download: downloadFinalVideo,
+    isDownloading: isDownloadingFinal,
+  } = useDownloadFinalVideo(
+    projectId,
+    project?.title ? `${String(project.title).replace(/[^\w\s-]/g, '').trim() || 'video'}.mp4` : undefined,
+  );
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<BrollImage[]>([]);
   const [brollVideos, setBrollVideos] = useState<BrollVideo[]>([]);
@@ -348,6 +365,10 @@ function WorkspacePageContent() {
   const [renderingProgress, setRenderingProgress] = useState(0);
   const [renderingStage, setRenderingStage] = useState<string>('pending');
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
+  const [previewPlaybackUrl, setPreviewPlaybackUrl] = useState<string | null>(null);
+  const [previewPreparing, setPreviewPreparing] = useState(false);
+  const [previewGenerationError, setPreviewGenerationError] = useState<string | null>(null);
+  const previewPollingRef = useRef<NodeJS.Timeout | null>(null);
   const [showExportConfirm, setShowExportConfirm] = useState(false);
   const [exportCostBreakdown, setExportCostBreakdown] = useState<any>(null);
   const [exportConfirmLoading, setExportConfirmLoading] = useState(false);
@@ -722,11 +743,8 @@ function WorkspacePageContent() {
           }
 
           // Check if project is already completed or rendering
-          if (projectData.status === 'COMPLETED' && (projectData.videoPublicUrl || projectData.videoGcsUrl || projectData.videoUrl)) {
-            // Project already has final video - go to completed mode
-            const finalUrl = projectData.videoPublicUrl || projectData.videoGcsUrl || 
-              (projectData.videoUrl?.startsWith('http') ? projectData.videoUrl : `${VIDEO_SERVICE_BASE_URL}${projectData.videoUrl}`);
-            setFinalVideoUrl(finalUrl);
+          if (projectData.status === 'COMPLETED' && hasFinalVideo(projectData)) {
+            applyProjectVideoUrls(projectData);
             setWorkspaceMode('completed');
             setRenderingProgress(100);
             setRenderingStage('completed');
@@ -1010,31 +1028,102 @@ function WorkspacePageContent() {
     }
   };
 
-  const handleDownloadFinalVideo = useCallback(async () => {
-    if (!finalVideoUrl) return;
+  const applyProjectVideoUrls = useCallback((projectData: {
+    videoPublicUrl?: string;
+    videoGcsUrl?: string;
+    videoUrl?: string;
+    metadata?: Record<string, unknown> | null;
+  }) => {
+    const final = getFinalVideoUrl(projectData, VIDEO_SERVICE_ORIGIN);
+    setFinalVideoUrl(final);
 
-    try {
-      const response = await fetch(finalVideoUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch video (${response.status})`);
-      }
+    const previewErr = projectData.metadata?.previewGenerationError;
+    setPreviewGenerationError(
+      typeof previewErr === 'string' ? previewErr : null,
+    );
 
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = `${project?.title || `project-${projectId || 'video'}`}.mp4`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
-      showToast('Download started', 'success');
-    } catch (error) {
-      console.warn('Direct download failed, falling back to opening URL:', error);
-      window.open(finalVideoUrl, '_blank');
-      showToast('Download could not start directly. Opened video in a new tab.', 'info');
+    if (isPreviewReady(projectData)) {
+      setPreviewPlaybackUrl(getPreviewPlaybackUrl(projectData, VIDEO_SERVICE_ORIGIN));
+      setPreviewPreparing(false);
+      return;
     }
-  }, [finalVideoUrl, project?.title, projectId, showToast]);
+
+    if (hasPreviewGenerationError(projectData)) {
+      setPreviewPlaybackUrl(null);
+      setPreviewPreparing(false);
+      return;
+    }
+
+    if (hasFinalVideo(projectData)) {
+      setPreviewPlaybackUrl(null);
+      setPreviewPreparing(true);
+    }
+  }, []);
+
+  const handleRetryPreview = useCallback(async () => {
+    if (!projectId) return;
+    setPreviewGenerationError(null);
+    setPreviewPreparing(true);
+    setPreviewPlaybackUrl(null);
+    try {
+      await apiClient.regenerateVideoPreview(projectId);
+      showToast('Preview regeneration started', 'info');
+    } catch {
+      showToast('Could not start preview regeneration', 'error');
+    }
+  }, [projectId, showToast]);
+
+  // Poll until watermarked preview is ready (or generation failed)
+  useEffect(() => {
+    if (workspaceMode !== 'completed' || !projectId) {
+      if (previewPollingRef.current) {
+        clearInterval(previewPollingRef.current);
+        previewPollingRef.current = null;
+      }
+      return;
+    }
+
+    if (isPreviewReady(project || {}) && previewPlaybackUrl) {
+      return;
+    }
+
+    if (hasPreviewGenerationError(project || {})) {
+      return;
+    }
+
+    if (!hasFinalVideo(project || {}) && !finalVideoUrl) {
+      return;
+    }
+
+    const pollPreview = async () => {
+      try {
+        const response = await apiClient.getVideoProject(projectId);
+        if (response.success && response.data) {
+          setProject(response.data);
+          applyProjectVideoUrls(response.data);
+        }
+      } catch (error) {
+        console.warn('[Workspace] Preview poll failed:', error);
+      }
+    };
+
+    void pollPreview();
+    previewPollingRef.current = setInterval(pollPreview, 4000);
+
+    return () => {
+      if (previewPollingRef.current) {
+        clearInterval(previewPollingRef.current);
+        previewPollingRef.current = null;
+      }
+    };
+  }, [
+    workspaceMode,
+    projectId,
+    previewPlaybackUrl,
+    project,
+    finalVideoUrl,
+    applyProjectVideoUrls,
+  ]);
 
   // Track preview container dimensions for avatar overlay positioning
   useEffect(() => {
@@ -1578,26 +1667,37 @@ function WorkspacePageContent() {
             return;
           }
 
-          // Check for completion
+          // Check for completion — final ready: exit render UI; preview continues in background
           if (status === 'COMPLETED' || renderingStatus === 'completed') {
             clearInterval(renderingPollingRef.current!);
             renderingPollingRef.current = null;
             setRenderingProgress(100);
             setRenderingStage('completed');
-            
-            // Set final video URL (prioritize GCS/public URLs)
-            const finalUrl = videoPublicUrl || videoGcsUrl || 
-              (videoUrl?.startsWith('http') ? videoUrl : `${VIDEO_SERVICE_BASE_URL}${videoUrl}`);
-            setFinalVideoUrl(finalUrl);
-            
-            // Transition to completed mode after a short delay
+
+            try {
+              const projectRes = await apiClient.getVideoProject(projectId);
+              if (projectRes.success && projectRes.data) {
+                setProject(projectRes.data);
+                applyProjectVideoUrls(projectRes.data);
+              } else if (videoUrl) {
+                applyProjectVideoUrls({
+                  videoUrl,
+                  metadata: response.data?.metadata,
+                });
+              }
+            } catch {
+              if (videoUrl) {
+                applyProjectVideoUrls({ videoUrl, metadata: response.data?.metadata });
+              }
+            }
+
             setTimeout(() => {
               setWorkspaceMode('completed');
               showToast('Video rendering completed!', 'success');
               if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('credits-refresh'));
               }
-            }, 1000);
+            }, 500);
             return;
           }
         }
@@ -2216,8 +2316,14 @@ function WorkspacePageContent() {
     );
   }
 
+  const finalReady =
+    Boolean(finalVideoUrl) || isFinalReady(project || {}, VIDEO_SERVICE_ORIGIN);
+  const previewPlayerReady =
+    Boolean(previewPlaybackUrl) && isPreviewReady(project || {});
+
   const showMainWorkspace =
-    workspaceMode !== 'rendering' && !(workspaceMode === 'completed' && finalVideoUrl);
+    workspaceMode !== 'rendering' &&
+    !(workspaceMode === 'completed' && finalReady);
 
   return (
     <div className="relative h-full min-h-0 flex flex-col overflow-hidden">
@@ -2276,7 +2382,7 @@ function WorkspacePageContent() {
       )}
 
       {/* Completed — dedicated full-area final video (not overlay) */}
-      {workspaceMode === 'completed' && finalVideoUrl && (
+      {workspaceMode === 'completed' && (finalVideoUrl || hasFinalVideo(project || {})) && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
           <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
             {/* Header Row */}
@@ -2294,15 +2400,16 @@ function WorkspacePageContent() {
 
               {/* Right: Export button */}
               <button
-                onClick={() => {
-                  if (finalVideoUrl) {
-                    window.open(finalVideoUrl, '_blank');
-                  }
-                }}
-                className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity"
+                type="button"
+                onClick={() => void downloadFinalVideo()}
+                disabled={!finalReady || isDownloadingFinal}
+                className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
+                {isDownloadingFinal ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                ) : null}
                 <span className="font-heading font-semibold text-[clamp(12px,1.37vh,14px)] leading-[clamp(12px,1.37vh,14px)] text-white">
-                  Export →
+                  Download
                 </span>
               </button>
             </div>
@@ -2311,22 +2418,48 @@ function WorkspacePageContent() {
             <div className="flex-1 flex flex-col items-center justify-center min-h-0 py-4">
               {/* Video player container - 9:16 aspect ratio */}
               <div className="relative h-[60vh] max-h-[500px] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black">
-                <video
-                  src={finalVideoUrl}
-                  className="w-full h-full object-contain"
-                  controls
-                  autoPlay={false}
-                  playsInline
-                >
-                  Your browser does not support the video tag.
-                </video>
-                
-                {/* Play button overlay - shows when video is not playing */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
-                  <div className="w-16 h-16 bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center">
-                    <Play className="w-8 h-8 text-white ml-1" fill="white" />
+                {previewPlayerReady ? (
+                  <>
+                    <video
+                      src={previewPlaybackUrl ?? undefined}
+                      className="w-full h-full object-contain"
+                      controls
+                      controlsList="nodownload noremoteplayback"
+                      disablePictureInPicture
+                      onContextMenu={(e) => e.preventDefault()}
+                      autoPlay={false}
+                      playsInline
+                    >
+                      Your browser does not support the video tag.
+                    </video>
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
+                      <div className="w-16 h-16 bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center">
+                        <Play className="w-8 h-8 text-white ml-1" fill="white" />
+                      </div>
+                    </div>
+                  </>
+                ) : previewGenerationError ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/90 z-10 px-6 text-center">
+                    <p className="font-heading text-sm">Preview could not be prepared.</p>
+                    <p className="text-xs text-white/70 max-w-[240px]">{previewGenerationError}</p>
+                    <button
+                      type="button"
+                      onClick={handleRetryPreview}
+                      className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Retry preview
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/90 z-10">
+                    <Loader2 className="w-10 h-10 animate-spin text-white" />
+                    <p className="font-heading text-sm">Preparing preview…</p>
+                    {finalReady ? (
+                      <p className="text-xs text-white/60">Download is available for the clean final video.</p>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
               {/* Export & Share section */}
@@ -2336,8 +2469,9 @@ function WorkspacePageContent() {
                   {/* Download */}
                   <button
                     type="button"
-                    onClick={handleDownloadFinalVideo}
-                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]"
+                    onClick={() => void downloadFinalVideo()}
+                    disabled={!finalReady || isDownloadingFinal}
+                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -2363,14 +2497,21 @@ function WorkspacePageContent() {
                   
                   {/* Share */}
                   <button
+                    type="button"
                     onClick={() => {
-                      if (navigator.share && finalVideoUrl) {
-                        navigator.share({
-                          title: 'My Video',
-                          url: finalVideoUrl,
+                      const shareUrl =
+                        typeof window !== 'undefined'
+                          ? window.location.href
+                          : projectId
+                            ? `/create-video/workspace?projectId=${projectId}`
+                            : '';
+                      if (navigator.share) {
+                        void navigator.share({
+                          title: project?.title || 'My Video',
+                          url: shareUrl,
                         });
                       } else {
-                        navigator.clipboard.writeText(finalVideoUrl || '');
+                        void navigator.clipboard.writeText(shareUrl);
                         showToast('Link copied to clipboard!', 'success');
                       }
                     }}

@@ -30,6 +30,8 @@ import {
 import Tooltip from '@/components/ui/Tooltip';
 import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
+import { LeaderboardCard, PrizePoolSummary } from '@/components/campaigns/LeaderboardCard';
+import { useAuth } from '@/hooks/useAuth';
 
 interface Applicant {
   id: string;
@@ -62,6 +64,11 @@ interface CampaignDetails {
   targetViews: number;
   budgetUsed: number;
   totalBudget: number;
+  payoutModel?: 'CPM' | 'POOL';
+  finalizationStatus?: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | null;
+  finalizedAt?: string | null;
+  finalizationError?: string | null;
+  gracePeriodHours?: number;
 }
 
 interface ApplicationRow {
@@ -109,6 +116,8 @@ export default function CampaignDetailsPage() {
   const router = useRouter();
   const params = useParams();
   const { showToast } = useToast();
+  const { user } = useAuth();
+  const isPrivileged = user?.role === 'ADMIN' || user?.role === 'OWNER';
   const campaignId = paramSegment(params, 'id');
   const getErrorMessage = (error: unknown, fallback: string) =>
     error instanceof Error && error.message ? error.message : fallback;
@@ -336,6 +345,10 @@ export default function CampaignDetailsPage() {
   }
 
   const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
+  const graceHours = campaign.gracePeriodHours ?? 24;
+  const finalizeEligibleAt =
+    new Date(campaign.endDate).getTime() + graceHours * 60 * 60 * 1000;
+  const canFinalizeNow = Date.now() >= finalizeEligibleAt;
   const budgetProgress =
     campaign.totalBudget > 0 ? (campaign.budgetUsed / campaign.totalBudget) * 100 : 0;
 
@@ -586,6 +599,81 @@ export default function CampaignDetailsPage() {
       </div>
       </div>
 
+      {campaign.payoutModel === 'POOL' && (
+        <div className="mb-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <PrizePoolSummary campaignId={campaignId} />
+          <LeaderboardCard campaignId={campaignId} showSnapshot />
+        </div>
+      )}
+
+      {campaign.payoutModel === 'POOL' &&
+        (campaign.status === 'COMPLETED' ||
+          new Date(campaign.endDate).getTime() < Date.now()) && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#E8E2DB] bg-white p-3">
+            <div>
+              <p className="font-heading text-sm font-medium text-[#212121]">Finalization</p>
+              <p className="text-xs text-text-secondary">
+                Status: {campaign.finalizationStatus || 'PENDING'}
+                {campaign.finalizedAt
+                  ? ` · finalized ${new Date(campaign.finalizedAt).toLocaleDateString('en-IN')}`
+                  : ''}
+                {campaign.finalizationError ? ` · ${campaign.finalizationError}` : ''}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {isPrivileged &&
+                (campaign.finalizationStatus === 'RUNNING' ||
+                  campaign.finalizationStatus === 'FAILED') && (
+                  <BrandSecondaryButton
+                    type="button"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await apiClient.resetCampaignFinalization(campaignId);
+                        await loadCampaign();
+                        showToast('Finalization status reset to PENDING', 'success');
+                      } catch (error: unknown) {
+                        showToast(getErrorMessage(error, 'Failed to reset finalization'), 'error');
+                      }
+                    }}
+                  >
+                    Reset finalization
+                  </BrandSecondaryButton>
+                )}
+              <BrandPrimaryButton
+                type="button"
+                size="sm"
+                disabled={
+                  campaign.finalizationStatus === 'COMPLETED' ||
+                  campaign.finalizationStatus === 'RUNNING'
+                }
+                title={
+                  !canFinalizeNow
+                    ? `Available after ${new Date(finalizeEligibleAt).toLocaleString('en-IN')} (end + ${graceHours}h grace)`
+                    : undefined
+                }
+                onClick={async () => {
+                  const force = canFinalizeNow
+                    ? true
+                    : window.confirm(
+                        `Grace period ends ${new Date(finalizeEligibleAt).toLocaleString('en-IN')}. Finalize anyway? This is irreversible.`,
+                      );
+                  if (!force) return;
+                  try {
+                    await apiClient.finalizeCampaign(campaignId, { force: true });
+                    await loadCampaign();
+                    showToast('Finalization triggered', 'success');
+                  } catch (error: unknown) {
+                    showToast(getErrorMessage(error, 'Failed to finalize campaign'), 'error');
+                  }
+                }}
+              >
+                {campaign.finalizationStatus === 'COMPLETED' ? 'Finalized' : 'Finalize now'}
+              </BrandPrimaryButton>
+            </div>
+          </div>
+        )}
+
       <div className="brand-gradient-frame flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
       <div className="rounded-[18px] bg-white/95 p-3 shadow-sm sm:p-4">
         <div className="mb-3 flex items-center justify-between">
@@ -653,36 +741,61 @@ export default function CampaignDetailsPage() {
                   </div>
                 </div>
                 {submission.status === 'VERIFIED' ? (
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <input
-                      value={viewInputs[submission.id] || ''}
-                      onChange={(event) =>
-                        setViewInputs((prev) => ({ ...prev, [submission.id]: event.target.value.replace(/[^0-9]/g, '') }))
-                      }
-                      placeholder="Current views"
-                      className="brand-field-capsule w-full sm:w-40"
-                    />
-                    <BrandPrimaryButton
-                      type="button"
-                      size="sm"
-                      onClick={async () => {
-                        const currentViews = Number(viewInputs[submission.id] || 0);
-                        if (!Number.isFinite(currentViews) || currentViews < 0) {
-                          showToast('Enter a valid view count', 'error');
-                          return;
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <input
+                        value={viewInputs[submission.id] || ''}
+                        onChange={(event) =>
+                          setViewInputs((prev) => ({ ...prev, [submission.id]: event.target.value.replace(/[^0-9]/g, '') }))
                         }
-                        try {
-                          await apiClient.verifyPostViews(submission.id, { currentViews });
-                          await loadCampaign();
-                          await loadPostSubmissions();
-                          showToast('Views verified and earnings accrued/locked', 'success');
-                        } catch (error: unknown) {
-                          showToast(getErrorMessage(error, 'Failed to verify views'), 'error');
-                        }
-                      }}
-                    >
-                      Update views
-                    </BrandPrimaryButton>
+                        placeholder="Current views"
+                        className="brand-field-capsule w-full sm:w-40"
+                      />
+                      <BrandPrimaryButton
+                        type="button"
+                        size="sm"
+                        onClick={async () => {
+                          const currentViews = Number(viewInputs[submission.id] || 0);
+                          if (!Number.isFinite(currentViews) || currentViews < 0) {
+                            showToast('Enter a valid view count', 'error');
+                            return;
+                          }
+                          try {
+                            if (campaign.payoutModel === 'POOL') {
+                              await apiClient.updatePostViews(submission.id, { currentViews });
+                            } else {
+                              await apiClient.verifyPostViews(submission.id, { currentViews });
+                            }
+                            await loadCampaign();
+                            await loadPostSubmissions();
+                            showToast('Views updated', 'success');
+                          } catch (error: unknown) {
+                            showToast(getErrorMessage(error, 'Failed to update views'), 'error');
+                          }
+                        }}
+                      >
+                        Update views
+                      </BrandPrimaryButton>
+                    </div>
+                    {campaign.payoutModel === 'POOL' && (
+                      <BrandSecondaryButton
+                        type="button"
+                        size="sm"
+                        onClick={async () => {
+                          const reason = window.prompt('Reason for disqualifying this post (visible in audit):');
+                          if (!reason || !reason.trim()) return;
+                          try {
+                            await apiClient.disqualifyPostSubmission(submission.id, { reason: reason.trim() });
+                            await loadPostSubmissions();
+                            showToast('Post disqualified from prize pool', 'success');
+                          } catch (error: unknown) {
+                            showToast(getErrorMessage(error, 'Failed to disqualify post'), 'error');
+                          }
+                        }}
+                      >
+                        Disqualify
+                      </BrandSecondaryButton>
+                    )}
                   </div>
                 ) : null}
               </div>

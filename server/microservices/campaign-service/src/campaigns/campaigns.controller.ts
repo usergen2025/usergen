@@ -18,10 +18,15 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import { CampaignsService } from './campaigns.service';
 import { CampaignMediaService } from './campaign-media.service';
+import { LeaderboardService } from './leaderboard.service';
+import { CampaignFinalizationService } from './campaign-finalization.service';
 import {
+  AdminFinalizeCampaignDto,
   ApplyToCampaignDto,
+  DisqualifyPostDto,
   DraftFromProjectDto,
   IngestDraftUrlDto,
+  PreviewLeaderboardQueryDto,
   ReplaceApplicationDraftDto,
   CreatePostSubmissionDto,
   CreateCampaignDto,
@@ -30,6 +35,7 @@ import {
   ReviewPostSubmissionDto,
   ReviewSubmissionDto,
   UpdateCampaignDto,
+  UpdatePostViewsDto,
   VerifyPostViewsDto,
 } from './dto/campaign.dto';
 import { JwtAuthGuard } from '../common/auth/guards/jwt-auth.guard';
@@ -44,6 +50,8 @@ export class CampaignsController {
   constructor(
     private readonly campaignsService: CampaignsService,
     private readonly campaignMediaService: CampaignMediaService,
+    private readonly leaderboardService: LeaderboardService,
+    private readonly campaignFinalizationService: CampaignFinalizationService,
   ) {}
 
   @Get('campaigns')
@@ -255,6 +263,105 @@ export class CampaignsController {
     @CurrentUser() user: any,
   ) {
     return this.campaignsService.verifyPostViewsAndAccrueEarnings(id, dto, { id: user.id, role: user.role });
+  }
+
+  @Post('post-submissions/:id/update-views')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  updatePostViews(
+    @Param('id') id: string,
+    @Body() dto: UpdatePostViewsDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.campaignsService.updatePostViews(id, dto, { id: user.id, role: user.role });
+  }
+
+  @Post('post-submissions/:id/disqualify')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  disqualifyPost(
+    @Param('id') id: string,
+    @Body() dto: DisqualifyPostDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.campaignsService.disqualifyPost(id, dto, { id: user.id, role: user.role });
+  }
+
+  @Get('campaigns/:id/leaderboard')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  async getCampaignLeaderboard(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    const leaderboard = await this.leaderboardService.computeLiveLeaderboard(id);
+    return this.serializeLeaderboard(leaderboard);
+  }
+
+  @Get('campaigns/:id/leaderboard/snapshot')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  async getCampaignLeaderboardSnapshot(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    return this.leaderboardService.getSnapshot(id);
+  }
+
+  @Get('campaigns/:id/prize-pool')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  async getCampaignPrizePool(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    return this.leaderboardService.getPrizePool(id);
+  }
+
+  @Get('campaigns/:id/prize-pool/preview')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  async previewCampaignPrizePool(
+    @Param('id') id: string,
+    @Query() query: PreviewLeaderboardQueryDto,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    const preview = await this.leaderboardService.previewAllocation(id, query.previewN);
+    return {
+      campaignId: preview.campaignId,
+      participants: preview.participants,
+      totalPoolPaise: preview.totalPoolPaise.toString(),
+      totalPoolRupees: preview.totalPoolRupees,
+      entries: preview.entries.map((entry) => ({
+        ...entry,
+        payoutPaise: entry.payoutPaise.toString(),
+      })),
+    };
+  }
+
+  @Post('campaigns/:id/finalize')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  finalizeCampaign(
+    @Param('id') id: string,
+    @Body() dto: AdminFinalizeCampaignDto | undefined,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return this.campaignFinalizationService.finalizeCampaign(id, user, { force: dto?.force });
+  }
+
+  @Post('campaigns/:id/finalize/reset')
+  @Roles('ADMIN', 'OWNER')
+  resetStuckFinalization(@Param('id') id: string) {
+    return this.campaignFinalizationService.resetStuckFinalization(id);
+  }
+
+  private serializeLeaderboard(leaderboard: import('./leaderboard.service').LiveLeaderboard) {
+    return {
+      ...leaderboard,
+      totalPoolPaise: leaderboard.totalPoolPaise.toString(),
+      entries: leaderboard.entries.map((entry) => ({
+        ...entry,
+        projectedPayoutPaise: entry.projectedPayoutPaise.toString(),
+      })),
+    };
   }
 
   @Get('brands/dashboard/stats')

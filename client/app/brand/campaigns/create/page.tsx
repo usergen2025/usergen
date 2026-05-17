@@ -12,6 +12,12 @@ import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
 import { ArrowLeft, Info, Paperclip, Send, ChevronDown } from 'lucide-react';
 import { addDays, parse as parseDate, startOfDay } from 'date-fns';
+import { PrizePoolEditor } from '@/components/campaigns/PrizePoolEditor';
+import {
+  PrizePoolConfig,
+  tiersForTemplate,
+  isTiersValid,
+} from '@/lib/campaigns/prize-pool';
 
 function cmpYmd(a: string, b: string): number {
   const da = parseDate(a, 'yyyy-MM-dd', new Date());
@@ -34,9 +40,17 @@ export default function CreateCampaignPage() {
     regionFilter: '',
     deadlineToApply: '',
     startDate: '',
-    payoutRate: '',
+    endDate: '',
     totalBudget: '',
   });
+  const [prizePool, setPrizePool] = useState<PrizePoolConfig>({
+    templateKey: 'BALANCED',
+    tiers: tiersForTemplate('BALANCED'),
+    tieBreaker: 'EARLIER_VERIFIED_POST',
+    minViewsToQualify: 0,
+    gracePeriodHours: 24,
+  });
+  const [previewN, setPreviewN] = useState(1000);
   const assetFileInputRef = useRef<HTMLInputElement>(null);
   const platformDropdownRef = useRef<HTMLDivElement>(null);
   const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
@@ -83,16 +97,25 @@ export default function CreateCampaignPage() {
       showToast('Campaign start date is required', 'error');
       return false;
     }
+    if (!formData.endDate) {
+      showToast('Campaign end date is required', 'error');
+      return false;
+    }
     if (cmpYmd(formData.deadlineToApply, formData.startDate) > 0) {
       showToast('Campaign start must be on or after the apply deadline.', 'error');
       return false;
     }
-    if (!formData.payoutRate || parseFloat(formData.payoutRate) <= 0) {
-      showToast('Valid payout rate is required', 'error');
+    if (cmpYmd(formData.startDate, formData.endDate) >= 0) {
+      showToast('Campaign end date must be after the start date.', 'error');
       return false;
     }
     if (!formData.totalBudget || parseFloat(formData.totalBudget) <= 0) {
       showToast('Valid total budget is required', 'error');
+      return false;
+    }
+    const poolValidation = isTiersValid(prizePool.tiers);
+    if (!poolValidation.ok) {
+      showToast(poolValidation.error || 'Prize pool configuration is invalid', 'error');
       return false;
     }
     return true;
@@ -107,9 +130,6 @@ export default function CreateCampaignPage() {
 
     setIsLoading(true);
     try {
-      const computedEndDate = addDays(parseDate(formData.startDate, 'yyyy-MM-dd', new Date()), 30)
-        .toISOString()
-        .slice(0, 10);
       const created = await apiClient.createCampaign({
         name: formData.name,
         description: formData.description,
@@ -120,9 +140,17 @@ export default function CreateCampaignPage() {
         regionFilter: formData.regionFilter || undefined,
         deadlineToApply: formData.deadlineToApply,
         startDate: formData.startDate,
-        endDate: computedEndDate,
-        payoutRate: parseFloat(formData.payoutRate),
+        endDate: formData.endDate,
         totalBudget: parseFloat(formData.totalBudget),
+        payoutModel: 'POOL',
+        prizePool: {
+          templateKey: prizePool.templateKey,
+          tiers: prizePool.tiers,
+          tieBreaker: prizePool.tieBreaker,
+          minViewsToQualify: prizePool.minViewsToQualify,
+          gracePeriodHours: prizePool.gracePeriodHours,
+        },
+        previewN,
       });
       const newId = created.data?.id as string | undefined;
       if (!newId) {
@@ -157,9 +185,17 @@ export default function CreateCampaignPage() {
         regionFilter: formData.regionFilter || undefined,
         deadlineToApply: formData.deadlineToApply || baseDate,
         startDate: formData.startDate || baseDate,
-        endDate: addDays(parseDate(formData.startDate || baseDate, 'yyyy-MM-dd', new Date()), 30).toISOString().slice(0, 10),
-        payoutRate: parseFloat(formData.payoutRate) || 1,
+        endDate: formData.endDate || addDays(parseDate(formData.startDate || baseDate, 'yyyy-MM-dd', new Date()), 30).toISOString().slice(0, 10),
         totalBudget: parseFloat(formData.totalBudget) || 1,
+        payoutModel: 'POOL',
+        prizePool: {
+          templateKey: prizePool.templateKey,
+          tiers: prizePool.tiers,
+          tieBreaker: prizePool.tieBreaker,
+          minViewsToQualify: prizePool.minViewsToQualify,
+          gracePeriodHours: prizePool.gracePeriodHours,
+        },
+        previewN,
       })
       .then((res) => {
         if (res.data?.id) {
@@ -172,14 +208,11 @@ export default function CreateCampaignPage() {
       .finally(() => setIsLoading(false));
   };
 
-  const payoutValue = Math.max(parseFloat(formData.payoutRate) || 0, 0);
-  const effectivePayout = Math.max(payoutValue, 1);
   const maxBudgetForSlider = Math.max(500_000, Math.ceil(budgetValue || 0));
   const sliderPercent =
     maxBudgetForSlider > 0
       ? Math.min(100, Math.max(0, Math.round((budgetValue / maxBudgetForSlider) * 100)))
       : 0;
-  const estimatedViews = Math.floor((budgetValue / effectivePayout) * 1000);
 
   const todayStart = startOfDay(new Date());
   const deadlineMin = todayStart;
@@ -188,6 +221,9 @@ export default function CreateCampaignPage() {
     : undefined;
   const startMin = formData.deadlineToApply
     ? parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date())
+    : todayStart;
+  const endMin = formData.startDate
+    ? addDays(parseDate(formData.startDate, 'yyyy-MM-dd', new Date()), 1)
     : todayStart;
 
   return (
@@ -398,43 +434,20 @@ export default function CreateCampaignPage() {
                   />
                 </div>
                 <div>
-                  <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
-                    Region Filter (optional)
+                  <label className="font-heading brand-campaign-row mb-2 block font-medium text-[#212121]">
+                    Campaign End Date
                   </label>
-                  <Input
-                    value={formData.regionFilter}
-                    onChange={(e) => setFormData({ ...formData, regionFilter: e.target.value })}
-                    placeholder="India, Mumbai, South India..."
-                    variant="brandCapsule"
+                  <BrandDatePicker
+                    value={formData.endDate}
+                    onChange={(next) => setFormData({ ...formData, endDate: next })}
+                    minDate={endMin}
+                    placeholder="Choose end date"
                   />
                 </div>
 
               </div>
 
               <div className="space-y-4">
-                {campaignType === 'REPOST_CPM' && (
-                  <div>
-                    <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
-                      Payout Rate
-                    </label>
-                    <div className="brand-field-shell">
-                      <span className="brand-field-shell__prefix">₹</span>
-                      <input
-                        value={formData.payoutRate}
-                        onChange={(e) => {
-                          const value = e.target.value.replace(/[^0-9.]/g, '');
-                          setFormData({ ...formData, payoutRate: value });
-                        }}
-                        placeholder="500"
-                        type="text"
-                        required
-                        className="brand-field-shell__input"
-                      />
-                      <span className="brand-field-shell__suffix">/ 1000 views</span>
-                    </div>
-                  </div>
-                )}
-
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <label className="font-heading brand-campaign-row font-medium text-[#212121]">
@@ -443,7 +456,8 @@ export default function CreateCampaignPage() {
                     <div className="relative group">
                       <Info className="w-4 h-4 text-gray-400 cursor-help" />
                       <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                        Once the budget is exhausted the campaign will end.
+                        The full budget will be distributed across approved creators based on the
+                        prize pool template you choose. Only refunded if zero creators qualify.
                       </div>
                     </div>
                   </div>
@@ -461,15 +475,6 @@ export default function CreateCampaignPage() {
                       className="brand-field-shell__input"
                     />
                   </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="font-heading brand-campaign-row font-medium text-[#212121]">Estimated Reach</p>
-                    <p className="text-xs text-text-secondary">
-                      ~{estimatedViews.toLocaleString()} views
-                    </p>
-                  </div>
                   <input
                     type="range"
                     min={0}
@@ -481,10 +486,32 @@ export default function CreateCampaignPage() {
                       const nextBudget = Math.round((nextValue / 100) * maxBudgetForSlider);
                       setFormData((prev) => ({ ...prev, totalBudget: String(Math.max(nextBudget, 0)) }));
                     }}
-                    className="w-full accent-[#E86512]"
+                    className="mt-2 w-full accent-[#E86512]"
                   />
                 </div>
+                <div>
+                  <label className="font-heading brand-campaign-row font-medium text-[#212121] mb-2 block">
+                    Region Filter (optional)
+                  </label>
+                  <Input
+                    value={formData.regionFilter}
+                    onChange={(e) => setFormData({ ...formData, regionFilter: e.target.value })}
+                    placeholder="India, Mumbai, South India..."
+                    variant="brandCapsule"
+                  />
+                </div>
+
               </div>
+            </div>
+
+            <div className="rounded-2xl border border-[#E8E2DB] bg-white p-3 sm:p-4">
+              <PrizePoolEditor
+                value={prizePool}
+                onChange={setPrizePool}
+                totalBudget={budgetValue}
+                previewN={previewN}
+                onPreviewNChange={setPreviewN}
+              />
             </div>
 
           </form>

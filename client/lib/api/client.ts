@@ -774,6 +774,58 @@ class ApiClient {
     return response.data;
   }
 
+  /** Resolve signed GCS or proxy download URL for clean final video. */
+  async getVideoDownloadUrl(projectId: string): Promise<
+    ApiResponse<{
+      downloadUrl: string;
+      filename: string;
+      strategy: 'signed_gcs' | 'proxy_stream';
+      expiresInSeconds?: number;
+    }>
+  > {
+    const token = this.getToken();
+    const response = await axios.get<
+      ApiResponse<{
+        downloadUrl: string;
+        filename: string;
+        strategy: 'signed_gcs' | 'proxy_stream';
+        expiresInSeconds?: number;
+      }>
+    >(`/api/video/${projectId}/download-url`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return response.data;
+  }
+
+  /** Download clean final video (no preview watermark) via Next.js proxy. */
+  async downloadVideoProject(projectId: string): Promise<Blob> {
+    const token = this.getToken();
+    const response = await axios.get(`/api/video/${projectId}/download`, {
+      responseType: 'blob',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return response.data;
+  }
+
+  async regenerateVideoPreview(projectId: string): Promise<ApiResponse<{ message?: string }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+    const response = await axios.post<ApiResponse<{ message?: string }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/regenerate-preview`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return response.data;
+  }
+
   // Script generation endpoints
   async uploadProductImage(file: File): Promise<ApiResponse<{ publicUrl: string; localUrl: string }>> {
     const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
@@ -1275,8 +1327,18 @@ class ApiClient {
     deadlineToApply: string;
     startDate: string;
     endDate: string;
-    payoutRate: number;
+    payoutRate?: number;
     totalBudget: number;
+    payoutModel?: 'CPM' | 'POOL';
+    prizePool?: {
+      templateKey?: 'WINNER_HEAVY' | 'BALANCED' | 'WIDE_REACH' | 'CUSTOM';
+      tiers?: Array<{ rankCutoff: number | null; bps: number; label?: string }>;
+      bands?: Array<{ from: number; to: number; percentageBps: number; label?: string }>;
+      tieBreaker?: string;
+      minViewsToQualify?: number;
+      gracePeriodHours?: number;
+    };
+    previewN?: number;
   }): Promise<ApiResponse<any>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
@@ -1317,6 +1379,16 @@ class ApiClient {
     endDate: string;
     payoutRate: number;
     totalBudget: number;
+    payoutModel: 'CPM' | 'POOL';
+    prizePool: {
+      templateKey?: 'WINNER_HEAVY' | 'BALANCED' | 'WIDE_REACH' | 'CUSTOM';
+      tiers?: Array<{ rankCutoff: number | null; bps: number; label?: string }>;
+      bands?: Array<{ from: number; to: number; percentageBps: number; label?: string }>;
+      tieBreaker?: string;
+      minViewsToQualify?: number;
+      gracePeriodHours?: number;
+    };
+    previewN: number;
   }>): Promise<ApiResponse<any>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
@@ -1720,6 +1792,121 @@ class ApiClient {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async updatePostViews(
+    submissionId: string,
+    data: { currentViews: number; note?: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/update-views`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async disqualifyPostSubmission(
+    submissionId: string,
+    data: { reason: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(`${campaignServiceUrl}/post-submissions/${submissionId}/disqualify`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignLeaderboard(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/leaderboard`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignLeaderboardSnapshot(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/leaderboard/snapshot`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getCampaignPrizePool(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/prize-pool`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async previewCampaignPrizePool(
+    campaignId: string,
+    previewN?: number,
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const params = previewN ? `?previewN=${previewN}` : '';
+    const response = await axios.get(
+      `${campaignServiceUrl}/campaigns/${campaignId}/prize-pool/preview${params}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async finalizeCampaign(
+    campaignId: string,
+    options?: { force?: boolean; reason?: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/finalize`,
+      options ?? {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async resetCampaignFinalization(campaignId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/finalize/reset`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
     return normalizeCampaignServiceResponse<any>(response.data);
   }
 

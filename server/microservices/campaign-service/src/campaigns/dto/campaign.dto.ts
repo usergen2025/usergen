@@ -1,9 +1,11 @@
 import {
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   IsUrl,
@@ -11,6 +13,26 @@ import {
   Min,
   ValidateIf,
 } from 'class-validator';
+
+export type CampaignPayoutModelDto = 'CPM' | 'POOL';
+
+export interface PrizePoolTierDto {
+  rankCutoff: number | null;
+  bps: number;
+  label?: string;
+}
+
+export interface PrizePoolInputDto {
+  templateKey?: 'WINNER_HEAVY' | 'BALANCED' | 'WIDE_REACH' | 'CUSTOM';
+  tiers?: PrizePoolTierDto[];
+  /** @deprecated use tiers */
+  bands?: PrizePoolTierDto[];
+  /** @deprecated use tiers */
+  customBands?: PrizePoolTierDto[];
+  tieBreaker?: 'EARLIER_VERIFIED_POST';
+  minViewsToQualify?: number;
+  gracePeriodHours?: number;
+}
 
 export class CreateCampaignDto {
   @IsString()
@@ -34,13 +56,27 @@ export class CreateCampaignDto {
   @IsString()
   endDate!: string;
 
+  @IsOptional()
+  @IsIn(['CPM', 'POOL'])
+  payoutModel?: CampaignPayoutModelDto;
+
+  @ValidateIf((o: CreateCampaignDto) => (o.payoutModel ?? 'POOL') === 'CPM')
   @IsNumber()
   @Min(1)
-  payoutRate!: number;
+  payoutRate?: number;
 
   @IsNumber()
   @Min(1)
   totalBudget!: number;
+
+  @IsOptional()
+  @IsObject()
+  prizePool?: PrizePoolInputDto;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  previewN?: number;
 
   @IsOptional()
   @IsString()
@@ -87,6 +123,10 @@ export class UpdateCampaignDto {
   endDate?: string;
 
   @IsOptional()
+  @IsIn(['CPM', 'POOL'])
+  payoutModel?: CampaignPayoutModelDto;
+
+  @IsOptional()
   @IsNumber()
   @Min(1)
   payoutRate?: number;
@@ -95,6 +135,27 @@ export class UpdateCampaignDto {
   @IsNumber()
   @Min(1)
   totalBudget?: number;
+
+  @IsOptional()
+  @IsObject()
+  prizePool?: PrizePoolInputDto;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  previewN?: number;
+
+  @IsOptional()
+  @IsString()
+  industry?: string;
+
+  @IsOptional()
+  @IsString()
+  platformTarget?: string;
+
+  @IsOptional()
+  @IsString()
+  regionFilter?: string;
 }
 
 export class ListCampaignsQueryDto {
@@ -224,4 +285,33 @@ export class VerifyPostViewsDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class UpdatePostViewsDto {
+  @IsInt()
+  @Min(0)
+  currentViews!: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class DisqualifyPostDto {
+  @IsString()
+  @IsNotEmpty()
+  reason!: string;
+}
+
+export class AdminFinalizeCampaignDto {
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
+}
+
+export class PreviewLeaderboardQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  previewN?: number;
 }

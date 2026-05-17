@@ -12,7 +12,6 @@ import { WebSocketModule } from './common/websocket/websocket.module';
 import { StorageModule } from './common/storage/storage.module';
 import { ProjectLogModule } from './common/logging/project-log.module';
 import { NotificationsModule } from './notifications/notifications.module';
-
 @Module({
   imports: [
     ConfigModule.forRoot({

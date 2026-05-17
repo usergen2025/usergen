@@ -250,12 +250,16 @@ export class UnifiedStorageService {
   /**
    * Get a signed URL for temporary access
    */
-  async getSignedUrl(gcsPath: string, expiresInMinutes: number = 60): Promise<string> {
+  async getSignedUrl(
+    gcsPath: string,
+    expiresInMinutes: number = 60,
+    options?: { responseDisposition?: string },
+  ): Promise<string> {
     if (!this.isGcsAvailable()) {
       throw new Error('GCS is not available');
     }
 
-    return this.gcsService.getSignedUrl(gcsPath, expiresInMinutes);
+    return this.gcsService.getSignedUrl(gcsPath, expiresInMinutes, options);
   }
 
   /**

@@ -15,7 +15,8 @@
     "test": "jest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "backfill:previews": "ts-node -r tsconfig-paths/register scripts/backfill-watermarked-previews.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.7.0",

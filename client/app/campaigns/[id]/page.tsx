@@ -9,6 +9,7 @@ import { useToast } from '@/lib/toast/toast';
 import { BrandPrimaryButton, BrandSecondaryButton, BrandIconChip } from '@/components/brand';
 import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
 import { CampaignApplyModal } from '@/components/campaigns/CampaignApplyModal';
+import { LeaderboardCard, PrizePoolSummary } from '@/components/campaigns/LeaderboardCard';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
 import { cn } from '@/lib/utils/cn';
 
@@ -119,7 +120,11 @@ export default function CreatorCampaignDetailPage() {
               <BrandIconChip size="sm">
                 <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
               </BrandIconChip>
-              <span>₹{Number(campaign.payoutRate).toLocaleString()} / 1k views</span>
+              <span>
+                {campaign.payoutModel === 'POOL'
+                  ? `Prize pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
+                  : `₹${Number(campaign.payoutRate || 0).toLocaleString()} / 1k views`}
+              </span>
             </div>
             <div className="inline-flex items-center gap-1.5 brand-campaign-row text-[#212121]">
               <BrandIconChip size="sm">
@@ -226,6 +231,25 @@ export default function CreatorCampaignDetailPage() {
             <BrandPrimaryButton type="button" size="sm" className="mt-4" onClick={() => router.push('/campaigns')}>
               Go to Live campaigns
             </BrandPrimaryButton>
+          </div>
+        </div>
+      )}
+
+      {/* Prize pool & live leaderboard for POOL campaigns */}
+      {campaign.payoutModel === 'POOL' && (
+        <div className="brand-gradient-frame mb-5 rounded-[20px] p-[2px] shadow-card sm:mb-6">
+          <div className="rounded-[18px] bg-white/95 p-4 sm:p-6 space-y-3">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Earnings shown are projected based on current views. Final payouts are computed when
+              the campaign ends (plus the brand&apos;s grace period). Creators without a verified
+              post at finalization are dropped, and the pool is redistributed.
+            </div>
+            <PrizePoolSummary campaignId={id} />
+            <LeaderboardCard
+              campaignId={id}
+              highlightCreatorId={application?.creatorId}
+              showSnapshot
+            />
           </div>
         </div>
       )}

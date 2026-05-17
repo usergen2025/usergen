@@ -156,4 +156,35 @@ export class WalletSyncService {
       throw new BadRequestException(`Failed to sync withdrawal with wallet service: ${reason}`);
     }
   }
+
+  /**
+   * Refund a brand budget back into the wallet — used for the zero-qualifier exception path
+   * during pool finalization, and for admin-initiated refunds.
+   */
+  async refundBrandBudget(
+    userId: string,
+    amount: number,
+    description: string,
+    metadata?: Record<string, any>,
+    idempotencyKey?: string,
+  ) {
+    if (!amount || amount <= 0) return;
+    try {
+      await this.postWithRetry(
+        '/transactions/add',
+        {
+          userId,
+          amount,
+          type: 'REFUNDED',
+          description,
+          metadata,
+        },
+        idempotencyKey,
+      );
+    } catch (error: any) {
+      const reason = this.extractErrorMessage(error);
+      this.logger.error(`Failed to refund brand budget: ${reason}`);
+      throw new BadRequestException(`Failed to sync brand refund with wallet service: ${reason}`);
+    }
+  }
 }

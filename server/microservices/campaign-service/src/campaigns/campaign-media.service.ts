@@ -16,11 +16,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { mkdir } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { applyUsergenTiledWatermark } from '@shared/ffmpeg/usergen-tiled-watermark';
 import type { Response } from 'express';
-
-const execFileAsync = promisify(execFile);
 
 const VIDEO_CT_PATTERN =
   /^(video\/|application\/octet-stream)/i; /* octet-stream for misconfigured servers */
@@ -66,48 +63,8 @@ export class CampaignMediaService {
     return `/uploads/${rel.split(path.sep).join('/')}`;
   }
 
-  /**
-   * Creates a grid/tile watermark pattern across the entire video (similar to "PROOF" watermarks).
-   * The text is repeated in a diagonal grid pattern with semi-transparency.
-   */
   private async runFfmpegWatermark(inputPath: string, outputPath: string): Promise<void> {
-    const wmText = 'UserGen';
-    const fontSize = 72;
-    const alpha = 0.5;
-    const spacingX = 350;
-    const spacingY = 220;
-    const diagonalShift = 150;
-
-    const drawTextFilters: string[] = [];
-    for (let row = -5; row <= 18; row++) {
-      for (let col = -5; col <= 12; col++) {
-        const x = col * spacingX + row * diagonalShift;
-        const y = row * spacingY;
-        drawTextFilters.push(
-          `drawtext=text='${wmText}':fontsize=${fontSize}:fontcolor=white@${alpha}:x=${x}:y=${y}`,
-        );
-      }
-    }
-    const vf = drawTextFilters.join(',');
-
-    await execFileAsync('ffmpeg', [
-      '-y',
-      '-i',
-      inputPath,
-      '-vf',
-      vf,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '23',
-      '-movflags',
-      '+faststart',
-      '-c:a',
-      'copy',
-      outputPath,
-    ]);
+    await applyUsergenTiledWatermark({ inputPath, outputPath });
   }
 
   /**

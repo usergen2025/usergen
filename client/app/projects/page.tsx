@@ -13,6 +13,7 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { getStepToRouteMap } from '@/lib/config/video-steps';
+import { getPreviewPlaybackUrl, isPreviewReady } from '@/lib/video-urls';
 
 interface VideoProject {
   id: string;
@@ -268,13 +269,11 @@ export default function ProjectsPage() {
   };
 
   const getPreviewVideoUrl = (project: VideoProject): string | undefined => {
-    const preview = project.metadata?.previewVideoUrl;
-    if (typeof preview === 'string' && preview.length > 0) {
-      if (preview.startsWith('http')) return preview;
-      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
-      return `${VIDEO_SERVICE_BASE_URL}${preview}`;
+    if (!isPreviewReady(project)) {
+      return undefined;
     }
-    return getVideoUrl(project);
+    const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+    return getPreviewPlaybackUrl(project, VIDEO_SERVICE_BASE_URL) || undefined;
   };
 
   const getStepText = (step: string) => {
@@ -503,6 +502,8 @@ export default function ProjectsPage() {
                           className="w-full h-full object-cover"
                           autoPlay={isPreviewing}
                           playsInline
+                          controlsList="nodownload noremoteplayback"
+                          disablePictureInPicture
                           preload="metadata"
                           onPlay={() => {
                             // If another preview is currently playing, pause it.

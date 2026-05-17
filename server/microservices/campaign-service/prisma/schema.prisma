@@ -15,6 +15,18 @@ enum CampaignStatus {
   COMPLETED
 }
 
+enum CampaignPayoutModel {
+  CPM
+  POOL
+}
+
+enum FinalizationStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 enum SubmissionStatus {
   PENDING
   APPROVED
@@ -73,10 +85,11 @@ model Campaign {
   name            String
   description     String
   status          CampaignStatus @default(DRAFT)
+  payoutModel     CampaignPayoutModel @default(POOL)
   deadlineToApply DateTime
   startDate       DateTime
   endDate         DateTime
-  payoutRate      Decimal
+  payoutRate      Decimal?
   totalBudget     Decimal
   budgetUsed      Decimal        @default(0)
   views           Int            @default(0)
@@ -86,6 +99,16 @@ model Campaign {
   industry        String?
   platformTarget  String?
   regionFilter    String?
+  prizePoolJson      Json?
+  tieBreaker         String   @default("EARLIER_VERIFIED_POST")
+  minViewsToQualify  Int      @default(0)
+  gracePeriodHours   Int      @default(24)
+  previewN           Int      @default(10)
+  finalizedAt        DateTime?
+  finalizationStatus FinalizationStatus @default(PENDING)
+  finalizationError  String?
+  finalizationAttempts Int    @default(0)
+  exceptionRefundAmountPaise BigInt?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   submissions     Submission[]
@@ -94,6 +117,10 @@ model Campaign {
   earnings        CampaignEarningSnapshot[]
   creatorEarnings CreatorEarning[]
   mediaAssets     CampaignMediaAsset[]
+  leaderboardSnapshots CampaignLeaderboardSnapshot[]
+
+  @@index([finalizationStatus, status])
+  @@index([payoutModel, status])
 }
 
 model CampaignMediaAsset {
@@ -176,25 +203,64 @@ model CampaignPostSubmission {
   reviewedBy    String?
   reviewedAt    DateTime?
   reviewComment String?
+  currentViews         Int       @default(0)
+  lastViewsUpdatedAt   DateTime?
+  disqualifiedAt       DateTime?
+  disqualifiedReason   String?
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
   campaign      Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   application   CampaignApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   creatorEarnings CreatorEarning[]
+  viewUpdates   CampaignPostViewUpdate[]
 
   @@index([campaignId, creatorId])
   @@index([status, createdAt])
+  @@index([campaignId, currentViews])
+}
+
+model CampaignPostViewUpdate {
+  id               String   @id @default(cuid())
+  postSubmissionId String
+  previousViews    Int
+  newViews         Int
+  recordedBy       String
+  recordedAt       DateTime @default(now())
+  note             String?
+  postSubmission   CampaignPostSubmission @relation(fields: [postSubmissionId], references: [id], onDelete: Cascade)
+
+  @@index([postSubmissionId, recordedAt])
+}
+
+model CampaignLeaderboardSnapshot {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  creatorId           String
+  postSubmissionId    String?
+  hadVerifiedPost     Boolean
+  rank                Int?
+  views               Int      @default(0)
+  percentageBps       Int      @default(0)
+  payoutAmountPaise   BigInt   @default(0)
+  droppedReason       String?
+  finalizationId      String?
+  createdAt           DateTime @default(now())
+  campaign            Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, rank])
+  @@index([campaignId, creatorId])
 }
 
 model CreatorEarning {
   id               String        @id @default(cuid())
   campaignId       String
   creatorId        String
-  postSubmissionId String
+  postSubmissionId String?
   viewsDelta       Int           @default(0)
-  cpmRate          Decimal
+  cpmRate          Decimal?
   amount           Decimal
   status           EarningStatus @default(LOCKED)
+  source           String        @default("CPM")
   earnedAt         DateTime      @default(now())
   unlockAt         DateTime
   availableAt      DateTime?
@@ -204,7 +270,7 @@ model CreatorEarning {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
   campaign         Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  postSubmission   CampaignPostSubmission @relation(fields: [postSubmissionId], references: [id], onDelete: Cascade)
+  postSubmission   CampaignPostSubmission? @relation(fields: [postSubmissionId], references: [id], onDelete: SetNull)
 
   @@index([creatorId, status, unlockAt])
   @@index([campaignId, createdAt])

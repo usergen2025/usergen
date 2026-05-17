@@ -35,7 +35,8 @@ interface Campaign {
   name: string;
   description: string;
   campaignType?: string;
-  payoutRate: number;
+  payoutRate?: number;
+  payoutModel?: 'CPM' | 'POOL';
   deadlineToApply: string;
   startDate: string;
   endDate: string;
@@ -148,7 +149,9 @@ function CreatorLiveCampaignCard({
           <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
             <IndianRupee className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
             <span>
-              CPM ₹{campaign.payoutRate.toLocaleString('en-IN')} / 1k views
+              {campaign.payoutModel === 'POOL'
+                ? `Prize pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
+                : `CPM ₹${Number(campaign.payoutRate || 0).toLocaleString('en-IN')} / 1k views`}
             </span>
           </div>
           <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
@@ -177,7 +180,9 @@ function CreatorLiveCampaignCard({
                 <Eye className="h-3 w-3" strokeWidth={1.8} />
               </BrandIconChip>
               <span>
-                {views.toLocaleString('en-IN')} / {targetViews.toLocaleString('en-IN')} views
+                {campaign.payoutModel === 'POOL'
+                  ? `${views.toLocaleString('en-IN')} views · pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
+                  : `${views.toLocaleString('en-IN')} / ${targetViews.toLocaleString('en-IN')} views`}
               </span>
             </div>
             <div className="inline-flex min-w-0 items-center gap-1.5">
@@ -343,7 +348,9 @@ function CreatorStateCampaignCard({
                 <Eye className="h-3 w-3" strokeWidth={1.8} />
               </BrandIconChip>
               <span>
-                {views.toLocaleString('en-IN')} / {targetViews.toLocaleString('en-IN')} views
+                {campaign.payoutModel === 'POOL'
+                  ? `${views.toLocaleString('en-IN')} views · pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
+                  : `${views.toLocaleString('en-IN')} / ${targetViews.toLocaleString('en-IN')} views`}
               </span>
             </div>
             <div className="inline-flex min-w-0 items-center gap-1.5">

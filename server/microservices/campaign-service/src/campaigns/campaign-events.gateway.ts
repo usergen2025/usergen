@@ -21,7 +21,13 @@ export type CampaignEventType =
   | 'campaign:status:changed'
   | 'campaign:deadline:approaching'
   | 'campaign:earnings:accrued'
-  | 'campaign:earnings:available';
+  | 'campaign:earnings:available'
+  | 'campaign:views:updated'
+  | 'campaign:post:disqualified'
+  | 'campaign:leaderboard:updated'
+  | 'campaign:rank:changed'
+  | 'campaign:finalized'
+  | 'campaign:refunded:exception';
 
 export interface CampaignEvent {
   type: CampaignEventType;

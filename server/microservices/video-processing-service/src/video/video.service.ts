@@ -1,6 +1,15 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../common/database/database.service';
+import { Response } from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CreateVideoProjectDto,
   UpdateVideoProjectDto,
@@ -11,6 +20,8 @@ import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
 import { ProjectLogService } from '../common/logging/project-log.service';
 import { UserNotificationService } from '../notifications/user-notification.service';
+import { PublicUrlService } from '../common/storage/public-url.service';
+import { parseGcsPublicUrl } from '@shared/storage';
 
 @Injectable()
 export class VideoService {
@@ -24,6 +35,7 @@ export class VideoService {
     private readonly configService: ConfigService,
     private readonly projectLog: ProjectLogService,
     private readonly userNotificationService: UserNotificationService,
+    private readonly publicUrlService: PublicUrlService,
   ) {
     this.aiContentServiceUrl = 
       this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 
@@ -803,6 +815,138 @@ export class VideoService {
       success: true,
       data: project,
     };
+  }
+
+  private buildFinalVideoFilename(title?: string | null): string {
+    const safeTitle = (title || 'video')
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .slice(0, 80) || 'video';
+    return `${safeTitle}.mp4`;
+  }
+
+  /**
+   * Resolve a short-lived download URL for the clean final video (never preview).
+   */
+  async getFinalVideoDownloadUrl(
+    projectId: string,
+    userId: string,
+  ): Promise<{
+    downloadUrl: string;
+    filename: string;
+    strategy: 'signed_gcs' | 'proxy_stream';
+    expiresInSeconds?: number;
+  }> {
+    const { data: project } = await this.getProject(projectId, userId);
+    const videoUrl = project.videoUrl;
+    if (!videoUrl) {
+      throw new NotFoundException('Final video not available');
+    }
+
+    const filename = this.buildFinalVideoFilename(project.title);
+    const expiresInMinutes = 15;
+
+    if (videoUrl.startsWith('/uploads/') || videoUrl.startsWith('uploads/')) {
+      return {
+        downloadUrl: `/api/video/${projectId}/download`,
+        filename,
+        strategy: 'proxy_stream',
+      };
+    }
+
+    if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+      const parsed = parseGcsPublicUrl(videoUrl);
+      const configuredBucket = this.configService.get<string>('GCS_BUCKET_NAME');
+      if (
+        parsed &&
+        this.publicUrlService.isGcsAvailable() &&
+        configuredBucket &&
+        parsed.bucket === configuredBucket
+      ) {
+        const signedUrl = await this.publicUrlService.getSignedDownloadUrl(
+          parsed.objectPath,
+          filename,
+          expiresInMinutes,
+        );
+        return {
+          downloadUrl: signedUrl,
+          filename,
+          strategy: 'signed_gcs',
+          expiresInSeconds: expiresInMinutes * 60,
+        };
+      }
+
+      return {
+        downloadUrl: `/api/video/${projectId}/download`,
+        filename,
+        strategy: 'proxy_stream',
+      };
+    }
+
+    throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);
+  }
+
+  /**
+   * Stream the clean final video (never preview) for authenticated download.
+   */
+  async streamFinalVideoDownload(
+    projectId: string,
+    userId: string,
+    res: Response,
+    disposition: 'attachment' | 'inline' = 'attachment',
+  ): Promise<void> {
+    const { data: project } = await this.getProject(projectId, userId);
+    const videoUrl = project.videoUrl;
+    if (!videoUrl) {
+      throw new NotFoundException('Final video not available');
+    }
+
+    const filename = this.buildFinalVideoFilename(project.title);
+    const contentDisposition =
+      disposition === 'inline'
+        ? `inline; filename="${filename}"`
+        : `attachment; filename="${filename}"`;
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', contentDisposition);
+
+    const uploadsDir =
+      this.configService.get<string>('UPLOADS_DIR') ||
+      path.join(process.cwd(), 'uploads');
+
+    if (videoUrl.startsWith('/uploads/') || videoUrl.startsWith('uploads/')) {
+      const relative = videoUrl.replace(/^\/?uploads\//, '');
+      const localPath = path.join(uploadsDir, relative);
+      if (!fs.existsSync(localPath)) {
+        throw new NotFoundException('Video file not found on server');
+      }
+      const stat = fs.statSync(localPath);
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(localPath).pipe(res);
+      return;
+    }
+
+    if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+      const response = await axios.get(videoUrl, {
+        responseType: 'stream',
+        timeout: 300000,
+        maxRedirects: 5,
+      });
+      const contentLength = response.headers['content-length'];
+      if (contentLength) {
+        res.setHeader('Content-Length', contentLength);
+      }
+      response.data.pipe(res);
+      response.data.on('error', () => {
+        if (!res.headersSent) {
+          res.status(HttpStatus.INTERNAL_SERVER_ERROR).end();
+        }
+      });
+      return;
+    }
+
+    throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);
   }
 }
 

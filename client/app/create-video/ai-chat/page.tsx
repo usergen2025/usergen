@@ -2,10 +2,18 @@
 
 import { useState, useEffect, useRef, Suspense, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check, Pencil } from 'lucide-react';
+import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check, Pencil, Loader2 } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
+import { useDownloadFinalVideo } from '@/hooks/useDownloadFinalVideo';
 import { apiClient, User } from '@/lib/api/client';
+import {
+  getFinalVideoUrl,
+  getPreviewPlaybackUrl,
+  hasFinalVideo,
+  hasPreviewGenerationError,
+  isPreviewReady,
+} from '@/lib/video-urls';
 import { cn } from '@/lib/utils/cn';
 import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -52,6 +60,8 @@ type StyleSubstep = 'selection' | 'confirmed';
 type VideoDurationChoice = '30 seconds' | '45 seconds' | '1 minute' | '90 seconds';
 type ScriptSubstep = 'language' | 'duration' | 'input';
 
+const VIDEO_SERVICE_ORIGIN = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+
 const VIDEO_DURATION_OPTIONS: { value: VideoDurationChoice; label: string }[] = [
   { value: '30 seconds', label: '30 seconds' },
   { value: '45 seconds', label: '45 seconds' },
@@ -90,6 +100,10 @@ function AIChatPageContent() {
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [userScriptMessage, setUserScriptMessage] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const {
+    download: downloadFinalVideo,
+    isDownloading: isDownloadingFinal,
+  } = useDownloadFinalVideo(projectId, projectId ? `video-${projectId}.mp4` : undefined);
   const [proceedConfirmed, setProceedConfirmed] = useState<boolean>(false);
   const [avatarPreference, setAvatarPreference] = useState<'library' | 'generate' | 'skip' | null>(null);
   const [avatarYesMessage, setAvatarYesMessage] = useState<boolean>(false); // Track if user selected "yes"
@@ -130,6 +144,9 @@ function AIChatPageContent() {
   // Avatar-only video rendering state (for direct rendering in AI chat)
   const [isRenderingVideo, setIsRenderingVideo] = useState<boolean>(false);
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
+  const [previewPlaybackUrl, setPreviewPlaybackUrl] = useState<string | null>(null);
+  const [previewPreparing, setPreviewPreparing] = useState(false);
+  const [previewGenerationError, setPreviewGenerationError] = useState<string | null>(null);
   // Voice selection state
   const [voicePreference, setVoicePreference] = useState<'yes' | 'no' | null>(null);
   const [voiceYesMessage, setVoiceYesMessage] = useState<boolean>(false);
@@ -4426,8 +4443,33 @@ function AIChatPageContent() {
               return;
             }
 
-            if (videoUrl) {
-              setFinalVideoUrl(videoUrl);
+            if (videoUrl && pid) {
+              try {
+                const projectRes = await apiClient.getVideoProject(pid);
+                if (projectRes.success && projectRes.data) {
+                  const data = projectRes.data;
+                  setFinalVideoUrl(getFinalVideoUrl(data, VIDEO_SERVICE_ORIGIN) || videoUrl);
+                  const previewErr = data.metadata?.previewGenerationError;
+                  setPreviewGenerationError(
+                    typeof previewErr === 'string' ? previewErr : null,
+                  );
+                  if (isPreviewReady(data)) {
+                    setPreviewPlaybackUrl(getPreviewPlaybackUrl(data, VIDEO_SERVICE_ORIGIN));
+                    setPreviewPreparing(false);
+                  } else if (hasPreviewGenerationError(data)) {
+                    setPreviewPlaybackUrl(null);
+                    setPreviewPreparing(false);
+                  } else {
+                    setPreviewPlaybackUrl(null);
+                    setPreviewPreparing(true);
+                  }
+                } else {
+                  setFinalVideoUrl(videoUrl);
+                  setPreviewPreparing(true);
+                }
+              } catch {
+                setFinalVideoUrl(videoUrl);
+              }
             }
             console.log('[AIChat] Avatar-only video rendering completed:', videoUrl);
           } else if (effectiveStatus === 'failed' || effectiveStatus === 'FAILED') {
@@ -4445,6 +4487,32 @@ function AIChatPageContent() {
     // Clean up interval on component unmount
     return () => clearInterval(pollInterval);
   };
+
+  useEffect(() => {
+    if (!projectId || !finalVideoUrl || !previewPreparing || previewPlaybackUrl) return;
+
+    const poll = async () => {
+      try {
+        const res = await apiClient.getVideoProject(projectId);
+        if (!res.success || !res.data) return;
+        if (isPreviewReady(res.data)) {
+          setPreviewPlaybackUrl(getPreviewPlaybackUrl(res.data, VIDEO_SERVICE_ORIGIN));
+          setPreviewPreparing(false);
+          setPreviewGenerationError(null);
+        } else if (hasPreviewGenerationError(res.data)) {
+          const err = res.data.metadata?.previewGenerationError;
+          setPreviewGenerationError(typeof err === 'string' ? err : 'Preview failed');
+          setPreviewPreparing(false);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void poll();
+    const id = setInterval(poll, 4000);
+    return () => clearInterval(id);
+  }, [projectId, finalVideoUrl, previewPreparing, previewPlaybackUrl]);
 
   // Handle proceed with manual recordings (all scenes recorded, process and continue)
   const handleProceedWithManualRecordings = async () => {
@@ -9300,26 +9368,42 @@ Read everything on screen smoothly.`}
                     </p>
                   </div>
 
-                  {/* Video Player */}
-                  <div 
-                    className="relative w-full max-w-[400px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden bg-black"
+                  {/* Video Player — watermarked preview only (never clean final) */}
+                  <div
+                    className="relative w-full max-w-[400px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden bg-black flex items-center justify-center"
                     style={{ aspectRatio: '9/16' }}
                   >
-                    <video
-                      src={finalVideoUrl}
-                      controls
-                      className="w-full h-full object-contain"
-                      playsInline
-                    />
+                    {previewPlaybackUrl ? (
+                      <video
+                        src={previewPlaybackUrl}
+                        controls
+                        controlsList="nodownload noremoteplayback"
+                        disablePictureInPicture
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="w-full h-full object-contain"
+                        playsInline
+                      />
+                    ) : previewGenerationError ? (
+                      <div className="text-center text-white/90 px-4 text-sm">
+                        <p>Preview could not be prepared.</p>
+                        <p className="text-xs text-white/60 mt-2">{previewGenerationError}</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-3 text-white/90">
+                        <Loader2 className="w-10 h-10 animate-spin" />
+                        <p className="text-sm">Preparing preview…</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Download and Share Buttons */}
                   <div className="flex flex-row justify-start items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.75rem,1.46vh,15px)] max-w-full flex-wrap">
                     {/* Download Button */}
-                    <a
-                      href={finalVideoUrl}
-                      download={`video-${projectId || 'output'}.mp4`}
-                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                    <button
+                      type="button"
+                      onClick={() => void downloadFinalVideo()}
+                      disabled={!finalVideoUrl || isDownloadingFinal}
+                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -9331,19 +9415,21 @@ Read everything on screen smoothly.`}
                       <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
                         Download
                       </span>
-                    </a>
+                    </button>
 
                     {/* Share Button */}
                     <button
+                      type="button"
                       onClick={() => {
-                        if (navigator.share && finalVideoUrl) {
-                          navigator.share({
+                        const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+                        if (navigator.share) {
+                          void navigator.share({
                             title: 'My Generated Video',
-                            url: finalVideoUrl,
+                            url: shareUrl,
                           }).catch(console.error);
                         } else {
-                          navigator.clipboard.writeText(finalVideoUrl || '');
-                          showToast('Video link copied to clipboard!', 'success');
+                          void navigator.clipboard.writeText(shareUrl);
+                          showToast('Link copied to clipboard!', 'success');
                         }
                       }}
                       className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"

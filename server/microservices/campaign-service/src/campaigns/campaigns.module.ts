@@ -10,6 +10,8 @@ import { WalletSyncService } from './wallet-sync.service';
 import { CampaignEventsGateway } from './campaign-events.gateway';
 import { CampaignNotificationService } from './campaign-notification.service';
 import { CampaignSchedulerService } from './campaign-scheduler.service';
+import { LeaderboardService } from './leaderboard.service';
+import { CampaignFinalizationService } from './campaign-finalization.service';
 import { DatabaseModule } from '../common/database/database.module';
 import { AuthModule } from '../common/auth/auth.module';
 
@@ -35,7 +37,9 @@ import { AuthModule } from '../common/auth/auth.module';
     CampaignEventsGateway,
     CampaignNotificationService,
     CampaignSchedulerService,
+    LeaderboardService,
+    CampaignFinalizationService,
   ],
-  exports: [CampaignEventsGateway, CampaignNotificationService],
+  exports: [CampaignEventsGateway, CampaignNotificationService, LeaderboardService],
 })
 export class CampaignsModule {}

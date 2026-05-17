@@ -130,6 +130,30 @@ export function buildGcsPublicUrl(bucketName: string, objectPath: string): strin
   return `https://storage.googleapis.com/${bucketName}/${objectPath}`;
 }
 
+/** Parse https://storage.googleapis.com/{bucket}/{objectPath} */
+export function parseGcsPublicUrl(
+  url: string,
+): { bucket: string; objectPath: string } | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== 'storage.googleapis.com') {
+      return null;
+    }
+    const pathParts = parsed.pathname.replace(/^\/+/, '').split('/');
+    if (pathParts.length < 2) {
+      return null;
+    }
+    const bucket = pathParts[0];
+    const objectPath = pathParts.slice(1).join('/');
+    if (!bucket || !objectPath) {
+      return null;
+    }
+    return { bucket, objectPath };
+  } catch {
+    return null;
+  }
+}
+
 
 
 

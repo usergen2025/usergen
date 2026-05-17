@@ -16,9 +16,11 @@ import {
   CreateCampaignDto,
   CreatePostSubmissionDto,
   CreateSubmissionDto,
+  DisqualifyPostDto,
   ReviewPostSubmissionDto,
   ReviewSubmissionDto,
   UpdateCampaignDto,
+  UpdatePostViewsDto,
   VerifyPostViewsDto,
 } from './dto/campaign.dto';
 import { DatabaseService } from '../common/database/database.service';
@@ -26,6 +28,8 @@ import { WalletSyncService } from './wallet-sync.service';
 import { CampaignMediaService } from './campaign-media.service';
 import { CampaignNotificationService } from './campaign-notification.service';
 import { isAfterCampaignEndDay, isOnOrBeforeDeadlineDay } from './utils/date-compare.util';
+import { resolvePrizePoolConfig } from './prize-pool';
+import { Prisma } from '@prisma/client';
 
 export type CampaignStatus = 'LIVE' | 'IN_PROGRESS' | 'COMPLETED' | 'PAUSED' | 'DRAFT';
 export type SubmissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -36,11 +40,12 @@ export interface Campaign {
   name: string;
   description: string;
   status: CampaignStatus;
+  payoutModel: 'CPM' | 'POOL';
   postedAt: string;
   deadlineToApply: string;
   startDate: string;
   endDate: string;
-  payoutRate: number;
+  payoutRate: number | null;
   totalBudget: number;
   budgetUsed: number;
   remainingBudget: number;
@@ -53,6 +58,15 @@ export interface Campaign {
   industry?: string;
   platformTarget?: string;
   regionFilter?: string;
+  prizePoolJson?: any;
+  tieBreaker?: string;
+  minViewsToQualify?: number;
+  gracePeriodHours?: number;
+  previewN?: number;
+  finalizationStatus?: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  finalizedAt?: string | null;
+  finalizationError?: string | null;
+  exceptionRefundAmountPaise?: string | null;
 }
 
 export interface Submission {
@@ -229,14 +243,40 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createCampaign(dto: CreateCampaignDto, brandUserId: string): Promise<Campaign> {
-    const payoutRate = Number(dto.payoutRate);
+    const payoutModel = dto.payoutModel || 'POOL';
     const totalBudget = Number(dto.totalBudget);
+    const payoutRate = payoutModel === 'CPM' ? Number(dto.payoutRate) : null;
+    if (payoutModel === 'CPM' && (!payoutRate || payoutRate <= 0)) {
+      throw new BadRequestException('CPM campaigns require a positive payoutRate');
+    }
+    const targetViews =
+      payoutModel === 'CPM' && payoutRate ? Math.floor((totalBudget / payoutRate) * 1000) : 0;
+
+    let prizePoolJson: any = null;
+    let tieBreaker = 'EARLIER_VERIFIED_POST';
+    let minViewsToQualify = 0;
+    let gracePeriodHours = 24;
+    if (payoutModel === 'POOL') {
+      const config = resolvePrizePoolConfig(dto.prizePool);
+      prizePoolJson = {
+        templateKey: config.templateKey,
+        tiers: config.tiers,
+        tieBreaker: config.tieBreaker,
+        minViewsToQualify: config.minViewsToQualify,
+        gracePeriodHours: config.gracePeriodHours,
+      };
+      tieBreaker = config.tieBreaker;
+      minViewsToQualify = config.minViewsToQualify;
+      gracePeriodHours = config.gracePeriodHours;
+    }
+
     const created = await this.databaseService.campaign.create({
       data: {
         brandId: brandUserId,
         name: dto.name,
         description: dto.description,
         status: 'DRAFT',
+        payoutModel,
         deadlineToApply: new Date(dto.deadlineToApply),
         startDate: new Date(dto.startDate),
         endDate: new Date(dto.endDate),
@@ -244,12 +284,17 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         totalBudget,
         budgetUsed: 0,
         views: 0,
-        targetViews: Math.floor((totalBudget / payoutRate) * 1000),
+        targetViews,
         brandAssetsUrl: dto.brandAssetsUrl,
-        campaignType: dto.campaignType ?? 'REPOST_CPM',
+        campaignType: dto.campaignType ?? (payoutModel === 'POOL' ? 'POOL_LEADERBOARD' : 'REPOST_CPM'),
         industry: dto.industry,
         platformTarget: dto.platformTarget,
         regionFilter: dto.regionFilter,
+        prizePoolJson,
+        tieBreaker,
+        minViewsToQualify,
+        gracePeriodHours,
+        previewN: dto.previewN ?? 10,
       },
       include: { submissions: true, applications: true },
     });
@@ -258,18 +303,73 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
 
   async updateCampaign(id: string, dto: UpdateCampaignDto, brandUserId: string): Promise<Campaign> {
     const campaign = await this.assertCampaignOwnership(id, brandUserId);
+    const isDraft = campaign.status === 'DRAFT';
+
     const totalBudget = dto.totalBudget !== undefined ? Number(dto.totalBudget) : Number(campaign.totalBudget);
-    const payoutRate = dto.payoutRate !== undefined ? Number(dto.payoutRate) : Number(campaign.payoutRate);
+    const payoutModel = (dto.payoutModel || campaign.payoutModel) as 'CPM' | 'POOL';
+    const payoutRate =
+      dto.payoutRate !== undefined ? Number(dto.payoutRate) : campaign.payoutRate ? Number(campaign.payoutRate) : null;
+
+    // Post-publish: only metadata copy (name/description/brandAssetsUrl) may change.
+    if (!isDraft) {
+      const allowed: Prisma.CampaignUpdateInput = {};
+      if (dto.name !== undefined) allowed.name = dto.name;
+      if (dto.description !== undefined) allowed.description = dto.description;
+      if (dto.brandAssetsUrl !== undefined) allowed.brandAssetsUrl = dto.brandAssetsUrl;
+      if (Object.keys(allowed).length === 0) {
+        return this.mapCampaign(campaign);
+      }
+      const updated = await this.databaseService.campaign.update({
+        where: { id },
+        data: allowed,
+        include: { submissions: true, applications: true },
+      });
+      return this.mapCampaign(updated);
+    }
+
+    // Draft: full edits allowed.
+    let prizePoolJson: any = campaign.prizePoolJson;
+    let tieBreaker = campaign.tieBreaker;
+    let minViewsToQualify = campaign.minViewsToQualify;
+    let gracePeriodHours = campaign.gracePeriodHours;
+    if (payoutModel === 'POOL' && (dto.prizePool || campaign.prizePoolJson === null)) {
+      const config = resolvePrizePoolConfig(dto.prizePool || (campaign.prizePoolJson as any));
+      prizePoolJson = {
+        templateKey: config.templateKey,
+        tiers: config.tiers,
+        tieBreaker: config.tieBreaker,
+        minViewsToQualify: config.minViewsToQualify,
+        gracePeriodHours: config.gracePeriodHours,
+      };
+      tieBreaker = config.tieBreaker;
+      minViewsToQualify = config.minViewsToQualify;
+      gracePeriodHours = config.gracePeriodHours;
+    }
+
+    const targetViews =
+      payoutModel === 'CPM' && payoutRate ? Math.floor((totalBudget / Math.max(payoutRate, 1)) * 1000) : 0;
+
     const updated = await this.databaseService.campaign.update({
       where: { id },
       data: {
-        ...dto,
+        name: dto.name ?? campaign.name,
+        description: dto.description ?? campaign.description,
+        brandAssetsUrl: dto.brandAssetsUrl ?? campaign.brandAssetsUrl,
         ...(dto.deadlineToApply ? { deadlineToApply: new Date(dto.deadlineToApply) } : {}),
         ...(dto.startDate ? { startDate: new Date(dto.startDate) } : {}),
         ...(dto.endDate ? { endDate: new Date(dto.endDate) } : {}),
+        ...(dto.industry !== undefined ? { industry: dto.industry } : {}),
+        ...(dto.platformTarget !== undefined ? { platformTarget: dto.platformTarget } : {}),
+        ...(dto.regionFilter !== undefined ? { regionFilter: dto.regionFilter } : {}),
+        payoutModel,
         totalBudget,
         payoutRate,
-        targetViews: Math.floor((totalBudget / Math.max(payoutRate, 1)) * 1000),
+        targetViews,
+        prizePoolJson,
+        tieBreaker,
+        minViewsToQualify,
+        gracePeriodHours,
+        ...(dto.previewN !== undefined ? { previewN: dto.previewN } : {}),
       },
       include: { submissions: true, applications: true },
     });
@@ -382,14 +482,26 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       });
       throw new BadRequestException('Campaign top-up failed due to wallet sync error');
     }
+    const newTotalBudget = Number(campaign.totalBudget) + amount;
+    const newTargetViews =
+      campaign.payoutModel === 'CPM' && campaign.payoutRate
+        ? Math.floor((newTotalBudget / Math.max(Number(campaign.payoutRate), 1)) * 1000)
+        : campaign.targetViews;
     const updated = await this.databaseService.campaign.update({
       where: { id },
       data: {
-        totalBudget: Number(campaign.totalBudget) + amount,
-        targetViews: Math.floor(((Number(campaign.totalBudget) + amount) / Math.max(Number(campaign.payoutRate), 1)) * 1000),
+        totalBudget: newTotalBudget,
+        targetViews: newTargetViews,
       },
       include: { submissions: true, applications: true },
     });
+    if (campaign.payoutModel === 'POOL') {
+      this.notificationService.emitLeaderboardUpdated({
+        campaignId: id,
+        campaignName: campaign.name,
+        triggeredBy: 'budget-topup',
+      });
+    }
     return this.mapCampaign(updated);
   }
 
@@ -693,6 +805,14 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (application.campaign.payoutModel === 'POOL') {
+      this.notificationService.emitLeaderboardUpdated({
+        campaignId: application.campaignId,
+        campaignName: application.campaign.name,
+        triggeredBy: `application-${updated.status.toLowerCase()}`,
+      });
+    }
+
     return this.mapApplication(updated);
   }
 
@@ -752,6 +872,14 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       postUrl: dto.postUrl,
     });
 
+    if (campaign.payoutModel === 'POOL') {
+      this.notificationService.emitLeaderboardUpdated({
+        campaignId,
+        campaignName: campaign.name,
+        triggeredBy: 'post-submitted',
+      });
+    }
+
     return this.mapPostSubmission(created);
   }
 
@@ -807,7 +935,177 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+    if (existing.campaign.payoutModel === 'POOL') {
+      this.notificationService.emitLeaderboardUpdated({
+        campaignId: existing.campaignId,
+        campaignName: existing.campaign.name,
+        triggeredBy: dto.status === 'VERIFIED' ? 'post-verified' : 'post-rejected',
+      });
+    }
     return this.mapPostSubmission(updated);
+  }
+
+  /**
+   * Unified entry point used by the brand UI.
+   * - For CPM campaigns: behaves as before — accrues earnings against the CPM rate.
+   * - For POOL campaigns: simply records the new total view count and emits a leaderboard
+   *   update event. Earnings are settled at finalization time.
+   */
+  async updatePostViews(
+    postSubmissionId: string,
+    dto: UpdatePostViewsDto,
+    actor: { id: string; role: string },
+  ) {
+    const postSubmission = await this.databaseService.campaignPostSubmission.findUnique({
+      where: { id: postSubmissionId },
+      include: { campaign: true },
+    });
+    if (!postSubmission) {
+      throw new NotFoundException('Post submission not found');
+    }
+    const isPrivileged = actor.role === 'ADMIN' || actor.role === 'OWNER';
+    if (!isPrivileged && postSubmission.campaign.brandId !== actor.id) {
+      throw new ForbiddenException('You do not have permission to update views for this submission');
+    }
+    if (postSubmission.status !== 'VERIFIED') {
+      throw new BadRequestException('Post submission must be verified before view updates');
+    }
+    if (postSubmission.disqualifiedAt) {
+      throw new BadRequestException('Post is disqualified — view updates are not accepted');
+    }
+    if (postSubmission.campaign.status !== 'LIVE' && postSubmission.campaign.status !== 'IN_PROGRESS') {
+      throw new BadRequestException('Campaign is not active');
+    }
+    if (postSubmission.campaign.payoutModel === 'CPM') {
+      return this.verifyPostViewsAndAccrueEarnings(
+        postSubmissionId,
+        { currentViews: dto.currentViews, note: dto.note },
+        actor,
+      );
+    }
+    // POOL: record the new view count, audit it, emit leaderboard update.
+    const previousViews = postSubmission.currentViews;
+    const newViews = Math.max(previousViews, Math.max(0, Math.floor(dto.currentViews)));
+    if (newViews === previousViews) {
+      return { success: true, message: 'Views unchanged', previousViews, newViews };
+    }
+    const updated = await this.databaseService.campaignPostSubmission.update({
+      where: { id: postSubmissionId },
+      data: {
+        currentViews: newViews,
+        lastViewsUpdatedAt: new Date(),
+      },
+    });
+    await this.databaseService.campaignPostViewUpdate.create({
+      data: {
+        postSubmissionId,
+        previousViews,
+        newViews,
+        recordedBy: actor.id,
+        note: dto.note,
+      },
+    });
+    await this.databaseService.walletSyncEvent.create({
+      data: {
+        eventType: 'POST_VIEWS_UPDATED',
+        status: 'SYNCED',
+        attempts: 1,
+        payload: {
+          campaignId: postSubmission.campaignId,
+          creatorId: postSubmission.creatorId,
+          postSubmissionId,
+          previousViews,
+          newViews,
+          recordedBy: actor.id,
+          note: dto.note || null,
+        },
+      },
+    });
+    // Update aggregate `views` for the campaign card so brand stats show the cumulative reach.
+    await this.databaseService.campaign.update({
+      where: { id: postSubmission.campaignId },
+      data: { views: { increment: Math.max(0, newViews - previousViews) } },
+    });
+    this.notificationService.emitViewsUpdated({
+      campaignId: postSubmission.campaignId,
+      campaignName: postSubmission.campaign.name,
+      creatorId: postSubmission.creatorId,
+      postSubmissionId,
+      previousViews,
+      newViews,
+    });
+    this.notificationService.emitLeaderboardUpdated({
+      campaignId: postSubmission.campaignId,
+      campaignName: postSubmission.campaign.name,
+      triggeredBy: 'views-updated',
+    });
+    return {
+      success: true,
+      previousViews,
+      newViews,
+      postSubmissionId,
+      lastViewsUpdatedAt: updated.lastViewsUpdatedAt?.toISOString(),
+    };
+  }
+
+  /**
+   * Mark a verified POOL campaign post as disqualified. Admin/brand-only.
+   * Disqualification is reflected in live and final leaderboards and reduces qualifiers count.
+   */
+  async disqualifyPost(
+    postSubmissionId: string,
+    dto: DisqualifyPostDto,
+    actor: { id: string; role: string },
+  ) {
+    const postSubmission = await this.databaseService.campaignPostSubmission.findUnique({
+      where: { id: postSubmissionId },
+      include: { campaign: true },
+    });
+    if (!postSubmission) {
+      throw new NotFoundException('Post submission not found');
+    }
+    const isPrivileged = actor.role === 'ADMIN' || actor.role === 'OWNER';
+    if (!isPrivileged && postSubmission.campaign.brandId !== actor.id) {
+      throw new ForbiddenException('You do not have permission to disqualify posts for this submission');
+    }
+    if (postSubmission.disqualifiedAt) {
+      return { success: true, message: 'Already disqualified' };
+    }
+    await this.databaseService.campaignPostSubmission.update({
+      where: { id: postSubmissionId },
+      data: {
+        disqualifiedAt: new Date(),
+        disqualifiedReason: dto.reason,
+      },
+    });
+    await this.databaseService.walletSyncEvent.create({
+      data: {
+        eventType: 'POST_DISQUALIFIED',
+        status: 'SYNCED',
+        attempts: 1,
+        payload: {
+          campaignId: postSubmission.campaignId,
+          creatorId: postSubmission.creatorId,
+          postSubmissionId,
+          actorId: actor.id,
+          reason: dto.reason,
+          disqualifiedAt: new Date().toISOString(),
+        },
+      },
+    });
+    this.notificationService.emitPostDisqualified({
+      campaignId: postSubmission.campaignId,
+      campaignName: postSubmission.campaign.name,
+      creatorId: postSubmission.creatorId,
+      postSubmissionId,
+      reason: dto.reason,
+    });
+    this.notificationService.emitLeaderboardUpdated({
+      campaignId: postSubmission.campaignId,
+      campaignName: postSubmission.campaign.name,
+      triggeredBy: 'post-disqualified',
+    });
+    return { success: true, postSubmissionId };
   }
 
   async verifyPostViewsAndAccrueEarnings(
@@ -832,6 +1130,9 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     if (postSubmission.campaign.status !== 'LIVE' && postSubmission.campaign.status !== 'IN_PROGRESS') {
       throw new BadRequestException('Campaign is not active');
     }
+    if (postSubmission.campaign.payoutModel !== 'CPM') {
+      throw new BadRequestException('CPM accrual is only available for CPM campaigns');
+    }
     const latestEarning = await this.databaseService.creatorEarning.findFirst({
       where: { postSubmissionId },
       orderBy: { earnedAt: 'desc' },
@@ -844,7 +1145,10 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     if (viewsDelta <= 0) {
       return { success: true, message: 'No new views to accrue', viewsDelta: 0, amount: 0 };
     }
-    const cpmRate = Number(postSubmission.campaign.payoutRate);
+    const cpmRate = Number(postSubmission.campaign.payoutRate ?? 0);
+    if (cpmRate <= 0) {
+      throw new BadRequestException('Campaign payoutRate is not set for CPM accrual');
+    }
     const amount = Math.floor((viewsDelta / 1000) * cpmRate);
     if (amount <= 0) {
       return { success: true, message: 'Views increased but below next CPM threshold', viewsDelta, amount: 0 };
@@ -1052,17 +1356,65 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       if (!due.length) return { processed: 0 };
       let unlocked = 0;
       for (const row of due) {
-        await this.databaseService.creatorEarning.update({
-          where: { id: row.id },
-          data: {
-            status: 'AVAILABLE',
-            availableAt: now,
-          },
+        const idempotencyKey = this.getIdempotencyKey('creator-earning-credit', [row.id]);
+        // Atomically claim the row: only one cron tick can transition LOCKED -> AVAILABLE.
+        // This makes the local DB the durable idempotency boundary for the wallet credit
+        // attempt below, so a wallet-service restart cannot cause re-crediting.
+        const claimed = await this.databaseService.creatorEarning.updateMany({
+          where: { id: row.id, status: 'LOCKED' },
+          data: { status: 'AVAILABLE', availableAt: now },
         });
+        if (claimed.count === 0) {
+          continue;
+        }
+        let walletSynced = false;
+        try {
+          await this.walletSyncService.addCreatorEarning(
+            row.creatorId,
+            Number(row.amount),
+            row.source === 'POOL'
+              ? 'Campaign pool payout (matured)'
+              : 'Campaign earnings (matured)',
+            {
+              creatorId: row.creatorId,
+              campaignId: row.campaignId,
+              earningId: row.id,
+              source: row.source,
+              postSubmissionId: row.postSubmissionId,
+              amount: Number(row.amount),
+              idempotencyKey,
+            },
+            idempotencyKey,
+          );
+          walletSynced = true;
+        } catch (err) {
+          // Local row is already AVAILABLE; enqueue a durable retry so the wallet
+          // eventually catches up without the cron re-attempting on every tick.
+          await this.databaseService.walletSyncEvent.create({
+            data: {
+              eventType: 'CREATOR_EARNING_CREDIT',
+              status: 'RETRY_PENDING',
+              attempts: 0,
+              payload: {
+                creatorId: row.creatorId,
+                campaignId: row.campaignId,
+                earningId: row.id,
+                amount: Number(row.amount),
+                source: row.source,
+                postSubmissionId: row.postSubmissionId,
+                idempotencyKey,
+              },
+              lastError: (err as Error).message,
+            },
+          });
+          this.logger.warn(
+            `Wallet credit failed for creator ${row.creatorId} earning ${row.id}; queued for retry: ${(err as Error).message}`,
+          );
+        }
         await this.databaseService.walletSyncEvent.create({
           data: {
             eventType: 'EARNING_UNLOCKED',
-            status: 'SYNCED',
+            status: walletSynced ? 'SYNCED' : 'RETRY_PENDING',
             attempts: 1,
             payload: {
               campaignId: row.campaignId,
@@ -1070,6 +1422,8 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
               postSubmissionId: row.postSubmissionId,
               earningId: row.id,
               amount: Number(row.amount),
+              source: row.source,
+              walletSynced,
               unlockedAt: now.toISOString(),
             },
           },
@@ -1378,6 +1732,14 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
           payload,
           payload.idempotencyKey || this.getIdempotencyKey('brand-budget-debit', [event.id]),
         );
+      } else if (event.eventType === 'BRAND_BUDGET_REFUND') {
+        await this.walletSyncService.refundBrandBudget(
+          payload.brandId || payload.userId,
+          Number(payload.amount),
+          payload.description || 'Campaign refund (retry)',
+          payload,
+          payload.idempotencyKey || this.getIdempotencyKey('brand-budget-refund', [event.id]),
+        );
       } else {
         throw new BadRequestException(`Unsupported wallet sync event type: ${event.eventType}`);
       }
@@ -1593,11 +1955,12 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       name: row.name,
       description: row.description,
       status: row.status,
+      payoutModel: row.payoutModel,
       postedAt: row.createdAt.toISOString(),
       deadlineToApply: row.deadlineToApply.toISOString(),
       startDate: row.startDate.toISOString(),
       endDate: row.endDate.toISOString(),
-      payoutRate: Number(row.payoutRate),
+      payoutRate: row.payoutRate !== null && row.payoutRate !== undefined ? Number(row.payoutRate) : null,
       totalBudget: Number(row.totalBudget),
       budgetUsed: Number(row.budgetUsed),
       remainingBudget: Math.max(Number(row.totalBudget) - Number(row.budgetUsed), 0),
@@ -1610,6 +1973,17 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       industry: row.industry || undefined,
       platformTarget: row.platformTarget || undefined,
       regionFilter: row.regionFilter || undefined,
+      prizePoolJson: row.prizePoolJson ?? null,
+      tieBreaker: row.tieBreaker || undefined,
+      minViewsToQualify: row.minViewsToQualify ?? undefined,
+      gracePeriodHours: row.gracePeriodHours ?? undefined,
+      previewN: row.previewN ?? undefined,
+      finalizationStatus: row.finalizationStatus,
+      finalizedAt: row.finalizedAt ? row.finalizedAt.toISOString() : null,
+      finalizationError: row.finalizationError ?? null,
+      exceptionRefundAmountPaise: row.exceptionRefundAmountPaise != null
+        ? row.exceptionRefundAmountPaise.toString()
+        : null,
     };
   }
 

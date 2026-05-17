@@ -1,17 +1,14 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/database.service';
-import { PublicUrlService } from '../../storage/public-url.service';
-import { execSync } from 'child_process';
-import * as path from 'path';
-import * as fs from 'fs';
+import { PreviewVideoService } from '../../../preview/preview-video.service';
 
-interface PreviewDerivativesJobData {
+export interface PreviewDerivativesJobData {
   projectId: string;
   userId: string;
   videoUrl?: string;
+  forceRegenerate?: boolean;
 }
 
 @Processor('preview-derivatives', {
@@ -19,85 +16,88 @@ interface PreviewDerivativesJobData {
 })
 @Injectable()
 export class PreviewDerivativesProcessor extends WorkerHost {
-  private readonly uploadsDir: string;
-
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly configService: ConfigService,
-    private readonly publicUrlService: PublicUrlService,
+    private readonly previewVideoService: PreviewVideoService,
   ) {
     super();
-    this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
 
   async process(job: Job<PreviewDerivativesJobData>): Promise<any> {
-    const { projectId, userId, videoUrl } = job.data;
-    const project = await this.databaseService.videoProject.findUnique({ where: { id: projectId } });
+    const { projectId, userId, videoUrl, forceRegenerate } = job.data;
+    const project = await this.databaseService.videoProject.findUnique({
+      where: { id: projectId },
+    });
     if (!project) throw new Error('Project not found');
 
-    const sourceUrl = videoUrl || project.videoUrl;
-    if (!sourceUrl) throw new Error('Source video URL missing');
-
-    const inputPath = this.resolveInputPath(sourceUrl);
-    const outputDir = path.join(this.uploadsDir, 'previews', userId);
-    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-
-    const thumbFilename = `${projectId}_thumb.jpg`;
-    const previewFilename = `${projectId}_preview.mp4`;
-    const thumbPath = path.join(outputDir, thumbFilename);
-    const previewPath = path.join(outputDir, previewFilename);
-
-    // Generate poster frame.
-    execSync(`ffmpeg -y -ss 0.5 -i "${inputPath}" -frames:v 1 -q:v 5 "${thumbPath}"`, {
-      stdio: 'pipe',
-    });
-
-    // Generate lightweight compressed preview.
-    execSync(
-      `ffmpeg -y -i "${inputPath}" -vf "scale='min(360,iw)':-2:force_original_aspect_ratio=decrease" -c:v libx264 -preset veryfast -crf 32 -movflags +faststart -an "${previewPath}"`,
-      { stdio: 'pipe' },
-    );
-
-    const thumbUpload = await this.publicUrlService.uploadFromPath(
-      thumbPath,
-      `videos/${userId}/previews`,
-      thumbFilename,
-      'image/jpeg',
-    );
-    const previewUpload = await this.publicUrlService.uploadFromPath(
-      previewPath,
-      `videos/${userId}/previews`,
-      previewFilename,
-      'video/mp4',
-    );
+    const sourceVideoUrl = videoUrl || project.videoUrl;
+    if (!sourceVideoUrl) throw new Error('Source video URL missing');
 
     const metadata =
       project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
         ? ({ ...(project.metadata as Record<string, unknown>) } as Record<string, unknown>)
         : {};
-    metadata.previewVideoUrl = previewUpload.publicUrl;
-    metadata.previewGeneratedAt = new Date().toISOString();
 
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        thumbnailUrl: thumbUpload.publicUrl,
-        metadata: metadata as object,
-      },
-    });
+    if (
+      this.previewVideoService.shouldSkipRegeneration(metadata, sourceVideoUrl, forceRegenerate)
+    ) {
+      console.log(`[PreviewDerivatives] Skipping project ${projectId} — preview up to date`);
+      return { success: true, skipped: true };
+    }
 
-    return {
-      success: true,
-      thumbnailUrl: thumbUpload.publicUrl,
-      previewVideoUrl: previewUpload.publicUrl,
-    };
+    try {
+      const audioFiles = this.parseAudioFiles(project.audioFiles);
+
+      const result = await this.previewVideoService.buildWatermarkedPreview({
+        projectId,
+        userId,
+        sourceVideoUrl,
+        audioFiles,
+      });
+
+      delete metadata.previewGenerationError;
+      metadata.previewVideoUrl = result.previewPublicUrl;
+      metadata.previewGeneratedAt = new Date().toISOString();
+      metadata.previewSourceHash = result.previewSourceHash;
+      metadata.previewFormatVersion = result.previewFormatVersion;
+
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          thumbnailUrl: result.thumbnailPublicUrl,
+          metadata: metadata as object,
+        },
+      });
+
+      return {
+        success: true,
+        thumbnailUrl: result.thumbnailPublicUrl,
+        previewVideoUrl: result.previewPublicUrl,
+      };
+    } catch (error: any) {
+      console.error(
+        `[PreviewDerivatives] Failed for project ${projectId}:`,
+        error?.message || error,
+      );
+      metadata.previewGenerationError = error?.message || String(error);
+      metadata.previewGenerationFailedAt = new Date().toISOString();
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { metadata: metadata as object },
+      });
+      throw error;
+    }
   }
 
-  private resolveInputPath(videoUrl: string): string {
-    if (videoUrl.startsWith('/uploads/')) {
-      const relative = videoUrl.replace(/^\/uploads\//, '');
-      return path.join(this.uploadsDir, relative);
-    }
-    return videoUrl;
+  private parseAudioFiles(
+    raw: unknown,
+  ): Array<{ sceneNumber?: number; duration?: number }> | undefined {
+    if (!raw) return undefined;
+    const arr = Array.isArray(raw) ? raw : typeof raw === 'object' ? Object.values(raw as object) : [];
+    if (!Array.isArray(arr) || arr.length === 0) return undefined;
+    return arr.map((item: any) => ({
+      sceneNumber: item?.sceneNumber ?? item?.scene_number,
+      duration: item?.duration,
+    }));
   }
 }

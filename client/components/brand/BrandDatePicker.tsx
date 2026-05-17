@@ -81,8 +81,17 @@ export function BrandDatePicker({
         setOpen(false);
       }
     };
-    if (open) document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    if (open) {
+      document.addEventListener('mousedown', onDoc);
+      document.addEventListener('keydown', onKey);
+    }
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   const selected = useMemo(() => parseYmd(value), [value]);
@@ -118,6 +127,7 @@ export function BrandDatePicker({
           disabled={disabled}
           aria-expanded={open}
           aria-haspopup="dialog"
+          aria-label={selected ? `Selected date ${label}` : placeholder}
           onClick={() => !disabled && setOpen((o) => !o)}
           className={cn(
             'brand-field-shell__input flex-1 cursor-pointer text-left disabled:cursor-not-allowed disabled:opacity-60',

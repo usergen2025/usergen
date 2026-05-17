@@ -196,4 +196,19 @@ export class PublicUrlService {
   getUnifiedStorage(): UnifiedStorageService {
     return this.unifiedStorage;
   }
+
+  /**
+   * Signed GCS URL for browser download (attachment disposition).
+   */
+  async getSignedDownloadUrl(
+    gcsPath: string,
+    filename: string,
+    expiresInMinutes: number = 15,
+  ): Promise<string> {
+    const safeName = filename.replace(/"/g, '');
+    const responseDisposition = `attachment; filename="${safeName}"`;
+    return this.unifiedStorage.getSignedUrl(gcsPath, expiresInMinutes, {
+      responseDisposition,
+    });
+  }
 }

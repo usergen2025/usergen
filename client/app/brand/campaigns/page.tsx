@@ -49,7 +49,8 @@ interface Campaign {
   deadlineToApply: string;
   startDate: string;
   endDate: string;
-  payoutRate: number;
+  payoutRate?: number;
+  payoutModel?: 'CPM' | 'POOL';
   totalBudget: number;
   budgetUsed: number;
   remainingBudget?: number;
@@ -57,6 +58,7 @@ interface Campaign {
   targetViews: number;
   applicantsCount: number;
   shortlistedCount: number;
+  finalizationStatus?: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | null;
 }
 
 export default function CampaignsPage() {
@@ -534,7 +536,9 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
                 <Eye className="h-3 w-3" strokeWidth={1.8} />
               </BrandIconChip>
               <span>
-                {campaign.views.toLocaleString('en-IN')} / {campaign.targetViews.toLocaleString('en-IN')} views
+                {campaign.payoutModel === 'POOL'
+                  ? `Pool ₹${Number(campaign.totalBudget).toLocaleString('en-IN')} · ${campaign.views.toLocaleString('en-IN')} views`
+                  : `${campaign.views.toLocaleString('en-IN')} / ${campaign.targetViews.toLocaleString('en-IN')} views`}
               </span>
             </div>
             <div className="inline-flex min-w-0 items-center gap-1.5">

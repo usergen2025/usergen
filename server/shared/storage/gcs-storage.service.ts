@@ -263,7 +263,8 @@ export class GCSStorageService {
    */
   async getSignedUrl(
     gcsPath: string,
-    expiresInMinutes: number = 60
+    expiresInMinutes: number = 60,
+    options?: { responseDisposition?: string },
   ): Promise<string> {
     if (!this.isAvailable() || !this.bucket) {
       throw new Error('GCS is not available');
@@ -275,6 +276,9 @@ export class GCSStorageService {
     const [signedUrl] = await file.getSignedUrl({
       action: 'read',
       expires,
+      ...(options?.responseDisposition
+        ? { responseDisposition: options.responseDisposition }
+        : {}),
     });
 
     return signedUrl;

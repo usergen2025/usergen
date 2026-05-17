@@ -535,12 +535,18 @@ body {
   z-index: 1;
 }
 
-/* Shared 7-column track for weekday labels and day rows */
+/* Table is a passthrough; rows are 7-column grids (fixes clustered overlap) */
 .brand-date-picker-popover .rdp-month_grid {
   width: 100%;
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0;
+  display: block;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.brand-date-picker-popover .rdp-month_grid thead,
+.brand-date-picker-popover .rdp-month_grid tbody {
+  display: block;
+  width: 100%;
 }
 
 .brand-date-picker-popover .rdp-weekdays {
@@ -557,12 +563,11 @@ body {
   min-width: 0;
   padding: 0.15rem 0;
   text-align: center;
+  font-weight: 500;
 }
 
 .brand-date-picker-popover .rdp-weeks {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 2px;
+  display: block;
   width: 100%;
 }
 
@@ -581,6 +586,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  text-align: center;
+}
+
+.brand-date-picker-popover .rdp-day th,
+.brand-date-picker-popover .rdp-day td {
+  padding: 0;
+  border: 0;
+  vertical-align: middle;
 }
 
 .brand-date-picker-popover .rdp-day_button {

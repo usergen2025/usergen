@@ -2,14 +2,21 @@
 
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Play, Pause, Download, Instagram, Facebook, Share2, Edit2, Home, Eye, EyeOff, X, Bold, Italic, Underline } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Download, Instagram, Facebook, Share2, Edit2, Home, Eye, EyeOff, X, Bold, Italic, Underline, Loader2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import { typography } from '@/lib/config/theme';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
+import {
+  getPreviewPlaybackUrl,
+  hasFinalVideo,
+  hasPreviewGenerationError,
+  isPreviewReady,
+} from '@/lib/video-urls';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useDownloadFinalVideo } from '@/hooks/useDownloadFinalVideo';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
 interface Scene {
@@ -38,6 +45,13 @@ function PreviewPageContent() {
   const [projectId, setProjectId] = useState<string | null>(() => searchParams?.get('projectId') ?? null);
   
   const [project, setProject] = useState<any>(null);
+  const {
+    download: downloadFinalVideo,
+    isDownloading: isDownloadingFinal,
+  } = useDownloadFinalVideo(
+    projectId,
+    project?.title ? `${project.title}.mp4` : undefined,
+  );
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
@@ -49,6 +63,8 @@ function PreviewPageContent() {
   
   // Video player state
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [previewPreparing, setPreviewPreparing] = useState(false);
+  const [previewGenerationError, setPreviewGenerationError] = useState<string | null>(null);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   
@@ -154,30 +170,20 @@ function PreviewPageContent() {
           console.log('Project data loaded:', projectData);
           setProject(projectData);
 
-          // Load video URL if available - prioritize GCS URLs
-          if (projectData.videoPublicUrl || projectData.videoGcsUrl || projectData.videoUrl) {
-            let videoSrc: string;
-            
-            // Priority 1: Use videoPublicUrl (GCS URL if available)
-            if (projectData.videoPublicUrl && projectData.videoPublicUrl.startsWith('http')) {
-              videoSrc = projectData.videoPublicUrl;
-            }
-            // Priority 2: Direct GCS URL
-            else if (projectData.videoGcsUrl && projectData.videoGcsUrl.startsWith('http')) {
-              videoSrc = projectData.videoGcsUrl;
-            }
-            // Priority 3: Fallback to videoUrl
-            else if (projectData.videoUrl) {
-              videoSrc = projectData.videoUrl.startsWith('http')
-                ? projectData.videoUrl
-                : `${VIDEO_SERVICE_BASE_URL}${projectData.videoUrl}`;
+          if (hasFinalVideo(projectData)) {
+            const previewErr = projectData.metadata?.previewGenerationError;
+            setPreviewGenerationError(
+              typeof previewErr === 'string' ? previewErr : null,
+            );
+            if (isPreviewReady(projectData)) {
+              setVideoUrl(getPreviewPlaybackUrl(projectData, VIDEO_SERVICE_BASE_URL));
+              setPreviewPreparing(false);
+            } else if (hasPreviewGenerationError(projectData)) {
+              setVideoUrl(null);
+              setPreviewPreparing(false);
             } else {
-              videoSrc = '';
-            }
-            
-            if (videoSrc) {
-              setVideoUrl(videoSrc);
-              console.log('Video URL set:', videoSrc);
+              setVideoUrl(null);
+              setPreviewPreparing(true);
             }
           }
 
@@ -254,6 +260,34 @@ function PreviewPageContent() {
 
     loadProject();
   }, [projectIdFromUrlStr, projectId, isAuthenticated, authLoading, router]);
+
+  useEffect(() => {
+    if (!projectId || !previewPreparing || videoUrl) return;
+    if (hasPreviewGenerationError(project || {})) return;
+
+    const poll = async () => {
+      try {
+        const response = await apiClient.getVideoProject(projectId);
+        if (!response.success || !response.data) return;
+        setProject(response.data);
+        if (isPreviewReady(response.data)) {
+          setVideoUrl(getPreviewPlaybackUrl(response.data, VIDEO_SERVICE_BASE_URL));
+          setPreviewPreparing(false);
+          setPreviewGenerationError(null);
+        } else if (hasPreviewGenerationError(response.data)) {
+          const err = response.data.metadata?.previewGenerationError;
+          setPreviewGenerationError(typeof err === 'string' ? err : 'Preview failed');
+          setPreviewPreparing(false);
+        }
+      } catch {
+        /* ignore poll errors */
+      }
+    };
+
+    void poll();
+    const id = setInterval(poll, 4000);
+    return () => clearInterval(id);
+  }, [projectId, previewPreparing, videoUrl, project]);
 
   // Play scene audio
   const handlePlayScene = (sceneIndex: number, scene: Scene) => {
@@ -476,28 +510,41 @@ function PreviewPageContent() {
                   src={videoUrl}
                   className="w-full h-full object-contain"
                   controls={true}
+                  controlsList="nodownload noremoteplayback"
+                  disablePictureInPicture
+                  onContextMenu={(e) => e.preventDefault()}
                   onPlay={() => setIsVideoPlaying(true)}
                   onPause={() => setIsVideoPlaying(false)}
                   onEnded={() => setIsVideoPlaying(false)}
                 >
                   Your browser does not support the video tag.
                 </video>
+              ) : previewGenerationError ? (
+                <div className="text-center text-text-secondary px-4">
+                  <p className="text-sm mb-2">Preview could not be prepared.</p>
+                  <p className="text-xs opacity-70">{previewGenerationError}</p>
+                </div>
+              ) : previewPreparing || hasFinalVideo(project || {}) ? (
+                <div className="flex flex-col items-center gap-3 text-text-secondary">
+                  <Loader2 className="w-10 h-10 animate-spin text-primary" />
+                  <p className="text-sm">Preparing watermarked preview…</p>
+                </div>
               ) : (
                 <>
-                  <div 
+                  <div
                     className="w-24 h-24 bg-primary rounded-full flex items-center justify-center cursor-pointer hover:bg-primary-dark transition-colors"
                     onClick={handleVideoPlay}
                   >
                     {isVideoPlaying ? (
                       <Pause className="w-12 h-12 text-secondary" fill="currentColor" />
                     ) : (
-                <Play className="w-12 h-12 text-secondary" fill="currentColor" />
+                      <Play className="w-12 h-12 text-secondary" fill="currentColor" />
                     )}
                   </div>
                   {!project?.videoUrl && (
                     <div className="absolute bottom-4 left-4 text-sm text-text-secondary">
                       Video is still rendering...
-              </div>
+                    </div>
                   )}
                 </>
               )}
@@ -509,8 +556,17 @@ function PreviewPageContent() {
             <div className="space-y-4">
               <p className="text-sm">Export & Share via</p>
               <div className="flex gap-4">
-                <button className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors">
-                  <Download className="w-6 h-6" />
+                <button
+                  type="button"
+                  disabled={isDownloadingFinal || !hasFinalVideo(project || {})}
+                  className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => void downloadFinalVideo()}
+                >
+                  {isDownloadingFinal ? (
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                  ) : (
+                    <Download className="w-6 h-6" />
+                  )}
                   <span className="text-xs">Download</span>
                 </button>
                 <button className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors relative">
