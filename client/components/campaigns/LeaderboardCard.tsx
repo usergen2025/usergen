@@ -42,6 +42,7 @@ interface LeaderboardCardProps {
   highlightCreatorId?: string;
   showSnapshot?: boolean;
   limit?: number;
+  refreshToken?: number;
   onLoaded?: (data: LeaderboardData) => void;
 }
 
@@ -49,6 +50,7 @@ export function LeaderboardCard({
   campaignId,
   highlightCreatorId,
   showSnapshot,
+  refreshToken,
   onLoaded,
 }: LeaderboardCardProps) {
   const [data, setData] = useState<LeaderboardData | null>(null);
@@ -81,7 +83,7 @@ export function LeaderboardCard({
     return () => {
       cancelled = true;
     };
-  }, [campaignId, showSnapshot, onLoaded]);
+  }, [campaignId, showSnapshot, refreshToken, onLoaded]);
 
   if (loading) {
     return (

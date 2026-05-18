@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -14,11 +14,13 @@ import { LeaderboardService } from './leaderboard.service';
 import { CampaignFinalizationService } from './campaign-finalization.service';
 import { DatabaseModule } from '../common/database/database.module';
 import { AuthModule } from '../common/auth/auth.module';
+import { ScraperModule } from '../scraper/scraper.module';
 
 @Module({
   imports: [
     DatabaseModule,
     AuthModule,
+    forwardRef(() => ScraperModule),
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -40,6 +42,11 @@ import { AuthModule } from '../common/auth/auth.module';
     LeaderboardService,
     CampaignFinalizationService,
   ],
-  exports: [CampaignEventsGateway, CampaignNotificationService, LeaderboardService],
+  exports: [
+    CampaignsService,
+    CampaignEventsGateway,
+    CampaignNotificationService,
+    LeaderboardService,
+  ],
 })
 export class CampaignsModule {}

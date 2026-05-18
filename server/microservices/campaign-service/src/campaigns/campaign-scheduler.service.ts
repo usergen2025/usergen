@@ -4,6 +4,8 @@ import { DatabaseService } from '../common/database/database.service';
 import { CampaignNotificationService } from './campaign-notification.service';
 import { CampaignsService } from './campaigns.service';
 import { CampaignFinalizationService } from './campaign-finalization.service';
+import { PostScraperService } from '../scraper/post-scraper.service';
+import { ApifyClientService } from '../scraper/apify.client';
 
 @Injectable()
 export class CampaignSchedulerService {
@@ -14,6 +16,8 @@ export class CampaignSchedulerService {
     private readonly notificationService: CampaignNotificationService,
     private readonly campaignsService: CampaignsService,
     private readonly campaignFinalizationService: CampaignFinalizationService,
+    private readonly postScraperService: PostScraperService,
+    private readonly apifyClient: ApifyClientService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
@@ -135,6 +139,43 @@ export class CampaignSchedulerService {
     }
   }
 
+  /** Friday 12:00 IST = 06:30 UTC */
+  @Cron('0 30 6 * * 5', { timeZone: 'UTC' })
+  async weeklyLeaderboardScrape() {
+    if (!this.apifyClient.isConfigured()) {
+      this.logger.warn('Skipping weekly leaderboard scrape: APIFY_TOKEN not configured');
+      return;
+    }
+    this.logger.log('Running weekly POOL leaderboard scrape...');
+    const now = new Date();
+    try {
+      const campaigns = await this.databaseService.campaign.findMany({
+        where: {
+          payoutModel: 'POOL',
+          status: { in: ['LIVE', 'IN_PROGRESS'] },
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+        select: { id: true, name: true },
+      });
+      for (const campaign of campaigns) {
+        try {
+          await this.postScraperService.runScrapeForCampaign(campaign.id, 'WEEKLY', {
+            id: 'cron',
+            role: 'CRON',
+          });
+        } catch (err: any) {
+          this.logger.error(
+            `Weekly scrape failed for campaign ${campaign.id}: ${err?.message ?? err}`,
+          );
+        }
+      }
+      this.logger.log(`Weekly scrape queued for ${campaigns.length} campaign(s)`);
+    } catch (error: any) {
+      this.logger.error(`Weekly leaderboard scrape failed: ${error?.message}`);
+    }
+  }
+
   @Cron(CronExpression.EVERY_HOUR)
   async finalizePoolCampaigns() {
     this.logger.log('Running POOL campaign finalization sweep...');
@@ -149,6 +190,23 @@ export class CampaignSchedulerService {
           continue;
         }
         try {
+          const hasRecentFinal = await this.postScraperService.hasRecentFinalScrape(campaign.id);
+          if (!hasRecentFinal) {
+            if (this.apifyClient.isConfigured()) {
+              this.logger.log(
+                `Queueing final scrape for campaign ${campaign.id} before finalization`,
+              );
+              await this.postScraperService.runScrapeForCampaign(campaign.id, 'FINAL', {
+                id: 'cron',
+                role: 'CRON',
+              });
+            } else {
+              this.logger.warn(
+                `Skipping final scrape for ${campaign.id}: APIFY_TOKEN not configured`,
+              );
+            }
+            continue;
+          }
           await this.campaignFinalizationService.finalizeCampaign(
             campaign.id,
             { id: 'cron', role: 'CRON' },

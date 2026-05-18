@@ -38,6 +38,13 @@ describe('CampaignsService wallet sync retry', () => {
     withdrawalRequest: {
       create: jest.fn(),
     },
+    campaignPostSubmission: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    campaignPostViewUpdate: {
+      create: jest.fn(),
+    },
   };
 
   const mockWalletSyncService: jest.Mocked<WalletSyncService> = {
@@ -63,6 +70,8 @@ describe('CampaignsService wallet sync retry', () => {
     notifyApplicationRejected: jest.fn(),
     notifyPostSubmitted: jest.fn(),
     notifyPostVerified: jest.fn(),
+    emitViewsUpdated: jest.fn(),
+    emitLeaderboardUpdated: jest.fn(),
   };
 
   let service: CampaignsService;
@@ -775,5 +784,35 @@ describe('CampaignsService wallet sync retry', () => {
     await service.listCampaignsForRequest({ id: 'o1', role: 'OWNER' });
     const call = mockDatabaseService.campaign.findMany.mock.calls[0][0] as { where: Record<string, unknown> };
     expect(call.where.brandId).toBeUndefined();
+  });
+
+  it('recordPostViewsFromScraper updates views without leaderboard emit when skipped', async () => {
+    const updatedAt = new Date('2026-02-01T12:00:00.000Z');
+    mockDatabaseService.campaignPostSubmission.findUnique.mockResolvedValueOnce({
+      id: 'post-pool-1',
+      campaignId: 'camp-1',
+      creatorId: 'creator-1',
+      status: 'PENDING_REVIEW',
+      disqualifiedAt: null,
+      currentViews: 100,
+      campaign: { id: 'camp-1', name: 'Pool', payoutModel: 'POOL' },
+    });
+    mockDatabaseService.campaignPostSubmission.update.mockResolvedValueOnce({
+      id: 'post-pool-1',
+      lastViewsUpdatedAt: updatedAt,
+    });
+    mockDatabaseService.campaignPostViewUpdate.create.mockResolvedValueOnce({});
+    mockDatabaseService.walletSyncEvent.create.mockResolvedValueOnce({});
+    mockDatabaseService.campaign.update.mockResolvedValueOnce({});
+
+    const result = await service.recordPostViewsFromScraper('post-pool-1', 2500, {
+      recordedBy: 'run-1',
+      note: 'apify:MANUAL',
+      skipLeaderboardEmit: true,
+    });
+
+    expect(result.newViews).toBe(2500);
+    expect(mockNotificationService.emitLeaderboardUpdated).not.toHaveBeenCalled();
+    expect(mockNotificationService.emitViewsUpdated).toHaveBeenCalled();
   });
 });

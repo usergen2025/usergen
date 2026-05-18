@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -43,6 +45,8 @@ import { RolesGuard } from '../common/auth/guards/roles.guard';
 import { Roles } from '../common/auth/decorators/roles.decorator';
 import { CurrentUser } from '../common/auth/decorators/current-user.decorator';
 import { Response } from 'express';
+import { PostScraperService } from '../scraper/post-scraper.service';
+import { RefreshLeaderboardDto } from '../scraper/dto/refresh-leaderboard.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -52,6 +56,7 @@ export class CampaignsController {
     private readonly campaignMediaService: CampaignMediaService,
     private readonly leaderboardService: LeaderboardService,
     private readonly campaignFinalizationService: CampaignFinalizationService,
+    private readonly postScraperService: PostScraperService,
   ) {}
 
   @Get('campaigns')
@@ -335,6 +340,42 @@ export class CampaignsController {
         payoutPaise: entry.payoutPaise.toString(),
       })),
     };
+  }
+
+  @Post('campaigns/:id/refresh-leaderboard')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async refreshCampaignLeaderboard(
+    @Param('id') id: string,
+    @Body() dto: RefreshLeaderboardDto,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    return this.postScraperService.runScrapeForCampaign(id, 'MANUAL', {
+      id: user.id,
+      role: user.role,
+    }, { force: dto?.force });
+  }
+
+  @Get('campaigns/:id/scrape-runs')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  async getCampaignScrapeRuns(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    return this.postScraperService.getScrapeRuns(id);
+  }
+
+  @Get('campaigns/:id/scrape-runs/:runId')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  async getCampaignScrapeRun(
+    @Param('id') id: string,
+    @Param('runId') runId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.leaderboardService.assertCampaignReadable(id, user);
+    return this.postScraperService.getScrapeRun(id, runId);
   }
 
   @Post('campaigns/:id/finalize')

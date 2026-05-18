@@ -109,6 +109,8 @@ model Campaign {
   finalizationError  String?
   finalizationAttempts Int    @default(0)
   exceptionRefundAmountPaise BigInt?
+  manualScrapeCooldownSec Int      @default(21600)
+  lastManualScrapeAt        DateTime?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   submissions     Submission[]
@@ -118,6 +120,7 @@ model Campaign {
   creatorEarnings CreatorEarning[]
   mediaAssets     CampaignMediaAsset[]
   leaderboardSnapshots CampaignLeaderboardSnapshot[]
+  postScrapeRuns  CampaignPostScrapeRun[]
 
   @@index([finalizationStatus, status])
   @@index([payoutModel, status])
@@ -207,12 +210,23 @@ model CampaignPostSubmission {
   lastViewsUpdatedAt   DateTime?
   disqualifiedAt       DateTime?
   disqualifiedReason   String?
+  ownerUsername        String?
+  postCreatedAt        DateTime?
+  postPlatformId       String?
+  caption              String?
+  hashtags             Json?
+  likesCount           Int       @default(0)
+  commentsCount        Int       @default(0)
+  prelimCheckedAt      DateTime?
+  prelimCheckPassed    Boolean?
+  lastScrapeRunId      String?
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
   campaign      Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   application   CampaignApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   creatorEarnings CreatorEarning[]
   viewUpdates   CampaignPostViewUpdate[]
+  scrapeResults CampaignPostScrapeResult[]
 
   @@index([campaignId, creatorId])
   @@index([status, createdAt])
@@ -328,4 +342,50 @@ model WalletSyncEvent {
 
   @@index([status, createdAt])
   @@index([eventType])
+}
+
+model CampaignPostScrapeRun {
+  id                String   @id @default(cuid())
+  campaignId        String
+  scope             String
+  triggeredBy       String
+  triggeredById     String?
+  status            String
+  apifyRunId        String?
+  postsRequested    Int      @default(0)
+  postsScraped      Int      @default(0)
+  postsFailed       Int      @default(0)
+  postsDisqualified Int      @default(0)
+  startedAt         DateTime @default(now())
+  finishedAt        DateTime?
+  error             String?
+  campaign          Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  results           CampaignPostScrapeResult[]
+
+  @@index([campaignId, startedAt])
+  @@index([status, startedAt])
+}
+
+model CampaignPostScrapeResult {
+  id               String   @id @default(cuid())
+  scrapeRunId      String
+  postSubmissionId String
+  status           String
+  apifyShortcode   String?
+  apifyPostId      String?
+  videoPlayCount   Int?
+  videoViewCount   Int?
+  likesCount       Int?
+  commentsCount    Int?
+  postTimestamp    DateTime?
+  ownerUsername    String?
+  productType      String?
+  rawJson          Json?
+  errorMessage     String?
+  createdAt        DateTime @default(now())
+  scrapeRun        CampaignPostScrapeRun  @relation(fields: [scrapeRunId], references: [id], onDelete: Cascade)
+  postSubmission   CampaignPostSubmission @relation(fields: [postSubmissionId], references: [id], onDelete: Cascade)
+
+  @@index([scrapeRunId])
+  @@index([postSubmissionId, createdAt])
 }

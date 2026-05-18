@@ -1895,6 +1895,52 @@ class ApiClient {
     return normalizeCampaignServiceResponse<any>(response.data);
   }
 
+  async refreshCampaignLeaderboard(
+    campaignId: string,
+    options?: { force?: boolean },
+  ): Promise<ApiResponse<{ runId: string; status: string; postsRequested: number }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/refresh-leaderboard`,
+      options ?? {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<{ runId: string; status: string; postsRequested: number }>(
+      response.data,
+    );
+  }
+
+  async getCampaignScrapeRuns(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/campaigns/${campaignId}/scrape-runs`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getCampaignScrapeRun(campaignId: string, runId: string): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(
+      `${campaignServiceUrl}/campaigns/${campaignId}/scrape-runs/${runId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
   async resetCampaignFinalization(campaignId: string): Promise<ApiResponse<any>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();

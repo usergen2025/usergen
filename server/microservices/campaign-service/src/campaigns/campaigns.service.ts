@@ -983,9 +983,42 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         actor,
       );
     }
-    // POOL: record the new view count, audit it, emit leaderboard update.
+    return this.recordPostViewsFromScraper(postSubmissionId, dto.currentViews, {
+      recordedBy: actor.id,
+      note: dto.note,
+    });
+  }
+
+  /**
+   * Record POOL view counts from Apify scraper (no brand auth; allows PENDING_REVIEW posts).
+   */
+  async recordPostViewsFromScraper(
+    postSubmissionId: string,
+    currentViews: number,
+    options: { recordedBy: string; note?: string; skipLeaderboardEmit?: boolean },
+  ) {
+    const postSubmission = await this.databaseService.campaignPostSubmission.findUnique({
+      where: { id: postSubmissionId },
+      include: { campaign: true },
+    });
+    if (!postSubmission) {
+      throw new NotFoundException('Post submission not found');
+    }
+    if (postSubmission.campaign.payoutModel !== 'POOL') {
+      throw new BadRequestException('Scraper view updates are only supported for POOL campaigns');
+    }
+    if (postSubmission.disqualifiedAt) {
+      return { success: true, message: 'Post disqualified — skipped', previousViews: postSubmission.currentViews, newViews: postSubmission.currentViews };
+    }
+    if (
+      postSubmission.status !== 'VERIFIED' &&
+      postSubmission.status !== 'PENDING_REVIEW'
+    ) {
+      throw new BadRequestException('Post submission is not eligible for view updates');
+    }
+
     const previousViews = postSubmission.currentViews;
-    const newViews = Math.max(previousViews, Math.max(0, Math.floor(dto.currentViews)));
+    const newViews = Math.max(previousViews, Math.max(0, Math.floor(currentViews)));
     if (newViews === previousViews) {
       return { success: true, message: 'Views unchanged', previousViews, newViews };
     }
@@ -1001,8 +1034,8 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         postSubmissionId,
         previousViews,
         newViews,
-        recordedBy: actor.id,
-        note: dto.note,
+        recordedBy: options.recordedBy,
+        note: options.note,
       },
     });
     await this.databaseService.walletSyncEvent.create({
@@ -1016,12 +1049,12 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
           postSubmissionId,
           previousViews,
           newViews,
-          recordedBy: actor.id,
-          note: dto.note || null,
+          recordedBy: options.recordedBy,
+          note: options.note || null,
+          source: 'apify-scraper',
         },
       },
     });
-    // Update aggregate `views` for the campaign card so brand stats show the cumulative reach.
     await this.databaseService.campaign.update({
       where: { id: postSubmission.campaignId },
       data: { views: { increment: Math.max(0, newViews - previousViews) } },
@@ -1034,11 +1067,13 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       previousViews,
       newViews,
     });
-    this.notificationService.emitLeaderboardUpdated({
-      campaignId: postSubmission.campaignId,
-      campaignName: postSubmission.campaign.name,
-      triggeredBy: 'views-updated',
-    });
+    if (!options.skipLeaderboardEmit) {
+      this.notificationService.emitLeaderboardUpdated({
+        campaignId: postSubmission.campaignId,
+        campaignName: postSubmission.campaign.name,
+        triggeredBy: 'views-updated',
+      });
+    }
     return {
       success: true,
       previousViews,
@@ -1046,6 +1081,11 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       postSubmissionId,
       lastViewsUpdatedAt: updated.lastViewsUpdatedAt?.toISOString(),
     };
+  }
+
+  /** Disqualify a post from automated scraper (no brand/admin auth). */
+  async disqualifyPostFromScraper(postSubmissionId: string, reason: string) {
+    return this.disqualifyPost(postSubmissionId, { reason }, { id: 'apify-scraper', role: 'SYSTEM' });
   }
 
   /**
@@ -1064,7 +1104,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     if (!postSubmission) {
       throw new NotFoundException('Post submission not found');
     }
-    const isPrivileged = actor.role === 'ADMIN' || actor.role === 'OWNER';
+    const isPrivileged = actor.role === 'ADMIN' || actor.role === 'OWNER' || actor.role === 'SYSTEM';
     if (!isPrivileged && postSubmission.campaign.brandId !== actor.id) {
       throw new ForbiddenException('You do not have permission to disqualify posts for this submission');
     }

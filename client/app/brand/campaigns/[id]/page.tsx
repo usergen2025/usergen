@@ -31,6 +31,8 @@ import Tooltip from '@/components/ui/Tooltip';
 import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
 import { LeaderboardCard, PrizePoolSummary } from '@/components/campaigns/LeaderboardCard';
+import { LeaderboardRefreshButton } from '@/components/campaigns/LeaderboardRefreshButton';
+import { ScrapeHistoryTable } from '@/components/campaigns/ScrapeHistoryTable';
 import { useAuth } from '@/hooks/useAuth';
 
 interface Applicant {
@@ -137,6 +139,7 @@ export default function CampaignDetailsPage() {
   const [activeReviewTab, setActiveReviewTab] = useState<'applicants' | 'shortlisted' | 'rejected'>(
     'applicants',
   );
+  const [leaderboardRefreshKey, setLeaderboardRefreshKey] = useState(0);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
 
   const pendingApplicants = useMemo(
@@ -600,9 +603,21 @@ export default function CampaignDetailsPage() {
       </div>
 
       {campaign.payoutModel === 'POOL' && (
-        <div className="mb-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <PrizePoolSummary campaignId={campaignId} />
-          <LeaderboardCard campaignId={campaignId} showSnapshot />
+        <div className="mb-3 space-y-3">
+          <LeaderboardRefreshButton
+            campaignId={campaignId}
+            isPrivileged={isPrivileged}
+            onRefreshComplete={() => setLeaderboardRefreshKey((k) => k + 1)}
+          />
+          {isPrivileged && <ScrapeHistoryTable campaignId={campaignId} />}
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <PrizePoolSummary campaignId={campaignId} />
+            <LeaderboardCard
+              campaignId={campaignId}
+              showSnapshot
+              refreshToken={leaderboardRefreshKey}
+            />
+          </div>
         </div>
       )}
 
