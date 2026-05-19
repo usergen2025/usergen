@@ -378,6 +378,7 @@ export class AvatarsController {
           properties: {
             publicUrl: { type: 'string' },
             imageKey: { type: 'string', description: 'Optional; set only if legacy' },
+            originalImageUrl: { type: 'string', description: 'Original JPEG URL for HeyGen (AVATAR_CUTOUT only)' },
           },
         },
       },
@@ -432,12 +433,13 @@ export class AvatarsController {
       properties: {
         avatarId: { type: 'string' },
         previewImageUrl: { type: 'string', description: 'Public URL of the preview image (same as metadata.avatarPreviewUrl)' },
+        originalImageUrl: { type: 'string', description: 'Original JPEG URL for HeyGen (AVATAR_CUTOUT only). If provided, this will be uploaded to HeyGen instead of previewImageUrl.' },
       },
       required: ['avatarId', 'previewImageUrl'],
     },
   })
   async finalizePreview(
-    @Body() body: { avatarId: string; previewImageUrl: string },
+    @Body() body: { avatarId: string; previewImageUrl: string; originalImageUrl?: string },
     @Request() req: any,
   ) {
     const userId = this.extractUserIdFromToken(req);
@@ -451,6 +453,7 @@ export class AvatarsController {
       userId,
       avatarId: body.avatarId,
       previewImageUrl: body.previewImageUrl,
+      originalImageUrl: body.originalImageUrl,
     });
     return { success: true, data: result };
   }

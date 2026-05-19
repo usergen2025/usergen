@@ -710,7 +710,7 @@ export class AvatarsService {
     /** Public or absolute URL to product image (avatar-product preview composite). */
     productImageUrl?: string;
     previewSceneIndex?: number;
-  }): Promise<{ publicUrl: string; imageKey?: string }> {
+  }): Promise<{ publicUrl: string; imageKey?: string; originalImageUrl?: string }> {
     const { projectId, avatarId, userId, script, style: rawStyle, avatarVisualStylePreset, productImageUrl, previewSceneIndex } = params;
     
     // Normalize style to backend format (handles both 'avatar-cutout' and 'AVATAR_CUTOUT')
@@ -728,18 +728,18 @@ export class AvatarsService {
       throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
     }
 
-    const originalImageUrl = avatar.originalImageUrl;
-    if (!originalImageUrl) {
+    const avatarOriginalImageUrl = avatar.originalImageUrl;
+    if (!avatarOriginalImageUrl) {
       throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
     }
 
-    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
+    const urlMatch = avatarOriginalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
     const possiblePaths = urlMatch
       ? [
           path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
           path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
         ]
-      : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
+      : [path.join(process.cwd(), avatarOriginalImageUrl.replace(/^\//, ''))];
     let imagePath: string | null = null;
     for (const p of possiblePaths) {
       if (fs.existsSync(p)) {
@@ -748,7 +748,7 @@ export class AvatarsService {
       }
     }
     if (!imagePath) {
-      throw new BadRequestException(`Avatar original image not found at: ${originalImageUrl}`);
+      throw new BadRequestException(`Avatar original image not found at: ${avatarOriginalImageUrl}`);
     }
 
     let imageBuffer = fs.readFileSync(imagePath);
@@ -908,12 +908,27 @@ export class AvatarsService {
     let finalImageBuffer = resultImageBuffer;
     let mimeType: 'image/jpeg' | 'image/png' = 'image/jpeg';
     let fileExtension = 'jpg';
+    let originalImageUrl: string | undefined;
 
     if (style === 'AVATAR_CUTOUT') {
-      this.logger.log(`[AvatarPreview] AVATAR_CUTOUT style detected, removing background for transparent preview`, 'AvatarsService');
+      this.logger.log(`[AvatarPreview] AVATAR_CUTOUT style detected, uploading original JPEG for HeyGen and creating transparent PNG for preview`, 'AvatarsService');
       
+      // Upload original JPEG with white background for HeyGen BEFORE background removal
+      // HeyGen Avatar IV cannot process transparent PNGs, so we preserve the original JPEG
+      const jpegTimestamp = Date.now();
+      const jpegFilename = `avatar_preview_original_${jpegTimestamp}.jpg`;
+      const subPathJpeg = `avatars/previews/${projectId}`;
+      const jpegStorageResult = await this.publicUrlService.uploadFromBuffer(
+        resultImageBuffer,
+        subPathJpeg,
+        jpegFilename,
+        'image/jpeg',
+      );
+      originalImageUrl = jpegStorageResult.gcsUrl || jpegStorageResult.publicUrl || jpegStorageResult.localUrl;
+      this.logger.log(`[AvatarPreview] AVATAR_CUTOUT: Uploaded original JPEG for HeyGen: ${originalImageUrl}`, 'AvatarsService');
+      
+      // Now remove background to create transparent PNG for preview display
       try {
-        // Save temp file for background removal
         const tempDir = path.join(process.cwd(), 'uploads', 'temp');
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
@@ -922,28 +937,23 @@ export class AvatarsService {
         const tempInputPath = path.join(tempDir, `avatar_preview_input_${Date.now()}.jpg`);
         const tempOutputPath = path.join(tempDir, `avatar_preview_output_${Date.now()}.png`);
         
-        // Write input image
         fs.writeFileSync(tempInputPath, resultImageBuffer);
         
-        // Remove background using existing method
         await this.removeImageBackground(tempInputPath, tempOutputPath);
         
-        // Read the transparent PNG
         if (fs.existsSync(tempOutputPath)) {
           finalImageBuffer = fs.readFileSync(tempOutputPath);
           mimeType = 'image/png';
           fileExtension = 'png';
           this.logger.log(`[AvatarPreview] Background removed successfully, PNG size: ${finalImageBuffer.length} bytes`, 'AvatarsService');
           
-          // Cleanup temp files
           if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
           if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
         } else {
           this.logger.warn(`[AvatarPreview] Background removal output not found, using original image`, 'AvatarsService');
         }
       } catch (bgRemovalError: any) {
-        this.logger.warn(`[AvatarPreview] Background removal failed: ${bgRemovalError.message}, using original image`, 'AvatarsService');
-        // Continue with original image if background removal fails
+        this.logger.warn(`[AvatarPreview] Background removal failed: ${bgRemovalError.message}, using original image for preview`, 'AvatarsService');
       }
     }
 
@@ -960,11 +970,11 @@ export class AvatarsService {
     const publicUrl = storageResult.gcsUrl || storageResult.publicUrl || `${storageResult.localUrl}`;
 
     this.logger.log(
-      `Avatar preview for project ${projectId} generated (GCS only; HeyGen on finalize), publicUrl: ${publicUrl}`,
+      `Avatar preview for project ${projectId} generated (GCS only; HeyGen on finalize), publicUrl: ${publicUrl}${originalImageUrl ? `, originalImageUrl: ${originalImageUrl}` : ''}`,
       'AvatarsService',
     );
 
-    return { publicUrl };
+    return { publicUrl, originalImageUrl };
   }
 
   /**
@@ -974,8 +984,9 @@ export class AvatarsService {
     userId: string;
     avatarId: string;
     previewImageUrl: string;
+    originalImageUrl?: string;
   }): Promise<{ imageKey: string }> {
-    const { userId, avatarId, previewImageUrl } = params;
+    const { userId, avatarId, previewImageUrl, originalImageUrl } = params;
 
     const avatar = await this.databaseService.avatar.findFirst({
       where: { id: avatarId, userId },
@@ -984,11 +995,20 @@ export class AvatarsService {
       throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
     }
 
-    if (!previewImageUrl || (!previewImageUrl.startsWith('http://') && !previewImageUrl.startsWith('https://'))) {
-      throw new BadRequestException('previewImageUrl must be a valid http(s) URL');
+    // Use originalImageUrl if provided (AVATAR_CUTOUT), otherwise use previewImageUrl
+    // This ensures HeyGen receives a JPEG with solid background, not a transparent PNG
+    const imageUrlForHeyGen = originalImageUrl || previewImageUrl;
+    
+    this.logger.log(
+      `[finalizeAvatarPreview] Using ${originalImageUrl ? 'original JPEG' : 'preview image'} for HeyGen upload: ${imageUrlForHeyGen}`,
+      'AvatarsService',
+    );
+
+    if (!imageUrlForHeyGen || (!imageUrlForHeyGen.startsWith('http://') && !imageUrlForHeyGen.startsWith('https://'))) {
+      throw new BadRequestException('Image URL must be a valid http(s) URL');
     }
 
-    const imageResponse = await axios.get(previewImageUrl, {
+    const imageResponse = await axios.get(imageUrlForHeyGen, {
       responseType: 'arraybuffer',
       timeout: 120000,
       maxContentLength: 50 * 1024 * 1024,

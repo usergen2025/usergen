@@ -138,6 +138,7 @@ function AIChatPageContent() {
   const [pendingAvatarPreview, setPendingAvatarPreview] = useState<string | null>(null);
   // Avatar preview state (new substep after visual-style)
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+  const [avatarPreviewOriginalUrl, setAvatarPreviewOriginalUrl] = useState<string | null>(null);
   const [avatarPreviewImageKey, setAvatarPreviewImageKey] = useState<string | null>(null);
   const [isGeneratingAvatarPreview, setIsGeneratingAvatarPreview] = useState<boolean>(false);
   const [avatarPreviewModalOpen, setAvatarPreviewModalOpen] = useState(false);
@@ -580,6 +581,9 @@ function AIChatPageContent() {
             // Restore avatar preview state
             if (project.metadata?.avatarPreviewUrl) {
               setAvatarPreviewUrl(project.metadata.avatarPreviewUrl as string);
+            }
+            if (project.metadata?.avatarPreviewOriginalUrl) {
+              setAvatarPreviewOriginalUrl(project.metadata.avatarPreviewOriginalUrl as string);
             }
             if (project.metadata?.generatedAvatarImageKey) {
               setAvatarPreviewImageKey(project.metadata.generatedAvatarImageKey as string);
@@ -5057,6 +5061,7 @@ function AIChatPageContent() {
       setIsGeneratingAvatarPreview(true);
       setAvatarSubstep('avatar-preview');
       setAvatarPreviewUrl(null);
+      setAvatarPreviewOriginalUrl(null);
       setAvatarPreviewImageKey(null);
       
       const previewResult = await apiClient.generateAvatarPreview({
@@ -5071,6 +5076,7 @@ function AIChatPageContent() {
       
       if (previewResult.success && previewResult.data) {
         setAvatarPreviewUrl(previewResult.data.publicUrl);
+        setAvatarPreviewOriginalUrl(previewResult.data.originalImageUrl ?? null);
         setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
         
         await apiClient.updateVideoProject(projectId, {
@@ -5081,6 +5087,7 @@ function AIChatPageContent() {
             generatedAvatarImageKey: null,
             avatarImageScriptHash: null,
             avatarPreviewUrl: previewResult.data.publicUrl,
+            avatarPreviewOriginalUrl: previewResult.data.originalImageUrl,
           },
         });
       } else {
@@ -5177,6 +5184,7 @@ function AIChatPageContent() {
     try {
       setIsGeneratingAvatarPreview(true);
       setAvatarPreviewUrl(null);
+      setAvatarPreviewOriginalUrl(null);
       setAvatarPreviewImageKey(null);
       
       const previewResult = await apiClient.generateAvatarPreview({
@@ -5191,6 +5199,7 @@ function AIChatPageContent() {
       
       if (previewResult.success && previewResult.data) {
         setAvatarPreviewUrl(previewResult.data.publicUrl);
+        setAvatarPreviewOriginalUrl(previewResult.data.originalImageUrl ?? null);
         setAvatarPreviewImageKey(previewResult.data.imageKey ?? null);
         
         await apiClient.updateVideoProject(projectId, {
@@ -5201,6 +5210,7 @@ function AIChatPageContent() {
             generatedAvatarImageKey: null,
             avatarImageScriptHash: null,
             avatarPreviewUrl: previewResult.data.publicUrl,
+            avatarPreviewOriginalUrl: previewResult.data.originalImageUrl,
           },
         });
       } else {
@@ -5227,6 +5237,7 @@ function AIChatPageContent() {
       const finalizeRes = await apiClient.finalizeAvatarPreview({
         avatarId: selectedAvatarId,
         previewImageUrl: avatarPreviewUrl,
+        originalImageUrl: avatarPreviewOriginalUrl || undefined,
       });
       if (!finalizeRes.success || !finalizeRes.data?.imageKey) {
         throw new Error(

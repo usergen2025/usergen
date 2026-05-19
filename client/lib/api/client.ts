@@ -446,11 +446,11 @@ class ApiClient {
     avatarVisualStylePreset?: string;
     productImageUrl?: string;
     previewSceneIndex?: number;
-  }): Promise<ApiResponse<{ publicUrl: string; imageKey?: string }>> {
+  }): Promise<ApiResponse<{ publicUrl: string; imageKey?: string; originalImageUrl?: string }>> {
     const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
-    const response = await axios.post<ApiResponse<{ publicUrl: string; imageKey?: string }>>(
+    const response = await axios.post<ApiResponse<{ publicUrl: string; imageKey?: string; originalImageUrl?: string }>>(
       `${avatarServiceUrl}/avatars/generate-preview`,
       data,
       {
@@ -467,6 +467,7 @@ class ApiClient {
   async finalizeAvatarPreview(data: {
     avatarId: string;
     previewImageUrl: string;
+    originalImageUrl?: string;
   }): Promise<ApiResponse<{ imageKey: string }>> {
     const avatarServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
