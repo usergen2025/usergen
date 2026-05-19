@@ -198,7 +198,7 @@ export class ScriptsService {
           messages: messages,
           response_format: { type: 'json_object' },
           temperature: 0.7,
-          max_tokens: useVisionAPI ? 4000 : 3000,
+          max_tokens: useVisionAPI ? 8000 : 6000,
         });
 
         if (attempt > 1) {
@@ -264,6 +264,20 @@ export class ScriptsService {
     for (let emptyAttempt = 1; emptyAttempt <= maxEmptyRetries; emptyAttempt++) {
       const completion = await this.callOpenAIWithRetry(messages, model, useVisionAPI, 5);
       lastCompletion = completion;
+
+      const finishReason = completion.choices?.[0]?.finish_reason;
+      if (finishReason === 'length') {
+        this.logger.error(
+          `${logLabel}: Response truncated due to max_tokens limit (finish_reason=length). ` +
+          `Tokens used: ${completion.usage?.total_tokens || 'unknown'}`,
+          'ScriptsService',
+        );
+        throw new Error(
+          `OpenAI response was truncated (finish_reason=length). The script may be too long. ` +
+          `Try a shorter duration or simpler prompt.`,
+        );
+      }
+
       const extracted = extractAssistantText(completion.choices[0]?.message);
 
       if (extracted.ok === true) {
