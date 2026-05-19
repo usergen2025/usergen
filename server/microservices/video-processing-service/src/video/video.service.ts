@@ -864,17 +864,23 @@ export class VideoService {
         configuredBucket &&
         parsed.bucket === configuredBucket
       ) {
-        const signedUrl = await this.publicUrlService.getSignedDownloadUrl(
-          parsed.objectPath,
-          filename,
-          expiresInMinutes,
-        );
-        return {
-          downloadUrl: signedUrl,
-          filename,
-          strategy: 'signed_gcs',
-          expiresInSeconds: expiresInMinutes * 60,
-        };
+        try {
+          const signedUrl = await this.publicUrlService.getSignedDownloadUrl(
+            parsed.objectPath,
+            filename,
+            expiresInMinutes,
+          );
+          return {
+            downloadUrl: signedUrl,
+            filename,
+            strategy: 'signed_gcs',
+            expiresInSeconds: expiresInMinutes * 60,
+          };
+        } catch (signError: any) {
+          console.warn(
+            `[VideoService] GCS signed URL generation failed, falling back to proxy stream: ${signError.message}`,
+          );
+        }
       }
 
       return {
