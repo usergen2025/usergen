@@ -15,7 +15,7 @@ export default function ImagePreview({ imageUrl, isOpen, onClose, alt = 'Preview
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={onClose}
     >
       <div className="relative max-w-7xl max-h-[90vh] w-full h-full flex items-center justify-center p-4">

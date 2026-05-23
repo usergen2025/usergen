@@ -290,7 +290,9 @@ function AIChatPageContent() {
   const [reviewPlaybackProgress, setReviewPlaybackProgress] = useState<Record<number, number>>({});
   
   // B-roll source selection state
-  const [brollSourcePreference, setBrollSourcePreference] = useState<'ai' | 'manual' | 'stock-auto' | null>(null);
+  // 'ai' = AI-generated visuals, 'stock' = manual stock selection, 'upload' = user uploads only
+  // 'stock-auto' kept for legacy/backwards compatibility
+  const [brollSourcePreference, setBrollSourcePreference] = useState<'ai' | 'stock' | 'upload' | 'stock-auto' | null>(null);
   const [isAutoSelectingStock, setIsAutoSelectingStock] = useState(false);
   const [stockDownloadProgress, setStockDownloadProgress] = useState(0);
   const stockJobsCompleteRef = useRef(false);
@@ -3596,8 +3598,8 @@ function AIChatPageContent() {
     // Otherwise, rendering will be triggered when audio job completes (handled in WebSocket)
   };
 
-  // Handle B-roll source selection (AI, manual, or stock-auto)
-  const handleBrollSourceSelection = async (source: 'ai' | 'manual' | 'stock-auto') => {
+  // Handle B-roll source selection (AI, stock manual selection, upload, or legacy stock-auto)
+  const handleBrollSourceSelection = async (source: 'ai' | 'stock' | 'upload' | 'stock-auto') => {
     setBrollSourcePreference(source);
     
     if (source === 'ai') {
@@ -3606,6 +3608,11 @@ function AIChatPageContent() {
       setTimeout(async () => {
         await startBrollGeneration();
       }, 500);
+    } else if (source === 'stock' || source === 'upload') {
+      // User chose to manually select stock visuals OR upload their own
+      // Just show the scene cards UI - no auto-selection, no loading
+      // The modal will be opened when user clicks on a scene card
+      // allowedTabs will be determined by the source type when opening the modal
     } else if (source === 'stock-auto') {
       // User chose auto stock visuals - generate audio first, then download stock videos using audio durations
       setIsAutoSelectingStock(true);
@@ -7694,16 +7701,16 @@ Use a recent photo of yourself.`}
                             <div className="w-[clamp(1.5rem,2.93vh,30px)] h-[clamp(1.5rem,2.93vh,30px)] border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
                           </div>
                         ) : activeVoiceTab === 'upload' ? (
-                          // Upload tab - functional upload UI
+                          // Upload tab - functional upload UI with button inside
                           <div 
                             key="voice-upload"
-                            className="flex flex-col items-center justify-center w-full"
+                            className="flex flex-col items-center justify-center w-full gap-[clamp(0.75rem,1.17vh,12px)]"
                             style={{
                               animation: 'fadeIn 0.3s ease-in-out'
                             }}
                             >
                               {/* Upload Area */}
-                              <div className="box-border flex flex-col justify-center items-center p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full h-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
+                              <div className="box-border flex flex-col justify-center items-center p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
                                 {/* Best Practices Title */}
                                 <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(0.6875rem,1.07vh,11px)] text-center text-black w-full">
                                   Best Practices:
@@ -7726,10 +7733,42 @@ Read everything on screen smoothly.`}
                                   accept="audio/*"
                                   className="hidden"
                                 />
+
+                                {/* Upload Button - Inside the component */}
+                                {!voiceUploadSuccess && (
+                                  <button
+                                    onClick={() => voiceFileInputRef.current?.click()}
+                                    disabled={voiceCloning}
+                                    className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[30px] h-[clamp(2.25rem,4.69vh,42px)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <div className="w-[clamp(1rem,1.76vh,20px)] h-[clamp(1rem,1.76vh,20px)] flex items-center justify-center flex-shrink-0">
+                                      <Image
+                                        src="/assets/u_upload.svg"
+                                        alt="Upload"
+                                        width={20}
+                                        height={20}
+                                        className="w-full h-full brightness-0 invert"
+                                      />
+                                    </div>
+                                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-white">
+                                      Upload Voice
+                                    </span>
+                                  </button>
+                                )}
+
+                                {/* Success message when voice is uploaded */}
+                                {voiceUploadSuccess && (
+                                  <div className="flex items-center gap-2 text-green-600">
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">Voice uploaded successfully!</span>
+                                  </div>
+                                )}
                               </div>
                           </div>
                         ) : activeVoiceTab === 'record' ? (
-                          // Record tab - functional recording UI
+                          // Record tab - functional recording UI with button inside
                           <div 
                             key="voice-record"
                             className="flex flex-col items-center justify-center w-full"
@@ -7757,6 +7796,37 @@ Speak clearly at normal volume.
 Don't move your head while talking.
 Read everything on screen smoothly.`}
                                   </p>
+
+                                  {/* Record/Stop Button - Inside the component */}
+                                  {voiceRecording ? (
+                                    <button
+                                      onClick={handleStopVoiceRecording}
+                                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[30px] h-[clamp(2.25rem,4.69vh,42px)] hover:opacity-90 transition-opacity"
+                                    >
+                                      <div className="w-[clamp(0.875rem,1.37vh,16px)] h-[clamp(0.875rem,1.37vh,16px)] bg-white rounded-sm" />
+                                      <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-white">
+                                        Stop Recording
+                                      </span>
+                                    </button>
+                                  ) : pendingVoiceFile && voiceCloneMode === 'record' ? (
+                                    <div className="flex items-center gap-2 text-green-600">
+                                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                      </svg>
+                                      <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium">Voice recorded successfully!</span>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={handleStartVoiceRecording}
+                                      disabled={voiceCloning}
+                                      className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[30px] h-[clamp(2.25rem,4.69vh,42px)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      <div className="w-[clamp(0.875rem,1.37vh,16px)] h-[clamp(0.875rem,1.37vh,16px)] bg-white rounded-full" />
+                                      <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-medium leading-[clamp(1rem,1.56vh,16px)] text-white">
+                                        Record Voice
+                                      </span>
+                                    </button>
+                                  )}
 
                                 </div>
                               </div>
@@ -7856,56 +7926,6 @@ Read everything on screen smoothly.`}
                     </div>
                   </div>
 
-                  {/* Upload/Record Voice Buttons - Outside container, only show in upload/record tabs */}
-                  {activeVoiceTab === 'upload' && !voiceUploadSuccess && (
-                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
-                      <button
-                        onClick={() => voiceFileInputRef.current?.click()}
-                        disabled={voiceCloning}
-                        className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
-                          <Image
-                            src="/assets/u_upload.svg"
-                            alt="Upload"
-                            width={24}
-                            height={24}
-                            className="w-full h-full"
-                          />
-                        </div>
-                        <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                          Upload Voice
-                        </span>
-                      </button>
-                    </div>
-                  )}
-
-                  {activeVoiceTab === 'record' && (
-                    <div className="flex flex-row justify-end items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
-                      {voiceRecording ? (
-                        <button
-                          onClick={handleStopVoiceRecording}
-                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
-                        >
-                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] bg-[#F12A4C] rounded-sm" />
-                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                            Stop Recording
-                          </span>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={handleStartVoiceRecording}
-                          disabled={voiceCloning}
-                          className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          <div className="w-[clamp(1rem,1.56vh,16px)] h-[clamp(1rem,1.56vh,16px)] bg-[#E86412] rounded-full" />
-                          <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">
-                            Record Voice
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  )}
                 </>
               )}
 
@@ -9120,68 +9140,36 @@ Read everything on screen smoothly.`}
                               </span>
                             </button>
 
-                            {/* Stock Auto Option */}
+                            {/* Stock Selection Option - Opens modal with stock tabs only */}
                             <button
-                              onClick={() => handleBrollSourceSelection('stock-auto')}
-                              disabled={isAutoSelectingStock}
-                              className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                                {isAutoSelectingStock ? 'Selecting...' : 'Use stock visuals'}
-                              </span>
-                            </button>
-
-                            {/* Choose Own Option */}
-                            <button
-                              onClick={() => handleBrollSourceSelection('manual')}
+                              onClick={() => handleBrollSourceSelection('stock')}
                               className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0"
                             >
                               <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
-                                Choose my own visuals
+                                Use stock visuals
+                              </span>
+                            </button>
+
+                            {/* Upload Option - Opens modal with upload tab only */}
+                            <button
+                              onClick={() => handleBrollSourceSelection('upload')}
+                              className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0"
+                            >
+                              <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] whitespace-nowrap">
+                                Upload my own visuals
                               </span>
                             </button>
                           </div>
                         )}
 
-                        {/* Stock-Auto Loading State */}
-                        {brollSourcePreference === 'stock-auto' && isAutoSelectingStock && (
+                        {/* Stock/Upload Manual Selection: Scene Cards Grid */}
+                        {(brollSourcePreference === 'stock' || brollSourcePreference === 'upload') && (
                           <>
                             {/* User Selection Message */}
                             <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
                               <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
                                 <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                                  Use stock visuals
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Loading Indicator for Stock Auto-Selection */}
-                            <div className="flex flex-col items-center gap-4 w-full max-w-full sm:max-w-[852px] mt-[clamp(1rem,2vh,24px)] p-8 bg-white rounded-[16px] shadow-[0px_1px_7px_rgba(87,73,119,0.15)]">
-                              <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-200 border-t-[#E86412]"></div>
-                              <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal text-[#212121] text-center">
-                                Searching and downloading stock videos for your scenes...
-                              </p>
-                              <div className="w-full max-w-[300px] h-2 bg-gray-100 rounded-full overflow-hidden">
-                                <div 
-                                  className="h-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-300"
-                                  style={{ width: `${stockDownloadProgress}%` }}
-                                />
-                              </div>
-                              <p className="font-heading text-[clamp(0.75rem,1.37vh,14px)] text-gray-500">
-                                {stockDownloadProgress}% complete
-                              </p>
-                            </div>
-                          </>
-                        )}
-
-                        {/* Manual B-Roll Selection: Scene Cards Grid */}
-                        {brollSourcePreference === 'manual' && (
-                          <>
-                            {/* User Selection Message */}
-                            <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
-                              <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
-                                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
-                                  Choose my own visuals
+                                  {brollSourcePreference === 'stock' ? 'Use stock visuals' : 'Upload my own visuals'}
                                 </span>
                               </div>
                             </div>
@@ -9189,11 +9177,13 @@ Read everything on screen smoothly.`}
                             {/* AI Message - Instructions */}
                             <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                               <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                                Select visuals for each scene below. You can choose from stock images/videos or upload your own. Scenes without selections will use AI-generated visuals.
+                                {brollSourcePreference === 'stock' 
+                                  ? 'Select stock visuals for each scene below. Scenes without selections will use AI-generated visuals.'
+                                  : 'Upload your own visuals for each scene below. Scenes without uploads will use AI-generated visuals.'}
                               </p>
                             </div>
 
-                            {/* Scene Cards Container - one row, up to 6; match video style cards */}
+                            {/* Scene Cards Container */}
                             <div className="relative w-full max-w-full sm:max-w-[850px] mt-[clamp(0.5rem,0.98vh,10px)]">
                               <div className="flex flex-row flex-wrap gap-[clamp(0.75rem,1.56vh,16px)] w-full">
                                 {generatedScript && (generatedScript.scenes || generatedScript.scene_plan || []).map((scene: any, index: number) => {
@@ -9214,7 +9204,7 @@ Read everything on screen smoothly.`}
                                       style={manualSelection ? undefined : { background: 'transparent' }}
                                     >
                                       <div className="flex flex-col gap-[clamp(0.375rem,0.59vh,6px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[12px] p-[clamp(0.5rem,0.78vh,8px)] w-[clamp(120px,11vw,152px)] min-w-0">
-                                        {/* Thumbnail - aspect 9/16 */}
+                                        {/* Thumbnail */}
                                         <div 
                                           className="relative w-full aspect-[9/16] bg-gray-100 rounded-[8px] overflow-hidden flex items-center justify-center cursor-pointer"
                                           onClick={() => {
@@ -9247,11 +9237,21 @@ Read everything on screen smoothly.`}
                                           ) : (
                                             <div className="flex flex-col items-center justify-center gap-1 text-gray-400">
                                               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                                                <circle cx="8.5" cy="8.5" r="1.5"/>
-                                                <polyline points="21 15 16 10 5 21"/>
+                                                {brollSourcePreference === 'upload' ? (
+                                                  <>
+                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                                    <polyline points="17 8 12 3 7 8" />
+                                                    <line x1="12" y1="3" x2="12" y2="15" />
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                                                    <circle cx="8.5" cy="8.5" r="1.5"/>
+                                                    <polyline points="21 15 16 10 5 21"/>
+                                                  </>
+                                                )}
                                               </svg>
-                                              <span className="text-[10px]">Select</span>
+                                              <span className="text-[10px]">{brollSourcePreference === 'upload' ? 'Upload' : 'Select'}</span>
                                             </div>
                                           )}
                                           {manualSelection && (
@@ -9275,7 +9275,7 @@ Read everything on screen smoothly.`}
                                           }}
                                           className="flex items-center justify-center gap-1 w-full py-1.5 px-2 bg-white border border-gray-200 rounded-[8px] hover:bg-gray-50 transition-colors text-[clamp(0.625rem,1.17vh,12px)] font-medium text-[#212121] font-heading"
                                         >
-                                          {manualSelection ? 'Change' : 'Select'}
+                                          {manualSelection ? 'Change' : (brollSourcePreference === 'upload' ? 'Upload' : 'Select')}
                                         </button>
                                       </div>
                                     </div>
@@ -9283,7 +9283,7 @@ Read everything on screen smoothly.`}
                                 })}
                               </div>
 
-                              {/* Summary and Proceed - same position and style as other steps (no divider line) */}
+                              {/* Summary and Proceed */}
                               <div className="flex flex-row justify-between items-center gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
                                 <div className="flex flex-col gap-0.5 min-w-0">
                                   <span className="font-heading text-sm text-gray-500">
@@ -9314,6 +9314,38 @@ Read everything on screen smoothly.`}
                             </div>
                           </>
                         )}
+
+                        {/* Legacy Stock-Auto Loading State (kept for backwards compatibility) */}
+                        {brollSourcePreference === 'stock-auto' && isAutoSelectingStock && (
+                          <>
+                            {/* User Selection Message */}
+                            <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
+                              <div className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.98vh,10px)] px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-gradient-to-r from-[rgba(255,211,183,0.4)] to-[rgba(246,166,166,0.4)] rounded-[20px] max-w-[clamp(300px,50vw,353px)]">
+                                <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] text-right whitespace-pre-wrap break-words">
+                                  Use stock visuals
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Loading Indicator for Stock Auto-Selection */}
+                            <div className="flex flex-col items-center gap-4 w-full max-w-full sm:max-w-[852px] mt-[clamp(1rem,2vh,24px)] p-8 bg-white rounded-[16px] shadow-[0px_1px_7px_rgba(87,73,119,0.15)]">
+                              <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-200 border-t-[#E86412]"></div>
+                              <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal text-[#212121] text-center">
+                                Searching and downloading stock videos for your scenes...
+                              </p>
+                              <div className="w-full max-w-[300px] h-2 bg-gray-100 rounded-full overflow-hidden">
+                                <div 
+                                  className="h-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] transition-all duration-300"
+                                  style={{ width: `${stockDownloadProgress}%` }}
+                                />
+                              </div>
+                              <p className="font-heading text-[clamp(0.75rem,1.37vh,14px)] text-gray-500">
+                                {stockDownloadProgress}% complete
+                              </p>
+                            </div>
+                          </>
+                        )}
+
                       </>
                     );
                   }
@@ -10034,7 +10066,7 @@ Read everything on screen smoothly.`}
           />
           
           {/* Modal */}
-          <div className="fixed inset-0 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="fixed inset-0 flex items-center justify-center z-[150] p-4 overflow-y-auto">
             <div className="bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl p-10 w-full max-w-[546px] flex flex-col gap-5 my-auto">
               {/* Modal Header */}
               <div className="flex flex-row items-center justify-between w-full flex-shrink-0">
@@ -10237,7 +10269,7 @@ Read everything on screen smoothly.`}
         <>
           {/* Overlay - backdrop only (translucent), card/image stay fully opaque */}
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center"
+            className="fixed inset-0 z-[150] flex items-center justify-center"
             style={{
               background: 'linear-gradient(116.46deg, rgba(191, 143, 100, 0.7) 17.88%, rgba(179, 104, 56, 0.7) 89.93%)',
             }}
@@ -10361,7 +10393,7 @@ Read everything on screen smoothly.`}
           />
           
           {/* Modal */}
-          <div className="fixed inset-0 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="fixed inset-0 flex items-center justify-center z-[150] p-4 overflow-y-auto">
             <div className="bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl p-6 w-full max-w-[500px] flex flex-col gap-4 my-auto">
               {/* Modal Header */}
               <div className="flex flex-row items-center justify-between w-full">
@@ -10802,7 +10834,13 @@ Read everything on screen smoothly.`}
           generatedScript?.scene_plan?.[brollModalSceneNumber - 1]?.stock_search_term ||
           ''
         }
-        allowedTabs={['images', 'videos', 'upload']}
+        allowedTabs={
+          brollSourcePreference === 'upload' 
+            ? ['upload'] 
+            : brollSourcePreference === 'stock' 
+              ? ['images', 'videos'] 
+              : ['images', 'videos', 'upload']
+        }
         targetAspectRatio="9:16"
       />
     </div>

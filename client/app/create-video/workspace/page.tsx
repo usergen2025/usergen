@@ -3002,7 +3002,71 @@ function WorkspacePageContent() {
             <div className={`flex flex-col items-start p-[clamp(12px,1.76vh,20px)] gap-[clamp(8px,1.17vh,12px)] w-full bg-white border border-[#E0E0E0] rounded-[12px] min-h-0 overflow-hidden ${musicExpanded ? 'flex-1' : 'flex-shrink-0'}`}>
               <div className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] w-full flex-shrink-0">
                 <Music className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] text-[#212121]" />
-                <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121] flex-1">Background Music</span>
+                <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121]">Background Music</span>
+                {/* Search in header - compact expandable */}
+                {musicExpanded && musicTab === 'library' && (
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0 mx-2">
+                    <div
+                      className={`overflow-hidden transition-all duration-200 ease-in-out rounded-full border border-[#E8E2DB] bg-white ${
+                        musicSearchExpanded ? 'flex-1 opacity-100 px-3 py-1.5' : 'w-0 opacity-0 px-0 py-0 border-0'
+                      }`}
+                    >
+                      <input
+                        ref={musicSearchInputRef}
+                        value={musicSearchInput}
+                        onChange={(e) => setMusicSearchInput(e.target.value)}
+                        placeholder="Search..."
+                        aria-label="Search music"
+                        className="w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[clamp(12px,1.3vh,14px)] text-[#212121] placeholder:text-[#9E9E9E]"
+                        onBlur={() => {
+                          if (!musicSearchInput.trim()) setMusicSearchExpanded(false);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            fetchMusicLibrary({ query: musicSearchInput, useSeed: false });
+                          } else if (e.key === 'Escape') {
+                            if (!musicSearchInput.trim()) {
+                              setMusicSearchExpanded(false);
+                            } else {
+                              setMusicSearchInput('');
+                              fetchMusicLibrary({ useSeed: true });
+                            }
+                          }
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMusicSearchExpanded((prev) => !prev);
+                        if (!musicSearchExpanded) {
+                          requestAnimationFrame(() => musicSearchInputRef.current?.focus());
+                        }
+                      }}
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60 transition-colors"
+                      aria-label={musicSearchExpanded ? 'Collapse search' : 'Search music'}
+                    >
+                      {musicSearchExpanded ? (
+                        <X className="h-4 w-4 text-[#E86512]" />
+                      ) : (
+                        <Search className="h-4 w-4 text-[#E86512]" />
+                      )}
+                    </button>
+                    {musicSearchInput.trim() && (
+                      <button
+                        onClick={() => {
+                          setMusicSearchInput('');
+                          setMusicSearchExpanded(false);
+                          fetchMusicLibrary({ useSeed: true });
+                        }}
+                        className="text-xs text-[#E86512] hover:underline shrink-0"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                )}
+                {!musicExpanded || musicTab !== 'library' ? <div className="flex-1" /> : null}
                 <button
                   onClick={() => setMusicExpanded(!musicExpanded)}
                   className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] flex items-center justify-center flex-shrink-0"
@@ -3037,76 +3101,13 @@ function WorkspacePageContent() {
 
                   {musicTab === 'library' && (
                     <>
-                      {/* Search Bar - Brand Campaigns Style */}
-                      <div className="flex items-center justify-between gap-2 w-full">
-                        <div className="flex flex-row-reverse items-center justify-start gap-2 flex-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setMusicSearchExpanded((prev) => !prev);
-                              if (!musicSearchExpanded) {
-                                requestAnimationFrame(() => musicSearchInputRef.current?.focus());
-                              }
-                            }}
-                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60 transition-colors"
-                            aria-label={musicSearchExpanded ? 'Collapse search' : 'Search music'}
-                          >
-                            {musicSearchExpanded ? (
-                              <X className="h-4 w-4 text-[#E86512]" />
-                            ) : (
-                              <Search className="h-4 w-4 text-[#E86512]" />
-                            )}
-                          </button>
-                          <div
-                            className={`overflow-hidden transition-all duration-200 ease-in-out rounded-full border border-[#E8E2DB] bg-white ${
-                              musicSearchExpanded ? 'flex-1 opacity-100 px-3 py-1.5' : 'w-0 opacity-0 px-0 py-0 border-0'
-                            }`}
-                          >
-                            <input
-                              ref={musicSearchInputRef}
-                              value={musicSearchInput}
-                              onChange={(e) => setMusicSearchInput(e.target.value)}
-                              placeholder="Search music..."
-                              aria-label="Search music"
-                              className="w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[clamp(12px,1.3vh,14px)] text-[#212121] placeholder:text-[#9E9E9E]"
-                              onBlur={() => {
-                                if (!musicSearchInput.trim()) setMusicSearchExpanded(false);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  fetchMusicLibrary({ query: musicSearchInput, useSeed: false });
-                                } else if (e.key === 'Escape') {
-                                  if (!musicSearchInput.trim()) {
-                                    setMusicSearchExpanded(false);
-                                  } else {
-                                    setMusicSearchInput('');
-                                    fetchMusicLibrary({ useSeed: true });
-                                  }
-                                }
-                              }}
-                            />
-                          </div>
-                        </div>
-                        {musicSearchInput.trim() && (
-                          <button
-                            onClick={() => {
-                              setMusicSearchInput('');
-                              setMusicSearchExpanded(false);
-                              fetchMusicLibrary({ useSeed: true });
-                            }}
-                            className="text-xs text-[#E86512] hover:underline shrink-0"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
                       {musicRelaxLevel > 0 && (
                         <div className="text-[11px] text-[#616161]">Showing relaxed results</div>
                       )}
                       {musicError && <div className="text-[11px] text-red-500">{musicError}</div>}
 
-                      {/* Music List - Voice Selection Style */}
-                      <div className="flex flex-col gap-[clamp(8px,1vh,12px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
+                      {/* Music List - Compact list items for thinner rows */}
+                      <div className="flex flex-col gap-[clamp(6px,0.8vh,10px)] w-full flex-1 min-h-0 overflow-y-auto pr-1">
                         {musicLoading && (
                           <div className="flex items-center justify-center py-6">
                             <Loader2 className="w-5 h-5 animate-spin text-[#E86512]" />
@@ -3144,21 +3145,21 @@ function WorkspacePageContent() {
                                 void persistBackgroundMusic(selected);
                                 showToast('Background music selected', 'success');
                               }}
-                              className={`w-full flex items-center justify-between p-3 rounded-lg border-2 transition-all duration-200 cursor-pointer ${
+                              className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md border transition-all duration-200 cursor-pointer ${
                                 isSelected
-                                  ? 'border-[#E86512] bg-[#E86512]/10 shadow-md ring-2 ring-[#E86512]/20'
+                                  ? 'border-[#E86512] bg-[#E86512]/10 shadow-sm'
                                   : 'border-[#E0E0E0] hover:bg-[#FFF5F0] hover:border-[#E86512]/50'
                               }`}
                             >
-                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
                                 <div className="flex flex-col flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-[#212121] truncate">{item.title}</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs font-medium text-[#212121] truncate">{item.title}</span>
                                     {isSelected && (
-                                      <Check className="w-4 h-4 text-[#E86512] shrink-0" />
+                                      <Check className="w-3 h-3 text-[#E86512] shrink-0" />
                                     )}
                                   </div>
-                                  <span className="text-xs text-[#616161] truncate">
+                                  <span className="text-[10px] text-[#616161] truncate">
                                     {item.artistName || 'Unknown artist'} {item.time ? `• ${item.time}` : ''}
                                   </span>
                                 </div>
@@ -3171,7 +3172,7 @@ function WorkspacePageContent() {
                                   void handleMusicPreview(item, isPlaying);
                                 }}
                                 disabled={isLoadingPreview}
-                                className={`ml-3 p-2 rounded-full transition-all duration-200 shrink-0 ${
+                                className={`ml-2 p-1.5 rounded-full transition-all duration-200 shrink-0 ${
                                   isPlaying
                                     ? 'bg-[#E86512] text-white hover:bg-[#D55A10]'
                                     : isLoadingPreview
@@ -3181,11 +3182,11 @@ function WorkspacePageContent() {
                                 title={isLoadingPreview ? 'Loading preview...' : isPlaying ? 'Pause' : 'Play preview'}
                               >
                                 {isLoadingPreview ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                  <Loader2 className="w-3 h-3 animate-spin" />
                                 ) : isPlaying ? (
-                                  <Pause className="w-4 h-4" />
+                                  <Pause className="w-3 h-3" />
                                 ) : (
-                                  <Play className="w-4 h-4 fill-current" />
+                                  <Play className="w-3 h-3 fill-current" />
                                 )}
                               </button>
                             </div>

@@ -637,14 +637,13 @@ export class VideoCompositorProvider {
           console.log(`[VideoCompositor] ✅ Background removed successfully in ${elapsed}s`);
           console.log(`[VideoCompositor] ========== BACKGROUND REMOVAL END ==========`);
           
-          // Return the WebM path if it exists, otherwise return a reference to PNG dir
-          if (hasWebm) {
-            console.log(`[VideoCompositor] Returning WebM path: ${webmPath}`);
-            resolve(webmPath);
-          } else {
-            // Return the PNG directory path - caller needs to handle this
-            console.log(`[VideoCompositor] Returning PNG directory path: ${pngDir}`);
+          // Prefer PNG sequence over WebM — VP9 alpha WebM decoding is fragile on some FFmpeg builds
+          if (hasPngDir) {
+            console.log(`[VideoCompositor] Returning PNG directory path (preferred): ${pngDir}`);
             resolve(pngDir);
+          } else if (hasWebm) {
+            console.log(`[VideoCompositor] Returning WebM path (fallback): ${webmPath}`);
+            resolve(webmPath);
           }
         } else {
           const errorMsg = stderr || stdout || `Process exited with code ${code}`;
@@ -937,12 +936,31 @@ export class VideoCompositorProvider {
         }
       }
     } else if (avatarVideoPath.endsWith('.webm')) {
-      // Input is WebM - check if it has alpha channel (already processed)
-      const hasAlpha = await this.hasAlphaChannel(avatarVideoPath);
-      if (hasAlpha) {
-        console.log(`[VideoCompositor] Input is WebM with alpha channel (already processed): ${avatarVideoPath}`);
+      // Prefer PNG sequence over WebM when both exist (more reliable alpha handling)
+      const pngDir = avatarVideoPath.replace('.webm', '_frames');
+      if (fs.existsSync(pngDir) && fs.statSync(pngDir).isDirectory()) {
+        console.log(`[VideoCompositor] Preferring PNG sequence over WebM for reliability: ${pngDir}`);
+        usePngSequence = true;
+        pngSequenceDir = pngDir;
         isAlreadyProcessed = true;
-        processedAvatarPath = avatarVideoPath;
+
+        const metadataPath = pngDir.replace(/_frames$/, '_metadata.json');
+        if (fs.existsSync(metadataPath)) {
+          try {
+            pngMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+            console.log(`[VideoCompositor] PNG metadata: ${JSON.stringify(pngMetadata)}`);
+          } catch (e) {
+            console.warn(`[VideoCompositor] Could not read PNG metadata: ${e}`);
+          }
+        }
+      } else {
+        // Input is WebM - check if it has alpha channel (already processed)
+        const hasAlpha = await this.hasAlphaChannel(avatarVideoPath);
+        if (hasAlpha) {
+          console.log(`[VideoCompositor] Input is WebM with alpha channel (already processed): ${avatarVideoPath}`);
+          isAlreadyProcessed = true;
+          processedAvatarPath = avatarVideoPath;
+        }
       }
     }
 

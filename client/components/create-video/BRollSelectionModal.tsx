@@ -242,7 +242,7 @@ export default function BRollSelectionModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50">
       <div className="bg-white rounded-[20px] w-[calc(100vw-2rem)] max-w-[640px] max-h-[80vh] flex flex-col overflow-hidden shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
@@ -342,17 +342,35 @@ export default function BRollSelectionModal({
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         handleSearch();
+                      } else if (e.key === 'Escape' && defaultSearchTerm.trim()) {
+                        e.preventDefault();
+                        setSearchTerm(defaultSearchTerm);
+                        handleSearch(1, defaultSearchTerm);
                       }
                     }}
-                    placeholder="Search stock media..."
+                    placeholder={defaultSearchTerm ? `Search or press Esc to reset to "${defaultSearchTerm}"` : "Search stock media..."}
                     className="flex-1 bg-transparent outline-none border-none font-heading text-[0.875rem] leading-5 text-[#616161] placeholder:text-[#9E9E9E] caret-[#E86412]"
                   />
+                  {/* Clear/Reset button - shows when searchTerm differs from default */}
+                  {searchTerm && searchTerm !== defaultSearchTerm && defaultSearchTerm.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchTerm(defaultSearchTerm);
+                        handleSearch(1, defaultSearchTerm);
+                      }}
+                      aria-label="Reset to default search"
+                      className="mr-2 text-xs text-[#E86412] hover:underline"
+                    >
+                      Reset
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => handleSearch()}
                     disabled={isSearching || !searchTerm.trim()}
                     aria-label="Search stock media"
-                    className="ml-3 w-6 h-6 rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="ml-1 w-6 h-6 rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
