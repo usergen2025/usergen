@@ -500,6 +500,7 @@ export class AvatarsController {
       style?: string;
       avatarVisualStylePreset?: string | null;
       script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+      language?: 'english' | 'hindi' | 'hinglish';
     },
     @Request() req: any,
   ) {
@@ -525,6 +526,7 @@ export class AvatarsController {
       style: body.style,
       avatarVisualStylePreset: body.avatarVisualStylePreset,
       script: body.script,
+      language: body.language,
     });
   }
 

@@ -7,6 +7,10 @@ import * as jwt from 'jsonwebtoken';
 import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
 import { httpImageToOpenAIDataUrl } from '../common/openai/openai-vision-image.util';
 import { extractAssistantText, formatCompletionDiagnostics } from '../common/openai/openai-completion.util';
+import {
+  GroundedFactsResult,
+  ScriptWebSearchService,
+} from './script-web-search.service';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -44,6 +48,8 @@ export interface VideoScriptGenerationRequest {
   avatarId?: string; // ID of the selected avatar (if any)
   analyzedAssets?: VideoScriptAnalyzedAsset[];
   urlContentContext?: string; // Extracted content from URL assets for script context
+  /** When true, run web search even if auto-detection would skip. */
+  useLiveWebSearch?: boolean;
 }
 
 export interface VideoScriptGenerationResponse {
@@ -143,6 +149,7 @@ export class ScriptsService {
   constructor(
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
+    private readonly scriptWebSearchService: ScriptWebSearchService,
   ) {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     const openAiBaseUrl = this.configService.get<string>('OPENAI_BASE_URL');
@@ -187,9 +194,14 @@ export class ScriptsService {
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     model: string,
     useVisionAPI: boolean,
-    maxRetries = 5
+    maxRetries = 5,
+    temperature?: number,
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     let lastError: any;
+    const temp =
+      typeof temperature === 'number'
+        ? temperature
+        : Number(this.configService.get<string>('AI_TEMPERATURE') || 0.7);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -197,7 +209,7 @@ export class ScriptsService {
           model: model,
           messages: messages,
           response_format: { type: 'json_object' },
-          temperature: 0.7,
+          temperature: temp,
           max_tokens: useVisionAPI ? 8000 : 6000,
         });
 
@@ -257,12 +269,19 @@ export class ScriptsService {
     model: string,
     useVisionAPI: boolean,
     logLabel: string,
+    temperature?: number,
   ): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; text: string }> {
     const maxEmptyRetries = 3;
     let lastCompletion: OpenAI.Chat.Completions.ChatCompletion | undefined;
 
     for (let emptyAttempt = 1; emptyAttempt <= maxEmptyRetries; emptyAttempt++) {
-      const completion = await this.callOpenAIWithRetry(messages, model, useVisionAPI, 5);
+      const completion = await this.callOpenAIWithRetry(
+        messages,
+        model,
+        useVisionAPI,
+        5,
+        temperature,
+      );
       lastCompletion = completion;
 
       const finishReason = completion.choices?.[0]?.finish_reason;
@@ -332,6 +351,32 @@ CRITICAL LANGUAGE (OVERRIDES ANY CONFLICTING INSTRUCTIONS FOR DIALOGUE):
 - Every "voiceover" string must be natural, conversational English.`;
   }
 
+  private buildGroundedFactsUserBlock(
+    groundedFactsContext?: string,
+    opts?: { searchAttemptedButEmpty?: boolean },
+  ): string {
+    if (groundedFactsContext?.trim()) {
+      return `
+
+GROUNDED FACTS FROM WEB SEARCH (MANDATORY FOR FACTUAL CLAIMS):
+${groundedFactsContext.trim()}
+
+RULES:
+- Use ONLY these facts for numbers, scores, dates, names, statistics, and specific claims.
+- Do NOT invent or update facts from training data when this block is present.
+- If a requested fact is missing above, the voiceover must say information is unavailable or speak in general terms without fake specifics.
+- Optionally include top-level JSON "fact_sources": [{ "claim": "...", "source_url": "..." }] when citing specific facts.`;
+    }
+    if (opts?.searchAttemptedButEmpty) {
+      return `
+
+FACTUAL ACCURACY (web search returned no reliable facts):
+- Do NOT invent specific statistics, scores, dates, or names for current events.
+- Use general commentary only, or state that specific data could not be verified.`;
+    }
+    return '';
+  }
+
   private buildVideoScriptRichUserText(
     request: VideoScriptGenerationRequest,
     analyzedAssets: VideoScriptAnalyzedAsset[],
@@ -340,6 +385,8 @@ CRITICAL LANGUAGE (OVERRIDES ANY CONFLICTING INSTRUCTIONS FOR DIALOGUE):
     expectedScenes: { min: number; max: number; target: number },
     hasAnalyzedAssets: boolean,
     language: 'english' | 'hindi' | 'hinglish',
+    groundedFactsContext?: string,
+    searchAttemptedButEmpty?: boolean,
   ): string {
     let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
 
@@ -383,6 +430,10 @@ CRITICAL DURATION REQUIREMENTS:
       }
     }
 
+    textPrompt += this.buildGroundedFactsUserBlock(
+      groundedFactsContext,
+      { searchAttemptedButEmpty },
+    );
     textPrompt += this.buildCriticalLanguageUserBlock(language);
     textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
     return textPrompt;
@@ -396,6 +447,8 @@ CRITICAL DURATION REQUIREMENTS:
     expectedScenes: { min: number; max: number; target: number },
     opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean },
     language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
+    groundedFactsContext?: string,
+    searchAttemptedButEmpty?: boolean,
   ): Promise<OpenAI.Chat.Completions.ChatCompletionUserMessageParam> {
     const list = analyzedAssets ?? [];
     const hasAnalyzedAssets = list.length > 0;
@@ -418,6 +471,8 @@ CRITICAL DURATION REQUIREMENTS:
         expectedScenes,
         hasAnalyzedAssets,
         language,
+        groundedFactsContext,
+        searchAttemptedButEmpty,
       );
       content.push({ type: 'text', text: textPrompt });
 
@@ -462,6 +517,8 @@ CRITICAL DURATION REQUIREMENTS:
         expectedScenes,
         hasAnalyzedAssets,
         language,
+        groundedFactsContext,
+        searchAttemptedButEmpty,
       );
       if (opts.textOnlyRetryNote) {
         text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
@@ -471,17 +528,17 @@ CRITICAL DURATION REQUIREMENTS:
 
     return {
       role: 'user',
-      content: `Create a video script for the following topic/idea: "${request.userPrompt}".
-
-CRITICAL DURATION REQUIREMENTS:
-- Total video duration: ${duration} (${durationSeconds} seconds)
-- You MUST generate exactly ${expectedScenes.target} scenes (acceptable range: ${expectedScenes.min}-${expectedScenes.max} scenes)
-- Each scene should be approximately ${Math.round(durationSeconds / expectedScenes.target)} seconds long
-- The total of all scene durations MUST equal ${durationSeconds} seconds
-- DO NOT generate fewer scenes than required - this is a strict requirement
-${this.buildCriticalLanguageUserBlock(language)}
-
-Return the response as a JSON object.`,
+      content: this.buildVideoScriptRichUserText(
+        request,
+        list,
+        duration,
+        durationSeconds,
+        expectedScenes,
+        hasAnalyzedAssets,
+        language,
+        groundedFactsContext,
+        searchAttemptedButEmpty,
+      ),
     };
   }
 
@@ -597,6 +654,24 @@ Return the response as a JSON object.`,
         a.url && (a.url.startsWith('http://') || a.url.startsWith('https://'))
       );
 
+      let webSearchMeta: GroundedFactsResult | null = null;
+      let groundedFactsContext: string | undefined;
+      let searchAttemptedButEmpty = false;
+      if (this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
+        webSearchMeta = await this.scriptWebSearchService.fetchGroundedFacts(request.userPrompt, {
+          force: request.useLiveWebSearch,
+        });
+        if (webSearchMeta?.summary) {
+          groundedFactsContext = webSearchMeta.summary;
+        } else {
+          searchAttemptedButEmpty = true;
+        }
+      }
+
+      const factualTemperature = groundedFactsContext
+        ? Number(this.configService.get<string>('SCRIPT_TEMPERATURE_FACTUAL') || 0.3)
+        : undefined;
+
       const textModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
       const buildMessages = async (attachVision: boolean, textOnlyRetryNote?: boolean) => {
         const userMsg = await this.buildVideoScriptUserMessage(
@@ -607,6 +682,8 @@ Return the response as a JSON object.`,
           expectedScenes,
           { attachVisionImages: attachVision, textOnlyRetryNote },
           language,
+          groundedFactsContext,
+          searchAttemptedButEmpty,
         );
         return [
           { role: 'system' as const, content: systemPrompt },
@@ -627,6 +704,7 @@ Return the response as a JSON object.`,
           model,
           visionFlag,
           'generateVideoScript',
+          factualTemperature,
         );
         completion = first.completion;
         responseContent = first.text;
@@ -641,6 +719,7 @@ Return the response as a JSON object.`,
             model,
             visionFlag,
             'generateVideoScript',
+            factualTemperature,
           );
           completion = second.completion;
           responseContent = second.text;
@@ -675,6 +754,25 @@ Return the response as a JSON object.`,
       if (!validation.valid) {
         this.logger.warn(`Prompt consistency issues detected: ${validation.issues.join(', ')}`, 'ScriptsService');
         // Log but don't fail - normalization should have fixed most issues
+      }
+
+      if (webSearchMeta?.summary) {
+        scriptData.generation_metadata = {
+          ...(scriptData.generation_metadata && typeof scriptData.generation_metadata === 'object'
+            ? scriptData.generation_metadata
+            : {}),
+          web_search_used: true,
+          web_search_at: webSearchMeta.searchedAt,
+          fact_sources: webSearchMeta.sources,
+        };
+      } else if (searchAttemptedButEmpty && this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
+        scriptData.generation_metadata = {
+          ...(scriptData.generation_metadata && typeof scriptData.generation_metadata === 'object'
+            ? scriptData.generation_metadata
+            : {}),
+          web_search_used: false,
+          web_search_attempted: true,
+        };
       }
 
       // Format script for display
@@ -754,14 +852,37 @@ Return the response as a JSON object.`,
         userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
       }
       
-      messages.push({ role: 'user', content: userRequest });
+      let groundedFactsContext: string | undefined;
+      let searchAttemptedButEmpty = false;
+      if (
+        request.operation === 'regenerate' &&
+        this.scriptWebSearchService.shouldSearch(request.originalUserPrompt)
+      ) {
+        const webMeta = await this.scriptWebSearchService.fetchGroundedFacts(
+          request.originalUserPrompt,
+        );
+        if (webMeta?.summary) {
+          groundedFactsContext = webMeta.summary;
+        } else {
+          searchAttemptedButEmpty = true;
+        }
+      }
+
+      const groundedBlock = this.buildGroundedFactsUserBlock(groundedFactsContext, {
+        searchAttemptedButEmpty,
+      });
+      messages.push({ role: 'user', content: userRequest + groundedBlock });
 
       const sceneModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
+      const factualTemperature = groundedFactsContext
+        ? Number(this.configService.get<string>('SCRIPT_TEMPERATURE_FACTUAL') || 0.3)
+        : undefined;
       const { completion, text: responseContent } = await this.completeChatWithJsonContent(
         messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         sceneModel,
         false,
         'regenerateOrEditScene',
+        factualTemperature,
       );
 
       let responseData: any;
@@ -1264,8 +1385,9 @@ Your JSON output MUST include at the top level: "avatar_image_prompt": "<full pr
 - This is a single string: a complete, ready-to-use prompt for the image model (no structured fields or enums).
 - Generate it entirely from the video topic, style, and visual_style_guide. Do not use placeholders.
 - Style-specific for this video: ${styleGuide}
-- Rules: No scenic or decorative backgrounds (no mountains, traffic, etc.). Neutral, theme-consistent background. Lighting must align with visual_style_guide so avatar and b-roll feel like one video.
-- Example format: "avatar_image_prompt": "Front-facing waist-up portrait, person looking directly at camera, neutral gray background, soft even lighting, professional video look" (for HALF_N_HALF) or "Front-facing close-up, person at streaming desk looking straight at camera, neutral dark gray background, soft lighting" (for ALTERNATE).
+- CRITICAL - AVATAR BACKGROUND vs B-ROLL: visual_style_guide mood and lighting apply to b-roll and overall video atmosphere. The avatar_image_prompt MUST describe a neutral or indoor studio background only (gray backdrop, podcast studio, presentation stage). NEVER put streets, markets, crowds, traffic, or outdoor city scenes in avatar_image_prompt — those belong in b-roll scenes only.
+- Rules: No scenic or decorative backgrounds in avatar_image_prompt (no mountains, traffic, markets, streets). Neutral studio or soft gradient background. Lighting and color palette from visual_style_guide may be referenced for mood only.
+- Example format: "avatar_image_prompt": "Front-facing waist-up portrait, person looking directly at camera, neutral gray studio background, soft even lighting, professional video look" (for HALF_N_HALF) or "Front-facing close-up, person at streaming desk looking straight at camera, neutral dark gray studio background, soft lighting" (for ALTERNATE).
 `;
     }
 

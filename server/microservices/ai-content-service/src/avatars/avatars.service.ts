@@ -56,7 +56,7 @@ function normalizeStyleToBackend(style?: string): string | undefined {
   return styleMap[style.toLowerCase()] || style.toUpperCase().replace(/-/g, '_');
 }
 
-/** Preset pose/framing prompts only (no lighting/background). Theme comes from script visual_style_guide. */
+/** Preset pose/framing prompts only (no lighting/background). */
 const PRESET_POSE_PROMPTS: Record<string, string> = {
   'front-facing': 'Front-facing waist-up portrait, person looking directly at camera, professional video look, simple talking-to-camera style',
   'wide-angle-front': 'Wide-angle front shot, natural creator look, person facing camera, casual professional aesthetic',
@@ -64,6 +64,27 @@ const PRESET_POSE_PROMPTS: Record<string, string> = {
   'side-camera-angle': 'Person at slight angle to camera, cinematic conversational feel',
   'podcast-setup': 'Person seated at desk with microphone and headphones, studio look',
 };
+
+/** Fixed indoor/studio backgrounds per preset — never b-roll locations. */
+const PRESET_BACKGROUND_PROMPTS: Record<string, string> = {
+  'front-facing': 'neutral soft gray studio backdrop, indoor, no outdoor elements',
+  'wide-angle-front': 'clean minimal creator studio background, soft gradient wall',
+  'standing-with-mic':
+    'indoor presentation stage or neutral studio wall, professional microphone visible, no audience, no street, no windows to city',
+  'side-camera-angle': 'neutral indoor studio, shallow depth, plain backdrop',
+  'podcast-setup':
+    'indoor podcast studio, desk, broadcast microphone, headphones, acoustic panels or bookshelf blur, no outdoor scenery, no market, no traffic',
+};
+
+const AVATAR_PLATE_STUDIO_SUFFIX =
+  ', avatar plate background must be studio or indoor only, no outdoor street scene, no crowd';
+
+const INDIAN_APPEARANCE_MENTIONED =
+  /\b(indian|south\s*asian|desi|brown\s*skin|hindi|punjabi|bengali|tamil|telugu|marathi|gujarati|north\s*indian|south\s*indian)\b/i;
+
+/** Strip location-heavy mood phrases from style guide before using on avatar lighting. */
+const LOCATION_MOOD_PATTERN =
+  /\b(street|market|outdoor|cityscape|traffic|festival|crowd|bustling|urban\s+street|indian\s+street|road|highway|village\s+lane)\b/gi;
 
 @Injectable()
 export class AvatarsService {
@@ -352,20 +373,130 @@ export class AvatarsService {
   }
 
   /**
-   * Extract theme (lighting, mood) from visual_style_guide for hybrid preset prompts.
+   * Lighting / palette / abstract mood only — for avatar image prompts (not b-roll locations).
    */
-  private formatThemeFromStyleGuide(visualStyleGuide: any): string {
+  private formatAvatarLightingFromStyleGuide(visualStyleGuide: any): string {
     if (!visualStyleGuide || typeof visualStyleGuide !== 'object') {
-      return 'soft even lighting, neutral background';
+      return 'soft even studio lighting';
     }
-    const lighting = visualStyleGuide.lighting || visualStyleGuide.Lighting || '';
-    const mood = visualStyleGuide.mood || visualStyleGuide.Mood || '';
     const parts: string[] = [];
+    const lighting = String(visualStyleGuide.lighting || visualStyleGuide.Lighting || '').trim();
+    const palette = String(
+      visualStyleGuide.color_palette || visualStyleGuide.colorPalette || '',
+    ).trim();
+    let mood = String(visualStyleGuide.mood || visualStyleGuide.Mood || '').trim();
+    if (mood) {
+      mood = mood.replace(LOCATION_MOOD_PATTERN, '').replace(/\s+/g, ' ').trim();
+    }
     if (lighting) parts.push(lighting);
-    else parts.push('soft even lighting');
-    if (mood) parts.push(`${mood} atmosphere`);
-    parts.push('theme-consistent background');
+    else parts.push('soft even studio lighting');
+    if (palette) parts.push(`color palette ${palette}`);
+    if (mood) parts.push(`${mood} mood`);
     return parts.join(', ');
+  }
+
+  private buildNamedPresetAvatarPrompt(
+    presetId: string,
+    visualStyleGuide: any,
+  ): string {
+    const pose = PRESET_POSE_PROMPTS[presetId] || PRESET_POSE_PROMPTS['front-facing'];
+    const background =
+      PRESET_BACKGROUND_PROMPTS[presetId] || PRESET_BACKGROUND_PROMPTS['front-facing'];
+    const lighting = this.formatAvatarLightingFromStyleGuide(visualStyleGuide);
+    return `${pose}, ${background}, ${lighting}, solid controlled background, no outdoor street scene, no crowd`;
+  }
+
+  /**
+   * Default Indian appearance when user description does not specify ethnicity.
+   */
+  private resolveIndianAppearanceSuffix(
+    appearancePrompt: string,
+    opts?: { language?: string },
+  ): string {
+    const mode = (this.configService.get<string>('DEFAULT_AVATAR_ETHNICITY') || 'indian')
+      .trim()
+      .toLowerCase();
+    if (mode === 'off') return '';
+    if (INDIAN_APPEARANCE_MENTIONED.test(appearancePrompt)) return '';
+
+    const lang = (opts?.language || '').toLowerCase();
+    const langImpliesIndian = lang === 'hindi' || lang === 'hinglish';
+    if (mode === 'auto' && !langImpliesIndian) return '';
+
+    return ', South Asian Indian appearance, natural Indian facial features and skin tone';
+  }
+
+  private appendAvatarStyleSuffixes(
+    effectivePrompt: string,
+    style: string | undefined,
+    useBottomHalfFraming: boolean,
+  ): string {
+    let prompt = effectivePrompt;
+    const norm = normalizeStyleToBackend(style);
+    if (norm !== 'ANIMATED_AVATAR') {
+      prompt =
+        'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' +
+        prompt;
+    }
+    if (norm === 'AVATAR_CUTOUT') {
+      prompt +=
+        ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
+    }
+    if (useBottomHalfFraming && norm !== 'AVATAR_CUTOUT') {
+      prompt +=
+        ' Person faces the camera directly, front-facing, looking straight ahead.' +
+        AVATAR_PLATE_STUDIO_SUFFIX;
+    }
+    return prompt;
+  }
+
+  /**
+   * Build BytePlus image-variant prompt from script + visual preset (project/preview paths).
+   */
+  private buildAvatarVariantEffectivePrompt(params: {
+    style?: string;
+    avatarVisualStylePreset?: string | null;
+    script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    useBottomHalfFraming: boolean;
+    sceneHint?: string;
+  }): string {
+    const { style, avatarVisualStylePreset, script, useBottomHalfFraming, sceneHint = '' } = params;
+    const avatarImagePrompt = script?.avatar_image_prompt;
+    const visualGuide = script?.visual_style_guide;
+    let effectivePrompt: string;
+
+    if (style === 'ANIMATED_AVATAR') {
+      if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+        throw new BadRequestException(
+          'Script must include avatar_image_prompt (string) for Animated Avatar style. Regenerate the script.',
+        );
+      }
+      const presetForPose =
+        avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+          ? avatarVisualStylePreset
+          : 'front-facing';
+      effectivePrompt = `${avatarImagePrompt}, ${this.buildNamedPresetAvatarPrompt(presetForPose, visualGuide)}`;
+    } else if (
+      avatarVisualStylePreset === 'random' ||
+      !avatarVisualStylePreset ||
+      !PRESET_POSE_PROMPTS[avatarVisualStylePreset]
+    ) {
+      if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
+        throw new BadRequestException(
+          'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected, or choose a visual style preset.',
+        );
+      }
+      const lighting = this.formatAvatarLightingFromStyleGuide(visualGuide);
+      const frontFacingSuffix = useBottomHalfFraming
+        ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+        : '';
+      effectivePrompt = `${avatarImagePrompt}, ${lighting}${frontFacingSuffix}${sceneHint}`;
+    } else {
+      effectivePrompt =
+        this.buildNamedPresetAvatarPrompt(avatarVisualStylePreset, visualGuide) + sceneHint;
+    }
+
+    return this.appendAvatarStyleSuffixes(effectivePrompt, style, useBottomHalfFraming);
   }
 
   private buildAvatarProductPreviewSceneHint(script: any, previewSceneIndex: number): string {
@@ -465,11 +596,16 @@ export class AvatarsService {
     avatarVisualStylePreset?: string | null;
     script?: { avatar_image_prompt?: string; visual_style_guide?: any };
     videoStyle?: string;
+    language?: string;
   }): string {
-    const { appearancePrompt, avatarVisualStylePreset, script, videoStyle } = params;
-    let base = `Professional portrait photograph of ${appearancePrompt}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
+    const { appearancePrompt, avatarVisualStylePreset, script, videoStyle, language } = params;
+    const appearance =
+      appearancePrompt.trim() +
+      this.resolveIndianAppearanceSuffix(appearancePrompt, { language });
+    let base = `Professional portrait photograph of ${appearance}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
 
     const preset = avatarVisualStylePreset || 'original';
+    const visualGuide = script?.visual_style_guide;
     if (preset === 'original') {
       // Keep base portrait; video framing handled in preview pipeline
     } else if (preset === 'random') {
@@ -478,27 +614,17 @@ export class AvatarsService {
           ? script.avatar_image_prompt.trim()
           : '';
       if (fromScript) {
-        base = `${base} ${fromScript}`;
+        base = `${base} ${fromScript}, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
       } else {
-        base = `${base} Natural varied professional framing and composition.`;
+        base = `${base} Natural varied professional framing and composition, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
       }
     } else if (PRESET_POSE_PROMPTS[preset]) {
-      const presetPose = PRESET_POSE_PROMPTS[preset];
-      const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-      base = `${base} ${presetPose}, ${theme}.`;
+      base = `${base} ${this.buildNamedPresetAvatarPrompt(preset, visualGuide)}`;
     }
 
     const norm = normalizeStyleToBackend(videoStyle);
-    if (norm === 'AVATAR_CUTOUT') {
-      base +=
-        ' solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
-    }
-    if (norm === 'HALF_N_HALF' || norm === 'ALTERNATE') {
-      base +=
-        ' Person faces the camera directly, front-facing, looking straight ahead.';
-    }
-
-    return base;
+    const useBottomHalfFraming = norm === 'HALF_N_HALF' || norm === 'ALTERNATE';
+    return this.appendAvatarStyleSuffixes(base, videoStyle, useBottomHalfFraming);
   }
 
   /**
@@ -587,54 +713,12 @@ export class AvatarsService {
           .toBuffer();
       }
     } else {
-      // Random or named preset: need effective prompt and BytePlus
-      let effectivePrompt: string;
-      const avatarImagePrompt = script?.avatar_image_prompt;
-
-      if (style === 'ANIMATED_AVATAR') {
-        // One-step 3D animated: combine script (3D animated descriptor) + preset pose + theme
-        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
-          throw new BadRequestException(
-            'Script must include avatar_image_prompt (string) for Animated Avatar style. Regenerate the script.',
-          );
-        }
-        const presetForPose = avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
-          ? avatarVisualStylePreset
-          : 'front-facing';
-        const presetPose = PRESET_POSE_PROMPTS[presetForPose];
-        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-        effectivePrompt = `${avatarImagePrompt}, ${presetPose}, ${theme}`;
-      } else if (
-        avatarVisualStylePreset === 'random' ||
-        !avatarVisualStylePreset ||
-        !PRESET_POSE_PROMPTS[avatarVisualStylePreset]
-      ) {
-        // Random or null/legacy: use script avatar_image_prompt
-        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
-          throw new BadRequestException(
-            'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected, or choose a visual style preset.',
-          );
-        }
-        const frontFacingSuffix = useBottomHalfFraming
-          ? ' Person faces the camera directly, front-facing, looking straight ahead.'
-          : '';
-        effectivePrompt = avatarImagePrompt + frontFacingSuffix;
-      } else {
-        // Named preset: hybrid (preset pose + script theme)
-        const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
-        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-        effectivePrompt = `${presetPose}, ${theme}`;
-      }
-
-      // Non-animated styles: enforce photorealistic output; only ANIMATED_AVATAR gets 3D/animated treatment
-      if (style !== 'ANIMATED_AVATAR') {
-        effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
-      }
-
-      // For AVATAR_CUTOUT style, request a plain/simple background to make background removal easier
-      if (style === 'AVATAR_CUTOUT') {
-        effectivePrompt += ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
-      }
+      const effectivePrompt = this.buildAvatarVariantEffectivePrompt({
+        style,
+        avatarVisualStylePreset,
+        script,
+        useBottomHalfFraming,
+      });
 
       const imageBase64 = imageBuffer.toString('base64');
       const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
@@ -799,58 +883,17 @@ export class AvatarsService {
           .toBuffer();
       }
     } else {
-      let effectivePrompt: string;
-      const avatarImagePrompt = script?.avatar_image_prompt;
-
-      if (style === 'ANIMATED_AVATAR') {
-        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
-          throw new BadRequestException(
-            'Script must include avatar_image_prompt (string) for Animated Avatar style. Regenerate the script.',
-          );
-        }
-        const presetForPose = avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
-          ? avatarVisualStylePreset
-          : 'front-facing';
-        const presetPose = PRESET_POSE_PROMPTS[presetForPose];
-        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-        effectivePrompt = `${avatarImagePrompt}, ${presetPose}, ${theme}`;
-      } else if (
-        avatarVisualStylePreset === 'random' ||
-        !avatarVisualStylePreset ||
-        !PRESET_POSE_PROMPTS[avatarVisualStylePreset]
-      ) {
-        if (!avatarImagePrompt || typeof avatarImagePrompt !== 'string') {
-          throw new BadRequestException(
-            'Script must include avatar_image_prompt (string). Regenerate the script with avatar selected, or choose a visual style preset.',
-          );
-        }
-        const frontFacingSuffix = useBottomHalfFraming
-          ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+      const sceneHint =
+        style === 'AVATAR_PRODUCT'
+          ? this.buildAvatarProductPreviewSceneHint(script, previewSceneIndex ?? 0)
           : '';
-        const sceneHint =
-          style === 'AVATAR_PRODUCT'
-            ? this.buildAvatarProductPreviewSceneHint(script, previewSceneIndex ?? 0)
-            : '';
-        effectivePrompt = avatarImagePrompt + frontFacingSuffix + sceneHint;
-      } else {
-        const presetPose = PRESET_POSE_PROMPTS[avatarVisualStylePreset];
-        const theme = this.formatThemeFromStyleGuide(script?.visual_style_guide);
-        const sceneHint =
-          style === 'AVATAR_PRODUCT'
-            ? this.buildAvatarProductPreviewSceneHint(script, previewSceneIndex ?? 0)
-            : '';
-        effectivePrompt = `${presetPose}, ${theme}${sceneHint}`;
-      }
-
-      // Non-animated styles: enforce photorealistic output; only ANIMATED_AVATAR gets 3D/animated treatment
-      if (style !== 'ANIMATED_AVATAR') {
-        effectivePrompt = 'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' + effectivePrompt;
-      }
-
-      // For AVATAR_CUTOUT style, request a plain/simple background to make background removal easier
-      if (style === 'AVATAR_CUTOUT') {
-        effectivePrompt += ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
-      }
+      let effectivePrompt = this.buildAvatarVariantEffectivePrompt({
+        style,
+        avatarVisualStylePreset,
+        script,
+        useBottomHalfFraming,
+        sceneHint,
+      });
 
       if (style === 'AVATAR_PRODUCT' && productImageUrl?.trim()) {
         effectivePrompt +=
@@ -1051,6 +1094,7 @@ export class AvatarsService {
     style?: string;
     avatarVisualStylePreset?: string | null;
     script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<{
     success: boolean;
     avatarId?: string;
@@ -1059,7 +1103,7 @@ export class AvatarsService {
     originalImageUrl?: string;
     error?: string;
   }> {
-    const { prompt, userId, projectId, style, avatarVisualStylePreset, script } = params;
+    const { prompt, userId, projectId, style, avatarVisualStylePreset, script, language } = params;
 
     this.logger.log(
       `Generating avatar from text for user ${userId}, preset: ${avatarVisualStylePreset ?? 'default'}, prompt: ${prompt.substring(0, 50)}...`,
@@ -1072,6 +1116,7 @@ export class AvatarsService {
         avatarVisualStylePreset,
         script,
         videoStyle: style,
+        language,
       });
 
       const backendStyle = normalizeStyleToBackend(style);

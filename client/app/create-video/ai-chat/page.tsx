@@ -5145,6 +5145,7 @@ function AIChatPageContent() {
         style: selectedVideoStyle || undefined,
         avatarVisualStylePreset: selectedAvatarVisualStyle,
         script: scriptPayload,
+        language: selectedLanguage || undefined,
       });
 
       if (response.success && response.avatarId) {

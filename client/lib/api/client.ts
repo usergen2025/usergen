@@ -492,6 +492,7 @@ class ApiClient {
     style?: string;
     avatarVisualStylePreset?: string | null;
     script?: { avatar_image_prompt?: string; visual_style_guide?: unknown };
+    language?: 'english' | 'hindi' | 'hinglish';
   }): Promise<{
     success: boolean;
     avatarId?: string;
