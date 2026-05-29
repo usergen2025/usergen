@@ -2924,6 +2924,7 @@ export class RenderingService {
     fontSize: number;
     fontWeight: 'normal' | 'bold';
     fontStyle: 'normal' | 'italic';
+    textDecoration: 'none' | 'underline';
     textColor: string;
     backgroundColor: string;
     borderColor: string;
@@ -2986,6 +2987,13 @@ export class RenderingService {
       fontStyle = 'italic';
     }
 
+    let textDecoration: 'none' | 'underline' = 'none';
+    if (nested.textDecoration === 'underline' || nested.textDecoration === 'none') {
+      textDecoration = nested.textDecoration;
+    } else if (cs.textDecoration === 'underline') {
+      textDecoration = 'underline';
+    }
+
     const textColor = pickStr(nested.textColor, cs.textColor) ?? '#FFFFFF';
     const backgroundColor =
       pickStr(nested.backgroundColor, cs.backgroundColor) ?? 'rgba(0,0,0,0.5)';
@@ -3002,11 +3010,39 @@ export class RenderingService {
       fontSize,
       fontWeight,
       fontStyle,
+      textDecoration,
       textColor,
       backgroundColor,
       borderColor,
       borderWidth,
     };
+  }
+
+  private async setCaptionRendererMetadata(
+    projectId: string,
+    captionRenderer: 'html' | 'ass' | 'failed',
+  ): Promise<void> {
+    try {
+      const project = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+      });
+      if (!project) return;
+      const metadata = ((project.metadata as Record<string, unknown>) || {}) as Record<string, unknown>;
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          metadata: {
+            ...metadata,
+            captionRenderer,
+            captionRendererAt: new Date().toISOString(),
+          } as any,
+        },
+      });
+    } catch (err: any) {
+      console.warn(
+        `[RenderingService] Could not persist captionRenderer metadata: ${err?.message || err}`,
+      );
+    }
   }
 
   /**
@@ -3144,6 +3180,7 @@ export class RenderingService {
     let posX = typeof gp.x === 'number' ? gp.x : 0.5;
     let posY = typeof gp.y === 'number' ? gp.y : 0.85;
     let widthScale = typeof gp.widthScale === 'number' ? gp.widthScale : 0.8;
+    let positionScale = typeof gp.scale === 'number' ? gp.scale : 0.1;
     if (posX > 1) {
       posX = posX / 100;
     }
@@ -3153,6 +3190,7 @@ export class RenderingService {
     posX = Math.max(0, Math.min(1, posX));
     posY = Math.max(0, Math.min(1, posY));
     widthScale = Math.max(0.3, Math.min(0.9, widthScale));
+    positionScale = Math.max(0.05, Math.min(1, positionScale));
 
     const resolved = this.resolveCaptionStyleForBurnIn(cap);
     let videoWidth = 1080;
@@ -3171,56 +3209,147 @@ export class RenderingService {
       fontSize,
       fontWeight: resolved.fontWeight,
       fontStyle: resolved.fontStyle,
+      textDecoration: resolved.textDecoration,
       textColor: resolved.textColor,
       backgroundColor: resolved.backgroundColor,
       borderColor: resolved.borderColor,
       borderWidth: resolved.borderWidth,
       position: { x: posX, y: posY },
       widthScale,
+      positionScale,
     };
 
     const captionedVideoPath = path.join(userDir, `final_captioned_${projectId}_${Date.now()}.mp4`);
     const useHtmlCaptionLayer = this.configService.get<string>('CAPTION_RENDERER_MODE') !== 'ass';
+    const assFallbackPolicy = (
+      this.configService.get<string>('CAPTION_ASS_FALLBACK') || 'allow'
+    ).trim().toLowerCase();
+    const useVp9Intermediate =
+      this.configService.get<string>('CAPTION_USE_VP9_INTERMEDIATE') === 'true';
+    const captionFps = Number(this.configService.get<string>('CAPTION_LAYER_FPS') || 12);
 
-    if (useHtmlCaptionLayer) {
+    let captionRenderer: 'html' | 'ass' | 'failed' = 'failed';
+
+    const cleanupFrameDir = (dir: string) => {
       try {
-        const durationSec = await this.videoCompositor.getVideoDuration(videoPath);
-        const captionLayerPath = path.join(userDir, `caption_layer_${projectId}_${Date.now()}.webm`);
-        await this.htmlCaptionLayerProvider.renderCaptionLayer({
+        if (dir && fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // no-op
+      }
+    };
+
+    try {
+      if (useHtmlCaptionLayer) {
+        try {
+          const durationSec = await this.videoCompositor.getVideoDuration(videoPath);
+
+          if (useVp9Intermediate) {
+            const captionLayerPath = path.join(
+              userDir,
+              `caption_layer_${projectId}_${Date.now()}.webm`,
+            );
+            await this.htmlCaptionLayerProvider.renderCaptionLayerAsWebm({
+              captions,
+              style,
+              width: videoWidth,
+              height: videoHeight,
+              durationSec,
+              outputPath: captionLayerPath,
+              fps: captionFps,
+            });
+            await this.videoCompositor.overlayCaptionLayerOnVideo(
+              videoPath,
+              captionLayerPath,
+              captionedVideoPath,
+            );
+            try {
+              if (fs.existsSync(captionLayerPath)) fs.unlinkSync(captionLayerPath);
+            } catch {
+              // no-op
+            }
+          } else {
+            const layerResult = await this.htmlCaptionLayerProvider.renderCaptionLayer({
+              captions,
+              style,
+              width: videoWidth,
+              height: videoHeight,
+              durationSec,
+              fps: captionFps,
+              outputDir: userDir,
+            });
+            await this.videoCompositor.overlayCaptionPngSequenceOnVideo(
+              videoPath,
+              layerResult.frameDir,
+              layerResult.fps,
+              captionedVideoPath,
+            );
+            cleanupFrameDir(layerResult.frameDir);
+          }
+          captionRenderer = 'html';
+        } catch (htmlError: any) {
+          if (assFallbackPolicy === 'deny') {
+            await this.setCaptionRendererMetadata(projectId, 'failed');
+            throw new Error(
+              `Caption rendering unavailable (Playwright/HTML): ${htmlError?.message || htmlError}`,
+            );
+          }
+          console.warn(
+            `[RenderingService] HTML caption layer failed, falling back to ASS burn-in: ${htmlError?.message || htmlError}`,
+          );
+          await this.videoCompositor.addCaptionsToVideo(
+            videoPath,
+            captionedVideoPath,
+            captions,
+            style,
+          );
+          captionRenderer = 'ass';
+        }
+      } else {
+        await this.videoCompositor.addCaptionsToVideo(
+          videoPath,
+          captionedVideoPath,
           captions,
           style,
-          width: videoWidth,
-          height: videoHeight,
-          durationSec,
-          outputPath: captionLayerPath,
-          fps: Number(this.configService.get<string>('CAPTION_LAYER_FPS') || 12),
-        });
-        await this.videoCompositor.overlayCaptionLayerOnVideo(
-          videoPath,
-          captionLayerPath,
-          captionedVideoPath,
+        );
+        captionRenderer = 'ass';
+      }
+
+      if (!fs.existsSync(captionedVideoPath)) {
+        await this.setCaptionRendererMetadata(projectId, 'failed');
+        return null;
+      }
+
+      const sourceDuration = await this.videoCompositor.getVideoDuration(videoPath);
+      const validation = await this.videoCompositor.validateVideoOutput(captionedVideoPath, {
+        sourcePath: videoPath,
+        expectedDurationSec: sourceDuration,
+      });
+
+      if (!validation.ok) {
+        console.error(
+          `[RenderingService] Caption output validation failed: ${validation.reason}. Keeping uncaptioned video.`,
         );
         try {
-          if (fs.existsSync(captionLayerPath)) fs.unlinkSync(captionLayerPath);
+          fs.unlinkSync(captionedVideoPath);
         } catch {
           // no-op
         }
-      } catch (htmlError: any) {
-        console.warn(
-          `[RenderingService] HTML caption layer failed, falling back to ASS burn-in: ${htmlError?.message || htmlError}`,
-        );
-        await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
+        await this.setCaptionRendererMetadata(projectId, 'failed');
+        if (assFallbackPolicy === 'deny' && captionRenderer === 'html') {
+          throw new Error(`Caption output validation failed: ${validation.reason}`);
+        }
+        return null;
       }
-    } else {
-      await this.videoCompositor.addCaptionsToVideo(videoPath, captionedVideoPath, captions, style);
-    }
 
-    if (fs.existsSync(captionedVideoPath)) {
-      console.log(`[RenderingService] ✅ Captions added successfully: ${captionedVideoPath}`);
+      await this.setCaptionRendererMetadata(projectId, captionRenderer);
+      console.log(
+        `[RenderingService] ✅ Captions added successfully (${captionRenderer}): ${captionedVideoPath}`,
+      );
       return captionedVideoPath;
+    } catch (err) {
+      await this.setCaptionRendererMetadata(projectId, 'failed');
+      throw err;
     }
-
-    return null;
   }
 
   private isBackgroundMusicMixEnabled(): boolean {

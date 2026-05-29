@@ -1,31 +1,109 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 type CaptionSegment = { text: string; startTime: number; endTime: number };
 
-type CaptionLayerStyle = {
+export type CaptionLayerStyle = {
   fontFamily: string;
   fontSize: number;
   fontWeight: 'normal' | 'bold';
   fontStyle: 'normal' | 'italic';
+  textDecoration?: 'none' | 'underline';
   textColor: string;
   backgroundColor: string;
   borderColor: string;
   borderWidth: number;
   position: { x: number; y: number };
   widthScale?: number;
+  positionScale?: number;
 };
+
+export type CaptionLayerRenderResult = {
+  frameDir: string;
+  fps: number;
+  frameCount: number;
+};
+
+const SAFETY_MARGIN = 4;
+
+/** Match DraggableResizableCaption top-left anchor math. */
+export function computeCaptionBoxPixels(params: {
+  containerWidth: number;
+  containerHeight: number;
+  positionX: number;
+  positionY: number;
+  widthScale: number;
+  positionScale: number;
+}): { left: number; top: number; width: number; minHeight: number } {
+  const { containerWidth, containerHeight, positionX, positionY } = params;
+  const widthScale = Math.max(0.3, Math.min(0.9, params.widthScale ?? 0.8));
+  const positionScale = Math.max(0.05, Math.min(1, params.positionScale ?? 0.1));
+
+  const captionWidth = containerWidth * widthScale;
+  const captionHeight = containerHeight * positionScale;
+
+  const maxPixelX = Math.max(0, containerWidth - captionWidth - SAFETY_MARGIN);
+  const maxPixelY = Math.max(0, containerHeight - captionHeight - SAFETY_MARGIN);
+
+  const clampedX = Math.max(0, Math.min(1, positionX));
+  const clampedY = Math.max(0, Math.min(1, positionY));
+
+  const rawPixelX = maxPixelX * clampedX;
+  const rawPixelY = maxPixelY * clampedY;
+  const left = Math.max(SAFETY_MARGIN / 2, Math.min(rawPixelX, maxPixelX));
+  const top = Math.max(0, Math.min(rawPixelY, maxPixelY));
+
+  return {
+    left: Math.round(left),
+    top: Math.round(top),
+    width: Math.round(captionWidth),
+    minHeight: Math.round(captionHeight),
+  };
+}
 
 @Injectable()
 export class HtmlCaptionLayerProvider {
+  constructor(private readonly configService: ConfigService) {}
+
   private checkFFmpeg(): void {
     try {
       execSync('ffmpeg -version', { stdio: 'ignore' });
     } catch {
       throw new Error('FFmpeg is not installed or not available in PATH.');
     }
+  }
+
+  private getFontsDirectory(): string | undefined {
+    const envDir = this.configService.get<string>('CAPTION_FONTS_DIR')?.trim();
+    if (envDir && fs.existsSync(envDir)) return path.resolve(envDir);
+    const bundled = path.join(process.cwd(), 'assets', 'fonts');
+    if (fs.existsSync(bundled)) return bundled;
+    return undefined;
+  }
+
+  private buildFontFaceCss(fontsDir: string | undefined): string {
+    if (!fontsDir) return '';
+    const boldPath = path.join(fontsDir, 'Inter-Bold.ttf');
+    const regularPath = path.join(fontsDir, 'Inter-Regular.ttf');
+    const variablePath = path.join(fontsDir, 'Inter.ttf');
+    const toFileUrl = (p: string) =>
+      fs.existsSync(p) ? `url('file://${p.replace(/\\/g, '/')}')` : null;
+
+    const boldUrl = toFileUrl(boldPath) || toFileUrl(variablePath);
+    const regularUrl = toFileUrl(regularPath) || toFileUrl(variablePath);
+    if (!boldUrl && !regularUrl) return '';
+
+    let css = '';
+    if (regularUrl) {
+      css += `@font-face { font-family: 'Inter'; src: ${regularUrl} format('truetype'); font-weight: 400; font-style: normal; }\n`;
+    }
+    if (boldUrl) {
+      css += `@font-face { font-family: 'Inter'; src: ${boldUrl} format('truetype'); font-weight: 700; font-style: normal; }\n`;
+    }
+    return css;
   }
 
   private captionAtTime(captions: CaptionSegment[], timeSec: number): string {
@@ -46,30 +124,47 @@ export class HtmlCaptionLayerProvider {
     return pw.chromium;
   }
 
+  /**
+   * Renders full-frame transparent PNGs (caption styled in-page). Caller overlays via FFmpeg PNG sequence.
+   */
   async renderCaptionLayer(params: {
     captions: CaptionSegment[];
     style: CaptionLayerStyle;
     width: number;
     height: number;
     durationSec: number;
-    outputPath: string;
     fps?: number;
-  }): Promise<string> {
+    outputDir?: string;
+  }): Promise<CaptionLayerRenderResult> {
     this.checkFFmpeg();
-    const { captions, style, width, height, durationSec, outputPath } = params;
+    const { captions, style, width, height, durationSec } = params;
     const fps = Math.max(8, Math.min(24, Math.round(params.fps ?? 12)));
 
     if (!captions.length || durationSec <= 0) {
       throw new Error('No caption timeline to render');
     }
 
-    const outputDir = path.dirname(outputPath);
-    fs.mkdirSync(outputDir, { recursive: true });
+    const baseDir =
+      params.outputDir ||
+      path.join(process.cwd(), 'uploads', 'caption_frames');
+    fs.mkdirSync(baseDir, { recursive: true });
     const frameDir = path.join(
-      outputDir,
+      baseDir,
       `caption_frames_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     );
     fs.mkdirSync(frameDir, { recursive: true });
+
+    const fontsDir = this.getFontsDirectory();
+    const fontFaceCss = this.buildFontFaceCss(fontsDir);
+
+    const box = computeCaptionBoxPixels({
+      containerWidth: width,
+      containerHeight: height,
+      positionX: style.position.x,
+      positionY: style.position.y,
+      widthScale: style.widthScale ?? 0.8,
+      positionScale: style.positionScale ?? 0.1,
+    });
 
     const chromium = await this.loadChromium();
     const browser = await chromium.launch({
@@ -89,6 +184,7 @@ export class HtmlCaptionLayerProvider {
 <head>
   <meta charset="utf-8" />
   <style>
+    ${fontFaceCss}
     html, body {
       margin: 0;
       padding: 0;
@@ -99,22 +195,21 @@ export class HtmlCaptionLayerProvider {
     }
     #caption {
       position: absolute;
-      left: 50%;
-      top: 85%;
-      transform: translate(-50%, -50%);
       display: inline-flex;
       align-items: center;
       justify-content: center;
       min-height: 1px;
-      padding: 10px 14px;
+      padding: 8px;
       text-align: center;
       white-space: pre-wrap;
       word-break: break-word;
       line-height: 1.2;
-      border-radius: 10px;
+      border-radius: 8px;
       text-rendering: geometricPrecision;
       -webkit-font-smoothing: antialiased;
+      transform: none;
       opacity: 0;
+      box-sizing: border-box;
     }
   </style>
 </head>
@@ -125,41 +220,42 @@ export class HtmlCaptionLayerProvider {
       );
 
       const totalFrames = Math.max(1, Math.ceil(durationSec * fps));
-      const widthScale = Math.max(0.3, Math.min(0.9, style.widthScale ?? 0.8));
-      const captionWidthPx = Math.round(width * widthScale);
-      const x = Math.max(0, Math.min(1, style.position.x));
-      const y = Math.max(0, Math.min(1, style.position.y));
 
       for (let i = 0; i < totalFrames; i++) {
         const t = i / fps;
         const text = this.captionAtTime(captions, t);
 
         await page.evaluate(
-          ({ textValue, s, widthPx, xPos, yPos }) => {
+          ({ textValue, s, boxPx }) => {
             const el = document.getElementById('caption') as HTMLDivElement | null;
             if (!el) return;
             el.textContent = textValue || '';
             el.style.opacity = textValue ? '1' : '0';
-            el.style.left = `${xPos * 100}%`;
-            el.style.top = `${yPos * 100}%`;
-            el.style.width = `${widthPx}px`;
-            el.style.fontFamily = s.fontFamily || 'Inter, Arial, sans-serif';
+            el.style.left = `${boxPx.left}px`;
+            el.style.top = `${boxPx.top}px`;
+            el.style.width = `${boxPx.width}px`;
+            el.style.minHeight = `${boxPx.minHeight}px`;
+            el.style.fontFamily = "'Inter', Arial, sans-serif";
             el.style.fontSize = `${Math.max(12, s.fontSize)}px`;
             el.style.fontWeight = s.fontWeight;
             el.style.fontStyle = s.fontStyle;
+            el.style.textDecoration = s.textDecoration || 'none';
             el.style.color = s.textColor || '#FFFFFF';
             el.style.background = s.backgroundColor || 'transparent';
             el.style.border =
               s.borderWidth > 0 && s.borderColor && s.borderColor !== 'transparent'
                 ? `${s.borderWidth}px solid ${s.borderColor}`
                 : 'none';
+            const bg = (s.backgroundColor || '').trim().toLowerCase();
+            const transparent = !bg || bg === 'transparent';
+            el.style.textShadow = transparent
+              ? '0 1px 2px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.6)'
+              : 'none';
           },
           {
             textValue: text,
             s: style,
-            widthPx: captionWidthPx,
-            xPos: x,
-            yPos: y,
+            boxPx: box,
           },
         );
 
@@ -171,24 +267,37 @@ export class HtmlCaptionLayerProvider {
         });
       }
 
-      const ffmpegCmd = `
-        ffmpeg -framerate ${fps} -i "${path.join(frameDir, 'frame_%06d.png')}" \
-        -c:v libvpx-vp9 -pix_fmt yuva420p -lossless 1 -auto-alt-ref 0 \
-        -y "${outputPath}"
-      `
-        .replace(/\s+/g, ' ')
-        .trim();
-      execSync(ffmpegCmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
-
-      return outputPath;
+      return { frameDir, fps, frameCount: totalFrames };
     } finally {
       await browser.close();
-      try {
-        fs.rmSync(frameDir, { recursive: true, force: true });
-      } catch {
-        // no-op
-      }
     }
   }
-}
 
+  /** Legacy VP9 WebM path — only when CAPTION_USE_VP9_INTERMEDIATE=true */
+  async renderCaptionLayerAsWebm(params: {
+    captions: CaptionSegment[];
+    style: CaptionLayerStyle;
+    width: number;
+    height: number;
+    durationSec: number;
+    outputPath: string;
+    fps?: number;
+  }): Promise<string> {
+    const { outputPath } = params;
+    const result = await this.renderCaptionLayer(params);
+    const ffmpegCmd = `
+      ffmpeg -framerate ${result.fps} -i "${path.join(result.frameDir, 'frame_%06d.png')}" \
+      -c:v libvpx-vp9 -pix_fmt yuva420p -lossless 1 -auto-alt-ref 0 \
+      -y "${outputPath}"
+    `
+      .replace(/\s+/g, ' ')
+      .trim();
+    execSync(ffmpegCmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+    try {
+      fs.rmSync(result.frameDir, { recursive: true, force: true });
+    } catch {
+      // no-op
+    }
+    return outputPath;
+  }
+}

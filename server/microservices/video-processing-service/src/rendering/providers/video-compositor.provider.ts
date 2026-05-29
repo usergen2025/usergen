@@ -1521,12 +1521,27 @@ export class VideoCompositorProvider {
     outputPath: string,
     videoWidth: number,
     videoHeight: number,
-    position: { x: number; y: number }
+    position: { x: number; y: number },
+    layout?: { widthScale?: number; positionScale?: number },
   ): string {
+    const widthScale = Math.max(0.3, Math.min(0.9, layout?.widthScale ?? 0.8));
+    const positionScale = Math.max(0.05, Math.min(1, layout?.positionScale ?? 0.1));
+    const px = Math.max(0, Math.min(1, position.x));
     const py = Math.max(0, Math.min(1, position.y));
-    const marginL = Math.floor(videoWidth * 0.05);
-    const marginR = Math.floor(videoWidth * 0.05);
-    const marginV = Math.floor(videoHeight * (1 - py));
+
+    const SAFETY_MARGIN = 4;
+    const captionWidth = videoWidth * widthScale;
+    const captionHeight = videoHeight * positionScale;
+    const maxPixelX = Math.max(0, videoWidth - captionWidth - SAFETY_MARGIN);
+    const maxPixelY = Math.max(0, videoHeight - captionHeight - SAFETY_MARGIN);
+    const rawPixelX = maxPixelX * px;
+    const rawPixelY = maxPixelY * py;
+    const boxLeft = Math.round(Math.max(SAFETY_MARGIN / 2, Math.min(rawPixelX, maxPixelX)));
+    const boxTop = Math.round(Math.max(0, Math.min(rawPixelY, maxPixelY)));
+
+    const marginL = 0;
+    const marginR = 0;
+    const marginV = 0;
 
     const primaryColor = this.cssColorToAssOpaque(style.textColor, '&H00FFFFFF');
     const rgbText = this.parseCssColor(style.textColor);
@@ -1577,11 +1592,15 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,${fontName},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${borderStyle},${outlineAss},${shadowAss},2,${marginL},${marginR},${marginV},1
+Style: Default,${fontName},${style.fontSize},${primaryColor},${primaryColor},${outlineColor},${backColor},${bold},${italic},0,0,100,100,0,0,${borderStyle},${outlineAss},${shadowAss},7,${marginL},${marginR},${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
+    console.warn(
+      `[VideoCompositor] ⚠️ Captions rendered in legacy ASS mode; styling may not match workspace preview. ` +
+        `font=${fontName} (requested=${style.fontFamily}), pos=(${boxLeft},${boxTop}), widthScale=${widthScale}`,
+    );
     console.log(
       `[VideoCompositor] ASS style computed: font=${fontName} (requested=${style.fontFamily}), borderStyle=${borderStyle}, outline=${outlineAss}, shadow=${shadowAss}, bgTransparent=${bgTransparent}, backColor=${backColor}, outlineColor=${outlineColor}`,
     );
@@ -1591,11 +1610,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       const startTime = this.formatAssTime(caption.startTime);
       const endTime = this.formatAssTime(caption.endTime);
       // Escape special characters for ASS
-      const text = caption.text
+      const escaped = caption.text
         .replace(/\\/g, '\\\\')
         .replace(/\n/g, '\\N')
         .replace(/\{/g, '\\{')
         .replace(/\}/g, '\\}');
+      const text = `{\\an7\\pos(${boxLeft},${boxTop})}${escaped}`;
       assContent += `Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${text}\n`;
     }
 
@@ -1763,6 +1783,46 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
    * @param captions Array of caption entries with text and timing
    * @param style Caption styling settings
    */
+  /**
+   * Overlay full-frame transparent PNG caption sequence (preferred over VP9 WebM).
+   */
+  async overlayCaptionPngSequenceOnVideo(
+    videoPath: string,
+    frameDir: string,
+    fps: number,
+    outputPath: string,
+  ): Promise<string> {
+    this.checkFFmpeg();
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const framePattern = path.join(frameDir, 'frame_%06d.png');
+    console.log(
+      `[VideoCompositor] Overlaying caption PNG sequence (${fps} fps) onto video...`,
+    );
+
+    const ffmpegCommand = `
+      ffmpeg -i "${videoPath}" \
+      -framerate ${fps} -i "${framePattern}" \
+      -filter_complex "[0:v][1:v]overlay=0:0:format=auto[v]" \
+      -map "[v]" -map 0:a? \
+      -c:v libx264 -preset medium -crf 20 \
+      -pix_fmt yuv420p \
+      -c:a copy \
+      -shortest \
+      -y "${outputPath}"
+    `
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+    return outputPath;
+  }
+
+  /** Legacy VP9 WebM caption overlay — avoid on macOS/local (alpha issues). */
   async overlayCaptionLayerOnVideo(
     videoPath: string,
     captionLayerPath: string,
@@ -1791,6 +1851,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return outputPath;
   }
 
+  /**
+   * Reject blank/corrupt captioned outputs before replacing the base video.
+   */
+  async validateVideoOutput(
+    outputPath: string,
+    options?: { expectedDurationSec?: number; sourcePath?: string; minSizeBytes?: number },
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const minSize = options?.minSizeBytes ?? 100 * 1024;
+    if (!fs.existsSync(outputPath)) {
+      return { ok: false, reason: 'output file missing' };
+    }
+    const stats = fs.statSync(outputPath);
+    if (stats.size < minSize) {
+      return { ok: false, reason: `file too small (${stats.size} bytes)` };
+    }
+
+    if (options?.expectedDurationSec && options.expectedDurationSec > 0) {
+      try {
+        const outDur = await this.getVideoDuration(outputPath);
+        const delta = Math.abs(outDur - options.expectedDurationSec);
+        if (delta > 0.75) {
+          return {
+            ok: false,
+            reason: `duration mismatch (expected ~${options.expectedDurationSec}s, got ${outDur.toFixed(2)}s)`,
+          };
+        }
+      } catch {
+        return { ok: false, reason: 'could not probe output duration' };
+      }
+    }
+
+    if (options?.sourcePath && fs.existsSync(options.sourcePath)) {
+      try {
+        const sourceDur = await this.getVideoDuration(options.sourcePath);
+        const outDur = await this.getVideoDuration(outputPath);
+        if (Math.abs(outDur - sourceDur) > 0.75) {
+          return {
+            ok: false,
+            reason: `duration differs from source (${sourceDur.toFixed(2)}s vs ${outDur.toFixed(2)}s)`,
+          };
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    try {
+      const blackCheck = `
+        ffmpeg -ss 50% -i "${outputPath}" -vframes 1 -vf signalstats,metadata=mode=print -f null -
+      `
+        .replace(/\s+/g, ' ')
+        .trim();
+      const out = execSync(blackCheck, { encoding: 'utf-8', stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 });
+      const yavgMatch = out.match(/lavfi\.signalstats\.YAVG=([0-9.]+)/);
+      if (yavgMatch) {
+        const yavg = parseFloat(yavgMatch[1]);
+        if (yavg < 8) {
+          return { ok: false, reason: `frame at 50% appears black (YAVG=${yavg})` };
+        }
+      }
+    } catch {
+      // signalstats optional — skip if ffmpeg build lacks it
+    }
+
+    return { ok: true };
+  }
+
   async addCaptionsToVideo(
     videoPath: string,
     outputPath: string,
@@ -1805,6 +1932,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       borderColor: string;
       borderWidth: number;
       position: { x: number; y: number };
+      widthScale?: number;
+      positionScale?: number;
     }
   ): Promise<string> {
     this.checkFFmpeg();
@@ -1834,7 +1963,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       assPath,
       videoRes.width,
       videoRes.height,
-      style.position
+      style.position,
+      { widthScale: style.widthScale, positionScale: style.positionScale },
     );
 
     console.log(`[VideoCompositor] Adding ${captions.length} captions to video...`);
