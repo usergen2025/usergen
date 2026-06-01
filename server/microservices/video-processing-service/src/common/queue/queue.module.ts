@@ -17,6 +17,7 @@ import { AssetProcessorService } from '../services/asset-processor.service';
 import { VideoModule } from '../../video/video.module';
 import { NotificationsModule } from '../../notifications/notifications.module';
 import { PreviewModule } from '../../preview/preview.module';
+import { BrandModule } from '../../brand/brand.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PreviewModule } from '../../preview/preview.module';
     NotificationsModule,
     StorageModule, // Import StorageModule to access PublicUrlService
     PreviewModule,
+    BrandModule,
     forwardRef(() => RenderingModule),
     WebSocketModule, // Import WebSocket module to access gateway
     // Register queues for different task types
@@ -37,6 +39,7 @@ import { PreviewModule } from '../../preview/preview.module';
       { name: 'scene-composite' },
       { name: 'stock-download' },
       { name: 'preview-derivatives' },
+      { name: 'brand-packaging' },
     ),
   ],
   providers: [

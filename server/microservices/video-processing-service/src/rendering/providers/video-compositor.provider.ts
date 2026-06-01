@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { computeCaptionBoxPixels } from './html-caption-layer.provider';
 
 @Injectable()
 export class VideoCompositorProvider {
@@ -885,11 +886,13 @@ export class VideoCompositorProvider {
       avatarWidthPx = Math.floor(rawWidth / 2) * 2; // Ensure even width
     }
     
-    // Calculate pixel position from normalized coordinates
-    // x: 0 = avatar left edge at video left, 1 = avatar right edge at video right
-    // y: 0 = avatar top edge at video top, 1 = avatar bottom edge at video bottom
-    const avatarX = Math.floor((brollWidth - avatarWidthPx) * position.x);
-    const avatarY = Math.floor((brollHeight - avatarHeightPx) * position.y);
+    // Calculate pixel position from normalized coordinates (50% off-screen allowed per edge — matches client avatarBounds.ts)
+    const minX = -0.5 * avatarWidthPx;
+    const maxX = brollWidth - 0.5 * avatarWidthPx;
+    const minY = -0.5 * avatarHeightPx;
+    const maxY = brollHeight - 0.5 * avatarHeightPx;
+    const avatarX = Math.floor(minX + position.x * (maxX - minX));
+    const avatarY = Math.floor(minY + position.y * (maxY - minY));
 
     // Calculate what frontend would have used (9:16 hardcoded aspect ratio for comparison)
     const frontendAspectRatio = 9 / 16;
@@ -1524,20 +1527,21 @@ export class VideoCompositorProvider {
     position: { x: number; y: number },
     layout?: { widthScale?: number; positionScale?: number },
   ): string {
-    const widthScale = Math.max(0.3, Math.min(0.9, layout?.widthScale ?? 0.8));
-    const positionScale = Math.max(0.05, Math.min(1, layout?.positionScale ?? 0.1));
-    const px = Math.max(0, Math.min(1, position.x));
-    const py = Math.max(0, Math.min(1, position.y));
-
-    const SAFETY_MARGIN = 4;
-    const captionWidth = videoWidth * widthScale;
-    const captionHeight = videoHeight * positionScale;
-    const maxPixelX = Math.max(0, videoWidth - captionWidth - SAFETY_MARGIN);
-    const maxPixelY = Math.max(0, videoHeight - captionHeight - SAFETY_MARGIN);
-    const rawPixelX = maxPixelX * px;
-    const rawPixelY = maxPixelY * py;
-    const boxLeft = Math.round(Math.max(SAFETY_MARGIN / 2, Math.min(rawPixelX, maxPixelX)));
-    const boxTop = Math.round(Math.max(0, Math.min(rawPixelY, maxPixelY)));
+    const box = computeCaptionBoxPixels({
+      containerWidth: videoWidth,
+      containerHeight: videoHeight,
+      positionX: position.x,
+      positionY: position.y,
+      widthScale: layout?.widthScale ?? 0.8,
+      fontSize: style.fontSize,
+      borderWidth: style.borderWidth,
+      layoutText: captions.reduce(
+        (longest, c) => (c.text.length > longest.length ? c.text : longest),
+        'Sample',
+      ),
+    });
+    const boxLeft = box.left;
+    const boxTop = box.top;
 
     const marginL = 0;
     const marginR = 0;
@@ -1599,7 +1603,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
     console.warn(
       `[VideoCompositor] ⚠️ Captions rendered in legacy ASS mode; styling may not match workspace preview. ` +
-        `font=${fontName} (requested=${style.fontFamily}), pos=(${boxLeft},${boxTop}), widthScale=${widthScale}`,
+        `font=${fontName} (requested=${style.fontFamily}), pos=(${boxLeft},${boxTop}), widthScale=${layout?.widthScale ?? 0.8}`,
     );
     console.log(
       `[VideoCompositor] ASS style computed: font=${fontName} (requested=${style.fontFamily}), borderStyle=${borderStyle}, outline=${outlineAss}, shadow=${shadowAss}, bgTransparent=${bgTransparent}, backColor=${backColor}, outlineColor=${outlineColor}`,

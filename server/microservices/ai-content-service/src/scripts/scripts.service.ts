@@ -11,6 +11,7 @@ import {
   GroundedFactsResult,
   ScriptWebSearchService,
 } from './script-web-search.service';
+import { normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -34,6 +35,8 @@ export type VideoScriptAnalyzedAsset = {
   productInfo?: any;
   url: string;
   visualScriptContext?: string;
+  /** Original asset type from project metadata (e.g. url vs image). */
+  sourceType?: 'image' | 'url';
 };
 
 export interface VideoScriptGenerationRequest {
@@ -602,6 +605,26 @@ CRITICAL DURATION REQUIREMENTS:
 
       // If projectId provided, fetch analyzed assets (wait for analysis if needed)
       let analyzedAssets = request.analyzedAssets;
+      let urlContentContext = request.urlContentContext;
+      let logoBrandName: string | undefined;
+
+      if (request.projectId && userId) {
+        const projectForMeta = await this.getProject(request.projectId, userId);
+        if (projectForMeta?.metadata) {
+          const meta = projectForMeta.metadata as Record<string, unknown>;
+          if (meta.logoBrand && typeof meta.logoBrand === 'object') {
+            const lb = meta.logoBrand as { brandName?: string };
+            logoBrandName = lb.brandName;
+          }
+          const existingUrlCtx = meta.urlBrandContext as
+            | { summary?: string; normalizedUrl?: string }
+            | undefined;
+          if (existingUrlCtx?.summary && !urlContentContext) {
+            urlContentContext = existingUrlCtx.summary;
+          }
+        }
+      }
+
       if (request.projectId && !analyzedAssets) {
         analyzedAssets = await this.waitForAssetAnalysisAndExtract(request.projectId, userId, this.assetAnalysisTimeoutMs);
         // Fallback: if analysis timed out or never completed, use raw metadata.assets so images are still referenced
@@ -609,6 +632,34 @@ CRITICAL DURATION REQUIREMENTS:
           analyzedAssets = await this.getRawAssetsFallback(request.projectId, userId);
           if (analyzedAssets?.length) {
             this.logger.log(`Using ${analyzedAssets.length} raw project assets as fallback (analysis unavailable) for project ${request.projectId}`, 'ScriptsService');
+          }
+        }
+      }
+
+      let webSearchMeta: GroundedFactsResult | null = null;
+      let groundedFactsContext: string | undefined;
+      let searchAttemptedButEmpty = false;
+
+      if (request.projectId && userId && this.scriptWebSearchService.isUrlAssetSearchEnabled()) {
+        const urlAssets = await this.extractUrlAssetsFromProject(request.projectId, userId);
+        if (urlAssets.length > 0) {
+          const primaryUrl = urlAssets[0];
+          const websiteMeta = await this.scriptWebSearchService.fetchGroundedFactsForWebsite(
+            primaryUrl,
+            request.userPrompt,
+          );
+          if (websiteMeta?.summary) {
+            groundedFactsContext = websiteMeta.summary;
+            urlContentContext = websiteMeta.summary;
+            await this.patchProjectMetadata(request.projectId, userId, {
+              urlBrandContext: {
+                normalizedUrl: normalizeWebsiteUrl(primaryUrl) || primaryUrl,
+                domain: this.scriptWebSearchService.extractDomain(primaryUrl),
+                summary: websiteMeta.summary,
+                sources: websiteMeta.sources,
+                searchedAt: websiteMeta.searchedAt,
+              },
+            });
           }
         }
       }
@@ -623,7 +674,8 @@ CRITICAL DURATION REQUIREMENTS:
         request.productImageUrl,
         effectiveHasAvatar,
         analyzedAssets,
-        request.urlContentContext
+        urlContentContext,
+        logoBrandName,
       );
       
       // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
@@ -651,19 +703,19 @@ CRITICAL DURATION REQUIREMENTS:
       // Only use Vision API if we have analyzed assets with image URLs for visual reference
       // Product images are already analyzed, so we don't need Vision API for analysis
       const useVisionAPI: boolean = hasAnalyzedAssets && analyzedAssets.some(a => 
-        a.url && (a.url.startsWith('http://') || a.url.startsWith('https://'))
+        a.url && (a.url.startsWith('http://') || a.url.startsWith('https://')) &&
+        a.sourceType !== 'url'
       );
 
-      let webSearchMeta: GroundedFactsResult | null = null;
-      let groundedFactsContext: string | undefined;
-      let searchAttemptedButEmpty = false;
       if (this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
         webSearchMeta = await this.scriptWebSearchService.fetchGroundedFacts(request.userPrompt, {
           force: request.useLiveWebSearch,
         });
         if (webSearchMeta?.summary) {
-          groundedFactsContext = webSearchMeta.summary;
-        } else {
+          groundedFactsContext = groundedFactsContext
+            ? `${groundedFactsContext}\n\n--- Additional topic research ---\n${webSearchMeta.summary}`
+            : webSearchMeta.summary;
+        } else if (!groundedFactsContext) {
           searchAttemptedButEmpty = true;
         }
       }
@@ -1259,7 +1311,8 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     productImageUrl?: string, // Deprecated - kept for backward compatibility, but not used for analysis
     hasAvatar?: boolean,
     analyzedAssets?: VideoScriptAnalyzedAsset[],
-    urlContentContext?: string // Content extracted from URL assets
+    urlContentContext?: string, // Content extracted from URL assets
+    logoBrandNameOverride?: string,
   ): string {
     // Language-specific descriptions
     const languageDescriptions = {
@@ -1307,7 +1360,8 @@ The visual_style_guide you create should be a synthesis of these tag preferences
       const backgroundAssets = analyzedAssets.filter(a => a.category === 'background' || a.category === 'environment');
       
       if (logoAsset) {
-        const brandName = logoAsset.extractedText ||
+        const brandName = logoBrandNameOverride ||
+                         logoAsset.extractedText ||
                          (logoAsset as any).brandName ||
                          (logoAsset.productInfo as any)?.name ||
                          undefined;
@@ -1362,7 +1416,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     // Add URL content context if provided
     let urlContext = '';
     if (urlContentContext && urlContentContext.trim()) {
-      urlContext = `\n\nWEBSITE/URL CONTENT CONTEXT:\nThe following content was extracted from URLs provided by the user. Use this information to inform the script content, messaging, and context:\n\n${urlContentContext}\n\nIMPORTANT:\n- Reference specific information from the website content when relevant\n- Use company/product names, features, and messaging from the extracted content\n- Ensure the script aligns with the brand voice and information from the website\n- Do not fabricate information - stick to what is provided in the website content\n`;
+      urlContext = `\n\nWEBSITE/BRAND CONTEXT FROM ATTACHED URL:\nThe following was researched from the user's attached website. Use it to inform script content, messaging, products, and tone:\n\n${urlContentContext}\n\nIMPORTANT:\n- Reference specific information from the website when relevant\n- Use company/product names, features, and messaging from this content\n- Ensure the script aligns with the brand voice\n- Do not fabricate information beyond what is provided\n`;
     }
 
     // Avatar image prompt: when hasAvatar is true, script must output a single avatar_image_prompt string (no hardcoding; LLM decides framing, background, lighting per style)
@@ -2219,6 +2273,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
               url: asset.originalAsset?.url || asset.url,
               visualScriptContext:
                 typeof asset.visualScriptContext === 'string' ? asset.visualScriptContext : undefined,
+              sourceType: asset.originalAsset?.type === 'url' ? 'url' : 'image',
             }));
           }
           return undefined;
@@ -2269,6 +2324,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
           id: a.id || `raw-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
           category: (a.category || (a as any).userLabel || 'reference').toLowerCase(),
           url: a.url || (a as any).publicUrl || (a as any).imageUrl,
+          sourceType: (a.type === 'url' ? 'url' : 'image') as 'image' | 'url',
         }));
     } catch {
       return undefined;
@@ -2405,6 +2461,7 @@ REGION CONTEXT (CRITICAL - Indian Default):
   private analyzedAssetsSupplyHeroReferenceForI2I(assets?: VideoScriptAnalyzedAsset[]): boolean {
     if (!assets?.length) return false;
     return assets.some((a) => {
+      if (a.sourceType === 'url') return false;
       const u = (a.url || '').trim();
       if (!u.startsWith('http://') && !u.startsWith('https://')) return false;
       return (
@@ -2413,6 +2470,54 @@ REGION CONTEXT (CRITICAL - Indian Default):
         a.category === 'branding'
       );
     });
+  }
+
+  private async extractUrlAssetsFromProject(projectId: string, userId: string): Promise<string[]> {
+    const project = await this.getProject(projectId, userId);
+    if (!project?.metadata) return [];
+    let assets = (project.metadata as any).assets;
+    if (typeof assets === 'string') {
+      try {
+        assets = JSON.parse(assets);
+      } catch {
+        return [];
+      }
+    }
+    if (!Array.isArray(assets)) return [];
+    return assets
+      .filter((a: any) => a?.type === 'url' && a?.url)
+      .map((a: any) => normalizeWebsiteUrl(a.url) || a.url)
+      .filter(Boolean);
+  }
+
+  private async patchProjectMetadata(
+    projectId: string,
+    userId: string,
+    partial: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const token = jwt.sign(
+        { sub: userId, userId, id: userId, type: 'service' },
+        this.jwtSecret,
+        { expiresIn: '1h' },
+      );
+      const project = await this.getProject(projectId, userId);
+      if (!project) return;
+      const currentMetadata =
+        project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+          ? { ...(project.metadata as Record<string, unknown>) }
+          : {};
+      await axios.put(
+        `${this.videoProcessingServiceUrl}/api/video-projects/${projectId}`,
+        { metadata: { ...currentMetadata, ...partial } },
+        {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          timeout: 10000,
+        },
+      );
+    } catch (err: any) {
+      this.logger.warn(`Failed to patch project metadata: ${err?.message}`, 'ScriptsService');
+    }
   }
 
   private buildReferenceAlignedBrollRuleBlock(assets?: VideoScriptAnalyzedAsset[]): string {

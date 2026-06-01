@@ -21,6 +21,8 @@ export interface BuildWatermarkedPreviewInput {
   /** Final clean video URL or local /uploads path */
   sourceVideoUrl: string;
   audioFiles?: PreviewAudioScene[] | null;
+  /** Project metadata (logoBrand, brandPackagingApplied) */
+  projectMetadata?: Record<string, unknown> | null;
 }
 
 export interface BuildWatermarkedPreviewResult {
@@ -68,7 +70,7 @@ export class PreviewVideoService {
   async buildWatermarkedPreview(
     input: BuildWatermarkedPreviewInput,
   ): Promise<BuildWatermarkedPreviewResult> {
-    const { projectId, userId, sourceVideoUrl, audioFiles } = input;
+    const { projectId, userId, sourceVideoUrl, audioFiles, projectMetadata } = input;
     const sourceHash = PreviewVideoService.computeSourceHash(sourceVideoUrl);
 
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `preview-${projectId}-`));
@@ -79,27 +81,60 @@ export class PreviewVideoService {
       const height = res?.height && res.height > 0 ? res.height : 1920;
       const totalDuration = this.probeDuration(sourcePath);
 
-      const mainWatermarkedPath = path.join(workDir, 'main_watermarked.mp4');
+      const mainPath = path.join(workDir, 'main.mp4');
+      const watermarkedPath = path.join(workDir, 'watermarked.mp4');
       const outroPath = path.join(workDir, 'outro.mp4');
       const concatPath = path.join(workDir, 'with_outro.mp4');
       const previewPath = path.join(workDir, `${projectId}_preview.mp4`);
       const thumbPath = path.join(workDir, `${projectId}_thumb.jpg`);
 
-      const timeRange = computeLastSceneTimeRange(totalDuration, audioFiles);
-      if (timeRange.endSec > timeRange.startSec) {
-        await applyUsergenTiledWatermark({
-          inputPath: sourcePath,
-          outputPath: mainWatermarkedPath,
-          timeRange,
-          crf: 23,
-        });
-      } else {
-        fs.copyFileSync(sourcePath, mainWatermarkedPath);
-      }
+      const meta = projectMetadata || {};
+      const brandPackagingApplied = meta.brandPackagingApplied === true;
+      const singleClipStyle =
+        meta.singleClipStyle === true ||
+        meta.style === 'AVATAR_ONLY' ||
+        meta.style === 'ANIMATED_AVATAR';
 
-      this.buildOutroClip(outroPath, width, height);
-      this.concatWithOutro(mainWatermarkedPath, outroPath, concatPath, width, height);
-      this.compressSegment(concatPath, previewPath);
+      const watermarkTimeRange = (
+        duration: number,
+      ): { startSec: number; endSec: number } => {
+        const total = Math.max(0, duration);
+        if (singleClipStyle) {
+          return { startSec: Math.max(0, total - 5), endSec: total };
+        }
+        return computeLastSceneTimeRange(total, audioFiles);
+      };
+
+      if (!brandPackagingApplied) {
+        fs.copyFileSync(sourcePath, mainPath);
+        this.buildOutroClip(outroPath, width, height);
+        this.concatWithOutro(mainPath, outroPath, concatPath, width, height);
+        const concatDuration = this.probeDuration(concatPath);
+        const timeRange = watermarkTimeRange(concatDuration);
+        if (timeRange.endSec > timeRange.startSec) {
+          await applyUsergenTiledWatermark({
+            inputPath: concatPath,
+            outputPath: watermarkedPath,
+            timeRange,
+            crf: 23,
+          });
+        } else {
+          fs.copyFileSync(concatPath, watermarkedPath);
+        }
+      } else {
+        const timeRange = watermarkTimeRange(totalDuration);
+        if (timeRange.endSec > timeRange.startSec) {
+          await applyUsergenTiledWatermark({
+            inputPath: sourcePath,
+            outputPath: watermarkedPath,
+            timeRange,
+            crf: 23,
+          });
+        } else {
+          fs.copyFileSync(sourcePath, watermarkedPath);
+        }
+      }
+      this.compressSegment(watermarkedPath, previewPath);
 
       execSync(
         `ffmpeg -y -ss 0.5 -i "${previewPath}" -frames:v 1 -q:v 5 "${thumbPath}"`,

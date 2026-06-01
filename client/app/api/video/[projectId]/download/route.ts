@@ -11,12 +11,20 @@ export async function GET(
   const disposition = request.nextUrl.searchParams.get('disposition');
   const qs = disposition === 'inline' ? '?disposition=inline' : '';
 
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return NextResponse.json(
+      { success: false, message: 'Please log in to download' },
+      { status: 401 },
+    );
+  }
+
   try {
     const upstream = await fetch(
       `${VIDEO_SERVICE_URL}/video-projects/${encodeURIComponent(projectId)}/download${qs}`,
       {
         headers: {
-          Authorization: request.headers.get('Authorization') || '',
+          Authorization: authHeader,
         },
       },
     );

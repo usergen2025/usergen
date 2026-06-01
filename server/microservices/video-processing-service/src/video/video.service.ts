@@ -22,6 +22,8 @@ import { ProjectLogService } from '../common/logging/project-log.service';
 import { UserNotificationService } from '../notifications/user-notification.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import { parseGcsPublicUrl } from '@shared/storage';
+import { normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
+import { parseMetadataAssets, metadataHasLogoAsset } from '@shared/brand';
 
 @Injectable()
 export class VideoService {
@@ -49,16 +51,18 @@ export class VideoService {
    */
   async createProject(userId: string, dto: CreateVideoProjectDto) {
     // Prepare initial metadata with asset analysis status if assets are present
-    let initialMetadata = dto.metadata || {};
-    const assets = initialMetadata?.assets;
-    
-    if (assets && Array.isArray(assets) && assets.length > 0) {
+    let initialMetadata = this.normalizeMetadataAssetsInPlace(dto.metadata || {});
+    const assets = parseMetadataAssets(initialMetadata.assets);
+
+    if (assets.length > 0) {
       initialMetadata = {
         ...initialMetadata,
+        assets,
         assetAnalysis: {
           status: 'pending',
           totalAssets: assets.length,
           completedAssets: 0,
+          assetsFingerprint: this.computeAssetsFingerprint(assets),
           startedAt: new Date().toISOString(),
         },
       };
@@ -88,7 +92,7 @@ export class VideoService {
         captionsEnabled: dto.captionsEnabled || false,
         currentStep: dto.currentStep || 'STYLE_SELECTION',
         status: dto.status || 'DRAFT',
-        metadata: initialMetadata,
+        metadata: initialMetadata as any,
       },
     });
     await this.projectLog
@@ -103,7 +107,7 @@ export class VideoService {
         })
         .catch(() => {});
     }
-    const firstAssetUrl = Array.isArray(assets) && assets.length > 0 ? assets[0]?.url : undefined;
+    const firstAssetUrl = assets.length > 0 ? assets[0]?.url : undefined;
     if (firstAssetUrl) {
       await this.projectLog
         .logProject(project.id, 'INFO', `ASSET_ADDED ${firstAssetUrl}`, {
@@ -113,7 +117,11 @@ export class VideoService {
     }
 
     // Trigger asset analysis in background (non-blocking)
-    if (assets && Array.isArray(assets) && assets.length > 0) {
+    if (assets.length > 0) {
+      const hasLogo = metadataHasLogoAsset(assets);
+      console.log(
+        `[VideoService] Queued asset-analysis for ${project.id}, assets=${assets.length}, logo=${hasLogo}`,
+      );
       this.triggerAssetAnalysis(project.id, userId, assets).catch(error => {
         console.error(`[VideoService] Failed to trigger asset analysis for project ${project.id}:`, error.message);
       });
@@ -337,7 +345,47 @@ export class VideoService {
       const existingMeta = existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
         ? (existing.metadata as Record<string, unknown>)
         : {};
-      updateData.metadata = { ...existingMeta, ...dto.metadata };
+      const mergedMeta = this.normalizeMetadataAssetsInPlace({
+        ...existingMeta,
+        ...dto.metadata,
+      });
+      updateData.metadata = mergedMeta;
+
+      const parsedAssets = parseMetadataAssets(mergedMeta.assets);
+      if (parsedAssets.length > 0) {
+        (updateData.metadata as Record<string, unknown>).assets = parsedAssets;
+        const fingerprint = this.computeAssetsFingerprint(parsedAssets);
+        const priorAnalysis = (existingMeta.assetAnalysis || {}) as Record<string, unknown>;
+        const oldFingerprint = priorAnalysis.assetsFingerprint as string | undefined;
+        const analysisStatus = priorAnalysis.status as string | undefined;
+        const needsAnalysis =
+          fingerprint !== oldFingerprint ||
+          !analysisStatus ||
+          analysisStatus === 'failed' ||
+          (metadataHasLogoAsset(parsedAssets) && !mergedMeta.logoBrand);
+
+        if (needsAnalysis) {
+          const nextMeta = { ...(updateData.metadata as Record<string, unknown>) };
+          nextMeta.assetAnalysis = {
+            ...priorAnalysis,
+            status: 'pending',
+            assetsFingerprint: fingerprint,
+            totalAssets: parsedAssets.length,
+            updatedAt: new Date().toISOString(),
+          };
+          if (fingerprint !== oldFingerprint) {
+            delete nextMeta.logoBrand;
+            delete nextMeta.analyzedAssets;
+            delete nextMeta.brandPackaging;
+            delete nextMeta.brandPackagingApplied;
+          }
+          updateData.metadata = nextMeta;
+          console.log(
+            `[VideoService] Assets changed for project ${projectId} — re-queueing asset analysis`,
+          );
+        }
+      }
+
       changedFields.push('metadata');
     }
     // When script or style changes, clear generated avatar image cache so it is regenerated at b-roll step
@@ -433,13 +481,22 @@ export class VideoService {
     }
 
     // Trigger asset analysis if metadata with assets was updated
-    if (dto.metadata?.assets && Array.isArray(dto.metadata.assets) && dto.metadata.assets.length > 0) {
-      // Check if analysis hasn't been completed yet
-      const currentMetadata = project.metadata as any;
-      const analysisStatus = currentMetadata?.assetAnalysis?.status;
-      
-      if (!analysisStatus || analysisStatus === 'pending' || analysisStatus === 'failed') {
-        this.triggerAssetAnalysis(projectId, userId, dto.metadata.assets).catch(error => {
+    const projectMeta = project.metadata as Record<string, unknown>;
+    const parsedAssets = parseMetadataAssets(projectMeta?.assets);
+    if (parsedAssets.length > 0) {
+      const analysisStatus = (projectMeta?.assetAnalysis as { status?: string } | undefined)?.status;
+
+      if (
+        !analysisStatus ||
+        analysisStatus === 'pending' ||
+        analysisStatus === 'failed' ||
+        (metadataHasLogoAsset(parsedAssets) && !projectMeta?.logoBrand)
+      ) {
+        const hasLogo = metadataHasLogoAsset(parsedAssets);
+        console.log(
+          `[VideoService] Queued asset-analysis for ${projectId}, assets=${parsedAssets.length}, logo=${hasLogo}`,
+        );
+        this.triggerAssetAnalysis(projectId, userId, parsedAssets).catch(error => {
           console.error(`[VideoService] Failed to trigger asset analysis for project ${projectId}:`, error.message);
         });
       }
@@ -449,6 +506,30 @@ export class VideoService {
       success: true,
       data: project,
     };
+  }
+
+  /**
+   * Stable hash of asset ids + urls — used to re-trigger analysis when assets change.
+   */
+  /** Coerce legacy stringified metadata.assets to array in metadata object. */
+  private normalizeMetadataAssetsInPlace(
+    metadata: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (!metadata?.assets) return metadata;
+    const parsed = parseMetadataAssets(metadata.assets);
+    if (parsed.length > 0) {
+      return { ...metadata, assets: parsed };
+    }
+    return metadata;
+  }
+
+  private computeAssetsFingerprint(
+    assets: Array<{ id?: string; url?: string }>,
+  ): string {
+    const normalized = assets
+      .map((a) => ({ id: a.id || '', url: a.url || '' }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
   }
 
   /**
@@ -468,12 +549,19 @@ export class VideoService {
       );
 
       // Prepare assets for analysis
-      const assetsForAnalysis = assets.map(asset => ({
-        id: asset.id,
-        url: asset.url || (asset as any).publicUrl || (asset as any).imageUrl,
-        type: asset.type || 'image',
-        userLabel: asset.category || (asset as any).label,
-      })).filter(asset => {
+      const assetsForAnalysis = assets.map(asset => {
+        let url = asset.url || (asset as any).publicUrl || (asset as any).imageUrl;
+        const type = asset.type || 'image';
+        if (type === 'url' && url) {
+          url = normalizeWebsiteUrl(url) || url;
+        }
+        return {
+          id: asset.id,
+          url,
+          type,
+          userLabel: asset.category || (asset as any).label,
+        };
+      }).filter(asset => {
         // Filter out invalid URLs (empty, placeholder, or non-HTTP(S))
         if (!asset.url) {
           console.warn(`[VideoService] Skipping asset ${asset.id}: no URL provided`);
@@ -817,6 +905,131 @@ export class VideoService {
     };
   }
 
+  /**
+   * Resolve the on-disk final MP4 for download/streaming.
+   * Prefers branded output (`final_branded_*`) over stale unbranded `final_*` leftovers.
+   */
+  private findLocalFinalVideoPath(
+    userId: string,
+    projectId: string,
+    videoUrl?: string | null,
+    brandPackagingApplied?: boolean,
+  ): string | null {
+    const uploadsDir =
+      this.configService.get<string>('UPLOADS_DIR') ||
+      path.join(process.cwd(), 'uploads');
+    const dir = path.join(uploadsDir, 'videos', userId);
+    if (!fs.existsSync(dir)) return null;
+
+    const newestWithPrefix = (prefix: string): string | null => {
+      const candidates = fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith(prefix) && f.endsWith('.mp4'))
+        .map((f) => {
+          const full = path.join(dir, f);
+          return { full, mtime: fs.statSync(full).mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      return candidates[0]?.full ?? null;
+    };
+
+    // When DB stores a local uploads path, use that exact file (post-branding path).
+    if (videoUrl && !videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
+      const basename = path.basename(videoUrl.replace(/\\/g, '/'));
+      const exact = path.join(dir, basename);
+      if (fs.existsSync(exact)) {
+        return exact;
+      }
+    }
+
+    const branded = newestWithPrefix(`final_branded_${projectId}_`);
+    if (branded) {
+      return branded;
+    }
+
+    // Branded render published to GCS — do not fall back to older unbranded local files.
+    if (brandPackagingApplied) {
+      return null;
+    }
+
+    return newestWithPrefix(`final_${projectId}_`);
+  }
+
+  /**
+   * Repair legacy stringified metadata.assets and re-queue brand pipeline.
+   */
+  async repairBrandMetadata(
+    projectId: string,
+    userId: string,
+  ): Promise<{
+    assetsCount: number;
+    hasLogo: boolean;
+    assetAnalysisQueued: boolean;
+  }> {
+    const project = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId, userId },
+    });
+    if (!project) {
+      throw new NotFoundException('Project not found');
+    }
+
+    const metadata = this.normalizeMetadataAssetsInPlace(
+      (project.metadata as Record<string, unknown>) || {},
+    );
+    const parsedAssets = parseMetadataAssets(metadata.assets);
+    if (parsedAssets.length === 0) {
+      throw new BadRequestException('No parseable assets in project metadata');
+    }
+
+    const hasLogo = metadataHasLogoAsset(parsedAssets);
+    const fingerprint = this.computeAssetsFingerprint(parsedAssets);
+    const priorAnalysis = (metadata.assetAnalysis || {}) as Record<string, unknown>;
+
+    const nextMeta: Record<string, unknown> = {
+      ...metadata,
+      assets: parsedAssets,
+      assetAnalysis: {
+        ...priorAnalysis,
+        status: 'pending',
+        totalAssets: parsedAssets.length,
+        completedAssets: 0,
+        assetsFingerprint: fingerprint,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+
+    delete nextMeta.logoBrand;
+    delete nextMeta.analyzedAssets;
+    delete nextMeta.brandPackagingApplied;
+    if (hasLogo) {
+      nextMeta.brandPackaging = {
+        status: 'pending',
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: { metadata: nextMeta as any },
+    });
+
+    console.log(
+      `[VideoService] repair-brand-metadata ${projectId}: assets=${parsedAssets.length}, logo=${hasLogo}`,
+    );
+
+    let assetAnalysisQueued = false;
+    if (parsedAssets.length > 0) {
+      assetAnalysisQueued = true;
+      await this.triggerAssetAnalysis(projectId, userId, parsedAssets);
+    }
+
+    return {
+      assetsCount: parsedAssets.length,
+      hasLogo,
+      assetAnalysisQueued,
+    };
+  }
+
   private buildFinalVideoFilename(title?: string | null): string {
     const safeTitle = (title || 'video')
       .replace(/[^\w\s-]/g, '')
@@ -827,7 +1040,9 @@ export class VideoService {
   }
 
   /**
-   * Resolve a short-lived download URL for the clean final video (never preview).
+   * Resolve download metadata for the clean final video (never preview).
+   * Always uses authenticated proxy stream so the browser saves a file (attachment),
+   * from local disk when present or from GCS via the video-processing service.
    */
   async getFinalVideoDownloadUrl(
     projectId: string,
@@ -835,62 +1050,21 @@ export class VideoService {
   ): Promise<{
     downloadUrl: string;
     filename: string;
-    strategy: 'signed_gcs' | 'proxy_stream';
+    strategy: 'signed_gcs' | 'proxy_stream' | 'public_gcs';
     expiresInSeconds?: number;
   }> {
     const { data: project } = await this.getProject(projectId, userId);
-    const videoUrl = project.videoUrl;
-    if (!videoUrl) {
+    if (!project.videoUrl) {
       throw new NotFoundException('Final video not available');
     }
 
     const filename = this.buildFinalVideoFilename(project.title);
-    const expiresInMinutes = 15;
 
-    if (videoUrl.startsWith('/uploads/') || videoUrl.startsWith('uploads/')) {
-      return {
-        downloadUrl: `/api/video/${projectId}/download`,
-        filename,
-        strategy: 'proxy_stream',
-      };
-    }
-
-    if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
-      const parsed = parseGcsPublicUrl(videoUrl);
-      const configuredBucket = this.configService.get<string>('GCS_BUCKET_NAME');
-      if (
-        parsed &&
-        this.publicUrlService.isGcsAvailable() &&
-        configuredBucket &&
-        parsed.bucket === configuredBucket
-      ) {
-        try {
-          const signedUrl = await this.publicUrlService.getSignedDownloadUrl(
-            parsed.objectPath,
-            filename,
-            expiresInMinutes,
-          );
-          return {
-            downloadUrl: signedUrl,
-            filename,
-            strategy: 'signed_gcs',
-            expiresInSeconds: expiresInMinutes * 60,
-          };
-        } catch (signError: any) {
-          console.warn(
-            `[VideoService] GCS signed URL generation failed, falling back to proxy stream: ${signError.message}`,
-          );
-        }
-      }
-
-      return {
-        downloadUrl: `/api/video/${projectId}/download`,
-        filename,
-        strategy: 'proxy_stream',
-      };
-    }
-
-    throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);
+    return {
+      downloadUrl: `/api/video/${projectId}/download`,
+      filename,
+      strategy: 'proxy_stream',
+    };
   }
 
   /**
@@ -921,6 +1095,25 @@ export class VideoService {
       this.configService.get<string>('UPLOADS_DIR') ||
       path.join(process.cwd(), 'uploads');
 
+    const metadata =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    const brandPackagingApplied = Boolean(metadata.brandPackagingApplied);
+
+    const localFinal = this.findLocalFinalVideoPath(
+      userId,
+      projectId,
+      videoUrl,
+      brandPackagingApplied,
+    );
+    if (localFinal && fs.existsSync(localFinal)) {
+      const stat = fs.statSync(localFinal);
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(localFinal).pipe(res);
+      return;
+    }
+
     if (videoUrl.startsWith('/uploads/') || videoUrl.startsWith('uploads/')) {
       const relative = videoUrl.replace(/^\/?uploads\//, '');
       const localPath = path.join(uploadsDir, relative);
@@ -934,22 +1127,42 @@ export class VideoService {
     }
 
     if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
-      const response = await axios.get(videoUrl, {
-        responseType: 'stream',
-        timeout: 300000,
-        maxRedirects: 5,
-      });
-      const contentLength = response.headers['content-length'];
-      if (contentLength) {
-        res.setHeader('Content-Length', contentLength);
-      }
-      response.data.pipe(res);
-      response.data.on('error', () => {
-        if (!res.headersSent) {
-          res.status(HttpStatus.INTERNAL_SERVER_ERROR).end();
+      try {
+        const response = await axios.get(videoUrl, {
+          responseType: 'stream',
+          timeout: 300000,
+          maxRedirects: 5,
+          validateStatus: (s) => s >= 200 && s < 400,
+        });
+        const contentLength = response.headers['content-length'];
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength);
         }
-      });
-      return;
+        response.data.pipe(res);
+        response.data.on('error', (streamErr: Error) => {
+          console.warn(
+            `[VideoService] streamFinalVideoDownload stream error for ${projectId}: ${streamErr.message}`,
+          );
+          if (!res.headersSent) {
+            res.status(HttpStatus.BAD_GATEWAY).json({
+              success: false,
+              message: 'Failed to stream video from storage',
+            });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      } catch (fetchErr: any) {
+        const status = fetchErr?.response?.status;
+        console.warn(
+          `[VideoService] streamFinalVideoDownload upstream ${status ?? 'error'} for ${projectId}: ${fetchErr?.message}`,
+        );
+        throw new HttpException(
+          'Failed to stream video from storage',
+          status === 404 ? HttpStatus.NOT_FOUND : HttpStatus.BAD_GATEWAY,
+        );
+      }
     }
 
     throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);

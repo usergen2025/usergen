@@ -17,10 +17,14 @@ import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useDownloadFinalVideo } from '@/hooks/useDownloadFinalVideo';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
+import { useWebSocketContext } from '@/contexts/WebSocketContext';
 import { cn } from '@/lib/utils/cn';
 import { DraggableResizableAvatar } from '@/components/create-video/DraggableResizableAvatar';
 import { DraggableResizableCaption } from '@/components/create-video/DraggableResizableCaption';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
+import { GradientTabBar } from '@/components/ui/GradientTabBar';
+import { isSingleClipVideoStyle } from '@/lib/workspace/singleClipStyle';
+import { longestWord } from '@/lib/workspace/captionBounds';
 
 interface Scene {
   scene_number?: number;
@@ -263,8 +267,8 @@ interface BrollVideo {
   prompt?: string;
 }
 
-const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:3003';
-const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:3002';
+const VOICE_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VOICE_SERVICE_URL || 'http://localhost:9002/api';
+const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_VIDEO_SERVICE_URL || 'http://localhost:9004';
 const VIDEO_SERVICE_ORIGIN = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
 
 /** Matches Tailwind `lg` — left/right rails fixed from this width; drawers below. */
@@ -345,7 +349,7 @@ function WorkspacePageContent() {
   const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null);
   const avatarSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
-  const [previewDimensions, setPreviewDimensions] = useState({ width: 320, height: 537 });
+  const [previewDimensions, setPreviewDimensions] = useState({ width: 0, height: 0 });
   const [mobileDrawerFrame, setMobileDrawerFrame] = useState({ top: 170, height: 420 });
   const [viewportWidth, setViewportWidth] = useState<number>(
     typeof window !== 'undefined' ? window.innerWidth : WORKSPACE_SIDEBAR_BREAKPOINT_PX
@@ -369,6 +373,9 @@ function WorkspacePageContent() {
   const [previewPreparing, setPreviewPreparing] = useState(false);
   const [previewGenerationError, setPreviewGenerationError] = useState<string | null>(null);
   const previewPollingRef = useRef<NodeJS.Timeout | null>(null);
+  const previewPollStoppedRef = useRef(false);
+  const previewPollFingerprintRef = useRef<string | null>(null);
+  const { subscribeToQueueType } = useWebSocketContext();
   const [showExportConfirm, setShowExportConfirm] = useState(false);
   const [exportCostBreakdown, setExportCostBreakdown] = useState<any>(null);
   const [exportConfirmLoading, setExportConfirmLoading] = useState(false);
@@ -598,6 +605,13 @@ function WorkspacePageContent() {
 
           setProject(projectData);
 
+          const brandPackagingStatus = (projectData.metadata as Record<string, unknown> | undefined)
+            ?.brandPackaging as { status?: string } | undefined;
+          if (brandPackagingStatus?.status === 'failed') {
+            showToast('Brand assets failed to prepare. Retrying in background…', 'warning');
+            void apiClient.startBrandPackaging(projectId).catch(() => {});
+          }
+
           if (projectData.captionsEnabled !== undefined || projectData.captionSettings) {
             const caps = (projectData.captionSettings || {}) as Record<string, unknown>;
             const enabledFromSettings = typeof caps.enabled === 'boolean' ? caps.enabled : false;
@@ -605,7 +619,8 @@ function WorkspacePageContent() {
             if (caps.displayMode === 'full-sentence' || caps.displayMode === 'word-by-word') {
               setCaptionDisplayMode(caps.displayMode);
             }
-            if (caps.applyToAll === false) setCaptionApplyToAll(false);
+            // TODO(per-scene-layout): re-enable per-scene when export supports perScenePositions
+            // if (caps.applyToAll === false) setCaptionApplyToAll(false);
             const gp = caps.globalPosition as Record<string, unknown> | undefined;
             if (gp && typeof gp.x === 'number') {
               setCaptionGlobalPosition({
@@ -745,7 +760,11 @@ function WorkspacePageContent() {
           // Check if project is already completed or rendering
           if (projectData.status === 'COMPLETED' && hasFinalVideo(projectData)) {
             applyProjectVideoUrls(projectData);
-            setWorkspaceMode('completed');
+            if (isSingleClipVideoStyle(projectData.style)) {
+              setWorkspaceMode('videos');
+            } else {
+              setWorkspaceMode('completed');
+            }
             setRenderingProgress(100);
             setRenderingStage('completed');
           } else if (projectData.status === 'IN_PROGRESS' && projectData.renderingStatus) {
@@ -1073,42 +1092,112 @@ function WorkspacePageContent() {
     }
   }, [projectId, showToast]);
 
-  // Poll until watermarked preview is ready (or generation failed)
+  const stopPreviewPolling = useCallback(() => {
+    previewPollStoppedRef.current = true;
+    if (previewPollingRef.current) {
+      clearInterval(previewPollingRef.current);
+      previewPollingRef.current = null;
+    }
+  }, []);
+
+  const refreshProjectForPreview = useCallback(async (options?: { force?: boolean }) => {
+    if (!projectId) return;
+    if (!options?.force && previewPollStoppedRef.current) return;
+    try {
+      const response = await apiClient.getVideoProject(projectId);
+      if (!response.success || !response.data) return;
+
+      const data = response.data;
+      const fingerprint = [
+        data.metadata?.previewVideoUrl,
+        data.metadata?.previewFormatVersion,
+        data.metadata?.previewGenerationError,
+      ].join('|');
+
+      if (fingerprint !== previewPollFingerprintRef.current) {
+        previewPollFingerprintRef.current = fingerprint;
+        setProject(data);
+      }
+      applyProjectVideoUrls(data);
+
+      if (isPreviewReady(data) || hasPreviewGenerationError(data)) {
+        stopPreviewPolling();
+      }
+    } catch (error) {
+      console.warn('[Workspace] Preview refresh failed:', error);
+    }
+  }, [projectId, applyProjectVideoUrls, stopPreviewPolling]);
+
+  // WebSocket: preview derivatives complete (user room — no per-job subscription)
+  useEffect(() => {
+    if (!projectId) return;
+
+    return subscribeToQueueType('preview-derivatives', (update: JobStatusUpdate) => {
+      if (update.metadata?.projectId !== projectId) return;
+
+      if (update.state === 'completed') {
+        stopPreviewPolling();
+        const previewUrl = update.result?.previewVideoUrl;
+        if (typeof previewUrl === 'string' && previewUrl.length > 0) {
+          const playback =
+            previewUrl.startsWith('http')
+              ? previewUrl
+              : getPreviewPlaybackUrl(
+                  {
+                    metadata: {
+                      previewVideoUrl: previewUrl,
+                      previewFormatVersion: update.result?.previewFormatVersion,
+                    },
+                  },
+                  VIDEO_SERVICE_ORIGIN,
+                );
+          if (playback) {
+            setPreviewPlaybackUrl(playback);
+            setPreviewPreparing(false);
+            setPreviewGenerationError(null);
+          }
+        }
+        void refreshProjectForPreview({ force: true });
+        return;
+      }
+
+      if (update.state === 'failed') {
+        stopPreviewPolling();
+        setPreviewGenerationError(update.error || 'Preview generation failed');
+        setPreviewPreparing(false);
+      }
+    });
+  }, [
+    projectId,
+    subscribeToQueueType,
+    stopPreviewPolling,
+    refreshProjectForPreview,
+  ]);
+
+  // Slow fallback poll until watermarked preview is ready (avoid hammering API)
   useEffect(() => {
     if (workspaceMode !== 'completed' || !projectId) {
-      if (previewPollingRef.current) {
-        clearInterval(previewPollingRef.current);
-        previewPollingRef.current = null;
-      }
+      previewPollStoppedRef.current = false;
+      stopPreviewPolling();
       return;
     }
 
-    if (isPreviewReady(project || {}) && previewPlaybackUrl) {
+    if (previewPollStoppedRef.current) {
       return;
     }
 
-    if (hasPreviewGenerationError(project || {})) {
-      return;
-    }
-
-    if (!hasFinalVideo(project || {}) && !finalVideoUrl) {
+    if (previewPlaybackUrl) {
+      stopPreviewPolling();
       return;
     }
 
     const pollPreview = async () => {
-      try {
-        const response = await apiClient.getVideoProject(projectId);
-        if (response.success && response.data) {
-          setProject(response.data);
-          applyProjectVideoUrls(response.data);
-        }
-      } catch (error) {
-        console.warn('[Workspace] Preview poll failed:', error);
-      }
+      if (previewPollStoppedRef.current) return;
+      await refreshProjectForPreview();
     };
 
     void pollPreview();
-    previewPollingRef.current = setInterval(pollPreview, 4000);
+    previewPollingRef.current = setInterval(pollPreview, 12_000);
 
     return () => {
       if (previewPollingRef.current) {
@@ -1116,36 +1205,51 @@ function WorkspacePageContent() {
         previewPollingRef.current = null;
       }
     };
-  }, [
-    workspaceMode,
-    projectId,
-    previewPlaybackUrl,
-    project,
-    finalVideoUrl,
-    applyProjectVideoUrls,
-  ]);
+  }, [workspaceMode, projectId, previewPlaybackUrl, refreshProjectForPreview, stopPreviewPolling]);
 
-  // Track preview container dimensions for avatar overlay positioning
+  // Track preview container dimensions for overlay positioning (ResizeObserver catches initial layout)
   useEffect(() => {
+    if (loading) return;
+
+    let ro: ResizeObserver | null = null;
+    let rafId: number | null = null;
+
     const updateDimensions = () => {
+      const el = previewContainerRef.current;
+      if (!el) return;
       setViewportWidth(window.innerWidth);
-      if (previewContainerRef.current) {
-        const rect = previewContainerRef.current.getBoundingClientRect();
-        setPreviewDimensions({
-          width: previewContainerRef.current.offsetWidth,
-          height: previewContainerRef.current.offsetHeight,
-        });
-        setMobileDrawerFrame({
-          top: Math.max(96, rect.top),
-          height: Math.max(260, Math.round(rect.height)),
-        });
+      const rect = el.getBoundingClientRect();
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      if (w > 0 && h > 0) {
+        setPreviewDimensions({ width: w, height: h });
       }
+      setMobileDrawerFrame({
+        top: Math.max(96, rect.top),
+        height: Math.max(260, Math.round(rect.height)),
+      });
     };
-    
-    updateDimensions();
-    window.addEventListener('resize', updateDimensions);
-    return () => window.removeEventListener('resize', updateDimensions);
-  }, [workspaceMode, selectedSceneIndex, sceneCount]);
+
+    const attach = () => {
+      const el = previewContainerRef.current;
+      if (!el) {
+        rafId = requestAnimationFrame(attach);
+        return;
+      }
+      updateDimensions();
+      ro = new ResizeObserver(() => updateDimensions());
+      ro.observe(el);
+      window.addEventListener('resize', updateDimensions);
+    };
+
+    attach();
+
+    return () => {
+      if (rafId != null) cancelAnimationFrame(rafId);
+      ro?.disconnect();
+      window.removeEventListener('resize', updateDimensions);
+    };
+  }, [loading, workspaceMode, selectedSceneIndex, sceneCount, captionsEnabled]);
 
   useEffect(() => {
     const onResize = () => {
@@ -1214,11 +1318,11 @@ function WorkspacePageContent() {
   const buildCaptionSettingsPayload = useCallback(() => ({
     enabled: captionsEnabled,
     displayMode: captionDisplayMode,
-    applyToAll: captionApplyToAll,
+    applyToAll: true,
     globalPosition: captionGlobalPosition,
     perScenePositions: captionPerScenePositions,
-    previewContainerHeight: previewDimensions.height,
-    previewContainerWidth: previewDimensions.width,
+    previewContainerHeight: previewDimensions.height > 0 ? previewDimensions.height : undefined,
+    previewContainerWidth: previewDimensions.width > 0 ? previewDimensions.width : undefined,
     style: {
       fontFamily: captionStyle.fontFamily,
       fontSize: captionStyle.fontSize,
@@ -1319,61 +1423,35 @@ function WorkspacePageContent() {
     }
   }, [avatarApplyToAll, avatarOverlayEnabled, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex, saveAvatarOverlaySettings]);
 
+  const LAYOUT_SCENE1_TOAST =
+    'Layout is configured on Scene 1 and applies to your whole video. Switch to Scene 1 to change position or size.';
+
   // Handle avatar position change (from drag or resize)
   const handleAvatarPositionChange = useCallback((newPosition: { x: number; y: number; scale: number }) => {
-    if (avatarApplyToAll) {
-      // Update global position for all scenes
-      setAvatarGlobalPosition(newPosition);
-      saveAvatarOverlaySettings({
-        enabled: avatarOverlayEnabled,
-        applyToAll: true,
-        globalPosition: newPosition,
-        perScenePositions: avatarPerScenePositions
-      });
-    } else {
-      // Update only current scene's position
-      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
-                                  scenes[selectedSceneIndex]?.sceneNumber || 
-                                  (selectedSceneIndex + 1);
-      const newPerScenePositions = {
-        ...avatarPerScenePositions,
-        [currentSceneNumber]: newPosition
-      };
-      setAvatarPerScenePositions(newPerScenePositions);
-      saveAvatarOverlaySettings({
-        enabled: avatarOverlayEnabled,
-        applyToAll: false,
-        globalPosition: avatarGlobalPosition,
-        perScenePositions: newPerScenePositions
-      });
+    if (selectedSceneIndex !== 0) {
+      showToast(LAYOUT_SCENE1_TOAST, 'info');
+      return;
     }
-  }, [avatarApplyToAll, avatarOverlayEnabled, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex, saveAvatarOverlaySettings]);
+    setAvatarGlobalPosition(newPosition);
+    saveAvatarOverlaySettings({
+      enabled: avatarOverlayEnabled,
+      applyToAll: true,
+      globalPosition: newPosition,
+      perScenePositions: avatarPerScenePositions,
+    });
+  }, [avatarOverlayEnabled, avatarGlobalPosition, avatarPerScenePositions, selectedSceneIndex, saveAvatarOverlaySettings, showToast]);
 
   // Get current avatar position for the selected scene
-  const getCurrentAvatarPosition = useCallback(() => {
-    if (avatarApplyToAll) {
-      return avatarGlobalPosition;
-    }
-    const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
-                                scenes[selectedSceneIndex]?.sceneNumber || 
-                                (selectedSceneIndex + 1);
-    return avatarPerScenePositions[currentSceneNumber] || avatarGlobalPosition;
-  }, [avatarApplyToAll, avatarGlobalPosition, avatarPerScenePositions, scenes, selectedSceneIndex]);
+  const getCurrentAvatarPosition = useCallback(() => avatarGlobalPosition, [avatarGlobalPosition]);
 
   // Handle caption position change
   const handleCaptionPositionChange = useCallback((newPosition: { x: number; y: number; scale: number; widthScale: number }) => {
-    if (captionApplyToAll) {
-      setCaptionGlobalPosition(newPosition);
-    } else {
-      const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
-                                  scenes[selectedSceneIndex]?.sceneNumber || 
-                                  (selectedSceneIndex + 1);
-      setCaptionPerScenePositions(prev => ({
-        ...prev,
-        [currentSceneNumber]: newPosition
-      }));
+    if (selectedSceneIndex !== 0) {
+      showToast(LAYOUT_SCENE1_TOAST, 'info');
+      return;
     }
-  }, [captionApplyToAll, scenes, selectedSceneIndex]);
+    setCaptionGlobalPosition(newPosition);
+  }, [selectedSceneIndex, showToast]);
 
   // Handle caption style change
   const handleCaptionStyleChange = useCallback((newStyle: typeof captionStyle) => {
@@ -1382,15 +1460,7 @@ function WorkspacePageContent() {
   }, []);
 
   // Get current caption position for the selected scene
-  const getCurrentCaptionPosition = useCallback(() => {
-    if (captionApplyToAll) {
-      return captionGlobalPosition;
-    }
-    const currentSceneNumber = scenes[selectedSceneIndex]?.scene_number || 
-                                scenes[selectedSceneIndex]?.sceneNumber || 
-                                (selectedSceneIndex + 1);
-    return captionPerScenePositions[currentSceneNumber] || captionGlobalPosition;
-  }, [captionApplyToAll, captionGlobalPosition, captionPerScenePositions, scenes, selectedSceneIndex]);
+  const getCurrentCaptionPosition = useCallback(() => captionGlobalPosition, [captionGlobalPosition]);
 
   // Apply caption style preset
   const applyCaptionPreset = useCallback((preset: 'light' | 'dark' | 'transparent') => {
@@ -1691,6 +1761,9 @@ function WorkspacePageContent() {
               }
             }
 
+            previewPollStoppedRef.current = false;
+            previewPollFingerprintRef.current = null;
+
             setTimeout(() => {
               setWorkspaceMode('completed');
               showToast('Video rendering completed!', 'success');
@@ -1732,13 +1805,23 @@ function WorkspacePageContent() {
       });
       console.log('[Workspace] Caption settings saved before rendering');
 
-      const response = await apiClient.startVideoRendering(projectId);
-      
+      const usePostProcess =
+        isSingleClipVideoStyle(project?.style) &&
+        (Boolean(finalVideoUrl) || isFinalReady(project || {}, VIDEO_SERVICE_ORIGIN));
+
+      const response = usePostProcess
+        ? await apiClient.postProcessVideoExport(projectId)
+        : await apiClient.startVideoRendering(projectId);
+
       if (!response.success) {
         throw new Error(response.message || 'Failed to start rendering');
       }
 
-      console.log('[Workspace] Rendering started successfully');
+      console.log(
+        usePostProcess
+          ? '[Workspace] Post-process export started successfully'
+          : '[Workspace] Rendering started successfully',
+      );
       startRenderingPolling();
     } catch (error: any) {
       console.error('Failed to start rendering:', error);
@@ -2261,10 +2344,24 @@ function WorkspacePageContent() {
   const currentImageUrl = getImageUrl(currentSceneNumber);
   const isRegeneratingCurrentImage = regeneratingImageScenes.has(currentSceneNumber);
   const currentSceneText = currentScene ? getSceneText(currentScene) : '';
+  const isSingleClipStyle = useMemo(
+    () => isSingleClipVideoStyle(project?.style),
+    [project?.style],
+  );
+  const singleClipPreviewUrl =
+    finalVideoUrl ||
+    (project ? getFinalVideoUrl(project, VIDEO_SERVICE_ORIGIN) : null) ||
+    project?.videoUrl ||
+    null;
+  const canEditLayout = selectedSceneIndex === 0;
   const currentBrollVideoUrl =
-    workspaceMode === 'videos' ? getVideoUrl(currentSceneNumber) : null;
+    workspaceMode === 'videos' && !isSingleClipStyle ? getVideoUrl(currentSceneNumber) : null;
   const hasPreviewMedia =
-    Boolean(currentImageUrl || currentBrollVideoUrl) && !isRegeneratingCurrentImage;
+    Boolean(
+      (isSingleClipStyle && singleClipPreviewUrl) ||
+        currentImageUrl ||
+        currentBrollVideoUrl,
+    ) && !isRegeneratingCurrentImage;
   const currentAudioForScene = audioFiles.find((af) => af.sceneNumber === currentSceneNumber);
 
   useEffect(() => {
@@ -2308,6 +2405,17 @@ function WorkspacePageContent() {
     previewPlaybackTime,
   ]);
 
+  const captionLayoutText = useMemo(() => {
+    const base =
+      (currentSceneText || currentAudioForScene?.voiceover || '').trim() || 'Sample caption text';
+    if (captionDisplayMode === 'full-sentence') return base;
+    const timedWords = (currentAudioForScene?.wordTimestamps || [])
+      .map((w) => (w.word ?? w.text ?? '').trim())
+      .filter(Boolean);
+    if (timedWords.length) return longestWord(timedWords.join(' '));
+    return longestWord(base);
+  }, [captionDisplayMode, currentSceneText, currentAudioForScene]);
+
   if (loading || authLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen">
@@ -2323,7 +2431,7 @@ function WorkspacePageContent() {
 
   const showMainWorkspace =
     workspaceMode !== 'rendering' &&
-    !(workspaceMode === 'completed' && finalReady);
+    !(workspaceMode === 'completed' && finalReady && !isSingleClipStyle);
 
   return (
     <div className="relative h-full min-h-0 flex flex-col overflow-hidden">
@@ -2416,6 +2524,23 @@ function WorkspacePageContent() {
 
             {/* Main content - Video Preview centered */}
             <div className="flex-1 flex flex-col items-center justify-center min-h-0 py-4">
+              {(() => {
+                const bp = (project?.metadata as Record<string, unknown> | undefined)
+                  ?.brandPackaging as { status?: string } | undefined;
+                const bpStatus = bp?.status;
+                if (bpStatus === 'pending' || bpStatus === 'processing') {
+                  return (
+                    <p className="mb-3 text-center text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 max-w-md">
+                      Preparing brand assets… Download for the final video with your logo.
+                    </p>
+                  );
+                }
+                return (
+                  <p className="mb-3 text-center text-xs text-gray-500 max-w-md">
+                    Preview — download for the final branded video.
+                  </p>
+                );
+              })()}
               {/* Video player container - 9:16 aspect ratio */}
               <div className="relative h-[60vh] max-h-[500px] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black">
                 {previewPlayerReady ? (
@@ -2547,7 +2672,7 @@ function WorkspacePageContent() {
           </div>
 
           {/* Center: Mode toggle tabs - only show when videos exist and not converting/rendering/completed */}
-          {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
+          {brollVideos.length > 0 && !isSingleClipStyle && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
             <div className="hidden lg:flex items-center gap-1 bg-gray-100 rounded-full p-1">
               <button
                 onClick={handleBackToImages}
@@ -2577,7 +2702,11 @@ function WorkspacePageContent() {
           {/* Right: Convert to Videos / Export button */}
           <div className="flex items-center gap-2">
           <button
-            onClick={workspaceMode === 'videos' ? handleExport : handleConvertToVideos}
+            onClick={
+              workspaceMode === 'videos' || (isSingleClipStyle && finalReady)
+                ? handleExport
+                : handleConvertToVideos
+            }
             disabled={workspaceMode === 'converting'}
             className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity disabled:opacity-70 disabled:cursor-wait">
             <span className="font-heading font-semibold text-[clamp(12px,1.37vh,14px)] leading-[clamp(12px,1.37vh,14px)] text-white flex items-center gap-2">
@@ -2586,7 +2715,7 @@ function WorkspacePageContent() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Converting...
                 </>
-              ) : workspaceMode === 'videos' ? (
+              ) : workspaceMode === 'videos' || (isSingleClipStyle && finalReady) ? (
                 'Export →'
               ) : (
                 'Convert to Videos →'
@@ -2608,6 +2737,11 @@ function WorkspacePageContent() {
         )}
         style={leftDrawerOpen ? { top: `${mobileDrawerFrame.top}px`, height: `${mobileDrawerFrame.height}px`, maxHeight: `${mobileDrawerFrame.height}px` } : undefined}>
           <div className="flex flex-col items-center gap-[clamp(8px,0.98vh,10px)] w-full h-full overflow-y-auto pr-[clamp(4px,0.52vw,8px)]">
+            {isSingleClipStyle && (
+              <p className="w-full text-[clamp(11px,1.27vh,13px)] text-[#616161] leading-snug px-1 pb-1">
+                This style uses one continuous avatar video. Scenes show your script; adjust music and captions on the right, then export.
+              </p>
+            )}
             {scenes.length > 0 ? (
               scenes.map((scene, index) => {
                 const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
@@ -2635,9 +2769,10 @@ function WorkspacePageContent() {
                       background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)'
                     } : {}}
                   >
-                    <div className={cn(
+                    <div                     className={cn(
                       "flex flex-row justify-center items-start gap-[clamp(8px,0.98vh,12px)] w-full bg-white rounded-[10px] transition-all",
-                      isSelected ? "p-[clamp(12px,1.76vh,22px)]" : "p-[clamp(14px,1.95vh,24px)]"
+                      isSelected ? "p-[clamp(12px,1.76vh,22px)]" : "p-[clamp(14px,1.95vh,24px)]",
+                      isSingleClipStyle && "opacity-80"
                     )}>
                       <div className="h-[clamp(73px,11vh,113px)] w-auto aspect-[9/16] max-w-[clamp(58px,7.8vw,90px)] rounded-[12px] overflow-hidden flex-shrink-0 relative">
                         {workspaceMode === 'videos' && hasVideo && !isRegeneratingImage ? (
@@ -2700,37 +2835,44 @@ function WorkspacePageContent() {
                         <span className="font-heading font-normal text-[clamp(12px,1.17vh,14px)] leading-[clamp(14px,1.56vh,16px)] text-[#616161]">
                           {timeRange}
                         </span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSceneUpload(sceneNumber);
-                            }}
-                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
-                            title="Upload scene media"
-                            aria-label={`Upload media for scene ${sceneNumber}`}
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              await handleSceneRegenerate(index);
-                            }}
-                            disabled={isRegeneratingImage}
-                            className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors disabled:opacity-50 disabled:pointer-events-none"
-                            title="Regenerate scene"
-                            aria-label={`Regenerate scene ${sceneNumber}`}
-                          >
-                            {isRegeneratingImage ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <RefreshCw className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
+                        {!isSingleClipStyle && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSceneUpload(sceneNumber);
+                              }}
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
+                              title="Upload scene media"
+                              aria-label={`Upload media for scene ${sceneNumber}`}
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                await handleSceneRegenerate(index);
+                              }}
+                              disabled={isRegeneratingImage}
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                              title="Regenerate scene"
+                              aria-label={`Regenerate scene ${sceneNumber}`}
+                            >
+                              {isRegeneratingImage ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                        {isSingleClipStyle && (
+                          <span className="text-[10px] uppercase tracking-wide text-[#9E9E9E] font-medium">
+                            Script only
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2817,6 +2959,19 @@ function WorkspacePageContent() {
                     <span className="text-[clamp(11px,1.27vh,13px)] text-gray-400 mt-1">Scene {currentSceneNumber}</span>
                   </div>
                 </div>
+              ) : isSingleClipStyle && singleClipPreviewUrl ? (
+                <video
+                  key="single-clip-preview"
+                  src={singleClipPreviewUrl}
+                  className="w-full h-full object-cover"
+                  controls
+                  onTimeUpdate={(e) => setPreviewPlaybackTime(e.currentTarget.currentTime)}
+                  onError={(e) => {
+                    console.error('Single-clip video failed to load:', singleClipPreviewUrl);
+                    const target = e.target as HTMLVideoElement;
+                    target.style.opacity = '0.5';
+                  }}
+                />
               ) : workspaceMode === 'videos' && getVideoUrl(currentSceneNumber) ? (
                 <video
                   ref={(el) => {
@@ -2867,7 +3022,9 @@ function WorkspacePageContent() {
               ) : (
                 <span className="text-[clamp(14px,1.76vh,18px)] text-gray-500">No image available</span>
               )}
-              
+
+              {previewDimensions.width > 0 && previewDimensions.height > 0 && (
+              <div className="absolute inset-0 z-10 overflow-hidden pointer-events-none">
               {/* Avatar Overlay - Only for AVATAR_CUTOUT style when enabled, hidden during converting */}
               {project?.style === 'AVATAR_CUTOUT' && avatarOverlayEnabled && avatarImageUrl && hasPreviewMedia && workspaceMode !== 'converting' && (
                 <DraggableResizableAvatar
@@ -2876,22 +3033,27 @@ function WorkspacePageContent() {
                   onPositionChange={handleAvatarPositionChange}
                   containerWidth={previewDimensions.width}
                   containerHeight={previewDimensions.height}
-                  disabled={false}
+                  containerRef={previewContainerRef}
+                  disabled={!canEditLayout}
                 />
               )}
               
               {/* Caption Overlay - For all styles when captions enabled, hidden during converting */}
               {captionsEnabled && hasPreviewMedia && workspaceMode !== 'converting' && (
                 <DraggableResizableCaption
-                  captionText={previewCaptionText}
+                  displayText={previewCaptionText}
+                  layoutText={captionLayoutText}
                   position={getCurrentCaptionPosition()}
                   style={captionStyle}
                   onPositionChange={handleCaptionPositionChange}
                   onStyleChange={handleCaptionStyleChange}
                   containerWidth={previewDimensions.width}
                   containerHeight={previewDimensions.height}
-                  disabled={false}
+                  containerRef={previewContainerRef}
+                  disabled={!canEditLayout}
                 />
+              )}
+              </div>
               )}
             </div>
 
@@ -2906,7 +3068,7 @@ function WorkspacePageContent() {
           </div>
 
           {/* Mobile mode toggle below preview */}
-          {brollVideos.length > 0 && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
+          {brollVideos.length > 0 && !isSingleClipStyle && !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
             <div className="lg:hidden flex items-center gap-1 bg-gray-100 rounded-full p-1">
               <button
                 onClick={handleBackToImages}
@@ -2968,7 +3130,8 @@ function WorkspacePageContent() {
 
                 {avatarOverlayExpanded && (
                   <div className="flex flex-col gap-[clamp(8px,1.17vh,12px)] w-full">
-                    {/* Apply to all scenes checkbox - custom styled */}
+                    {/* TODO(per-scene-layout): re-enable when caption burn-in supports perScenePositions */}
+                    {false && (
                     <label className="flex items-center gap-[clamp(8px,0.98vh,10px)] cursor-pointer group">
                       <div 
                         onClick={(e) => { e.preventDefault(); handleApplyToAllToggle(); }}
@@ -2988,7 +3151,8 @@ function WorkspacePageContent() {
                         Apply to all scenes
                       </span>
                     </label>
-                    
+                    )}
+
                     {/* Helper text */}
                     <p className="font-heading font-normal text-[clamp(10px,1.17vh,12px)] leading-[clamp(12px,1.37vh,14px)] text-[#616161]">
                       Drag the avatar on the preview to reposition. Use corner handles to resize.
@@ -3083,21 +3247,15 @@ function WorkspacePageContent() {
 
               {musicExpanded && (
                 <div className="flex flex-col gap-[clamp(8px,1.17vh,12px)] w-full flex-1 min-h-0 overflow-hidden">
-                  {/* Tabs */}
-                  <div className="flex flex-row items-center gap-0 w-full h-[clamp(28px,3.52vh,36px)] bg-[#E0E0E0] rounded-[24px] p-[clamp(2px,0.39vh,4px)] flex-shrink-0">
-                    <button
-                      onClick={() => setMusicTab('library')}
-                      className={`flex flex-row justify-center items-center gap-[clamp(8px,0.98vh,10px)] flex-1 h-full rounded-[24px] transition-colors ${musicTab === 'library' ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : ''}`}
-                    >
-                      <span className={`font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] ${musicTab === 'library' ? 'text-white' : 'text-[#212121]'}`}>Library</span>
-                    </button>
-                    <button
-                      onClick={() => setMusicTab('upload')}
-                      className={`flex flex-row justify-center items-center gap-[clamp(8px,0.98vh,10px)] flex-1 h-full rounded-[24px] transition-colors ${musicTab === 'upload' ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : ''}`}
-                    >
-                      <span className={`font-heading font-normal text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] ${musicTab === 'upload' ? 'text-white' : 'text-[#212121]'}`}>Upload</span>
-                    </button>
-                  </div>
+                  <GradientTabBar
+                    size="xs"
+                    tabs={[
+                      { id: 'library', label: 'Library' },
+                      { id: 'upload', label: 'Upload' },
+                    ]}
+                    value={musicTab}
+                    onChange={(id) => setMusicTab(id as 'library' | 'upload')}
+                  />
 
                   {musicTab === 'library' && (
                     <>
@@ -3282,77 +3440,43 @@ function WorkspacePageContent() {
 
                   {captionsEnabled && (
                     <>
+                      {selectedSceneIndex !== 0 && (
+                        <p className="text-[clamp(10px,1.07vh,11px)] text-gray-500 w-full">
+                          Caption layout is set on Scene 1 and applies to the whole video.
+                        </p>
+                      )}
+
                       {/* Display Mode */}
                       <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full">
                         <span className="text-[clamp(11px,1.27vh,13px)] font-medium text-gray-600">Display Mode</span>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setCaptionDisplayMode('word-by-word')}
-                            className={`flex-1 px-3 py-1.5 text-[clamp(10px,1.17vh,12px)] rounded-lg border transition-all ${
-                              captionDisplayMode === 'word-by-word'
-                                ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] text-white border-transparent'
-                                : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            Word-by-word
-                          </button>
-                          <button
-                            onClick={() => setCaptionDisplayMode('full-sentence')}
-                            className={`flex-1 px-3 py-1.5 text-[clamp(10px,1.17vh,12px)] rounded-lg border transition-all ${
-                              captionDisplayMode === 'full-sentence'
-                                ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C] text-white border-transparent'
-                                : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            Full sentence
-                          </button>
-                        </div>
+                        <GradientTabBar
+                          size="xs"
+                          tabs={[
+                            { id: 'word-by-word', label: 'Word-by-word' },
+                            { id: 'full-sentence', label: 'Full sentence' },
+                          ]}
+                          value={captionDisplayMode}
+                          onChange={(id) =>
+                            setCaptionDisplayMode(id as 'word-by-word' | 'full-sentence')
+                          }
+                        />
                       </div>
 
                       {/* Style Presets */}
                       <div className="flex flex-col gap-[clamp(6px,0.78vh,8px)] w-full">
                         <span className="text-[clamp(11px,1.27vh,13px)] font-medium text-gray-600">Style Preset</span>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => applyCaptionPreset('light')}
-                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
-                              captionStylePreset === 'light'
-                                ? 'border-[#E86412] bg-orange-50'
-                                : 'border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            <div className="w-5 h-5 rounded bg-white border border-gray-300 flex items-center justify-center">
-                              <span className="text-[8px] font-bold text-black">Aa</span>
-                            </div>
-                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Light</span>
-                          </button>
-                          <button
-                            onClick={() => applyCaptionPreset('dark')}
-                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
-                              captionStylePreset === 'dark'
-                                ? 'border-[#E86412] bg-orange-50'
-                                : 'border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            <div className="w-5 h-5 rounded bg-black flex items-center justify-center">
-                              <span className="text-[8px] font-bold text-white">Aa</span>
-                            </div>
-                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Dark</span>
-                          </button>
-                          <button
-                            onClick={() => applyCaptionPreset('transparent')}
-                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
-                              captionStylePreset === 'transparent'
-                                ? 'border-[#E86412] bg-orange-50'
-                                : 'border-gray-200 hover:border-gray-300'
-                            }`}
-                          >
-                            <div className="w-5 h-5 rounded flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200">
-                              <span className="text-[8px] font-bold text-gray-800 drop-shadow-sm">Aa</span>
-                            </div>
-                            <span className="text-[clamp(10px,1.17vh,12px)] text-gray-700">Transparent</span>
-                          </button>
-                        </div>
+                        <GradientTabBar
+                          size="xs"
+                          tabs={[
+                            { id: 'light', label: 'Light' },
+                            { id: 'dark', label: 'Dark' },
+                            { id: 'transparent', label: 'Transparent' },
+                          ]}
+                          value={captionStylePreset === 'custom' ? 'dark' : captionStylePreset}
+                          onChange={(id) =>
+                            applyCaptionPreset(id as 'light' | 'dark' | 'transparent')
+                          }
+                        />
                         {captionStylePreset === 'custom' && (
                           <div className="text-[clamp(10px,1.07vh,11px)] text-gray-500 text-center">
                             Custom style - edit using the overlay toolbar
@@ -3360,7 +3484,8 @@ function WorkspacePageContent() {
                         )}
                       </div>
 
-                      {/* Apply to All Scenes */}
+                      {/* TODO(per-scene-layout): re-enable when export supports perScenePositions */}
+                      {false && (
                       <div className="flex items-center gap-2 w-full pt-1">
                         <button
                           onClick={() => setCaptionApplyToAll(!captionApplyToAll)}
@@ -3374,6 +3499,7 @@ function WorkspacePageContent() {
                         </button>
                         <span className="text-[clamp(11px,1.27vh,13px)] text-gray-700">Apply to all scenes</span>
                       </div>
+                      )}
 
                       {/* Tip */}
                       <div className="text-[clamp(10px,1.07vh,11px)] text-gray-400 italic">

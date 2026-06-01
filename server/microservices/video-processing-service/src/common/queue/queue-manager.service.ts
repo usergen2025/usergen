@@ -12,6 +12,7 @@ export enum JobType {
   SCENE_COMPOSITE = 'scene-composite',
   STOCK_DOWNLOAD = 'stock-download',
   PREVIEW_DERIVATIVES = 'preview-derivatives',
+  BRAND_PACKAGING = 'brand-packaging',
 }
 
 export interface JobData {
@@ -38,6 +39,7 @@ export class QueueManagerService {
     @InjectQueue('scene-composite') private sceneCompositeQueue: Queue,
     @InjectQueue('stock-download') private stockDownloadQueue: Queue,
     @InjectQueue('preview-derivatives') private previewDerivativesQueue: Queue,
+    @InjectQueue('brand-packaging') private brandPackagingQueue: Queue,
     private readonly configService: ConfigService,
   ) {
     this.concurrencyPerUser = parseInt(
@@ -237,6 +239,40 @@ export class QueueManagerService {
   }
 
   /**
+   * Add brand packaging job (Phase B — end-card plate prep).
+   */
+  async addBrandPackagingJob(data: JobData): Promise<string> {
+    const jobId = `brand-packaging-${data.projectId}`;
+    try {
+      const existing = await this.brandPackagingQueue.getJob(jobId);
+      if (existing) {
+        const state = await existing.getState();
+        if (state === 'completed' || state === 'failed') {
+          await existing.remove();
+        }
+      }
+      const job = await this.brandPackagingQueue.add(
+        `brand-packaging-${data.projectId}-${data.userId}`,
+        data,
+        {
+          jobId,
+          attempts: this.maxAttempts,
+          removeOnComplete: { age: 3600, count: 100 },
+          removeOnFail: { age: 86400, count: 50 },
+        },
+      );
+      console.log(`[QueueManager] Added brand packaging job: ${job.id}`);
+      return job.id!;
+    } catch (err: any) {
+      if (err?.message?.includes('already exists') || err?.code === 'JOB_ALREADY_EXISTS') {
+        console.log(`[QueueManager] Brand packaging job ${jobId} already queued, skipping duplicate`);
+        return jobId;
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Get job status
    */
   async getJobStatus(queueName: JobType, jobId: string) {
@@ -262,6 +298,9 @@ export class QueueManagerService {
         break;
       case JobType.PREVIEW_DERIVATIVES:
         queue = this.previewDerivativesQueue;
+        break;
+      case JobType.BRAND_PACKAGING:
+        queue = this.brandPackagingQueue;
         break;
       default:
         throw new Error(`Unknown queue: ${queueName}`);

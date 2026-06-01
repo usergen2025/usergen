@@ -15,6 +15,7 @@ import {
   isPreviewReady,
 } from '@/lib/video-urls';
 import { cn } from '@/lib/utils/cn';
+import { normalizeWebsiteUrl } from '@/lib/utils/normalize-website-url';
 import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
@@ -69,6 +70,9 @@ const VIDEO_DURATION_OPTIONS: { value: VideoDurationChoice; label: string }[] = 
   { value: '90 seconds', label: '1 min 30 sec' },
 ];
 
+/** Set false to restore ad / promo / tutorial / ai-clip picker before style selection. */
+const SKIP_VIDEO_TYPE_STEP = true;
+
 function AIChatPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -76,7 +80,9 @@ function AIChatPageContent() {
   const { showToast } = useToast();
   const [user, setUser] = useState<User | null>(null);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<ChatStep>('welcome');
+  const [currentStep, setCurrentStep] = useState<ChatStep>(
+    SKIP_VIDEO_TYPE_STEP ? 'style-selection' : 'welcome',
+  );
   const [showAddAssetsModal, setShowAddAssetsModal] = useState(false);
   // Modal state - temporary, only visible in modal
   const [modalLogoAsset, setModalLogoAsset] = useState<Asset | null>(null);
@@ -1017,9 +1023,9 @@ function AIChatPageContent() {
         return;
       }
       
-      // Validate file type (PNG or JPG only)
-      if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
-        alert('Please select a valid image file (PNG or JPG only)');
+      // Validate file type (PNG, JPG, or SVG for logos)
+      if (!['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'].includes(file.type)) {
+        alert('Please select a valid image file (PNG, JPG, or SVG only)');
         return;
       }
       
@@ -1037,7 +1043,7 @@ function AIChatPageContent() {
         preview: previewUrl
       });
     } else {
-      alert('Please select a valid image file (PNG or JPG)');
+      alert('Please select a valid image file (PNG, JPG, or SVG)');
     }
     // Reset input so same file can be selected again
     if (logoFileInputRef.current) {
@@ -1135,18 +1141,19 @@ function AIChatPageContent() {
     
     if (modalCompanyUrl && modalCompanyUrl.trim()) {
       const trimmedUrl = modalCompanyUrl.trim();
+      const normalizedUrl = normalizeWebsiteUrl(trimmedUrl) || trimmedUrl;
       // Check if URL already exists in pendingAssets to preserve its ID
       // Match by URL value (name or url property) to preserve ID if user didn't change it
       const existingUrl = pendingAssets.find(a => 
         a.id.startsWith('url-') && 
-        (a.url === trimmedUrl || a.name === trimmedUrl)
+        (a.url === normalizedUrl || a.url === trimmedUrl || a.name === trimmedUrl)
       );
       if (existingUrl) {
         // Preserve existing URL asset ID if URL value matches
         assetsToAttach.push({
           ...existingUrl,
           name: trimmedUrl,
-          url: trimmedUrl
+          url: normalizedUrl
         });
       } else {
         // Create new URL asset with new ID
@@ -1154,7 +1161,7 @@ function AIChatPageContent() {
           id: `url-${Date.now()}`,
           name: trimmedUrl,
           type: 'url',
-          url: trimmedUrl
+          url: normalizedUrl
         });
       }
     }
@@ -1221,6 +1228,8 @@ function AIChatPageContent() {
       const assetsForBackend = await Promise.all(
         assetsToDisplay.map(async (asset) => {
           let assetUrl = asset.url;
+          let localUrl: string | undefined;
+          let localPath: string | undefined;
           
           // If asset has a file, upload it to get a public URL
           if (asset.file) {
@@ -1230,7 +1239,8 @@ function AIChatPageContent() {
                 const uploadResponse = await apiClient.uploadProductImage(asset.file);
                 if (uploadResponse.success && uploadResponse.data) {
                   assetUrl = uploadResponse.data.publicUrl;
-                  // Update the asset with the public URL
+                  localUrl = uploadResponse.data.localUrl;
+                  localPath = uploadResponse.data.localPath;
                   asset.url = assetUrl;
                 }
               }
@@ -1252,7 +1262,8 @@ function AIChatPageContent() {
                 const uploadResponse = await apiClient.uploadProductImage(file);
                 if (uploadResponse.success && uploadResponse.data) {
                   assetUrl = uploadResponse.data.publicUrl;
-                  // Update the asset with the public URL
+                  localUrl = uploadResponse.data.localUrl;
+                  localPath = uploadResponse.data.localPath;
                   asset.url = assetUrl;
                 }
               }
@@ -1276,7 +1287,9 @@ function AIChatPageContent() {
           
           return {
             id: asset.id,
-            url: assetUrl || '',
+            url: asset.type === 'url' ? (normalizeWebsiteUrl(assetUrl || '') || assetUrl || '') : (assetUrl || ''),
+            localUrl,
+            localPath,
             type: asset.type || 'image',
             category: category,
             label: asset.name || category,
@@ -1594,7 +1607,9 @@ function AIChatPageContent() {
       // Extract product image URL from attached assets (if any)
       // Upload File to backend to get public URL (FAL storage in local, backend URL in prod)
       let productImageUrl: string | null = null;
-      const productImageAsset = attachedAssets.find(asset => asset.type === 'image');
+      const productImageAsset = attachedAssets.find(
+        (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
+      );
       if (productImageAsset) {
         if (productImageAsset.url && (productImageAsset.url.startsWith('http://') || productImageAsset.url.startsWith('https://'))) {
           // Already has a public HTTP(S) URL - use it directly
@@ -1843,7 +1858,9 @@ function AIChatPageContent() {
       // Extract product image URL from attached assets (if any)
       // Upload File to backend to get public URL (FAL storage in local, backend URL in prod)
       let productImageUrl: string | null = null;
-      const productImageAsset = attachedAssets.find(asset => asset.type === 'image');
+      const productImageAsset = attachedAssets.find(
+        (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
+      );
       if (productImageAsset) {
         if (productImageAsset.url && (productImageAsset.url.startsWith('http://') || productImageAsset.url.startsWith('https://'))) {
           // Already has a public HTTP(S) URL - use it directly
@@ -3560,6 +3577,18 @@ function AIChatPageContent() {
   };
 
   // Start avatar-only generation (no B-roll needed)
+  const triggerBrandPackaging = async (projectIdToUse: string) => {
+    try {
+      const response = await apiClient.startBrandPackaging(projectIdToUse);
+      if (response.success && response.data?.jobId) {
+        console.log('[AIChat] Brand packaging started:', response.data.jobId, response.data.status);
+        subscribeToJob(response.data.jobId, 'brand-packaging');
+      }
+    } catch (error) {
+      console.warn('[AIChat] Brand packaging start failed (non-blocking):', error);
+    }
+  };
+
   const startAvatarOnlyGeneration = async (projectIdToUse: string) => {
     setCurrentStep('audio-image-generation');
     setGenerationProgress(0);
@@ -3587,6 +3616,8 @@ function AIChatPageContent() {
       showToast('Failed to start voice generation', 'error');
       return;
     }
+
+    void triggerBrandPackaging(projectIdToUse);
 
     console.log('[AIChat] Avatar-only style detected, skipping b-roll image generation');
     setIsGeneratingBroll(false);
@@ -3639,6 +3670,7 @@ function AIChatPageContent() {
           audioJobIdRef.current = audioResponse.data.jobId;
           console.log('[AIChat] Started audio generation for stock-auto, jobId:', audioResponse.data.jobId);
           subscribeToJob(audioResponse.data.jobId, 'audio-generation');
+          void triggerBrandPackaging(projectId);
           
           // Wait for audio generation to complete by polling the project
           // This ensures we have actual audio durations before downloading stock videos
@@ -4272,6 +4304,8 @@ function AIChatPageContent() {
       return;
     }
 
+    void triggerBrandPackaging(projectId);
+
     // Start broll image generation for all scenes (non-avatar-only styles)
     if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
       try {
@@ -4444,6 +4478,7 @@ function AIChatPageContent() {
                     metadata: {
                       generationFlow: 'AI_CHAT',
                       aiChatStep: 'workspace',
+                      workspaceLayout: 'single-avatar',
                     },
                   });
                 } catch (err) {
@@ -4708,6 +4743,17 @@ function AIChatPageContent() {
       const shouldSkipAvatarSelection = styleToUse === 'product-only' || styleToUse === 'broll-only';
       const nextStep = shouldSkipAvatarSelection ? 'voice-selection' : 'avatar-selection';
       
+      const validAssetsForScriptCreate = attachedAssets
+        .filter(a => a.url && (a.url.startsWith('http://') || a.url.startsWith('https://') || a.url.startsWith('/uploads')))
+        .map(asset => ({
+          id: asset.id,
+          url: asset.url || asset.preview || '',
+          type: asset.type || 'image',
+          category: asset.category || (asset.id.startsWith('logo-') ? 'logo' : asset.id.startsWith('product-') ? 'product' : 'reference'),
+          label: asset.name || asset.category,
+          userLabel: asset.category || (asset.id.startsWith('logo-') ? 'logo' : undefined),
+        }));
+
       const createResponse = await apiClient.createVideoProject({
         videoType: videoType || 'WITHOUT_AVATAR',
         script: JSON.stringify(generatedScript),
@@ -4720,7 +4766,7 @@ function AIChatPageContent() {
           aiChatStep: nextStep, // Set correct step based on style
           aiChatAvatarSubstep: shouldSkipAvatarSelection ? undefined : 'question', // Skip avatar substep for product-only
           aiChatVoiceSubstep: 'question',
-          assets: JSON.stringify(attachedAssets),
+          ...(validAssetsForScriptCreate.length > 0 ? { assets: validAssetsForScriptCreate } : {}),
           formattedScript: formattedScript,
           selectedOption: selectedOption,
           userScriptMessage: userScriptMessage,
@@ -5403,6 +5449,8 @@ function AIChatPageContent() {
       if (styleSubstep === 'confirmed') {
         // Go back to selection substep
         setStyleSubstep('selection');
+      } else if (SKIP_VIDEO_TYPE_STEP) {
+        router.push('/');
       } else {
         // Go back to option-selected step (style is now before assets)
         setCurrentStep('option-selected');
@@ -5474,36 +5522,109 @@ function AIChatPageContent() {
   };
 
   const getProgressStep = () => {
-    switch(currentStep) {
-      case 'welcome': return 0;
-      case 'option-selected': return 1;
-      case 'style-selection': return 2;
-      case 'asset-upload': return 3;
-      case 'assets-attached': return 3;
-      case 'script-input': return 4;
-      case 'script-generated': return 4;
-      case 'avatar-selection': return 5;
-      case 'voice-selection': return 6;
-      case 'audio-image-generation': return 7;
-      case 'workspace': return 7;
-      default: return 0;
+    if (SKIP_VIDEO_TYPE_STEP) {
+      switch (currentStep) {
+        case 'welcome':
+        case 'option-selected':
+          return 0;
+        case 'style-selection':
+          return 1;
+        case 'asset-upload':
+        case 'assets-attached':
+          return 2;
+        case 'script-input':
+        case 'script-generated':
+          return 3;
+        case 'avatar-selection':
+          return 4;
+        case 'voice-selection':
+          return 5;
+        case 'audio-image-generation':
+        case 'workspace':
+          return 6;
+        default:
+          return 1;
+      }
+    }
+    switch (currentStep) {
+      case 'welcome':
+        return 0;
+      case 'option-selected':
+        return 1;
+      case 'style-selection':
+        return 2;
+      case 'asset-upload':
+        return 3;
+      case 'assets-attached':
+        return 3;
+      case 'script-input':
+        return 4;
+      case 'script-generated':
+        return 4;
+      case 'avatar-selection':
+        return 5;
+      case 'voice-selection':
+        return 6;
+      case 'audio-image-generation':
+        return 7;
+      case 'workspace':
+        return 7;
+      default:
+        return 0;
     }
   };
 
   const getProgressMessage = () => {
-    switch(currentStep) {
-      case 'welcome': return "Let's kick things off!";
-      case 'option-selected': return "Choose your video style...";
-      case 'style-selection': return "Pick your video style...";
-      case 'asset-upload': return "Upload your visuals so I can shape your video.";
+    if (SKIP_VIDEO_TYPE_STEP) {
+      switch (currentStep) {
+        case 'welcome':
+        case 'option-selected':
+          return "Let's kick things off!";
+        case 'style-selection':
+          return 'Pick your video style...';
+        case 'asset-upload':
+          return 'Upload your visuals so I can shape your video.';
+        case 'assets-attached':
+        case 'script-input':
+          return 'Awesome! Now share your idea for video or paste your script.';
+        case 'script-generated':
+          return 'Nice! Your story is set.';
+        case 'avatar-selection':
+          return 'Choose your avatar style to bring the story to life.';
+        case 'voice-selection':
+          return 'Time to give your avatar a voice.';
+        case 'audio-image-generation':
+          return 'Generating audio and images...';
+        case 'workspace':
+          return 'Your workspace is ready!';
+        default:
+          return 'Pick your video style...';
+      }
+    }
+    switch (currentStep) {
+      case 'welcome':
+        return "Let's kick things off!";
+      case 'option-selected':
+        return 'Choose your video style...';
+      case 'style-selection':
+        return 'Pick your video style...';
+      case 'asset-upload':
+        return 'Upload your visuals so I can shape your video.';
       case 'assets-attached':
-      case 'script-input': return "Awesome! Now share your idea for video or paste your script.";
-      case 'script-generated': return "Nice! Your story is set.";
-      case 'avatar-selection': return "Choose your avatar style to bring the story to life.";
-      case 'voice-selection': return "Time to give your avatar a voice.";
-      case 'audio-image-generation': return "Generating audio and images...";
-      case 'workspace': return "Your workspace is ready!";
-      default: return "Let's kick things off!";
+      case 'script-input':
+        return 'Awesome! Now share your idea for video or paste your script.';
+      case 'script-generated':
+        return 'Nice! Your story is set.';
+      case 'avatar-selection':
+        return 'Choose your avatar style to bring the story to life.';
+      case 'voice-selection':
+        return 'Time to give your avatar a voice.';
+      case 'audio-image-generation':
+        return 'Generating audio and images...';
+      case 'workspace':
+        return 'Your workspace is ready!';
+      default:
+        return "Let's kick things off!";
     }
   };
 
@@ -5695,13 +5816,15 @@ function AIChatPageContent() {
                 <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[428px]">
                   Your creative studio powered by AI.
                   <br />
-                  So, tell me... what kind of video are we making today?
+                  {SKIP_VIDEO_TYPE_STEP
+                    ? "Let's pick a format for your video."
+                    : 'So, tell me... what kind of video are we making today?'}
                 </p>
               </div>
             )}
 
-            {/* Option Selected - Step 1 - Always show user response once option is selected */}
-            {hasReachedStep('option-selected') && (
+            {/* Option Selected - Step 1 - user bubble (hidden when SKIP_VIDEO_TYPE_STEP) */}
+            {!SKIP_VIDEO_TYPE_STEP && hasReachedStep('option-selected') && (
               <>
                 {/* User Response - Always show once option is selected (even after moving forward) */}
                 {selectedOption && (
@@ -9982,8 +10105,8 @@ Read everything on screen smoothly.`}
             </div>
           )}
 
-          {/* Suggested Actions - Only show on welcome step - Height responsive */}
-          {currentStep === 'welcome' && (
+          {/* Suggested Actions - 4 video types (restore by setting SKIP_VIDEO_TYPE_STEP = false) */}
+          {!SKIP_VIDEO_TYPE_STEP && currentStep === 'welcome' && (
             <div className="flex flex-row items-start gap-[clamp(0.25rem,0.5vh,8px)] w-full h-[clamp(2rem,4.2vh,42px)] flex-wrap md:flex-nowrap flex-shrink-0 mt-auto">
               {/* Create an ad */}
               <button

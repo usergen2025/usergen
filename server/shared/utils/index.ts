@@ -281,6 +281,8 @@ export class QueueHelper {
   }
 }
 
+export { normalizeWebsiteUrl, extractDomainFromUrl } from './normalize-website-url';
+
 export class LoggerHelper {
   static formatLogMessage(level: string, message: string, meta?: any): string {
     const timestamp = new Date().toISOString();

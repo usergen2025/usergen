@@ -47,6 +47,15 @@ Scripts may include:
 
 Optional future: `useLiveWebSearch: true` on `generateVideoScript` to force search regardless of keywords.
 
+## URL asset forced search
+
+When `metadata.assets` contains `type: 'url'` and `SCRIPT_WEB_SEARCH_ON_URL_ASSET=true` (default):
+
+1. `ScriptsService` calls `ScriptWebSearchService.fetchGroundedFactsForWebsite`.
+2. Summary is merged into script prompts and saved as `metadata.urlBrandContext`.
+
+Normalize bare domains to `https://` via `@shared/utils/normalize-website-url`.
+
 ## Avatar defaults (related)
 
 See code in `AvatarsService`:

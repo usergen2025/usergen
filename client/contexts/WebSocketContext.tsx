@@ -8,7 +8,14 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
 
 export interface JobStatusUpdate {
   jobId: string;
-  queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download';
+  queueType:
+    | 'audio-generation'
+    | 'image-generation'
+    | 'video-generation'
+    | 'scene-composite'
+    | 'stock-download'
+    | 'brand-packaging'
+    | 'preview-derivatives';
   state: 'completed' | 'failed' | 'processing' | 'progress';
   result?: any;
   progress?: number;
@@ -27,6 +34,11 @@ interface WebSocketContextType {
   isConnected: boolean;
   subscribeToJob: (jobId: string, queueType: string, handler: (update: JobStatusUpdate) => void) => () => void;
   unsubscribeFromJob: (jobId: string) => void;
+  /** User-room events (e.g. preview-derivatives) without per-job subscription */
+  subscribeToQueueType: (
+    queueType: JobStatusUpdate['queueType'],
+    handler: (update: JobStatusUpdate) => void,
+  ) => () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType>({
@@ -34,6 +46,7 @@ const WebSocketContext = createContext<WebSocketContextType>({
   isConnected: false,
   subscribeToJob: () => () => {},
   unsubscribeFromJob: () => {},
+  subscribeToQueueType: () => () => {},
 });
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
@@ -42,6 +55,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const jobHandlersRef = useRef<Map<string, Set<(update: JobStatusUpdate) => void>>>(new Map());
   const jobQueueTypesRef = useRef<Map<string, string>>(new Map()); // Track queue type per job
+  const queueTypeHandlersRef = useRef<
+    Map<JobStatusUpdate['queueType'], Set<(update: JobStatusUpdate) => void>>
+  >(new Map());
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const isManuallyClosedRef = useRef(false);
@@ -206,6 +222,17 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         sceneNumber: update.result?.image?.sceneNumber ?? update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
       });
 
+      const queueHandlers = queueTypeHandlersRef.current.get(update.queueType);
+      if (queueHandlers && queueHandlers.size > 0) {
+        queueHandlers.forEach((handler) => {
+          try {
+            handler(update);
+          } catch (error) {
+            console.error('[WebSocketContext] ❌ Error in queue-type handler:', error);
+          }
+        });
+      }
+
       // Call all handlers subscribed to this job
       const handlers = jobHandlersRef.current.get(update.jobId);
       if (handlers && handlers.size > 0) {
@@ -217,7 +244,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             console.error('[WebSocketContext] ❌ Error in job handler:', error);
           }
         });
-      } else {
+      } else if (!queueHandlers?.size) {
         console.warn(`[WebSocketContext] ⚠️ No handlers found for job ${update.jobId}. Registered jobs:`, Array.from(jobHandlersRef.current.keys()));
       }
     });
@@ -236,6 +263,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     setIsConnected(false);
     jobHandlersRef.current.clear();
     jobQueueTypesRef.current.clear();
+    queueTypeHandlersRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -331,6 +359,25 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const subscribeToQueueType = useCallback(
+    (queueType: JobStatusUpdate['queueType'], handler: (update: JobStatusUpdate) => void) => {
+      if (!queueTypeHandlersRef.current.has(queueType)) {
+        queueTypeHandlersRef.current.set(queueType, new Set());
+      }
+      queueTypeHandlersRef.current.get(queueType)!.add(handler);
+
+      return () => {
+        const handlers = queueTypeHandlersRef.current.get(queueType);
+        if (!handlers) return;
+        handlers.delete(handler);
+        if (handlers.size === 0) {
+          queueTypeHandlersRef.current.delete(queueType);
+        }
+      };
+    },
+    [],
+  );
+
   return (
     <WebSocketContext.Provider
       value={{
@@ -338,6 +385,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         isConnected,
         subscribeToJob,
         unsubscribeFromJob,
+        subscribeToQueueType,
       }}
     >
       {children}

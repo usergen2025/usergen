@@ -98,14 +98,21 @@ export class AssetProcessorService {
     }
 
     const toUrl = (asset: AnalyzedAsset): string | null => {
+      if (asset.originalAsset?.type === 'url') return null;
       const u = asset.originalAsset?.publicUrl ?? asset.url ?? asset.originalAsset?.url;
       return u && (u.startsWith('http://') || u.startsWith('https://')) ? u : null;
+    };
+
+    const isReferenceImageAsset = (asset: AnalyzedAsset): boolean => {
+      if (asset.originalAsset?.type === 'url') return false;
+      if (asset.category === 'reference' && asset.originalAsset?.type === 'url') return false;
+      return true;
     };
 
     const productAssets = this.getProductAssets(assets);
     const logoAssets = assets.filter(a => a.category === 'logo');
     const restAssets = assets.filter(
-      a => a.category !== 'product' && a.category !== 'logo'
+      a => a.category !== 'product' && a.category !== 'logo' && isReferenceImageAsset(a),
     );
 
     const productUrls = productAssets.map(toUrl).filter((u): u is string => !!u);

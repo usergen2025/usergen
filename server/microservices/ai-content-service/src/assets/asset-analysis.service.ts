@@ -51,6 +51,14 @@ export interface AnalyzedAsset {
   suitableAsBackground?: boolean;
   /** Neutral factual visual inventory for script/B-roll; from vision JSON; no real-person identification */
   visualScriptContext?: string;
+  /** Logo preprocessing hints from vision analysis */
+  logoProcessingHints?: {
+    markBoundingBox?: { x: number; y: number; width: number; height: number };
+    backgroundType?: 'transparent' | 'solid' | 'busy' | 'unknown';
+    dominantColors?: string[];
+    cornerOverlaySuitable?: boolean;
+    endCardBackgroundHint?: 'neutral' | 'brand-gradient' | 'byteplus';
+  };
   analysisMetadata: {
     model: string;
     analyzedAt: string;
@@ -125,6 +133,7 @@ export class AssetAnalysisService {
       const recommendedUsage = (category === 'product' || category === 'background' || category === 'environment') ? this.extractRecommendedUsage(analysis, category) : undefined;
       const suitableAsBackground = (category === 'background' || category === 'environment') ? this.extractSuitableAsBackground(analysis) : undefined;
       const visualScriptContext = this.extractVisualScriptContext(analysis);
+      const logoProcessingHints = category === 'logo' ? this.extractLogoProcessingHints(analysis) : undefined;
 
       return {
         id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -145,6 +154,7 @@ export class AssetAnalysisService {
         recommendedUsage,
         suitableAsBackground,
         visualScriptContext,
+        logoProcessingHints,
         analysisMetadata: {
           model: 'gpt-4o',
           analyzedAt: new Date().toISOString(),
@@ -227,6 +237,11 @@ export class AssetAnalysisService {
 6. Is the logo on a clean or solid/transparent background suitable for use as a reference overlay in image generation (e.g. logo on white/black/transparent)? Set suitableForReferenceOverlay true only if the logo can be cleanly used as a reference image.
 7. suitableForTopRightBug: true only if the logo is a compact mark (not a full-width banner), would stay readable when scaled to ~10% of frame width, and is suitable for a small fixed corner placement. False for busy full-bleed wordmarks or illegible-at-small-size designs.
 8. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual description of the full frame (composition, background, colors, how the logo appears, lighting). Suitable for marketing copy and video scripts. Treat as a staged commercial/catalog asset. Do NOT identify or name real individuals.
+9. markBoundingBox: normalized 0-1 bounding box { x, y, width, height } of the primary logo mark (exclude excess padding).
+10. backgroundType: one of transparent, solid, busy (photo/scene behind logo).
+11. dominantColors: array of 2-4 hex colors from the logo mark.
+12. cornerOverlaySuitable: true if compact mark readable at ~10% frame width in top-right.
+13. endCardBackgroundHint: neutral | brand-gradient | byteplus (byteplus if busy photo background).
 
 Return your analysis as a JSON object with the following structure:
 {
@@ -238,7 +253,12 @@ Return your analysis as a JSON object with the following structure:
   "designStyle": "style description",
   "suitableForReferenceOverlay": true/false,
   "suitableForTopRightBug": true/false,
-  "visualScriptContext": "multi-sentence neutral visual description as specified above"
+  "visualScriptContext": "multi-sentence neutral visual description as specified above",
+  "markBoundingBox": { "x": 0.1, "y": 0.2, "width": 0.8, "height": 0.6 },
+  "backgroundType": "transparent|solid|busy",
+  "dominantColors": ["#FF0000", "#000000"],
+  "cornerOverlaySuitable": true/false,
+  "endCardBackgroundHint": "neutral|brand-gradient|byteplus"
 }`;
     } else if (userLabel?.toLowerCase() === 'product' || userLabel?.toLowerCase().includes('product')) {
       return `Analyze this product image and extract:
@@ -509,10 +529,50 @@ Return your analysis as a JSON object with the following structure:
   }
 
   private extractSuitableForTopRightBug(analysis: any): boolean | undefined {
+    if (typeof analysis.cornerOverlaySuitable === 'boolean') {
+      return analysis.cornerOverlaySuitable;
+    }
     if (typeof analysis.suitableForTopRightBug === 'boolean') {
       return analysis.suitableForTopRightBug;
     }
     return undefined;
+  }
+
+  private extractLogoProcessingHints(analysis: any): AnalyzedAsset['logoProcessingHints'] {
+    const box = analysis.markBoundingBox;
+    let markBoundingBox: { x: number; y: number; width: number; height: number } | undefined;
+    if (box && typeof box === 'object') {
+      const x = Number(box.x);
+      const y = Number(box.y);
+      const width = Number(box.width);
+      const height = Number(box.height);
+      if ([x, y, width, height].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)) {
+        markBoundingBox = { x, y, width, height };
+      }
+    }
+    const bg = analysis.backgroundType;
+    const backgroundType =
+      bg === 'transparent' || bg === 'solid' || bg === 'busy' ? bg : 'unknown';
+    const dominantColors = Array.isArray(analysis.dominantColors)
+      ? analysis.dominantColors.filter((c: unknown) => typeof c === 'string').slice(0, 4)
+      : Array.isArray(analysis.colors)
+        ? analysis.colors.filter((c: unknown) => typeof c === 'string').slice(0, 4)
+        : undefined;
+    const hint = analysis.endCardBackgroundHint;
+    const endCardBackgroundHint =
+      hint === 'neutral' || hint === 'brand-gradient' || hint === 'byteplus' ? hint : undefined;
+    return {
+      markBoundingBox,
+      backgroundType,
+      dominantColors,
+      cornerOverlaySuitable:
+        typeof analysis.cornerOverlaySuitable === 'boolean'
+          ? analysis.cornerOverlaySuitable
+          : typeof analysis.suitableForTopRightBug === 'boolean'
+            ? analysis.suitableForTopRightBug
+            : undefined,
+      endCardBackgroundHint,
+    };
   }
 
   private extractCanUseAsDirectBroll(analysis: any): boolean {

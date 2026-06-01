@@ -18,6 +18,7 @@ import { CompositorModule } from '../compositor/compositor.module';
 import { QueueModule } from '../common/queue/queue.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ProjectLogModule } from '../common/logging/project-log.module';
+import { BrandModule } from '../brand/brand.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { ProjectLogModule } from '../common/logging/project-log.module';
     VideoModule,
     NotificationsModule,
     ProjectLogModule,
+    BrandModule,
     forwardRef(() => QueueModule),
   ],
   providers: [

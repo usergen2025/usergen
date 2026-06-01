@@ -3,9 +3,12 @@ import { Job } from 'bullmq';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AssetAnalysisService, AnalyzedAsset } from '../../asset-analysis.service';
+import { LogoPreprocessingService } from '../../logo-preprocessing.service';
+import { LogoBrandMetadata, BrandPackagingMetadata } from '@shared/brand/logo-brand.types';
 import { LoggerService } from '../../../common/logger/logger.service';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 
 interface AssetAnalysisJobData {
   projectId: string;
@@ -28,6 +31,7 @@ export class AssetAnalysisProcessor extends WorkerHost {
 
   constructor(
     private readonly assetAnalysisService: AssetAnalysisService,
+    private readonly logoPreprocessingService: LogoPreprocessingService,
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
   ) {
@@ -74,49 +78,35 @@ export class AssetAnalysisProcessor extends WorkerHost {
       const analyzedAssets: AnalyzedAsset[] = [...detectedAnalyzedAssets];
       const failedAssets: Array<{ id: string; error: string }> = [];
 
-      // Handle URL content that couldn't be analyzed as images (these are HTML pages)
-      // Store them as reference assets with extracted content in metadata
+      // HTML URL assets: script grounding uses web search at script generation — do not add empty reference rows
       for (const urlContent of urlContents) {
         if (urlContent.error) {
-          failedAssets.push({
-            id: urlContent.id,
-            error: urlContent.error,
-          });
-          this.logger.warn(
-            `[AssetAnalysisProcessor] Failed to process URL ${urlContent.id}: ${urlContent.error}`,
-            'AssetAnalysisProcessor'
-          );
+          failedAssets.push({ id: urlContent.id, error: urlContent.error });
         }
-        
-        // Create a reference asset for HTML URLs (even if extraction failed, they're still reference URLs)
-        const asset = assets.find(a => a.id === urlContent.id);
-        if (asset) {
-          const extracted = urlContent.extractedContent?.trim();
-          analyzedAssets.push({
-            id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            originalAsset: {
-              id: asset.id,
-              url: asset.url,
-              originalUrl: asset.url,
-              type: 'url',
-              userLabel: asset.userLabel,
-            },
-            category: 'reference',
-            confidence: 0.7,
-            visualScriptContext: extracted
-              ? extracted.slice(0, 2000)
-              : undefined,
-            analysisMetadata: {
-              model: 'url-content-extraction',
-              analyzedAt: new Date().toISOString(),
-              processingTime: 0,
-            },
-            // Store HTML URL metadata separately for downstream use
-            urlMetadata: {
-              isHtmlUrl: true,
-              extractedContent: urlContent.extractedContent,
-            },
-          } as AnalyzedAsset);
+      }
+
+      await job.updateProgress(92);
+
+      let logoBrand: LogoBrandMetadata | null = null;
+      const logoAnalyzed = analyzedAssets.find(
+        (a) => a.category === 'logo' || a.originalAsset?.userLabel?.toLowerCase() === 'logo',
+      );
+      if (logoAnalyzed) {
+        logoBrand = await this.logoPreprocessingService.processLogo(
+          projectId,
+          userId,
+          logoAnalyzed,
+        );
+        if (logoBrand) {
+          this.logger.log(
+            `[AssetAnalysisProcessor] Logo brand packaging ready for project ${projectId}`,
+            'AssetAnalysisProcessor',
+          );
+        } else {
+          this.logger.warn(
+            `[AssetAnalysisProcessor] Logo detected but logoBrand preprocessing failed for project ${projectId} — render-time fallback will attempt recovery`,
+            'AssetAnalysisProcessor',
+          );
         }
       }
 
@@ -125,14 +115,28 @@ export class AssetAnalysisProcessor extends WorkerHost {
       // Update project metadata with analyzed assets
       await this.updateProjectMetadata(projectId, userId, {
         analyzedAssets,
+        logoBrand: logoBrand || undefined,
+        brandPackaging: logoBrand
+          ? {
+              status: 'pending' as const,
+              cornerReady: true,
+              endCardPlateReady: false,
+              updatedAt: new Date().toISOString(),
+            }
+          : undefined,
         assetAnalysis: {
           status: 'completed',
           totalAssets: assets.length,
           completedAssets: analyzedAssets.length,
           failedAssets: failedAssets.length,
+          assetsFingerprint: this.computeAssetsFingerprint(assets),
           completedAt: new Date().toISOString(),
         },
       });
+
+      if (logoBrand) {
+        await this.triggerBrandPackaging(projectId, userId);
+      }
 
       await job.updateProgress(100);
 
@@ -293,12 +297,15 @@ export class AssetAnalysisProcessor extends WorkerHost {
     userId: string,
     metadataUpdate: {
       analyzedAssets: AnalyzedAsset[];
+      logoBrand?: LogoBrandMetadata;
+      brandPackaging?: BrandPackagingMetadata;
       assetAnalysis: {
         status: string;
         totalAssets: number;
         completedAssets: number;
         failedAssets: number;
         completedAt: string;
+        assetsFingerprint?: string;
       };
     }
   ): Promise<void> {
@@ -355,6 +362,8 @@ export class AssetAnalysisProcessor extends WorkerHost {
       const updatedMetadata = {
         ...currentMetadata,
         analyzedAssets: metadataUpdate.analyzedAssets,
+        ...(metadataUpdate.logoBrand ? { logoBrand: metadataUpdate.logoBrand } : {}),
+        ...(metadataUpdate.brandPackaging ? { brandPackaging: metadataUpdate.brandPackaging } : {}),
         assetAnalysis: {
           ...currentMetadata.assetAnalysis,
           ...metadataUpdate.assetAnalysis,
@@ -405,6 +414,32 @@ export class AssetAnalysisProcessor extends WorkerHost {
         'AssetAnalysisProcessor'
       );
       throw error;
+    }
+  }
+
+  /**
+   * Trigger Phase B brand packaging on video-processing (idempotent).
+   */
+  private async triggerBrandPackaging(projectId: string, userId: string): Promise<void> {
+    try {
+      const token = this.generateServiceToken(userId);
+      await axios.post(
+        `${this.videoProcessingServiceUrl}/api/video-projects/${projectId}/brand-packaging/start`,
+        {},
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 15000,
+        },
+      );
+      this.logger.log(
+        `[AssetAnalysisProcessor] Triggered brand packaging for project ${projectId}`,
+        'AssetAnalysisProcessor',
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `[AssetAnalysisProcessor] Brand packaging trigger failed for ${projectId}: ${error?.message}`,
+        'AssetAnalysisProcessor',
+      );
     }
   }
 
@@ -467,6 +502,18 @@ export class AssetAnalysisProcessor extends WorkerHost {
     }
     
     throw lastError;
+  }
+
+  /**
+   * Stable hash of asset ids + urls — stored on completion for change detection.
+   */
+  private computeAssetsFingerprint(
+    assets: Array<{ id: string; url: string }>,
+  ): string {
+    const normalized = assets
+      .map((a) => ({ id: a.id || '', url: a.url || '' }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
   }
 
   /**

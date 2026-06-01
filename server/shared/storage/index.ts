@@ -9,6 +9,12 @@
 
 // Export types
 export * from './storage.types';
+export * from './storage-ref.types';
+export {
+  resolveStorageRefToLocalPath,
+  resolveStorageRefExternalUrl,
+  legacyPngUrlToRef,
+} from './resolve-storage-ref';
 
 // Export constants and utilities
 export * from './storage.constants';

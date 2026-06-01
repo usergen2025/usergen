@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { LoggerService } from '../common/logger/logger.service';
 import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
+import { extractDomainFromUrl, normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
 
 export type GroundedFactsResult = {
   summary: string;
@@ -54,17 +55,66 @@ export class ScriptWebSearchService {
     return LIVE_DATA_KEYWORDS.test(text) || YEAR_PATTERN.test(text);
   }
 
-  async fetchGroundedFacts(
-    userPrompt: string,
-    opts?: { force?: boolean },
+  isUrlAssetSearchEnabled(): boolean {
+    return this.configService.get<string>('SCRIPT_WEB_SEARCH_ON_URL_ASSET') !== 'false';
+  }
+
+  extractDomain(url: string): string {
+    return extractDomainFromUrl(url);
+  }
+
+  buildWebsiteResearchPrompt(normalizedUrl: string, domain: string, userPrompt?: string): string {
+    const topicLine = userPrompt?.trim()
+      ? `\nUser's video topic / request:\n${userPrompt.trim()}\n`
+      : '';
+    return `Research the company or brand at this website for a short marketing video script.
+
+Website URL: ${normalizedUrl}
+Domain: ${domain}
+${topicLine}
+Extract and return:
+- Official company/brand name and tagline (if found)
+- Products or services offered and key features
+- Target audience and brand tone/voice
+- Location or market focus if relevant
+- Any notable recent news or announcements (only if verified)
+
+Instructions:
+- Use web search; prefer the official site and reputable sources.
+- Do not invent facts, statistics, or product details.
+- If information is limited, say what is uncertain.
+- Return concise bullet points suitable for a voiceover script.
+- End with a "Sources:" section listing URLs you relied on.`;
+  }
+
+  async fetchGroundedFactsForWebsite(
+    url: string,
+    userPrompt?: string,
   ): Promise<GroundedFactsResult | null> {
-    if (!this.shouldSearch(userPrompt, opts?.force)) {
-      return null;
-    }
-    if (!this.openai) {
-      this.logger.warn('[ScriptWebSearch] OpenAI client not configured', 'ScriptWebSearchService');
-      return null;
-    }
+    if (!this.isEnabled() || !this.openai) return null;
+
+    const normalizedUrl = normalizeWebsiteUrl(url) || url;
+    const domain = this.extractDomain(normalizedUrl);
+
+    const primary = await this.runSearchRequest(
+      this.buildWebsiteResearchPrompt(normalizedUrl, domain, userPrompt),
+      `website:${normalizedUrl}`,
+    );
+    if (primary?.summary?.trim()) return primary;
+
+    const fallbackPrompt = `Research the company or brand associated with domain "${domain}" for a marketing video script.
+${userPrompt?.trim() ? `Video topic: ${userPrompt.trim()}\n` : ''}
+Find: brand name, products/services, key features, target audience, brand tone.
+Use web search. Do not invent facts. End with Sources: URLs.`;
+
+    return this.runSearchRequest(fallbackPrompt, `domain:${domain}`);
+  }
+
+  private async runSearchRequest(
+    researchInput: string,
+    queryLabel: string,
+  ): Promise<GroundedFactsResult | null> {
+    if (!this.openai) return null;
 
     const model =
       this.configService.get<string>('OPENAI_MODEL_WEB_SEARCH') ||
@@ -75,19 +125,6 @@ export class ScriptWebSearchService {
       parseInt(this.configService.get<string>('SCRIPT_WEB_SEARCH_TIMEOUT_MS') || '45000', 10) ||
         45000,
     );
-
-    const researchInput = `Research factual, up-to-date information for a short social video script.
-
-Topic / user request:
-${userPrompt.trim()}
-
-Instructions:
-- Use web search to find current facts: numbers, dates, names, scores, prices, announcements.
-- Prefer official, news, or reputable sources.
-- If information is uncertain or conflicting, say so explicitly.
-- Do not speculate or invent statistics.
-- Return a concise bullet list of verified facts suitable for a voiceover script.
-- End with a "Sources:" section listing URLs you relied on.`;
 
     try {
       const response = await Promise.race([
@@ -102,14 +139,11 @@ Instructions:
       ]);
 
       const summary = this.extractResponseText(response);
-      if (!summary?.trim()) {
-        this.logger.warn('[ScriptWebSearch] Empty summary from Responses API', 'ScriptWebSearchService');
-        return null;
-      }
+      if (!summary?.trim()) return null;
 
       const sources = this.extractSourcesFromText(summary);
       this.logger.log(
-        `[ScriptWebSearch] Grounded facts retrieved (${summary.length} chars, ${sources.length} sources)`,
+        `[ScriptWebSearch] Website facts retrieved for ${queryLabel} (${summary.length} chars)`,
         'ScriptWebSearchService',
       );
 
@@ -117,15 +151,43 @@ Instructions:
         summary: summary.trim(),
         sources,
         searchedAt: new Date().toISOString(),
-        queryUsed: userPrompt.trim().slice(0, 500),
+        queryUsed: queryLabel.slice(0, 500),
       };
     } catch (err: any) {
       this.logger.warn(
-        `[ScriptWebSearch] fetchGroundedFacts failed: ${err?.message || err}`,
+        `[ScriptWebSearch] Website search failed for ${queryLabel}: ${err?.message || err}`,
         'ScriptWebSearchService',
       );
       return null;
     }
+  }
+
+  async fetchGroundedFacts(
+    userPrompt: string,
+    opts?: { force?: boolean },
+  ): Promise<GroundedFactsResult | null> {
+    if (!this.shouldSearch(userPrompt, opts?.force)) {
+      return null;
+    }
+    if (!this.openai) {
+      this.logger.warn('[ScriptWebSearch] OpenAI client not configured', 'ScriptWebSearchService');
+      return null;
+    }
+
+    const researchInput = `Research factual, up-to-date information for a short social video script.
+
+Topic / user request:
+${userPrompt.trim()}
+
+Instructions:
+- Use web search to find current facts: numbers, dates, names, scores, prices, announcements.
+- Prefer official, news, or reputable sources.
+- If information is uncertain or conflicting, say so explicitly.
+- Do not speculate or invent statistics.
+- Return a concise bullet list of verified facts suitable for a voiceover script.
+- End with a "Sources:" section listing URLs you relied on.`;
+
+    return this.runSearchRequest(researchInput, userPrompt.trim().slice(0, 500));
   }
 
   /** Walk Responses API output items and concatenate assistant text. */

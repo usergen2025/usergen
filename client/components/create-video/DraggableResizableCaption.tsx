@@ -3,12 +3,19 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Bold, Italic, Underline, Type, Palette, Square, ChevronDown, Check } from 'lucide-react';
+import {
+  CAPTION_HANDLE_INSET,
+  estimateCaptionBoxSize,
+  layoutCaptionBox,
+  pixelsToCaptionNormalized,
+  reclampCaptionPosition,
+} from '@/lib/workspace/captionBounds';
 
 interface CaptionPosition {
   x: number;
   y: number;
   scale: number;
-  widthScale: number; // Width as ratio of container (0.3 to 0.8)
+  widthScale: number;
 }
 
 interface CaptionStyle {
@@ -24,13 +31,17 @@ interface CaptionStyle {
 }
 
 interface DraggableResizableCaptionProps {
-  captionText: string;
+  /** Visible caption text (may change word-by-word during playback). */
+  displayText: string;
+  /** Stable text used for box sizing / bounds (longest word for word-by-word). */
+  layoutText?: string;
   position: CaptionPosition;
   style: CaptionStyle;
   onPositionChange: (position: CaptionPosition) => void;
   onStyleChange: (style: CaptionStyle) => void;
   containerWidth: number;
   containerHeight: number;
+  containerRef?: React.RefObject<HTMLElement | null>;
   disabled?: boolean;
 }
 
@@ -57,44 +68,46 @@ const COLOR_PRESETS = [
   { value: '#FACC15', label: 'Yellow' },
 ];
 
-// Orange accent color to match avatar overlay UI
 const ACCENT_COLOR = '#E86412';
-
-// Width scale limits (as ratio of container width)
-const MIN_WIDTH_SCALE = 0.3;  // Minimum 30% of container
-const MAX_WIDTH_SCALE = 0.8;  // Maximum 80% of container
-
-// Height scale limits
-const MIN_HEIGHT_SCALE = 0.05;
-const MAX_HEIGHT_SCALE = 0.3;
-
-// Safety margin to prevent edge overflow (in pixels)
-const SAFETY_MARGIN = 4;
+const MIN_WIDTH_SCALE = 0.3;
+const MAX_WIDTH_SCALE = 0.8;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 72;
 const SNAP_THRESHOLD_PX = 10;
 const SNAP_RELEASE_PX = 16;
+const TOOLBAR_GAP = 6;
+const TOOLBAR_MIN_WIDTH = 260;
+const TOOLBAR_EST_HEIGHT = 40;
 
 export function DraggableResizableCaption({
-  captionText,
+  displayText,
+  layoutText,
   position,
   style,
   onPositionChange,
   onStyleChange,
   containerWidth,
   containerHeight,
+  containerRef,
   disabled = false,
 }: DraggableResizableCaptionProps) {
+  const sizingText = layoutText ?? displayText;
   const captionRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const fontTriggerRef = useRef<HTMLDivElement>(null);
   const colorTextTriggerRef = useRef<HTMLDivElement>(null);
   const colorBgTriggerRef = useRef<HTMLDivElement>(null);
   const colorBorderTriggerRef = useRef<HTMLDivElement>(null);
+  const prevDimsRef = useRef({ w: 0, h: 0 });
+
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [activeHandle, setActiveHandle] = useState<ResizeHandle | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPosition, setInitialPosition] = useState<CaptionPosition>(position);
+  const [initialStyle, setInitialStyle] = useState<CaptionStyle>(style);
   const [showToolbar, setShowToolbar] = useState(false);
   const [showVerticalGuide, setShowVerticalGuide] = useState(false);
   const [showHorizontalGuide, setShowHorizontalGuide] = useState(false);
@@ -103,13 +116,178 @@ export function DraggableResizableCaption({
   const [activeColorPicker, setActiveColorPicker] = useState<'text' | 'bg' | 'border' | null>(null);
   const [showFontDropdown, setShowFontDropdown] = useState(false);
   const [popoutPos, setPopoutPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  });
   const [mounted, setMounted] = useState(false);
+  const [measuredSize, setMeasuredSize] = useState({ w: 0, h: 0 });
+  const measureRafRef = useRef<number | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  useEffect(() => {
+    if (disabled) {
+      setShowToolbar(false);
+      setActiveColorPicker(null);
+      setShowFontDropdown(false);
+    }
+  }, [disabled]);
+
+  const widthScale = position.widthScale ?? MAX_WIDTH_SCALE;
+  const captionWidth = containerWidth * widthScale;
+
+  const getLocalPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const cr = containerRef?.current?.getBoundingClientRect();
+      if (cr) {
+        return { x: clientX - cr.left, y: clientY - cr.top };
+      }
+      return { x: clientX, y: clientY };
+    },
+    [containerRef],
+  );
+
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const w = Math.ceil(Math.max(el.offsetWidth, el.scrollWidth));
+      const h = Math.ceil(Math.max(el.offsetHeight, el.scrollHeight));
+      if (w > 0 && h > 0) {
+        setMeasuredSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+      }
+    };
+
+    const scheduleMeasure = () => {
+      if (measureRafRef.current != null) cancelAnimationFrame(measureRafRef.current);
+      measureRafRef.current = requestAnimationFrame(() => {
+        measureRafRef.current = requestAnimationFrame(measure);
+      });
+    };
+
+    scheduleMeasure();
+    const ro = new ResizeObserver(scheduleMeasure);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (measureRafRef.current != null) cancelAnimationFrame(measureRafRef.current);
+    };
+  }, [
+    sizingText,
+    style.fontSize,
+    style.fontWeight,
+    style.fontFamily,
+    style.borderWidth,
+    style.backgroundColor,
+    widthScale,
+    containerWidth,
+    captionWidth,
+  ]);
+
+  const layout = layoutCaptionBox({
+    containerWidth,
+    containerHeight,
+    positionX: position.x,
+    positionY: position.y,
+    widthScale,
+    fontSize: style.fontSize,
+    borderWidth: style.borderWidth,
+    layoutText: sizingText,
+    measuredWidth: measuredSize.w > 0 ? measuredSize.w : undefined,
+    measuredHeight: measuredSize.h > 0 ? measuredSize.h : undefined,
+  });
+
+  const { left: pixelX, top: pixelY, width: boxW, height: boxH, maxLeft, maxTop } = layout;
+
+  const boundsInputBase = {
+    containerWidth,
+    containerHeight,
+    boxWidth: boxW,
+    boxHeight: boxH,
+    handleInset: CAPTION_HANDLE_INSET,
+  };
+
+  const pixelToNormalized = useCallback(
+    (px: number, py: number, wScale: number): CaptionPosition => {
+      const norm = pixelsToCaptionNormalized(px, py, boundsInputBase);
+      return {
+        x: Math.max(0, Math.min(1, norm.x)),
+        y: Math.max(0, Math.min(1, norm.y)),
+        scale: position.scale,
+        widthScale: wScale,
+      };
+    },
+    [containerWidth, containerHeight, boxW, boxH, position.scale],
+  );
+
+  useEffect(() => {
+    if (containerWidth <= 0 || containerHeight <= 0 || disabled) return;
+    const prev = prevDimsRef.current;
+    if (prev.w === containerWidth && prev.h === containerHeight) return;
+
+    const isInitial = prev.w === 0 && prev.h === 0;
+    prevDimsRef.current = { w: containerWidth, h: containerHeight };
+    if (isInitial || boxW <= 0 || boxH <= 0) return;
+
+    const reclamped = reclampCaptionPosition(position.x, position.y, boundsInputBase);
+    if (reclamped) {
+      onPositionChange({
+        x: reclamped.x,
+        y: reclamped.y,
+        scale: position.scale,
+        widthScale,
+      });
+    }
+  }, [
+    containerWidth,
+    containerHeight,
+    boxW,
+    boxH,
+    disabled,
+    position.x,
+    position.y,
+    position.scale,
+    widthScale,
+    onPositionChange,
+  ]);
+
+  const updateToolbarPosition = useCallback(() => {
+    const captionEl = captionRef.current;
+    if (!captionEl) return;
+
+    const rect = captionEl.getBoundingClientRect();
+    const pad = 8;
+    const toolbarH = toolbarRef.current?.offsetHeight || TOOLBAR_EST_HEIGHT;
+    const toolbarW = toolbarRef.current?.offsetWidth || TOOLBAR_MIN_WIDTH;
+
+    // Always above the caption — clamp to viewport top only, never flip below
+    let top = rect.top - toolbarH - TOOLBAR_GAP;
+    top = Math.max(pad, top);
+
+    let left = rect.left + rect.width / 2 - toolbarW / 2;
+    left = Math.max(pad, Math.min(left, window.innerWidth - toolbarW - pad));
+
+    setToolbarPos({ top, left });
+  }, []);
+
   const popoutOpen = showFontDropdown || activeColorPicker !== null;
+
+  useLayoutEffect(() => {
+    if (!showToolbar || disabled) return;
+    updateToolbarPosition();
+    const raf = requestAnimationFrame(updateToolbarPosition);
+    window.addEventListener('scroll', updateToolbarPosition, true);
+    window.addEventListener('resize', updateToolbarPosition);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('scroll', updateToolbarPosition, true);
+      window.removeEventListener('resize', updateToolbarPosition);
+    };
+  }, [showToolbar, disabled, pixelX, pixelY, boxW, boxH, updateToolbarPosition]);
 
   useLayoutEffect(() => {
     if (!popoutOpen) return;
@@ -145,91 +323,52 @@ export function DraggableResizableCaption({
     };
   }, [popoutOpen, showFontDropdown, activeColorPicker]);
 
-  // Get widthScale with fallback for backwards compatibility
-  const widthScale = position.widthScale ?? MAX_WIDTH_SCALE;
-  
-  // Caption dimensions based on scale
-  const captionHeight = containerHeight * position.scale;
-  const captionWidth = containerWidth * widthScale;
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
 
-  // Calculate max bounds with safety margin
-  const maxPixelX = Math.max(0, containerWidth - captionWidth - SAFETY_MARGIN);
-  const maxPixelY = Math.max(0, containerHeight - captionHeight - SAFETY_MARGIN);
+      const local = getLocalPoint(e.clientX, e.clientY);
+      setIsDragging(true);
+      setDragStart({ x: local.x - pixelX, y: local.y - pixelY });
+      setInitialPosition(position);
+      setShowToolbar(true);
+    },
+    [disabled, getLocalPoint, pixelX, pixelY, position],
+  );
 
-  // Clamp normalized position to strict 0-1 range
-  const clampedPositionX = Math.max(0, Math.min(1, position.x));
-  const clampedPositionY = Math.max(0, Math.min(1, position.y));
+  const handleResizeMouseDown = useCallback(
+    (e: React.MouseEvent, handle: ResizeHandle) => {
+      if (disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
 
-  // Convert normalized position to pixel position with bounds clamping
-  const rawPixelX = maxPixelX * clampedPositionX;
-  const rawPixelY = maxPixelY * clampedPositionY;
-  const pixelX = Math.max(SAFETY_MARGIN / 2, Math.min(rawPixelX, maxPixelX));
-  const pixelY = Math.max(0, Math.min(rawPixelY, maxPixelY));
+      setIsResizing(true);
+      setActiveHandle(handle);
+      setDragStart({ x: e.clientX, y: e.clientY });
+      setInitialPosition(position);
+      setInitialStyle(style);
+    },
+    [disabled, position, style],
+  );
 
-  // Convert pixel position to normalized position with safety margin
-  const pixelToNormalized = useCallback((px: number, py: number, scale: number, wScale: number): CaptionPosition => {
-    const captionH = containerHeight * scale;
-    const captionW = containerWidth * wScale;
-
-    const maxX = Math.max(0, containerWidth - captionW - SAFETY_MARGIN);
-    const maxY = Math.max(0, containerHeight - captionH - SAFETY_MARGIN);
-
-    const clampedPx = Math.max(SAFETY_MARGIN / 2, Math.min(px, maxX));
-    const clampedPy = Math.max(0, Math.min(py, maxY));
-
-    const normX = maxX > 0 ? clampedPx / maxX : 0.5;
-    const normY = maxY > 0 ? clampedPy / maxY : 0.5;
-
-    return {
-      x: Math.max(0, Math.min(1, normX)),
-      y: Math.max(0, Math.min(1, normY)),
-      scale,
-      widthScale: wScale,
-    };
-  }, [containerWidth, containerHeight]);
-
-  // Handle mouse down for dragging
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (disabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - pixelX, y: e.clientY - pixelY });
-    setInitialPosition(position);
-    setShowToolbar(true);
-  }, [disabled, pixelX, pixelY, position]);
-
-  // Handle mouse down for resizing
-  const handleResizeMouseDown = useCallback((e: React.MouseEvent, handle: ResizeHandle) => {
-    if (disabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    setIsResizing(true);
-    setActiveHandle(handle);
-    setDragStart({ x: e.clientX, y: e.clientY });
-    setInitialPosition(position);
-  }, [disabled, position]);
-
-  // Handle mouse move for dragging and resizing
   useEffect(() => {
     if (!isDragging && !isResizing) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) {
-        let newPixelX = e.clientX - dragStart.x;
-        let newPixelY = e.clientY - dragStart.y;
-        // Align snap targets with pixelToNormalized / clamp range (guides stay at geometric center).
-        const minPX = SAFETY_MARGIN / 2;
-        const maxPX = Math.max(0, containerWidth - captionWidth - SAFETY_MARGIN);
-        const maxPY = Math.max(0, containerHeight - captionHeight - SAFETY_MARGIN);
-        const idealCenterX = (containerWidth - captionWidth) / 2;
-        const idealCenterY = (containerHeight - captionHeight) / 2;
-        const targetCenterX = Math.max(minPX, Math.min(idealCenterX, maxPX));
-        const targetCenterY = Math.max(0, Math.min(idealCenterY, maxPY));
+        const local = getLocalPoint(e.clientX, e.clientY);
+        let newPixelX = local.x - dragStart.x;
+        let newPixelY = local.y - dragStart.y;
+
+        const idealCenterX = (containerWidth - boxW) / 2;
+        const idealCenterY = (containerHeight - boxH) / 2;
+        const targetCenterX = Math.max(0, Math.min(idealCenterX, maxLeft));
+        const targetCenterY = Math.max(0, Math.min(idealCenterY, maxTop));
         const dx = Math.abs(newPixelX - targetCenterX);
         const dy = Math.abs(newPixelY - targetCenterY);
+
         if (lockCenterXRef.current) {
           if (dx > SNAP_RELEASE_PX) lockCenterXRef.current = false;
         } else if (dx <= SNAP_THRESHOLD_PX) {
@@ -244,47 +383,64 @@ export function DraggableResizableCaption({
         if (lockCenterYRef.current) newPixelY = targetCenterY;
         setShowVerticalGuide(lockCenterXRef.current);
         setShowHorizontalGuide(lockCenterYRef.current);
-        const newPosition = pixelToNormalized(newPixelX, newPixelY, position.scale, widthScale);
-        onPositionChange(newPosition);
+        onPositionChange(pixelToNormalized(newPixelX, newPixelY, widthScale));
       } else if (isResizing && activeHandle) {
         const deltaX = e.clientX - dragStart.x;
         const deltaY = e.clientY - dragStart.y;
 
-        let newScale = initialPosition.scale;
         let newWidthScale = initialPosition.widthScale ?? MAX_WIDTH_SCALE;
+        let newFontSize = initialStyle.fontSize;
 
-        // Handle vertical resizing (top/bottom)
         if (activeHandle.includes('t')) {
-          const scaleChange = -deltaY / containerHeight;
-          newScale = Math.max(MIN_HEIGHT_SCALE, Math.min(MAX_HEIGHT_SCALE, initialPosition.scale + scaleChange));
+          const sizeChange = -deltaY / 4;
+          newFontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, initialStyle.fontSize + sizeChange));
         } else if (activeHandle.includes('b')) {
-          const scaleChange = deltaY / containerHeight;
-          newScale = Math.max(MIN_HEIGHT_SCALE, Math.min(MAX_HEIGHT_SCALE, initialPosition.scale + scaleChange));
+          const sizeChange = deltaY / 4;
+          newFontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, initialStyle.fontSize + sizeChange));
         }
 
-        // Handle horizontal resizing (left/right)
         if (activeHandle.includes('l')) {
           const widthChange = -deltaX / containerWidth;
-          newWidthScale = Math.max(MIN_WIDTH_SCALE, Math.min(MAX_WIDTH_SCALE, (initialPosition.widthScale ?? MAX_WIDTH_SCALE) + widthChange));
+          newWidthScale = Math.max(
+            MIN_WIDTH_SCALE,
+            Math.min(MAX_WIDTH_SCALE, (initialPosition.widthScale ?? MAX_WIDTH_SCALE) + widthChange),
+          );
         } else if (activeHandle.includes('r')) {
           const widthChange = deltaX / containerWidth;
-          newWidthScale = Math.max(MIN_WIDTH_SCALE, Math.min(MAX_WIDTH_SCALE, (initialPosition.widthScale ?? MAX_WIDTH_SCALE) + widthChange));
+          newWidthScale = Math.max(
+            MIN_WIDTH_SCALE,
+            Math.min(MAX_WIDTH_SCALE, (initialPosition.widthScale ?? MAX_WIDTH_SCALE) + widthChange),
+          );
         }
 
-        // Calculate new position to keep caption in bounds
-        const newCaptionW = containerWidth * newWidthScale;
-        const newCaptionH = containerHeight * newScale;
-        const newMaxX = Math.max(0, containerWidth - newCaptionW - SAFETY_MARGIN);
-        const newMaxY = Math.max(0, containerHeight - newCaptionH - SAFETY_MARGIN);
+        if (newFontSize !== initialStyle.fontSize) {
+          onStyleChange({ ...style, fontSize: Math.round(newFontSize) });
+        }
 
-        const newPosition = pixelToNormalized(
-          newMaxX * initialPosition.x,
-          newMaxY * initialPosition.y,
-          newScale,
-          newWidthScale
+        const newEst = estimateCaptionBoxSize(
+          containerWidth,
+          newWidthScale,
+          Math.round(newFontSize),
+          style.borderWidth,
+          sizingText,
+          sizingText,
         );
+        const newBoxW = Math.ceil(measuredSize.w > 0 ? measuredSize.w : newEst.w);
+        const newBoxH = Math.ceil(measuredSize.h > 0 ? measuredSize.h : newEst.h);
+        const reclamped = reclampCaptionPosition(initialPosition.x, initialPosition.y, {
+          containerWidth,
+          containerHeight,
+          boxWidth: newBoxW,
+          boxHeight: newBoxH,
+          handleInset: CAPTION_HANDLE_INSET,
+        });
 
-        onPositionChange(newPosition);
+        onPositionChange({
+          x: reclamped?.x ?? initialPosition.x,
+          y: reclamped?.y ?? initialPosition.y,
+          scale: position.scale,
+          widthScale: newWidthScale,
+        });
       }
     };
 
@@ -305,15 +461,37 @@ export function DraggableResizableCaption({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, isResizing, activeHandle, dragStart, initialPosition, position.scale, widthScale, containerWidth, containerHeight, pixelToNormalized, onPositionChange, captionWidth, captionHeight]);
+  }, [
+    isDragging,
+    isResizing,
+    activeHandle,
+    dragStart,
+    initialPosition,
+    initialStyle,
+    widthScale,
+    containerWidth,
+    containerHeight,
+    pixelToNormalized,
+    onPositionChange,
+    onStyleChange,
+    style,
+    boxW,
+    boxH,
+    maxLeft,
+    maxTop,
+    measuredSize.w,
+    measuredSize.h,
+    sizingText,
+    getLocalPoint,
+    position.scale,
+  ]);
 
-  // Close toolbar and dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      const isInsideCaption = captionRef.current && captionRef.current.contains(target);
-      const isInsideToolbar = toolbarRef.current && toolbarRef.current.contains(target);
-      const isInsidePortal = portalRef.current && portalRef.current.contains(target);
+      const isInsideCaption = captionRef.current?.contains(target);
+      const isInsideToolbar = toolbarRef.current?.contains(target);
+      const isInsidePortal = portalRef.current?.contains(target);
 
       if (!isInsideCaption && !isInsideToolbar && !isInsidePortal) {
         setShowToolbar(false);
@@ -326,8 +504,7 @@ export function DraggableResizableCaption({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Handle styles - use orange to match avatar overlay
-  const handleBaseStyle = "absolute w-[8px] h-[8px] bg-white border-2 rounded-sm z-10";
+  const handleBaseStyle = 'absolute w-[8px] h-[8px] bg-white border-2 rounded-sm z-10';
 
   const handles: { position: ResizeHandle; style: string; cursor: string }[] = [
     { position: 'tl', style: 'top-[-4px] left-[-4px]', cursor: 'nwse-resize' },
@@ -357,9 +534,30 @@ export function DraggableResizableCaption({
     setShowFontDropdown(false);
   };
 
+  const contentStyle: React.CSSProperties = {
+    fontFamily: style.fontFamily,
+    fontSize: `${style.fontSize}px`,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
+    textDecoration: style.textDecoration,
+    color: style.textColor,
+    backgroundColor:
+      style.backgroundColor === 'transparent'
+        ? disabled
+          ? 'rgba(0, 0, 0, 0.85)'
+          : 'transparent'
+        : style.backgroundColor,
+    border:
+      style.borderWidth > 0 && style.borderColor !== 'transparent'
+        ? `${style.borderWidth}px solid ${style.borderColor}`
+        : 'none',
+    ...(style.backgroundColor === 'transparent' && !disabled
+      ? { textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.6)' }
+      : {}),
+  };
+
   const ColorPickerPanel = ({ type, currentColor }: { type: 'text' | 'bg' | 'border'; currentColor: string }) => {
-    const colors =
-      type === 'text' ? COLOR_PRESETS.filter((c) => !c.isTransparent) : COLOR_PRESETS;
+    const colors = type === 'text' ? COLOR_PRESETS.filter((c) => !c.isTransparent) : COLOR_PRESETS;
 
     return (
       <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-2 min-w-[120px]">
@@ -428,6 +626,186 @@ export function DraggableResizableCaption({
       document.body,
     );
 
+  const styleToggleClass = (active: boolean) =>
+    `w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0 transition-colors ${
+      active
+        ? 'bg-gradient-to-r from-[#E86412] to-[#F12A4C] text-white shadow-sm'
+        : 'bg-[#FFF5F0] text-[#212121] hover:bg-[#FFE8DC] border border-[#F5D5C8]'
+    }`;
+
+  const toolbarDivider = <div className="w-px h-5 bg-[#F0E0D8] shrink-0" />;
+
+  const toolbarPortal =
+    mounted &&
+    showToolbar &&
+    !disabled &&
+    createPortal(
+      <div
+        ref={toolbarRef}
+        className="fixed z-[200] pointer-events-auto w-max max-w-[calc(100vw-16px)]"
+        style={{
+          top: toolbarPos.top,
+          left: toolbarPos.left,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div
+          className="rounded-lg p-[1px] shadow-lg"
+          style={{ background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }}
+        >
+          <div className="bg-white rounded-[7px] px-1 py-1 flex flex-row items-center gap-1">
+            <div ref={fontTriggerRef} className="relative inline-flex shrink-0">
+              <button
+                type="button"
+                title="Font family"
+                onClick={() => {
+                  setShowFontDropdown(!showFontDropdown);
+                  setActiveColorPicker(null);
+                }}
+                className="h-7 w-[88px] px-1.5 text-[11px] border border-[#F0E0D8] rounded-md flex items-center gap-0.5 hover:bg-[#FFF5F0] bg-white justify-between"
+                style={{ fontFamily: selectedFont.value }}
+              >
+                <span className="truncate text-[#212121]">{selectedFont.label}</span>
+                <ChevronDown className="w-3 h-3 flex-shrink-0 text-[#8B6C5C]" />
+              </button>
+            </div>
+
+            <input
+              type="number"
+              title="Font size"
+              value={style.fontSize}
+              onChange={(e) =>
+                onStyleChange({
+                  ...style,
+                  fontSize: Math.max(
+                    MIN_FONT_SIZE,
+                    Math.min(MAX_FONT_SIZE, parseInt(e.target.value) || 16),
+                  ),
+                })
+              }
+              className="w-9 h-7 px-1 text-[11px] text-center border border-[#F0E0D8] rounded-md focus:outline-none focus:ring-2 focus:ring-[#E86412]/40 text-[#212121] shrink-0"
+              min={MIN_FONT_SIZE}
+              max={MAX_FONT_SIZE}
+            />
+
+            {toolbarDivider}
+
+            <button type="button" onClick={toggleBold} className={styleToggleClass(style.fontWeight === 'bold')} title="Bold">
+              <Bold className="w-3.5 h-3.5" />
+            </button>
+            <button type="button" onClick={toggleItalic} className={styleToggleClass(style.fontStyle === 'italic')} title="Italic">
+              <Italic className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleUnderline}
+              className={styleToggleClass(style.textDecoration === 'underline')}
+              title="Underline"
+            >
+              <Underline className="w-3.5 h-3.5" />
+            </button>
+
+            {toolbarDivider}
+
+            <div ref={colorTextTriggerRef} className="relative inline-flex shrink-0">
+              <button
+                type="button"
+                title="Text color"
+                onClick={() => {
+                  setActiveColorPicker(activeColorPicker === 'text' ? null : 'text');
+                  setShowFontDropdown(false);
+                }}
+                className={`${styleToggleClass(activeColorPicker === 'text')} ${
+                  activeColorPicker === 'text' ? 'ring-1 ring-[#E86412]' : ''
+                }`}
+              >
+                <Type
+                  className="w-3.5 h-3.5"
+                  strokeWidth={2.25}
+                  style={{
+                    color: style.textColor,
+                    filter:
+                      style.textColor === '#FFFFFF' || style.textColor?.toLowerCase() === '#fff'
+                        ? 'drop-shadow(0 0 1px rgba(0,0,0,0.85))'
+                        : undefined,
+                  }}
+                />
+              </button>
+            </div>
+            <div ref={colorBgTriggerRef} className="relative inline-flex shrink-0">
+              <button
+                type="button"
+                title="Background color"
+                onClick={() => {
+                  setActiveColorPicker(activeColorPicker === 'bg' ? null : 'bg');
+                  setShowFontDropdown(false);
+                }}
+                className={`${styleToggleClass(activeColorPicker === 'bg')} ${
+                  activeColorPicker === 'bg' ? 'ring-1 ring-[#E86412]' : ''
+                }`}
+              >
+                <Palette
+                  className="w-3.5 h-3.5"
+                  strokeWidth={2}
+                  style={{
+                    color: style.backgroundColor === 'transparent' ? '#9CA3AF' : style.backgroundColor,
+                    filter:
+                      style.backgroundColor === '#FFFFFF' ||
+                      style.backgroundColor?.toLowerCase() === '#fff'
+                        ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
+                        : undefined,
+                  }}
+                />
+              </button>
+            </div>
+            <div ref={colorBorderTriggerRef} className="relative inline-flex shrink-0">
+              <button
+                type="button"
+                title="Border color"
+                onClick={() => {
+                  setActiveColorPicker(activeColorPicker === 'border' ? null : 'border');
+                  setShowFontDropdown(false);
+                }}
+                className={`${styleToggleClass(activeColorPicker === 'border')} ${
+                  activeColorPicker === 'border' ? 'ring-1 ring-[#E86412]' : ''
+                }`}
+              >
+                <Square
+                  className="w-3.5 h-3.5"
+                  strokeWidth={2}
+                  style={{
+                    color: style.borderColor === 'transparent' ? '#9CA3AF' : style.borderColor,
+                    filter:
+                      style.borderColor === '#FFFFFF' || style.borderColor?.toLowerCase() === '#fff'
+                        ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
+                        : undefined,
+                  }}
+                />
+              </button>
+            </div>
+
+            <input
+              type="number"
+              title="Border width (px)"
+              value={style.borderWidth}
+              onChange={(e) =>
+                onStyleChange({
+                  ...style,
+                  borderWidth: Math.max(0, Math.min(10, parseInt(e.target.value) || 0)),
+                })
+              }
+              className="w-8 h-7 px-0.5 text-[11px] text-center border border-[#F0E0D8] rounded-md focus:outline-none focus:ring-2 focus:ring-[#E86412]/40 text-[#212121] shrink-0"
+              min={0}
+              max={10}
+            />
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+
+  const inset = CAPTION_HANDLE_INSET;
+
   return (
     <>
       {showVerticalGuide && (
@@ -443,215 +821,55 @@ export function DraggableResizableCaption({
         />
       )}
       {toolbarPopout}
-      {/* Floating Toolbar - positioned above caption, width matches caption */}
-      {showToolbar && !disabled && (
+      {toolbarPortal}
+
+      {/* Hidden sizing element — uses layoutText for stable bounds */}
+      <div
+        aria-hidden
+        className="absolute opacity-0 pointer-events-none overflow-hidden"
+        style={{ left: 0, top: 0, width: captionWidth, visibility: 'hidden' }}
+      >
         <div
-          ref={toolbarRef}
-          className="absolute z-20 bg-white rounded-lg shadow-lg border border-gray-200 p-1.5 flex items-center gap-1 overflow-x-auto overflow-y-visible max-w-[min(100vw-1rem,calc(100%+2rem))]"
-          style={{
-            left: `${pixelX}px`,
-            top: `${Math.max(0, pixelY - 45)}px`,
-            width: `${captionWidth}px`,
-            minWidth: `${captionWidth}px`,
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
+          ref={measureRef}
+          className="w-full flex items-center justify-center p-2 rounded-lg box-border"
+          style={contentStyle}
         >
-          {/* Font Family */}
-          <div ref={fontTriggerRef} className="relative inline-flex shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                setShowFontDropdown(!showFontDropdown);
-                setActiveColorPicker(null);
-              }}
-              className="h-7 px-2 text-xs border border-gray-200 rounded flex items-center gap-1 hover:bg-gray-50 bg-white min-w-[70px] justify-between"
-              style={{ fontFamily: selectedFont.value }}
-            >
-              <span className="truncate">{selectedFont.label}</span>
-              <ChevronDown className="w-3 h-3 flex-shrink-0 text-gray-500" />
-            </button>
-          </div>
-
-          {/* Font Size */}
-          <input
-            type="number"
-            value={style.fontSize}
-            onChange={(e) => onStyleChange({ ...style, fontSize: Math.max(8, Math.min(72, parseInt(e.target.value) || 16)) })}
-            className="w-10 h-7 px-1 text-xs text-center border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-orange-500"
-            min={8}
-            max={72}
-          />
-
-          <div className="w-px h-5 bg-gray-200 flex-shrink-0" />
-
-          {/* Bold */}
-          <button
-            onClick={toggleBold}
-            className={`w-7 h-7 flex items-center justify-center rounded flex-shrink-0 ${style.fontWeight === 'bold' ? 'bg-orange-100 text-orange-600' : 'hover:bg-gray-100'}`}
-            title="Bold"
-          >
-            <Bold className="w-4 h-4" />
-          </button>
-
-          {/* Italic */}
-          <button
-            onClick={toggleItalic}
-            className={`w-7 h-7 flex items-center justify-center rounded flex-shrink-0 ${style.fontStyle === 'italic' ? 'bg-orange-100 text-orange-600' : 'hover:bg-gray-100'}`}
-            title="Italic"
-          >
-            <Italic className="w-4 h-4" />
-          </button>
-
-          {/* Underline */}
-          <button
-            onClick={toggleUnderline}
-            className={`w-7 h-7 flex items-center justify-center rounded flex-shrink-0 ${style.textDecoration === 'underline' ? 'bg-orange-100 text-orange-600' : 'hover:bg-gray-100'}`}
-            title="Underline"
-          >
-            <Underline className="w-4 h-4" />
-          </button>
-
-          <div className="w-px h-5 bg-gray-200 flex-shrink-0" />
-
-          {/* Text Color */}
-          <div ref={colorTextTriggerRef} className="relative inline-flex shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveColorPicker(activeColorPicker === 'text' ? null : 'text');
-                setShowFontDropdown(false);
-              }}
-              className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 border border-transparent hover:border-gray-200"
-              title="Text Color"
-            >
-              <Type
-                className="w-4 h-4"
-                strokeWidth={2.25}
-                style={{
-                  color: style.textColor,
-                  filter:
-                    style.textColor === '#FFFFFF' || style.textColor?.toLowerCase() === '#fff'
-                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.85))'
-                      : undefined,
-                }}
-              />
-            </button>
-          </div>
-
-          {/* Background Color */}
-          <div ref={colorBgTriggerRef} className="relative inline-flex shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveColorPicker(activeColorPicker === 'bg' ? null : 'bg');
-                setShowFontDropdown(false);
-              }}
-              className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100"
-              title="Background Color"
-            >
-              <Palette
-                className="w-4 h-4"
-                strokeWidth={2}
-                style={{
-                  color: style.backgroundColor === 'transparent' ? '#9CA3AF' : style.backgroundColor,
-                  filter:
-                    style.backgroundColor === '#FFFFFF' || style.backgroundColor?.toLowerCase() === '#fff'
-                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
-                      : undefined,
-                }}
-              />
-            </button>
-          </div>
-
-          {/* Border Color */}
-          <div ref={colorBorderTriggerRef} className="relative inline-flex shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveColorPicker(activeColorPicker === 'border' ? null : 'border');
-                setShowFontDropdown(false);
-              }}
-              className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100"
-              title="Border Color"
-            >
-              <Square
-                className="w-4 h-4"
-                strokeWidth={2}
-                style={{
-                  color: style.borderColor === 'transparent' ? '#9CA3AF' : style.borderColor,
-                  filter:
-                    style.borderColor === '#FFFFFF' || style.borderColor?.toLowerCase() === '#fff'
-                      ? 'drop-shadow(0 0 1px rgba(0,0,0,0.75))'
-                      : undefined,
-                }}
-              />
-            </button>
-          </div>
-
-          {/* Border Width */}
-          <input
-            type="number"
-            value={style.borderWidth}
-            onChange={(e) => onStyleChange({ ...style, borderWidth: Math.max(0, Math.min(10, parseInt(e.target.value) || 0)) })}
-            className="w-8 h-7 px-1 text-xs text-center border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-orange-500 flex-shrink-0"
-            min={0}
-            max={10}
-            title="Border Width (px)"
-          />
+          <span className="text-center leading-tight">{sizingText || 'Sample caption text'}</span>
         </div>
-      )}
+      </div>
 
-      {/* Caption Box */}
       <div
         ref={captionRef}
-        className={`absolute select-none ${isDragging || isResizing ? 'cursor-grabbing' : 'cursor-grab'} ${disabled ? 'pointer-events-none opacity-50' : ''}`}
+        className={`absolute select-none pointer-events-auto ${isDragging || isResizing ? 'cursor-grabbing' : 'cursor-grab'} ${disabled ? 'pointer-events-none' : ''}`}
         style={{
           left: `${pixelX}px`,
           top: `${pixelY}px`,
           width: `${captionWidth}px`,
-          minHeight: `${captionHeight}px`,
+          maxWidth: `${Math.max(0, containerWidth - pixelX - inset)}px`,
+          minHeight: `${boxH}px`,
+          maxHeight: `${Math.max(0, containerHeight - pixelY - inset)}px`,
         }}
         onMouseDown={handleMouseDown}
-        onClick={() => setShowToolbar(true)}
+        onClick={() => !disabled && setShowToolbar(true)}
       >
-        {/* Caption Content */}
-        <div
-          className="w-full h-full flex items-center justify-center p-2 rounded-lg"
-          style={{
-            fontFamily: style.fontFamily,
-            fontSize: `${style.fontSize}px`,
-            fontWeight: style.fontWeight,
-            fontStyle: style.fontStyle,
-            textDecoration: style.textDecoration,
-            color: style.textColor,
-            backgroundColor: style.backgroundColor === 'transparent' ? 'transparent' : style.backgroundColor,
-            border: style.borderWidth > 0 && style.borderColor !== 'transparent' 
-              ? `${style.borderWidth}px solid ${style.borderColor}` 
-              : 'none',
-            ...(style.backgroundColor === 'transparent'
-              ? { textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.6)' }
-              : {}),
-          }}
-        >
-          <span className="text-center leading-tight">
-            {captionText || 'Sample caption text'}
-          </span>
+        <div className="w-full h-full flex items-center justify-center p-2 rounded-lg box-border" style={contentStyle}>
+          <span className="text-center leading-tight">{displayText || 'Sample caption text'}</span>
         </div>
 
-        {/* Selection border - orange to match avatar overlay */}
         {showToolbar && (
           <div className="absolute inset-0 border-2 border-[#E86412] border-dashed pointer-events-none rounded-lg" />
         )}
 
-        {/* Resize handles */}
-        {!disabled && showToolbar && handles.map(({ position: handlePos, style: handleStyle, cursor }) => (
-          <div
-            key={handlePos}
-            className={`${handleBaseStyle} ${handleStyle}`}
-            style={{ cursor, borderColor: ACCENT_COLOR }}
-            onMouseDown={(e) => handleResizeMouseDown(e, handlePos)}
-          />
-        ))}
+        {!disabled &&
+          showToolbar &&
+          handles.map(({ position: handlePos, style: handleStyle, cursor }) => (
+            <div
+              key={handlePos}
+              className={`${handleBaseStyle} ${handleStyle}`}
+              style={{ cursor, borderColor: ACCENT_COLOR }}
+              onMouseDown={(e) => handleResizeMouseDown(e, handlePos)}
+            />
+          ))}
       </div>
     </>
   );

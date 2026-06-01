@@ -1,5 +1,5 @@
 /** Matches server PREVIEW_FORMAT_VERSION — tiled last-portion WM + UserGen outro */
-export const PREVIEW_FORMAT_VERSION = 3;
+export const PREVIEW_FORMAT_VERSION = 4;
 
 export interface VideoProjectUrlFields {
   videoPublicUrl?: string;

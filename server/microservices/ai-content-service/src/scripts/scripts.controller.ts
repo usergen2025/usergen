@@ -463,17 +463,22 @@ export class ScriptsController {
       
       // Construct local URL path
       const localUrl = `/uploads/product-images/${userId}/${file.filename}`;
-      
-      // Get public URL using PublicUrlService
-      // In local env, this will upload to FAL storage
-      // In prod env, this will return backend URL
-      const publicUrl = await this.publicUrlService.getPublicUrl(file.path, localUrl);
+
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        file.path,
+        `product-images/${userId}`,
+        file.filename,
+        file.mimetype,
+      );
 
       return {
         success: true,
         data: {
-          publicUrl,
-          localUrl,
+          publicUrl: storageResult.publicUrl,
+          localUrl: storageResult.localUrl || localUrl,
+          localPath: storageResult.localPath,
+          gcsUrl: storageResult.gcsUrl,
+          gcsUploaded: storageResult.gcsUploaded,
         },
         message: 'Product image uploaded successfully',
         timestamp: new Date().toISOString(),

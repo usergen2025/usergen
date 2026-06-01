@@ -16,6 +16,15 @@ import { getRenderingRollbackStep } from '../common/constants/video-steps';
 import { aggregateVoiceoversFromScript } from '../common/utils/script-aggregate';
 import { UserNotificationService } from '../notifications/user-notification.service';
 import { ProjectLogService } from '../common/logging/project-log.service';
+import {
+  BrandVideoPostProcessorService,
+} from '../brand/brand-video-post-processor.service';
+import { BrandLogoResolverService } from '../brand/brand-logo-resolver.service';
+import { BrandPackagingService } from '../brand/brand-packaging.service';
+import {
+  LogoBrandMetadata,
+  logoBrandHasPackagingAssets,
+} from '@shared/brand/logo-brand.types';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -37,6 +46,9 @@ export class RenderingService {
     private readonly queueManager: QueueManagerService,
     private readonly userNotificationService: UserNotificationService,
     private readonly projectLog: ProjectLogService,
+    private readonly brandVideoPostProcessor: BrandVideoPostProcessorService,
+    private readonly brandLogoResolver: BrandLogoResolverService,
+    private readonly brandPackagingService: BrandPackagingService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
@@ -176,6 +188,438 @@ export class RenderingService {
     } catch (err: any) {
       console.warn(`[RenderingService] Failed to queue preview derivatives for ${projectId}: ${err?.message || err}`);
     }
+  }
+
+  /**
+   * Apply brand packaging (corner logo + end card), upload, mark COMPLETED, queue preview.
+   */
+  private async finalizeAndPublishVideo(
+    projectId: string,
+    userId: string,
+    project: any,
+    pathForUpload: string,
+    userDir: string,
+    totalDuration: number,
+    styleLabel: string,
+  ): Promise<{ publicUrl: string; localVideoUrl: string; finalDuration: number }> {
+    let finalPath = pathForUpload;
+    let finalDuration = totalDuration;
+
+    const freshProject = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId },
+    });
+    let metadata =
+      freshProject?.metadata &&
+      typeof freshProject.metadata === 'object' &&
+      !Array.isArray(freshProject.metadata)
+        ? ({ ...(freshProject.metadata as Record<string, unknown>) } as Record<string, unknown>)
+        : project.metadata &&
+            typeof project.metadata === 'object' &&
+            !Array.isArray(project.metadata)
+          ? ({ ...(project.metadata as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+
+    const resolved = await this.brandLogoResolver.resolve({
+      metadata,
+      projectId,
+      userId,
+      workDir: userDir,
+    });
+
+    if (resolved.source === 'fallback' && resolved.logoBrand) {
+      metadata.logoBrand = resolved.logoBrand;
+    }
+
+    let logoBrand = resolved.logoBrand;
+    const hasLogo = this.brandPackagingService.hasLogoAsset(metadata);
+
+    if (hasLogo && (!logoBrand || !logoBrandHasPackagingAssets(logoBrand))) {
+      console.warn(
+        `[RenderingService] ${styleLabel}: BRAND_SKIPPED_NO_LOGO_BRAND — waiting for logoBrand (${resolved.reason || 'missing'})`,
+      );
+      try {
+        const workDir = path.join(userDir, 'brand_emergency');
+        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
+        await this.brandPackagingService.processProject(projectId, userId, workDir);
+      } catch (e: any) {
+        console.warn(`[RenderingService] ${styleLabel}: emergency logoBrand build failed: ${e?.message}`);
+      }
+      const refreshed = await this.databaseService.videoProject.findFirst({ where: { id: projectId } });
+      if (refreshed?.metadata && typeof refreshed.metadata === 'object') {
+        metadata = { ...(refreshed.metadata as Record<string, unknown>) };
+        logoBrand = metadata.logoBrand as LogoBrandMetadata | undefined;
+      }
+    }
+
+    if (hasLogo) {
+      const bp = metadata.brandPackaging as { status?: string } | undefined;
+      if (bp?.status !== 'ready' && bp?.status !== 'skipped') {
+        const ready = await this.brandPackagingService.waitUntilReady(projectId);
+        if (!ready) {
+          console.warn(
+            `[RenderingService] ${styleLabel}: brand packaging not ready in time — attempting emergency apply`,
+          );
+          try {
+            const workDir = path.join(userDir, 'brand_emergency');
+            if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
+            await this.brandPackagingService.processProject(projectId, userId, workDir);
+          } catch (e: any) {
+            console.warn(`[RenderingService] ${styleLabel}: emergency brand packaging failed: ${e?.message}`);
+          }
+          const refreshed = await this.databaseService.videoProject.findFirst({ where: { id: projectId } });
+          if (refreshed?.metadata && typeof refreshed.metadata === 'object') {
+            metadata = { ...(refreshed.metadata as Record<string, unknown>) };
+            logoBrand = metadata.logoBrand as LogoBrandMetadata | undefined;
+          }
+        } else {
+          const refreshed = await this.databaseService.videoProject.findFirst({ where: { id: projectId } });
+          if (refreshed?.metadata && typeof refreshed.metadata === 'object') {
+            metadata = { ...(refreshed.metadata as Record<string, unknown>) };
+            logoBrand = metadata.logoBrand as LogoBrandMetadata | undefined;
+          }
+        }
+      }
+    }
+
+    if (logoBrand?.overlayPolicy && logoBrandHasPackagingAssets(logoBrand)) {
+      try {
+        const brandedPath = path.join(userDir, `final_branded_${projectId}_${Date.now()}.mp4`);
+        const packaged = await this.brandVideoPostProcessor.applyBrandPackaging(
+          pathForUpload,
+          brandedPath,
+          logoBrand,
+          userDir,
+        );
+        if (packaged.cornerApplied || packaged.endCardApplied) {
+          finalPath = packaged.outputPath;
+          finalDuration += packaged.durationAddedSec;
+          metadata.brandPackagingApplied = packaged.endCardApplied;
+          console.log(
+            `[RenderingService] ${styleLabel}: BRAND_PACKAGING_APPLIED corner=${packaged.cornerApplied} end=${packaged.endCardApplied} +${packaged.durationAddedSec}s source=${resolved.source}`,
+          );
+        } else {
+          console.warn(
+            `[RenderingService] ${styleLabel}: BRAND_PACKAGING_NOOP (source=${resolved.source})`,
+          );
+        }
+      } catch (brandErr: any) {
+        console.warn(`[RenderingService] ${styleLabel}: Brand packaging skipped: ${brandErr?.message}`);
+      }
+    } else if (hasLogo) {
+      console.warn(
+        `[RenderingService] ${styleLabel}: BRAND_SKIPPED_NO_LOGO_BRAND (${resolved.reason || 'unknown'})`,
+      );
+    }
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalPath)}`;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        finalPath,
+        `videos/${userId}`,
+        path.basename(finalPath),
+        'video/mp4',
+      );
+      if (storageResult.publicUrl) {
+        publicUrl = storageResult.publicUrl;
+      }
+      if (storageResult.gcsUrl) {
+        console.log(`[RenderingService] ✅ ${styleLabel} final video uploaded to GCS: ${storageResult.gcsUrl}`);
+      }
+    } catch (error: any) {
+      console.warn(`[RenderingService] GCS upload failed for ${styleLabel} final video: ${error.message}`);
+    }
+
+    const projectStyle = String(
+      freshProject?.style || project?.style || styleLabel || '',
+    );
+    if (projectStyle === 'AVATAR_ONLY' || projectStyle === 'ANIMATED_AVATAR') {
+      metadata.singleClipStyle = true;
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'COMPLETED',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        videoUrl: publicUrl || localVideoUrl,
+        duration: finalDuration,
+        currentStep: 'COMPLETED',
+        completedAt: new Date(),
+        metadata: metadata as any,
+      } as any,
+    });
+
+    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
+
+    console.log(`[RenderingService] ${styleLabel} video completed: ${publicUrl || localVideoUrl}`);
+    return { publicUrl: publicUrl || localVideoUrl, localVideoUrl, finalDuration };
+  }
+
+  private findExistingSourceVideoPath(
+    userId: string,
+    projectId: string,
+    videoUrl?: string | null,
+    brandPackagingApplied?: boolean,
+  ): string | null {
+    const dir = path.join(this.uploadsDir, 'videos', userId);
+    if (!fs.existsSync(dir)) return null;
+
+    const newestWithPrefix = (prefix: string): string | null => {
+      const candidates = fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith(prefix) && f.endsWith('.mp4'))
+        .map((f) => {
+          const full = path.join(dir, f);
+          return { full, mtime: fs.statSync(full).mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      return candidates[0]?.full ?? null;
+    };
+
+    if (videoUrl && !videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
+      const basename = path.basename(videoUrl.replace(/\\/g, '/'));
+      const exact = path.join(dir, basename);
+      if (fs.existsSync(exact)) return exact;
+    }
+
+    const branded = newestWithPrefix(`final_branded_${projectId}_`);
+    if (branded) return branded;
+
+    if (brandPackagingApplied) return null;
+
+    const avatarOnly = newestWithPrefix(`avatar_only_${projectId}_`);
+    if (avatarOnly) return avatarOnly;
+
+    return newestWithPrefix(`final_${projectId}_`);
+  }
+
+  private async resolveVideoUrlToLocalPath(
+    sourceVideoUrl: string,
+    workDir: string,
+  ): Promise<string> {
+    if (sourceVideoUrl.startsWith('/uploads/')) {
+      const relative = sourceVideoUrl.replace(/^\/uploads\//, '');
+      const local = path.join(this.uploadsDir, relative);
+      if (!fs.existsSync(local)) {
+        throw new Error(`Source video not found at ${local}`);
+      }
+      return local;
+    }
+    if (sourceVideoUrl.startsWith('http://') || sourceVideoUrl.startsWith('https://')) {
+      const dest = path.join(workDir, `source_${Date.now()}.mp4`);
+      const response = await axios.get<ArrayBuffer>(sourceVideoUrl, {
+        responseType: 'arraybuffer',
+        timeout: 300000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      });
+      fs.writeFileSync(dest, Buffer.from(response.data));
+      return dest;
+    }
+    if (fs.existsSync(sourceVideoUrl)) {
+      return sourceVideoUrl;
+    }
+    throw new Error(`Unsupported or missing source video: ${sourceVideoUrl}`);
+  }
+
+  /** BGM + captions + brand publish on an existing avatar clip (no HeyGen). */
+  private async enhanceAndPublishFinalPath(
+    projectId: string,
+    userId: string,
+    project: any,
+    sourcePath: string,
+    userDir: string,
+    audioFiles: any[],
+    styleLabel: string,
+  ): Promise<void> {
+    const sortedAudioFiles = [...audioFiles].sort(
+      (a, b) => (a.sceneNumber ?? 0) - (b.sceneNumber ?? 0),
+    );
+    const totalDuration = sortedAudioFiles.reduce(
+      (sum, af) => sum + (af.duration || 0),
+      0,
+    );
+
+    await this.updateRenderingStatus(projectId, 'stitching', 50);
+
+    let pathForUpload = await this.applyBackgroundMusicIfEnabled(
+      project,
+      sourcePath,
+      userDir,
+      projectId,
+    );
+
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        console.log(`[RenderingService] ${styleLabel}: Adding captions to final video...`);
+        const captionedPath = await this.addCaptionsToFinalVideo(
+          pathForUpload,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings,
+        );
+        if (captionedPath) {
+          pathForUpload = captionedPath;
+        }
+      } catch (captionError: any) {
+        console.error(
+          `[RenderingService] ${styleLabel}: Failed to add captions: ${captionError.message}`,
+        );
+      }
+    }
+
+    await this.updateRenderingStatus(projectId, 'finalizing', 85);
+
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      pathForUpload,
+      userDir,
+      totalDuration,
+      styleLabel,
+    );
+  }
+
+  /**
+   * Re-export for single-clip avatar styles: apply music/captions/brand only (no HeyGen).
+   */
+  async postProcessExport(
+    projectId: string,
+    userId: string,
+    authToken?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const project = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId, userId },
+    });
+
+    if (!project) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const style = String(project.style || '');
+    if (style !== 'AVATAR_ONLY' && style !== 'ANIMATED_AVATAR') {
+      throw new HttpException(
+        'Post-process export is only available for avatar-only video styles',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!project.videoUrl) {
+      throw new HttpException(
+        'No existing video to enhance. Complete avatar rendering first.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const audioFiles = (project.audioFiles as any[]) || [];
+    if (audioFiles.length === 0) {
+      throw new HttpException(
+        'Audio files not found. Please generate audio first.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    await this.assertExportAffordable(projectId, userId);
+
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    const brandPackagingApplied = meta.brandPackagingApplied === true;
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'IN_PROGRESS',
+        renderingStatus: 'stitching' as any,
+        renderingProgress: 10 as any,
+      },
+    });
+
+    await this.projectLog
+      .logProject(
+        projectId,
+        'INFO',
+        'Post-process export started: applying music, captions, and brand to your avatar video.',
+        { op: 'post_process_export_start' },
+      )
+      .catch(() => {});
+
+    this.processPostProcessExport(projectId, userId, authToken).catch(async (error) => {
+      console.error(`[RenderingService] Post-process export failed for ${projectId}:`, error);
+      const rollbackStep = getRenderingRollbackStep();
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          status: 'FAILED',
+          renderingStatus: 'failed' as any,
+          currentStep: rollbackStep as any,
+          metadata: {
+            ...meta,
+            lastRenderError: error?.message || String(error),
+          } as any,
+        },
+      });
+    });
+
+    return {
+      success: true,
+      message: 'Post-process export started',
+    };
+  }
+
+  private async processPostProcessExport(
+    projectId: string,
+    userId: string,
+    _authToken?: string,
+  ): Promise<void> {
+    const project = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId },
+    });
+    if (!project) throw new Error('Project not found');
+
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    const brandPackagingApplied = meta.brandPackagingApplied === true;
+
+    const userDir = path.join(this.uploadsDir, 'videos', userId);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+
+    let sourcePath = this.findExistingSourceVideoPath(
+      userId,
+      projectId,
+      project.videoUrl,
+      brandPackagingApplied,
+    );
+
+    if (!sourcePath) {
+      const workDir = path.join(userDir, `post_process_${Date.now()}`);
+      fs.mkdirSync(workDir, { recursive: true });
+      sourcePath = await this.resolveVideoUrlToLocalPath(project.videoUrl!, workDir);
+    }
+
+    const audioFiles = (project.audioFiles as any[]) || [];
+    const styleLabel = String(project.style || 'AVATAR_ONLY');
+
+    await this.enhanceAndPublishFinalPath(
+      projectId,
+      userId,
+      project,
+      sourcePath,
+      userDir,
+      audioFiles,
+      styleLabel,
+    );
   }
 
   /**
@@ -513,6 +957,20 @@ export class RenderingService {
       project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
         ? (project.metadata as Record<string, unknown>)
         : {};
+    if (this.brandPackagingService.hasLogoAsset(meta)) {
+      const bp = meta.brandPackaging as { status?: string } | undefined;
+      if (!bp?.status || bp.status === 'pending') {
+        try {
+          const prepared = await this.brandPackagingService.prepareStart(projectId, userId);
+          if (!prepared.skipQueue) {
+            await this.queueManager.addBrandPackagingJob({ projectId, userId });
+          }
+        } catch (e: any) {
+          console.warn(`[RenderingService] Failed to queue brand packaging for ${projectId}: ${e?.message}`);
+        }
+      }
+    }
+
     const styleLabel = String((project as { style?: string }).style || meta.style || 'video');
     await this.projectLog
       .logProject(
@@ -1208,45 +1666,15 @@ export class RenderingService {
       }
     }
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUpload)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        pathForUpload,
-        `videos/${userId}`,
-        path.basename(pathForUpload),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ HALF_N_HALF final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for HALF_N_HALF final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] HALF_N_HALF video completed: ${publicUrl || localVideoUrl}`);
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      pathForUpload,
+      userDir,
+      totalDuration,
+      'HALF_N_HALF',
+    );
   }
 
   /**
@@ -1960,45 +2388,15 @@ export class RenderingService {
       }
     }
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUploadCutout)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        pathForUploadCutout,
-        `videos/${userId}`,
-        path.basename(pathForUploadCutout),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ CUTOUT final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for CUTOUT final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] CUTOUT video completed: ${publicUrl || localVideoUrl}`);
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      pathForUploadCutout,
+      userDir,
+      totalDuration,
+      'CUTOUT',
+    );
   }
 
   /**
@@ -2284,45 +2682,15 @@ export class RenderingService {
       }
     }
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoWithAudioPath)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        finalVideoWithAudioPath,
-        `videos/${userId}`,
-        path.basename(finalVideoWithAudioPath),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ ALTERNATE final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for ALTERNATE final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] ✅ ALTERNATE video completed: ${publicUrl || localVideoUrl}, duration: ${totalDuration.toFixed(2)}s, scenes: ${sceneVideoPaths.length}`);
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      finalVideoWithAudioPath,
+      userDir,
+      totalDuration,
+      'ALTERNATE',
+    );
   }
 
   /**
@@ -2441,73 +2809,15 @@ export class RenderingService {
     const avatarVideoPath = path.join(userDir, `avatar_only_${projectId}_${Date.now()}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
-    // Calculate total duration
-    const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
-
-    let pathForUploadAvatarOnly = await this.applyBackgroundMusicIfEnabled(
+    await this.enhanceAndPublishFinalPath(
+      projectId,
+      userId,
       project,
       avatarVideoPath,
       userDir,
-      projectId,
+      audioFiles,
+      'AVATAR_ONLY',
     );
-    if (project.captionsEnabled && project.captionSettings) {
-      try {
-        console.log(`[RenderingService] AVATAR_ONLY: Adding captions to final video...`);
-        const captionedPath = await this.addCaptionsToFinalVideo(
-          pathForUploadAvatarOnly,
-          userDir,
-          projectId,
-          sortedAudioFiles,
-          project.captionSettings,
-        );
-        if (captionedPath) {
-          pathForUploadAvatarOnly = captionedPath;
-        }
-      } catch (captionError: any) {
-        console.error(`[RenderingService] AVATAR_ONLY: Failed to add captions: ${captionError.message}`);
-        console.warn(`[RenderingService] AVATAR_ONLY: Proceeding without captions`);
-      }
-    }
-
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(pathForUploadAvatarOnly)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        pathForUploadAvatarOnly,
-        `videos/${userId}`,
-        path.basename(pathForUploadAvatarOnly),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ AVATAR_ONLY final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for AVATAR_ONLY final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] AVATAR_ONLY video completed: ${publicUrl || localVideoUrl}`);
   }
 
   /**
@@ -2666,45 +2976,15 @@ export class RenderingService {
       }
     }
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        finalVideoPath,
-        `videos/${userId}`,
-        path.basename(finalVideoPath),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ PRODUCT_ONLY final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for PRODUCT_ONLY final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] PRODUCT_ONLY video completed: ${publicUrl || localVideoUrl}`);
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      finalVideoPath,
+      userDir,
+      totalDuration,
+      'PRODUCT_ONLY',
+    );
   }
 
   /**
@@ -2872,45 +3152,15 @@ export class RenderingService {
       }
     }
 
-    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(finalVideoPath)}`;
-
-    // Upload to GCS if available
-    let gcsUrl: string | undefined;
-    let publicUrl: string = localVideoUrl;
-    try {
-      const storageResult = await this.publicUrlService.uploadFromPath(
-        finalVideoPath,
-        `videos/${userId}`,
-        path.basename(finalVideoPath),
-        'video/mp4'
-      );
-      gcsUrl = storageResult.gcsUrl;
-      publicUrl = storageResult.publicUrl;
-      if (gcsUrl) {
-        console.log(`[RenderingService] ✅ AVATAR_PRODUCT final video uploaded to GCS: ${gcsUrl}`);
-      }
-    } catch (error: any) {
-      console.warn(`[RenderingService] GCS upload failed for AVATAR_PRODUCT final video: ${error.message}`);
-    }
-
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: totalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-      } as any,
-    });
-
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
-
-    console.log(`[RenderingService] AVATAR_PRODUCT video completed: ${publicUrl || localVideoUrl}`);
+    await this.finalizeAndPublishVideo(
+      projectId,
+      userId,
+      project,
+      finalVideoPath,
+      userDir,
+      totalDuration,
+      'AVATAR_PRODUCT',
+    );
   }
 
   /**

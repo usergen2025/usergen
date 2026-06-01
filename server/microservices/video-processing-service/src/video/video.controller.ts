@@ -41,6 +41,7 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import type { Multer } from 'multer';
 import axios from 'axios';
+import { BrandPackagingService } from '../brand/brand-packaging.service';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -53,6 +54,7 @@ export class VideoController {
     private readonly modelRegistry: ModelRegistryService,
     private readonly publicUrlService: PublicUrlService,
     private readonly videoCompositor: VideoCompositorProvider,
+    private readonly brandPackagingService: BrandPackagingService,
   ) {}
 
   /**
@@ -465,6 +467,77 @@ export class VideoController {
     return { success: true, message: 'Use /video-projects/:id to get project status' };
   }
 
+  @Post(':projectId/brand-packaging/start')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({ summary: 'Start brand packaging', description: 'Queue Phase B brand asset preparation (end-card plate)' })
+  async startBrandPackaging(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const prepared = await this.brandPackagingService.prepareStart(projectId, userId);
+    if (prepared.skipQueue) {
+      return {
+        success: true,
+        data: { jobId: prepared.jobId, status: prepared.status },
+        message: `Brand packaging ${prepared.status}`,
+      };
+    }
+
+    const jobId = await this.queueManager.addBrandPackagingJob({ projectId, userId });
+    return {
+      success: true,
+      data: { jobId, status: 'processing' },
+      message: 'Brand packaging queued',
+    };
+  }
+
+  @Post(':projectId/repair-brand-metadata')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Repair stringified metadata.assets and re-queue brand pipeline',
+  })
+  async repairBrandMetadata(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const repair = await this.videoService.repairBrandMetadata(projectId, userId);
+    let brandPackagingStatus: string | undefined;
+    if (repair.hasLogo) {
+      const prepared = await this.brandPackagingService.prepareStart(projectId, userId);
+      brandPackagingStatus = prepared.status;
+      if (!prepared.skipQueue) {
+        await this.queueManager.addBrandPackagingJob({ projectId, userId });
+        brandPackagingStatus = 'processing';
+      }
+    }
+
+    return {
+      success: true,
+      data: { ...repair, brandPackagingStatus },
+      message: 'Brand metadata repaired',
+    };
+  }
+
+  @Get(':projectId/brand-packaging/status')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({ summary: 'Get brand packaging status' })
+  async getBrandPackagingStatus(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const status = await this.brandPackagingService.getStatus(projectId, userId);
+    return { success: true, data: status };
+  }
+
   @Post(':projectId/start-rendering')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
@@ -482,6 +555,25 @@ export class VideoController {
     const authToken = req.headers?.authorization || null;
 
     return await this.renderingService.startRendering(projectId, userId, authToken);
+  }
+
+  @Post(':projectId/post-process-export')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Post-process export (single-clip avatar)',
+    description:
+      'Apply background music, captions, and brand packaging to an existing avatar video without re-running HeyGen',
+  })
+  @ApiResponse({ status: 200, description: 'Post-process export started successfully' })
+  async postProcessExport(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const authToken = req.headers?.authorization || null;
+    return await this.renderingService.postProcessExport(projectId, userId, authToken);
   }
 
   @Get(':projectId/rendering-status')
@@ -1952,7 +2044,7 @@ export class VideoController {
   async getQueueJobStatus(
     @Request() req: any,
     @Param('jobId') jobId: string,
-    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite',
+    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging',
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {

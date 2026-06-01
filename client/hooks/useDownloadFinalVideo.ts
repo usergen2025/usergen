@@ -3,30 +3,10 @@
 import { useCallback, useRef, useState } from 'react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
-
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const objectUrl = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = objectUrl;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(objectUrl);
-}
-
-function triggerNativeDownload(downloadUrl: string) {
-  const link = document.createElement('a');
-  link.href = downloadUrl;
-  link.rel = 'noopener noreferrer';
-  link.target = '_blank';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
+import { downloadAuthenticatedProxyWithFallback } from '@/lib/download-video';
 
 /**
- * Download clean final video with instant feedback and GCS signed-URL when available.
+ * Download clean final video as a file (local server path or GCS via authenticated stream).
  */
 export function useDownloadFinalVideo(
   projectId: string | null | undefined,
@@ -49,19 +29,12 @@ export function useDownloadFinalVideo(
 
     try {
       const response = await apiClient.getVideoDownloadUrl(projectId);
-      if (!response.success || !response.data) {
-        throw new Error(response.message || 'Failed to get download URL');
-      }
+      const saveAs =
+        (response.success && response.data?.filename) ||
+        defaultFilename ||
+        `project-${projectId}.mp4`;
 
-      const { downloadUrl, filename, strategy } = response.data;
-      const saveAs = filename || defaultFilename || `project-${projectId}.mp4`;
-
-      if (strategy === 'signed_gcs') {
-        triggerNativeDownload(downloadUrl);
-      } else {
-        const blob = await apiClient.downloadVideoProject(projectId);
-        triggerBlobDownload(blob, saveAs);
-      }
+      await downloadAuthenticatedProxyWithFallback(projectId, saveAs);
 
       showToast('Download started', 'success');
     } catch (err) {
@@ -69,7 +42,7 @@ export function useDownloadFinalVideo(
       const message =
         err instanceof Error ? err.message : 'Download failed';
       setError(message);
-      showToast('Download failed. Please try again.', 'error');
+      showToast(message || 'Download failed. Please try again.', 'error');
     } finally {
       setIsDownloading(false);
       inFlightRef.current = false;

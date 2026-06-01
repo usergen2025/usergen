@@ -1086,6 +1086,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     imagePath: string,
     analyzedAssets: AnalyzedAsset[] | undefined,
   ): Promise<void> {
+    if (this.configService.get<string>('BROLL_STILL_LOGO_OVERLAY') !== 'true') {
+      return;
+    }
     if (!analyzedAssets?.length) return;
     const logo = this.assetProcessor.getLogoAsset(analyzedAssets);
     if (!this.logoEligibleForCornerOverlay(logo)) return;

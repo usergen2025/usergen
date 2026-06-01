@@ -28,39 +28,49 @@ export type CaptionLayerRenderResult = {
 };
 
 const SAFETY_MARGIN = 4;
+const HANDLE_INSET = 4;
 
-/** Match DraggableResizableCaption top-left anchor math. */
+/** Match client/lib/workspace/captionBounds.ts layoutCaptionBox */
 export function computeCaptionBoxPixels(params: {
   containerWidth: number;
   containerHeight: number;
   positionX: number;
   positionY: number;
   widthScale: number;
-  positionScale: number;
+  fontSize?: number;
+  borderWidth?: number;
+  layoutText?: string;
+  /** @deprecated ignored — height derived from fontSize + layoutText */
+  positionScale?: number;
 }): { left: number; top: number; width: number; minHeight: number } {
   const { containerWidth, containerHeight, positionX, positionY } = params;
   const widthScale = Math.max(0.3, Math.min(0.9, params.widthScale ?? 0.8));
-  const positionScale = Math.max(0.05, Math.min(1, params.positionScale ?? 0.1));
-
   const captionWidth = containerWidth * widthScale;
-  const captionHeight = containerHeight * positionScale;
+  const fontSize = params.fontSize ?? 16;
+  const borderWidth = params.borderWidth ?? 0;
+  const layoutText = params.layoutText ?? 'Sample';
 
-  const maxPixelX = Math.max(0, containerWidth - captionWidth - SAFETY_MARGIN);
-  const maxPixelY = Math.max(0, containerHeight - captionHeight - SAFETY_MARGIN);
+  const padding = 16;
+  const lineHeight = fontSize * 1.35;
+  const charsPerLine = Math.max(8, Math.floor((captionWidth - padding) / (fontSize * 0.55)));
+  const lines = Math.max(1, Math.ceil(layoutText.length / charsPerLine));
+  const boxHeight = padding + lineHeight * lines + borderWidth * 2 + 4;
+
+  const inset = HANDLE_INSET + SAFETY_MARGIN;
+  const maxLeft = Math.max(0, containerWidth - captionWidth - inset);
+  const maxTop = Math.max(0, containerHeight - boxHeight - inset);
 
   const clampedX = Math.max(0, Math.min(1, positionX));
   const clampedY = Math.max(0, Math.min(1, positionY));
 
-  const rawPixelX = maxPixelX * clampedX;
-  const rawPixelY = maxPixelY * clampedY;
-  const left = Math.max(SAFETY_MARGIN / 2, Math.min(rawPixelX, maxPixelX));
-  const top = Math.max(0, Math.min(rawPixelY, maxPixelY));
+  const left = Math.max(0, Math.min(maxLeft, maxLeft * clampedX));
+  const top = Math.max(0, Math.min(maxTop, maxTop * clampedY));
 
   return {
     left: Math.round(left),
     top: Math.round(top),
     width: Math.round(captionWidth),
-    minHeight: Math.round(captionHeight),
+    minHeight: Math.round(boxHeight),
   };
 }
 
@@ -157,13 +167,20 @@ export class HtmlCaptionLayerProvider {
     const fontsDir = this.getFontsDirectory();
     const fontFaceCss = this.buildFontFaceCss(fontsDir);
 
+    const longestSegmentText = captions.reduce(
+      (longest, seg) => (seg.text.length > longest.length ? seg.text : longest),
+      'Sample',
+    );
+
     const box = computeCaptionBoxPixels({
       containerWidth: width,
       containerHeight: height,
       positionX: style.position.x,
       positionY: style.position.y,
       widthScale: style.widthScale ?? 0.8,
-      positionScale: style.positionScale ?? 0.1,
+      fontSize: style.fontSize,
+      borderWidth: style.borderWidth,
+      layoutText: longestSegmentText,
     });
 
     const chromium = await this.loadChromium();

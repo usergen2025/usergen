@@ -3,6 +3,7 @@ import { Job } from 'bullmq';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
 import { PreviewVideoService } from '../../../preview/preview-video.service';
+import { JobStatusGateway } from '../../websocket/job-status.gateway';
 
 export interface PreviewDerivativesJobData {
   projectId: string;
@@ -19,6 +20,7 @@ export class PreviewDerivativesProcessor extends WorkerHost {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly previewVideoService: PreviewVideoService,
+    private readonly jobStatusGateway: JobStatusGateway,
   ) {
     super();
   }
@@ -42,8 +44,30 @@ export class PreviewDerivativesProcessor extends WorkerHost {
       this.previewVideoService.shouldSkipRegeneration(metadata, sourceVideoUrl, forceRegenerate)
     ) {
       console.log(`[PreviewDerivatives] Skipping project ${projectId} — preview up to date`);
+      const previewVideoUrl =
+        typeof metadata.previewVideoUrl === 'string' ? metadata.previewVideoUrl : undefined;
+      await this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: job.id!,
+        queueType: 'preview-derivatives',
+        state: 'completed',
+        progress: 100,
+        metadata: { projectId },
+        result: {
+          skipped: true,
+          previewVideoUrl,
+          previewFormatVersion: metadata.previewFormatVersion,
+        },
+      });
       return { success: true, skipped: true };
     }
+
+    await this.jobStatusGateway.notifyJobStatus(userId, {
+      jobId: job.id!,
+      queueType: 'preview-derivatives',
+      state: 'processing',
+      progress: 5,
+      metadata: { projectId },
+    });
 
     try {
       const audioFiles = this.parseAudioFiles(project.audioFiles);
@@ -53,6 +77,7 @@ export class PreviewDerivativesProcessor extends WorkerHost {
         userId,
         sourceVideoUrl,
         audioFiles,
+        projectMetadata: metadata,
       });
 
       delete metadata.previewGenerationError;
@@ -66,6 +91,19 @@ export class PreviewDerivativesProcessor extends WorkerHost {
         data: {
           thumbnailUrl: result.thumbnailPublicUrl,
           metadata: metadata as object,
+        },
+      });
+
+      await this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: job.id!,
+        queueType: 'preview-derivatives',
+        state: 'completed',
+        progress: 100,
+        metadata: { projectId },
+        result: {
+          previewVideoUrl: result.previewPublicUrl,
+          previewFormatVersion: result.previewFormatVersion,
+          thumbnailUrl: result.thumbnailPublicUrl,
         },
       });
 
@@ -85,6 +123,15 @@ export class PreviewDerivativesProcessor extends WorkerHost {
         where: { id: projectId },
         data: { metadata: metadata as object },
       });
+
+      await this.jobStatusGateway.notifyJobStatus(userId, {
+        jobId: job.id!,
+        queueType: 'preview-derivatives',
+        state: 'failed',
+        error: error?.message || String(error),
+        metadata: { projectId },
+      });
+
       throw error;
     }
   }

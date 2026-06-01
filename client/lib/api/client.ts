@@ -759,6 +759,24 @@ class ApiClient {
     return response.data;
   }
 
+  async postProcessVideoExport(projectId: string): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${projectId}/post-process-export`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async getRenderingStatus(projectId: string): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
@@ -776,12 +794,12 @@ class ApiClient {
     return response.data;
   }
 
-  /** Resolve signed GCS or proxy download URL for clean final video. */
+  /** Resolve signed GCS, public GCS, or proxy download URL for clean final video. */
   async getVideoDownloadUrl(projectId: string): Promise<
     ApiResponse<{
       downloadUrl: string;
       filename: string;
-      strategy: 'signed_gcs' | 'proxy_stream';
+      strategy: 'signed_gcs' | 'proxy_stream' | 'public_gcs';
       expiresInSeconds?: number;
     }>
   > {
@@ -790,7 +808,7 @@ class ApiClient {
       ApiResponse<{
         downloadUrl: string;
         filename: string;
-        strategy: 'signed_gcs' | 'proxy_stream';
+        strategy: 'signed_gcs' | 'proxy_stream' | 'public_gcs';
         expiresInSeconds?: number;
       }>
     >(`/api/video/${projectId}/download-url`, {
@@ -804,13 +822,48 @@ class ApiClient {
   /** Download clean final video (no preview watermark) via Next.js proxy. */
   async downloadVideoProject(projectId: string): Promise<Blob> {
     const token = this.getToken();
+    if (!token) {
+      throw new Error('Please log in to download');
+    }
     const response = await axios.get(`/api/video/${projectId}/download`, {
       responseType: 'blob',
       headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Authorization: `Bearer ${token}`,
       },
+      validateStatus: (status) => status < 500,
     });
-    return response.data;
+
+    const contentType = String(response.headers['content-type'] || '');
+    if (response.status !== 200) {
+      if (contentType.includes('json') || contentType.includes('text')) {
+        const text =
+          response.data instanceof Blob
+            ? await response.data.text()
+            : String(response.data);
+        try {
+          const parsed = JSON.parse(text) as { message?: string };
+          throw new Error(parsed.message || `Download failed (${response.status})`);
+        } catch (e) {
+          if (e instanceof Error && !e.message.startsWith('Download failed')) throw e;
+          throw new Error(`Download failed (${response.status})`);
+        }
+      }
+      throw new Error(`Download failed (${response.status})`);
+    }
+
+    const blob = response.data as Blob;
+    if (!contentType.includes('video') && blob.size < 4096) {
+      const text = await blob.text();
+      try {
+        const parsed = JSON.parse(text) as { message?: string };
+        throw new Error(parsed.message || 'Download failed');
+      } catch (e) {
+        if (e instanceof Error && e.message !== 'Download failed') throw e;
+        throw new Error('Download failed: unexpected response from server');
+      }
+    }
+
+    return blob;
   }
 
   async regenerateVideoPreview(projectId: string): Promise<ApiResponse<{ message?: string }>> {
@@ -829,14 +882,26 @@ class ApiClient {
   }
 
   // Script generation endpoints
-  async uploadProductImage(file: File): Promise<ApiResponse<{ publicUrl: string; localUrl: string }>> {
+  async uploadProductImage(file: File): Promise<ApiResponse<{
+    publicUrl: string;
+    localUrl: string;
+    localPath?: string;
+    gcsUrl?: string;
+    gcsUploaded?: boolean;
+  }>> {
     const aiContentServiceUrl = AI_CONTENT_SERVICE_URL;
     const token = this.getToken();
 
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await axios.post<ApiResponse<{ publicUrl: string; localUrl: string }>>(
+    const response = await axios.post<ApiResponse<{
+      publicUrl: string;
+      localUrl: string;
+      localPath?: string;
+      gcsUrl?: string;
+      gcsUploaded?: boolean;
+    }>>(
       `${aiContentServiceUrl}/scripts/upload-product-image`,
       formData,
       {
@@ -1083,6 +1148,67 @@ class ApiClient {
     return response.data;
   }
 
+  async startBrandPackaging(projectId: string): Promise<ApiResponse<{ jobId?: string; status: string }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<{ jobId?: string; status: string }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/brand-packaging/start`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
+  async repairBrandMetadata(
+    projectId: string,
+  ): Promise<
+    ApiResponse<{
+      assetsCount: number;
+      hasLogo: boolean;
+      assetAnalysisQueued: boolean;
+      brandPackagingStatus?: string;
+    }>
+  > {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post(
+      `${videoServiceUrl}/video-projects/${projectId}/repair-brand-metadata`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
+  async getBrandPackagingStatus(projectId: string): Promise<ApiResponse<{ brandPackaging: Record<string, unknown> }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{ brandPackaging: Record<string, unknown> }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/brand-packaging/status`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
   async queueStockDownloads(
     projectId: string, 
     scenes: Array<{ sceneNumber: number; searchTerm: string }>
@@ -1267,7 +1393,7 @@ class ApiClient {
     return response.data;
   }
 
-  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite'): Promise<ApiResponse<any>> {
+  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging'): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

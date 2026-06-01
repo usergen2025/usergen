@@ -12,6 +12,8 @@ import { WebSocketModule } from './common/websocket/websocket.module';
 import { StorageModule } from './common/storage/storage.module';
 import { ProjectLogModule } from './common/logging/project-log.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { BrandModule } from './brand/brand.module';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -35,6 +37,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     ProjectLogModule,
     NotificationsModule,
     AdminModule,
+    BrandModule,
   ],
   controllers: [VideoController],
 })
