@@ -9,6 +9,7 @@ import {
   Inject,
   forwardRef,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Campaign, CampaignPostSubmission } from '@prisma/client';
 import { DatabaseService } from '../common/database/database.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
@@ -34,6 +35,7 @@ export class PostScraperService {
     @Inject(forwardRef(() => CampaignsService))
     private readonly campaignsService: CampaignsService,
     private readonly notificationService: CampaignNotificationService,
+    private readonly configService: ConfigService,
   ) {}
 
   async runScrapeForCampaign(
@@ -101,7 +103,10 @@ export class PostScraperService {
     if (isPrivileged && force) return;
     if (actor.role !== 'BRAND') return;
     if (!campaign.lastManualScrapeAt) return;
-    const cooldownMs = (campaign.manualScrapeCooldownSec || 21600) * 1000;
+    const defaultCooldownSec = Number(
+      this.configService.get<string>('MANUAL_SCRAPE_COOLDOWN_SECONDS', '21600'),
+    );
+    const cooldownMs = (campaign.manualScrapeCooldownSec || defaultCooldownSec) * 1000;
     const elapsed = Date.now() - campaign.lastManualScrapeAt.getTime();
     if (elapsed < cooldownMs) {
       const retryAfterSec = Math.ceil((cooldownMs - elapsed) / 1000);

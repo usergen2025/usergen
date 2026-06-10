@@ -1582,6 +1582,66 @@ class ApiClient {
     return normalizeCampaignServiceResponse<any>(response.data);
   }
 
+  async getPendingApplicationsCount(
+    campaignId: string,
+  ): Promise<ApiResponse<{ count: number }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(
+      `${campaignServiceUrl}/campaigns/${campaignId}/pending-applications-count`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<{ count: number }>(response.data);
+  }
+
+  async startCampaign(
+    campaignId: string,
+    options?: { handlePendingAs?: 'REJECT_ALL' | 'KEEP_PENDING' },
+  ): Promise<
+    ApiResponse<{
+      campaign: unknown;
+      pendingApplicationsCount: number;
+      rejectedCount?: number;
+    }>
+  > {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/start`,
+      options ?? {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse(response.data);
+  }
+
+  async endCampaign(
+    campaignId: string,
+    options?: { skipGracePeriod?: boolean },
+  ): Promise<ApiResponse<unknown>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/end`,
+      options ?? {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse(response.data);
+  }
+
   async topUpCampaign(campaignId: string, amount: number): Promise<ApiResponse<any>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();

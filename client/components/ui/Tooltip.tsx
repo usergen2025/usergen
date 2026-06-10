@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { cn } from '@/lib/utils/cn';
 
 interface TooltipProps {
-  content: string;
+  content: ReactNode;
   children: ReactNode;
   position?: 'top' | 'bottom' | 'left' | 'right';
   className?: string;
@@ -67,7 +67,7 @@ export default function Tooltip({
           ref={tooltipRef}
           role="tooltip"
           className={cn(
-            'fixed z-[100] whitespace-nowrap rounded-lg bg-[#212121] px-2.5 py-1.5 text-xs font-medium text-white shadow-lg',
+            'fixed z-[100] rounded-xl border border-[#E8E2DB] bg-[#FFFBF8] px-3 py-2 text-xs text-[#212121] shadow-lg',
             'animate-in fade-in-0 zoom-in-95 duration-150',
             className,
           )}
@@ -76,11 +76,11 @@ export default function Tooltip({
           {content}
           <div
             className={cn(
-              'absolute h-2 w-2 rotate-45 bg-[#212121]',
-              position === 'top' && 'bottom-[-4px] left-1/2 -translate-x-1/2',
-              position === 'bottom' && 'top-[-4px] left-1/2 -translate-x-1/2',
-              position === 'left' && 'right-[-4px] top-1/2 -translate-y-1/2',
-              position === 'right' && 'left-[-4px] top-1/2 -translate-y-1/2',
+              'absolute h-2.5 w-2.5 rotate-45 border-[#E8E2DB] bg-[#FFFBF8]',
+              position === 'top' && 'bottom-[-5px] left-1/2 -translate-x-1/2 border-b border-r',
+              position === 'bottom' && 'top-[-5px] left-1/2 -translate-x-1/2 border-l border-t',
+              position === 'left' && 'right-[-5px] top-1/2 -translate-y-1/2 border-r border-t',
+              position === 'right' && 'left-[-5px] top-1/2 -translate-y-1/2 border-b border-l',
             )}
           />
         </div>

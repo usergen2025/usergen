@@ -6,6 +6,7 @@ import { CampaignsService } from './campaigns.service';
 import { CampaignFinalizationService } from './campaign-finalization.service';
 import { PostScraperService } from '../scraper/post-scraper.service';
 import { ApifyClientService } from '../scraper/apify.client';
+import { isOnOrAfterCampaignStartDay, isAfterCampaignEndDay } from './utils/date-compare.util';
 
 @Injectable()
 export class CampaignSchedulerService {
@@ -139,6 +140,58 @@ export class CampaignSchedulerService {
     }
   }
 
+  /** 12:00 AM IST daily = 18:30 UTC previous calendar day boundary check at midnight IST */
+  @Cron('30 18 * * *', { timeZone: 'UTC' })
+  async processScheduledCampaignStarts() {
+    this.logger.log('Running scheduled campaign start check...');
+    const now = new Date();
+    try {
+      const campaigns = await this.databaseService.campaign.findMany({
+        where: {
+          status: 'LIVE',
+          actualStartDate: null,
+        },
+      });
+
+      for (const campaign of campaigns) {
+        if (!isOnOrAfterCampaignStartDay(campaign.startDate, now)) {
+          continue;
+        }
+
+        await this.databaseService.campaign.update({
+          where: { id: campaign.id },
+          data: { status: 'IN_PROGRESS' },
+        });
+
+        await this.databaseService.campaignApplication.updateMany({
+          where: { campaignId: campaign.id, status: 'APPLIED' },
+          data: { status: 'REJECTED', reviewedAt: now },
+        });
+
+        const approved = await this.databaseService.campaignApplication.findMany({
+          where: { campaignId: campaign.id, status: 'APPROVED' },
+        });
+        for (const app of approved) {
+          try {
+            await this.notificationService.notifyCampaignStarted({
+              creatorId: app.creatorId,
+              campaignId: campaign.id,
+              campaignName: campaign.name,
+            });
+          } catch (notifyErr: any) {
+            this.logger.warn(
+              `Campaign-started notification failed for ${app.creatorId}: ${notifyErr?.message}`,
+            );
+          }
+        }
+      }
+
+      this.logger.log(`Scheduled start processed for ${campaigns.length} candidate campaign(s)`);
+    } catch (error: any) {
+      this.logger.error(`Scheduled campaign start check failed: ${error?.message}`);
+    }
+  }
+
   /** Friday 12:00 IST = 06:30 UTC */
   @Cron('0 30 6 * * 5', { timeZone: 'UTC' })
   async weeklyLeaderboardScrape() {
@@ -153,12 +206,19 @@ export class CampaignSchedulerService {
         where: {
           payoutModel: 'POOL',
           status: { in: ['LIVE', 'IN_PROGRESS'] },
-          startDate: { lte: now },
-          endDate: { gte: now },
+          actualEndDate: null,
         },
-        select: { id: true, name: true },
+        select: { id: true, name: true, startDate: true, actualStartDate: true, endDate: true, actualEndDate: true },
       });
       for (const campaign of campaigns) {
+        const effectiveEnd = campaign.actualEndDate ?? campaign.endDate;
+        if (isAfterCampaignEndDay(effectiveEnd, now)) {
+          continue;
+        }
+        const effectiveStart = campaign.actualStartDate ?? campaign.startDate;
+        if (!isOnOrAfterCampaignStartDay(effectiveStart, now)) {
+          continue;
+        }
         try {
           await this.postScraperService.runScrapeForCampaign(campaign.id, 'WEEKLY', {
             id: 'cron',

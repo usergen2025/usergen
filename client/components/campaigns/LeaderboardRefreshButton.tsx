@@ -137,10 +137,19 @@ export function LeaderboardRefreshButton({
   };
 
   const formatCooldown = (ms: number) => {
-    const h = Math.floor(ms / 3600000);
-    const m = Math.ceil((ms % 3600000) / 60000);
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
+    const totalMinutes = Math.ceil(ms / 60000);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    
+    if (h === 0) {
+      return m === 1 ? '1 minute' : `${m} minutes`;
+    }
+    if (m === 0) {
+      return h === 1 ? '1 hour' : `${h} hours`;
+    }
+    const hourStr = h === 1 ? '1 hour' : `${h} hours`;
+    const minStr = m === 1 ? '1 minute' : `${m} minutes`;
+    return `${hourStr} ${minStr}`;
   };
 
   return (

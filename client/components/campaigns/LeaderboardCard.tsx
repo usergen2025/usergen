@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Hourglass, AlertCircle } from 'lucide-react';
+import { Trophy, Info, AlertCircle, Hourglass } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
-import { rupeesIN, templateLabel, normalizePoolTiers, type PrizePoolTier } from '@/lib/campaigns/prize-pool';
+import { rupeesIN, templateLabel } from '@/lib/campaigns/prize-pool';
 import { TierLeaderboard, type TierLeaderboardEntry } from '@/components/campaigns/TierLeaderboard';
+import Tooltip from '@/components/ui/Tooltip';
 
 interface LeaderboardData {
   campaignId: string;
@@ -37,11 +38,19 @@ interface LeaderboardData {
   tierGroups?: unknown[];
 }
 
+interface PrizePoolData {
+  totalBudget: number;
+  templateKey?: string;
+  tieBreaker?: string;
+  minViewsToQualify?: number;
+  gracePeriodHours?: number;
+  payoutModel?: string;
+}
+
 interface LeaderboardCardProps {
   campaignId: string;
   highlightCreatorId?: string;
   showSnapshot?: boolean;
-  limit?: number;
   refreshToken?: number;
   onLoaded?: (data: LeaderboardData) => void;
 }
@@ -54,6 +63,7 @@ export function LeaderboardCard({
   onLoaded,
 }: LeaderboardCardProps) {
   const [data, setData] = useState<LeaderboardData | null>(null);
+  const [poolData, setPoolData] = useState<PrizePoolData | null>(null);
   const [snapshot, setSnapshot] = useState<any[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,10 +73,15 @@ export function LeaderboardCard({
     const load = async () => {
       try {
         setLoading(true);
-        const res = await apiClient.getCampaignLeaderboard(campaignId);
+        const [leaderboardRes, poolRes] = await Promise.all([
+          apiClient.getCampaignLeaderboard(campaignId),
+          apiClient.getCampaignPrizePool(campaignId),
+        ]);
         if (cancelled) return;
-        const payload = (res.data ?? null) as LeaderboardData | null;
+        const payload = (leaderboardRes.data ?? null) as LeaderboardData | null;
+        const pool = (poolRes.data ?? null) as PrizePoolData | null;
         setData(payload);
+        setPoolData(pool);
         if (payload) onLoaded?.(payload);
         if (showSnapshot && payload?.finalizationStatus === 'COMPLETED') {
           const snap = await apiClient.getCampaignLeaderboardSnapshot(campaignId);
@@ -88,11 +103,13 @@ export function LeaderboardCard({
   if (loading) {
     return (
       <div className="rounded-2xl border border-[#E8E2DB] bg-white p-4">
-        <div className="h-3 w-32 animate-pulse rounded bg-[#F0E9E2]" />
+        <div className="h-4 w-32 animate-pulse rounded bg-[#F0E9E2]" />
         <div className="mt-3 h-3 w-full animate-pulse rounded bg-[#F0E9E2]" />
+        <div className="mt-2 h-12 w-full animate-pulse rounded bg-[#F0E9E2]" />
       </div>
     );
   }
+  
   if (error || !data) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -101,6 +118,7 @@ export function LeaderboardCard({
       </div>
     );
   }
+  
   if (data.payoutModel === 'CPM') {
     return null;
   }
@@ -115,44 +133,64 @@ export function LeaderboardCard({
     caveat: e.caveat,
   }));
 
-  const previewN = Math.max(data.qualifiersCount || 1, data.approvedCount || 1);
+  const infoTooltipContent = (
+    <div className="max-w-xs space-y-1.5 text-xs">
+      <p><strong>Pool:</strong> ₹{rupeesIN(data.totalPoolRupees)}</p>
+      {poolData?.templateKey && (
+        <p><strong>Template:</strong> {templateLabel(poolData.templateKey)}</p>
+      )}
+      {poolData?.tieBreaker && (
+        <p><strong>Tie-breaker:</strong> {poolData.tieBreaker.replace(/_/g, ' ')}</p>
+      )}
+      <p><strong>Min views:</strong> {poolData?.minViewsToQualify ?? 0}</p>
+      <p><strong>Grace period:</strong> {data.gracePeriodHours}h</p>
+      <p><strong>Ends:</strong> {new Date(data.endDate).toLocaleDateString('en-IN')}</p>
+      <p className="mt-2 pt-2 border-t border-white/20 text-[11px] opacity-80">
+        Final payouts computed after campaign ends plus grace period. 
+        Creators without verified post at finalization are dropped.
+      </p>
+    </div>
+  );
 
   return (
     <div className="rounded-2xl border border-[#E8E2DB] bg-white p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="font-heading text-sm font-medium text-[#212121]">
-            Prize pool leaderboard · {data.qualifiersCount} qualifying / {data.approvedCount} approved
-          </p>
-          <p className="text-xs text-text-secondary">
-            Pool ₹{rupeesIN(data.totalPoolRupees)} · ends {new Date(data.endDate).toLocaleDateString('en-IN')}
-            {data.gracePeriodHours ? ` (+${data.gracePeriodHours}h grace)` : ''}
-          </p>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2">
+          <Trophy className="h-5 w-5 text-[#E86412]" />
+          <h3 className="font-heading text-base font-semibold text-[#212121]">Leaderboard</h3>
         </div>
-        {data.finalizationStatus === 'COMPLETED' && (
-          <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
-            Finalized {data.finalizedAt ? new Date(data.finalizedAt).toLocaleDateString('en-IN') : ''}
-          </span>
-        )}
-        {data.finalizationStatus === 'RUNNING' && (
-          <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
-            <Hourglass className="h-3 w-3" /> Finalizing…
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {data.finalizationStatus === 'COMPLETED' && (
+            <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+              Finalized
+            </span>
+          )}
+          {data.finalizationStatus === 'RUNNING' && (
+            <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
+              <Hourglass className="h-3 w-3" /> Finalizing…
+            </span>
+          )}
+          <Tooltip content={infoTooltipContent} position="left">
+            <button
+              type="button"
+              className="flex h-6 w-6 items-center justify-center rounded-full text-text-secondary hover:bg-[#F0E9E2] hover:text-[#212121] transition-colors"
+            >
+              <Info className="h-4 w-4" />
+            </button>
+          </Tooltip>
+        </div>
       </div>
 
-      <p className="mt-2 text-xs text-text-secondary">{data.caveat}</p>
+      <p className="mb-3 text-xs text-text-secondary">
+        Pool ₹{rupeesIN(data.totalPoolRupees)} · {data.qualifiersCount} qualifying / {data.approvedCount} approved
+        {data.gracePeriodHours ? ` · ends ${new Date(data.endDate).toLocaleDateString('en-IN')} (+${data.gracePeriodHours}h grace)` : ''}
+      </p>
 
-      <div className="mt-3">
-        <TierLeaderboard
-          tiers={data.tiers || []}
-          tierGroups={data.tierGroups as never}
-          entries={tierEntries}
-          highlightCreatorId={highlightCreatorId}
-          totalPoolRupees={data.totalPoolRupees}
-          participants={previewN}
-        />
-      </div>
+      <TierLeaderboard
+        entries={tierEntries}
+        highlightCreatorId={highlightCreatorId}
+        qualifiersCount={data.qualifiersCount}
+      />
 
       {showSnapshot && snapshot && snapshot.length > 0 && (
         <div className="mt-3 rounded-xl border border-[#E8E2DB] bg-[#FFFCF7] p-3">
@@ -168,59 +206,5 @@ export function LeaderboardCard({
 
 
 export function PrizePoolSummary({ campaignId }: { campaignId: string }) {
-  const [pool, setPool] = useState<{
-    totalBudget: number;
-    templateKey?: string;
-    tiers?: unknown[];
-    tieBreaker?: string;
-    minViewsToQualify?: number;
-    gracePeriodHours?: number;
-    payoutModel?: string;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .getCampaignPrizePool(campaignId)
-      .then((res) => {
-        if (cancelled) return;
-        setPool(res.data || null);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [campaignId]);
-
-  if (loading) {
-    return (
-      <div className="rounded-2xl border border-[#E8E2DB] bg-white p-4">
-        <div className="h-3 w-40 animate-pulse rounded bg-[#F0E9E2]" />
-      </div>
-    );
-  }
-  if (!pool || pool.payoutModel !== 'POOL') return null;
-
-  const tiers = normalizePoolTiers({
-    tiers: pool.tiers as PrizePoolTier[] | undefined,
-    templateKey: pool.templateKey,
-  });
-
-  return (
-    <div className="rounded-2xl border border-[#E8E2DB] bg-white p-4">
-      <p className="font-heading text-sm font-medium text-[#212121]">
-        Prize pool · ₹{rupeesIN(pool.totalBudget)} · {templateLabel(pool.templateKey)}
-      </p>
-      <p className="mt-1 text-xs text-text-secondary">
-        Tie-breaker: {pool.tieBreaker} · Min views: {pool.minViewsToQualify} · Grace: {pool.gracePeriodHours}h
-      </p>
-      <div className="mt-3">
-        <TierLeaderboard tiers={tiers} totalPoolRupees={pool.totalBudget} participants={1000} />
-      </div>
-    </div>
-  );
+  return null;
 }

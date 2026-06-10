@@ -338,23 +338,31 @@ export class CampaignFinalizationService {
     });
   }
 
-  isPastFinalizationWindow(campaign: Pick<Campaign, 'endDate' | 'gracePeriodHours'>): boolean {
-    const cutoff = new Date(campaign.endDate.getTime() + campaign.gracePeriodHours * 60 * 60 * 1000);
+  isPastFinalizationWindow(
+    campaign: Pick<Campaign, 'endDate' | 'gracePeriodHours' | 'actualEndDate'>,
+  ): boolean {
+    const effectiveEnd = campaign.actualEndDate ?? campaign.endDate;
+    const cutoff = new Date(effectiveEnd.getTime() + campaign.gracePeriodHours * 60 * 60 * 1000);
     return Date.now() >= cutoff.getTime();
   }
 
   /** Find POOL campaigns that are past the cutoff and not yet COMPLETED. */
   async findCampaignsDueForFinalization(limit = 20) {
     const now = new Date();
-    return this.databaseService.campaign.findMany({
+    const rows = await this.databaseService.campaign.findMany({
       where: {
         payoutModel: 'POOL',
         finalizationStatus: { in: ['PENDING', 'FAILED'] },
         status: { not: 'COMPLETED' },
-        endDate: { lte: now },
       },
       orderBy: { endDate: 'asc' },
-      take: limit,
+      take: limit * 3,
     });
+    return rows
+      .filter((campaign) => {
+        const effectiveEnd = campaign.actualEndDate ?? campaign.endDate;
+        return effectiveEnd.getTime() <= now.getTime();
+      })
+      .slice(0, limit);
   }
 }

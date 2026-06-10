@@ -13,6 +13,12 @@ import { cn } from '@/lib/utils/cn';
 import { PrizePoolEditor } from '@/components/campaigns/PrizePoolEditor';
 import { PrizePoolConfig, tiersForTemplate, isTiersValid, normalizePoolTiers } from '@/lib/campaigns/prize-pool';
 
+function cmpYmd(a: string, b: string): number {
+  const da = parseDate(a, 'yyyy-MM-dd', new Date());
+  const db = parseDate(b, 'yyyy-MM-dd', new Date());
+  return da.getTime() - db.getTime();
+}
+
 function paramSegment(params: ReturnType<typeof useParams> | null, key: string): string {
   const value = params?.[key];
   if (typeof value === 'string') return value;
@@ -144,6 +150,16 @@ export default function EditCampaignPage() {
         }
         if (!formData.endDate) {
           showToast('Campaign end date is required', 'error');
+          setIsSaving(false);
+          return;
+        }
+        if (cmpYmd(formData.deadlineToApply, formData.startDate) >= 0) {
+          showToast('Campaign start must be at least one day after the apply deadline.', 'error');
+          setIsSaving(false);
+          return;
+        }
+        if (cmpYmd(formData.startDate, formData.endDate) >= 0) {
+          showToast('Campaign end date must be after the start date.', 'error');
           setIsSaving(false);
           return;
         }
@@ -347,7 +363,7 @@ export default function EditCampaignPage() {
                     onChange={(next) => setFormData((prev) => ({ ...prev, startDate: next }))}
                     minDate={
                       formData.deadlineToApply
-                        ? parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date())
+                        ? addDays(parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date()), 1)
                         : startOfDay(new Date())
                     }
                     placeholder="Choose start date"

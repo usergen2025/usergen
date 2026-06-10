@@ -27,7 +27,8 @@ export type CampaignEventType =
   | 'campaign:leaderboard:updated'
   | 'campaign:rank:changed'
   | 'campaign:finalized'
-  | 'campaign:refunded:exception';
+  | 'campaign:refunded:exception'
+  | 'campaign:started';
 
 export interface CampaignEvent {
   type: CampaignEventType;

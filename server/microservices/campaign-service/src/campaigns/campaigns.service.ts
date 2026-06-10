@@ -27,7 +27,8 @@ import { DatabaseService } from '../common/database/database.service';
 import { WalletSyncService } from './wallet-sync.service';
 import { CampaignMediaService } from './campaign-media.service';
 import { CampaignNotificationService } from './campaign-notification.service';
-import { isAfterCampaignEndDay, isOnOrBeforeDeadlineDay } from './utils/date-compare.util';
+import { CampaignFinalizationService } from './campaign-finalization.service';
+import { endOfIstDay, isAfterCampaignEndDay, isOnOrBeforeDeadlineDay, isOnOrAfterCampaignStartDay, isStartAtLeastOneDayAfterDeadline, startOfIstDay } from './utils/date-compare.util';
 import { resolvePrizePoolConfig } from './prize-pool';
 import { Prisma } from '@prisma/client';
 
@@ -45,6 +46,10 @@ export interface Campaign {
   deadlineToApply: string;
   startDate: string;
   endDate: string;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
+  manuallyStartedBy?: string | null;
+  manuallyEndedBy?: string | null;
   payoutRate: number | null;
   totalBudget: number;
   budgetUsed: number;
@@ -67,6 +72,8 @@ export interface Campaign {
   finalizedAt?: string | null;
   finalizationError?: string | null;
   exceptionRefundAmountPaise?: string | null;
+  manualScrapeCooldownSec?: number;
+  lastManualScrapeAt?: string | null;
 }
 
 export interface Submission {
@@ -128,10 +135,72 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly campaignMediaService: CampaignMediaService,
     private readonly notificationService: CampaignNotificationService,
+    private readonly campaignFinalizationService: CampaignFinalizationService,
   ) {}
 
   private getIdempotencyKey(scope: string, ids: Array<string | number>) {
     return `campaign-service:${scope}:${ids.join(':')}`;
+  }
+
+  private assertCampaignDateOrder(deadlineToApply: string, startDate: string, endDate: string) {
+    if (!isStartAtLeastOneDayAfterDeadline(deadlineToApply, startDate)) {
+      throw new BadRequestException(
+        'Campaign start date must be at least one day after the deadline to apply',
+      );
+    }
+    const start = startOfIstDay(startDate);
+    const end = startOfIstDay(endDate);
+    if (end.getTime() <= start.getTime()) {
+      throw new BadRequestException('Campaign end date must be after the start date');
+    }
+  }
+
+  /** Effective campaign start instant for gating post submissions and scraper validation. */
+  getEffectiveCampaignStart(row: {
+    startDate: Date | string;
+    actualStartDate?: Date | string | null;
+  }): Date {
+    if (row.actualStartDate) {
+      return new Date(row.actualStartDate);
+    }
+    return startOfIstDay(row.startDate);
+  }
+
+  /** Effective deadline for applications. If manually started, deadline = actualStartDate. */
+  getEffectiveDeadline(row: {
+    deadlineToApply: Date | string;
+    actualStartDate?: Date | string | null;
+  }): Date {
+    if (row.actualStartDate) {
+      return new Date(row.actualStartDate);
+    }
+    return new Date(row.deadlineToApply);
+  }
+
+  /** Effective campaign end instant for finalization. */
+  getEffectiveCampaignEnd(row: {
+    endDate: Date | string;
+    actualEndDate?: Date | string | null;
+  }): Date {
+    if (row.actualEndDate) {
+      return new Date(row.actualEndDate);
+    }
+    return new Date(row.endDate);
+  }
+
+  /** Whether the campaign running phase has begun (post link submissions allowed). */
+  hasCampaignStarted(row: {
+    status: string;
+    startDate: Date | string;
+    actualStartDate?: Date | string | null;
+  }): boolean {
+    if (row.status === 'IN_PROGRESS') {
+      return true;
+    }
+    if (row.status !== 'LIVE') {
+      return false;
+    }
+    return isOnOrAfterCampaignStartDay(this.getEffectiveCampaignStart(row), new Date());
   }
 
   private buildWalletSyncFilters(params?: {
@@ -197,7 +266,12 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         },
         ...(brandId ? { brandId } : {}),
         ...(status ? { status } : {}),
-        ...(deadlineNotPassed ? { deadlineToApply: { gte: now } } : {}),
+        ...(deadlineNotPassed
+          ? {
+              deadlineToApply: { gte: now },
+              actualStartDate: null,
+            }
+          : {}),
         ...(search
           ? {
               OR: [
@@ -243,6 +317,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createCampaign(dto: CreateCampaignDto, brandUserId: string): Promise<Campaign> {
+    this.assertCampaignDateOrder(dto.deadlineToApply, dto.startDate, dto.endDate);
     const payoutModel = dto.payoutModel || 'POOL';
     const totalBudget = Number(dto.totalBudget);
     const payoutRate = payoutModel === 'CPM' ? Number(dto.payoutRate) : null;
@@ -277,9 +352,9 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         description: dto.description,
         status: 'DRAFT',
         payoutModel,
-        deadlineToApply: new Date(dto.deadlineToApply),
-        startDate: new Date(dto.startDate),
-        endDate: new Date(dto.endDate),
+        deadlineToApply: endOfIstDay(dto.deadlineToApply),
+        startDate: startOfIstDay(dto.startDate),
+        endDate: endOfIstDay(dto.endDate),
         payoutRate,
         totalBudget,
         budgetUsed: 0,
@@ -328,6 +403,11 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Draft: full edits allowed.
+    const deadlineToApply = dto.deadlineToApply ?? campaign.deadlineToApply.toISOString().slice(0, 10);
+    const startDate = dto.startDate ?? campaign.startDate.toISOString().slice(0, 10);
+    const endDate = dto.endDate ?? campaign.endDate.toISOString().slice(0, 10);
+    this.assertCampaignDateOrder(deadlineToApply, startDate, endDate);
+
     let prizePoolJson: any = campaign.prizePoolJson;
     let tieBreaker = campaign.tieBreaker;
     let minViewsToQualify = campaign.minViewsToQualify;
@@ -355,9 +435,9 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
         name: dto.name ?? campaign.name,
         description: dto.description ?? campaign.description,
         brandAssetsUrl: dto.brandAssetsUrl ?? campaign.brandAssetsUrl,
-        ...(dto.deadlineToApply ? { deadlineToApply: new Date(dto.deadlineToApply) } : {}),
-        ...(dto.startDate ? { startDate: new Date(dto.startDate) } : {}),
-        ...(dto.endDate ? { endDate: new Date(dto.endDate) } : {}),
+        ...(dto.deadlineToApply ? { deadlineToApply: endOfIstDay(dto.deadlineToApply) } : {}),
+        ...(dto.startDate ? { startDate: startOfIstDay(dto.startDate) } : {}),
+        ...(dto.endDate ? { endDate: endOfIstDay(dto.endDate) } : {}),
         ...(dto.industry !== undefined ? { industry: dto.industry } : {}),
         ...(dto.platformTarget !== undefined ? { platformTarget: dto.platformTarget } : {}),
         ...(dto.regionFilter !== undefined ? { regionFilter: dto.regionFilter } : {}),
@@ -436,8 +516,124 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async resumeCampaign(id: string, brandUserId: string): Promise<Campaign> {
-    await this.assertCampaignOwnership(id, brandUserId);
-    return this.transitionStatus(id, 'LIVE');
+    const campaign = await this.assertCampaignOwnership(id, brandUserId);
+    const row = await this.databaseService.campaign.findUnique({ where: { id } });
+    if (!row) {
+      throw new NotFoundException('Campaign not found');
+    }
+    const targetStatus = this.hasCampaignStarted(row) ? 'IN_PROGRESS' : 'LIVE';
+    return this.transitionStatus(id, targetStatus);
+  }
+
+  async getPendingApplicationsCount(campaignId: string, brandUserId: string): Promise<{ count: number }> {
+    await this.assertCampaignOwnership(campaignId, brandUserId);
+    const count = await this.databaseService.campaignApplication.count({
+      where: { campaignId, status: 'APPLIED' },
+    });
+    return { count };
+  }
+
+  async startCampaignManually(
+    campaignId: string,
+    brandUserId: string,
+    options?: { handlePendingAs?: 'REJECT_ALL' | 'KEEP_PENDING' },
+  ): Promise<{
+    campaign: Campaign;
+    pendingApplicationsCount: number;
+    rejectedCount?: number;
+  }> {
+    const campaign = await this.assertCampaignOwnership(campaignId, brandUserId);
+    if (campaign.status !== 'LIVE') {
+      throw new BadRequestException('Campaign must be in LIVE status to start manually');
+    }
+    if (campaign.actualStartDate) {
+      throw new BadRequestException('Campaign has already been started');
+    }
+    const now = new Date();
+    const scheduledStart = startOfIstDay(campaign.startDate);
+    if (now.getTime() >= scheduledStart.getTime()) {
+      throw new BadRequestException('Campaign has already reached its scheduled start date');
+    }
+
+    const pendingApplications = await this.databaseService.campaignApplication.findMany({
+      where: { campaignId, status: 'APPLIED' },
+    });
+
+    let rejectedCount = 0;
+    if (options?.handlePendingAs === 'REJECT_ALL' && pendingApplications.length > 0) {
+      await this.databaseService.campaignApplication.updateMany({
+        where: { campaignId, status: 'APPLIED' },
+        data: { status: 'REJECTED', reviewedAt: now, reviewedBy: brandUserId },
+      });
+      rejectedCount = pendingApplications.length;
+    }
+
+    const updated = await this.databaseService.campaign.update({
+      where: { id: campaignId },
+      data: {
+        actualStartDate: now,
+        manuallyStartedBy: brandUserId,
+        status: 'IN_PROGRESS',
+      },
+      include: { submissions: true, applications: true },
+    });
+
+    const approvedApps = await this.databaseService.campaignApplication.findMany({
+      where: { campaignId, status: 'APPROVED' },
+    });
+    for (const app of approvedApps) {
+      void this.notificationService.notifyCampaignStarted({
+        creatorId: app.creatorId,
+        campaignId,
+        campaignName: campaign.name,
+      });
+    }
+
+    return {
+      campaign: this.mapCampaign(updated),
+      pendingApplicationsCount: pendingApplications.length,
+      rejectedCount,
+    };
+  }
+
+  async endCampaignManually(
+    campaignId: string,
+    brandUserId: string,
+    options?: { skipGracePeriod?: boolean },
+  ): Promise<Campaign> {
+    const campaign = await this.assertCampaignOwnership(campaignId, brandUserId);
+    const row = await this.databaseService.campaign.findUnique({ where: { id: campaignId } });
+    if (!row) {
+      throw new NotFoundException('Campaign not found');
+    }
+    if (row.status !== 'IN_PROGRESS' && row.status !== 'LIVE') {
+      throw new BadRequestException('Campaign must be active to end manually');
+    }
+    if (row.status === 'LIVE' && !this.hasCampaignStarted(row)) {
+      throw new BadRequestException('Campaign has not started yet — use Start Campaign first');
+    }
+    if (row.actualEndDate) {
+      throw new BadRequestException('Campaign has already been ended manually');
+    }
+
+    const now = new Date();
+    await this.databaseService.campaign.update({
+      where: { id: campaignId },
+      data: {
+        actualEndDate: now,
+        manuallyEndedBy: brandUserId,
+      },
+    });
+
+    if (options?.skipGracePeriod && campaign.payoutModel === 'POOL') {
+      await this.campaignFinalizationService.finalizeCampaign(
+        campaignId,
+        { id: brandUserId, role: 'BRAND' },
+        { force: true },
+      );
+    }
+
+    return this.getCampaign(campaignId);
   }
 
   async topUpCampaign(id: string, amount: number, brandUserId: string): Promise<Campaign> {
@@ -523,12 +719,19 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     dto?: ApplyToCampaignDto,
   ): Promise<{ success: boolean; message: string }> {
     const campaign = await this.getCampaign(campaignId);
-    if (campaign.status !== 'LIVE' && campaign.status !== 'IN_PROGRESS') {
-      throw new BadRequestException('Applications are allowed only on active campaigns');
+    if (campaign.status !== 'LIVE') {
+      throw new BadRequestException('Applications are allowed only during the live application phase');
     }
     const now = new Date();
     if (!isOnOrBeforeDeadlineDay(campaign.deadlineToApply, now)) {
       throw new BadRequestException('Application deadline has passed');
+    }
+    if (this.hasCampaignStarted({
+      status: campaign.status,
+      startDate: campaign.startDate,
+      actualStartDate: campaign.actualStartDate,
+    })) {
+      throw new BadRequestException('Application period has ended — the campaign has started');
     }
     if (!dto?.termsAccepted) {
       throw new BadRequestException('Terms must be accepted before applying');
@@ -821,14 +1024,24 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     creatorId: string,
     dto: CreatePostSubmissionDto,
   ): Promise<CampaignPostSubmissionView> {
-    const campaign = await this.getCampaign(campaignId);
-    if (campaign.status !== 'LIVE' && campaign.status !== 'IN_PROGRESS') {
+    const campaignRow = await this.databaseService.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaignRow) {
+      throw new NotFoundException('Campaign not found');
+    }
+    if (campaignRow.status !== 'LIVE' && campaignRow.status !== 'IN_PROGRESS') {
       throw new BadRequestException('Campaign is not active');
     }
     const now = new Date();
-    if (isAfterCampaignEndDay(campaign.endDate, now)) {
+    const effectiveEnd = campaignRow.actualEndDate ?? campaignRow.endDate;
+    if (isAfterCampaignEndDay(effectiveEnd, now)) {
       throw new BadRequestException('Campaign has already ended');
     }
+    if (!this.hasCampaignStarted(campaignRow)) {
+      throw new BadRequestException(
+        'Campaign has not started yet. Final post submissions open after the campaign start date.',
+      );
+    }
+    const campaign = this.mapCampaign(campaignRow);
     const application = await this.databaseService.campaignApplication.findUnique({
       where: {
         campaignId_creatorId: {
@@ -2000,6 +2213,10 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       deadlineToApply: row.deadlineToApply.toISOString(),
       startDate: row.startDate.toISOString(),
       endDate: row.endDate.toISOString(),
+      actualStartDate: row.actualStartDate ? row.actualStartDate.toISOString() : null,
+      actualEndDate: row.actualEndDate ? row.actualEndDate.toISOString() : null,
+      manuallyStartedBy: row.manuallyStartedBy ?? null,
+      manuallyEndedBy: row.manuallyEndedBy ?? null,
       payoutRate: row.payoutRate !== null && row.payoutRate !== undefined ? Number(row.payoutRate) : null,
       totalBudget: Number(row.totalBudget),
       budgetUsed: Number(row.budgetUsed),
@@ -2024,6 +2241,9 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       exceptionRefundAmountPaise: row.exceptionRefundAmountPaise != null
         ? row.exceptionRefundAmountPaise.toString()
         : null,
+      manualScrapeCooldownSec: row.manualScrapeCooldownSec ?? 
+        Number(this.configService.get<string>('MANUAL_SCRAPE_COOLDOWN_SECONDS', '21600')),
+      lastManualScrapeAt: row.lastManualScrapeAt ? row.lastManualScrapeAt.toISOString() : null,
     };
   }
 

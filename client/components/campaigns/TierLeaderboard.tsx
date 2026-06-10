@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { Trophy, ChevronDown, ChevronRight } from 'lucide-react';
+import { useMemo } from 'react';
+import { Trophy } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import {
   TierAllocationGroup,
@@ -25,13 +25,15 @@ export interface TierLeaderboardEntry {
 }
 
 interface TierLeaderboardProps {
-  tiers: PrizePoolTier[] | unknown[];
+  tiers?: PrizePoolTier[] | unknown[];
   perRank?: Array<{ rank: number; payoutPaise: bigint | string; tierIndex: number }>;
   tierGroups?: TierAllocationGroup[];
   entries?: TierLeaderboardEntry[];
   highlightCreatorId?: string;
   totalPoolRupees?: number;
   participants?: number;
+  qualifiersCount?: number;
+  approvedCount?: number;
   className?: string;
 }
 
@@ -43,11 +45,11 @@ export function TierLeaderboard({
   highlightCreatorId,
   totalPoolRupees,
   participants,
+  qualifiersCount,
   className,
 }: TierLeaderboardProps) {
-  const [expandedTier, setExpandedTier] = useState<number | null>(null);
   const tiers = useMemo(
-    () => normalizePoolTiers({ tiers: tiersInput as PrizePoolTier[] }),
+    () => tiersInput ? normalizePoolTiers({ tiers: tiersInput as PrizePoolTier[] }) : [],
     [tiersInput],
   );
 
@@ -66,66 +68,33 @@ export function TierLeaderboard({
     return [];
   }, [tierGroupsProp, perRank, tiers]);
 
-  const creatorByRank = useMemo(() => {
-    const map = new Map<number, TierLeaderboardEntry>();
-    for (const e of entries || []) {
-      if (e.qualifies !== false) map.set(e.rank, e);
-    }
-    return map;
+  const isPreviewMode = !entries?.length && tierGroups.length > 0;
+
+  const qualifyingEntries = useMemo(() => {
+    return (entries || []).filter((e) => e.qualifies !== false);
   }, [entries]);
 
-  const highlightRank = useMemo(() => {
-    if (!highlightCreatorId || !entries?.length) return null;
-    const found = entries.find((e) => e.creatorId === highlightCreatorId && e.qualifies);
-    return found?.rank ?? null;
-  }, [entries, highlightCreatorId]);
-
-  if (!tierGroups.length) {
+  if (isPreviewMode) {
     return (
-      <p className="rounded-lg bg-[#FFFCF7] p-3 text-xs text-text-secondary">
-        Prize pool tiers will appear once creators qualify.
-      </p>
-    );
-  }
+      <div className={cn('space-y-1', className)}>
+        {(totalPoolRupees !== undefined || participants !== undefined) && (
+          <p className="mb-2 text-xs text-text-secondary">
+            {totalPoolRupees !== undefined && <>Pool ₹{rupeesIN(totalPoolRupees)}</>}
+            {participants !== undefined && <> · {participants.toLocaleString('en-IN')} creators</>}
+          </p>
+        )}
+        {tierGroups.map((group) => {
+          const isTop1 = group.fromRank === 1 && group.toRank === 1;
+          const isTop3 = group.toRank <= 3;
 
-  return (
-    <div className={cn('space-y-1', className)}>
-      {(totalPoolRupees !== undefined || participants !== undefined) && (
-        <p className="mb-2 text-xs text-text-secondary">
-          {totalPoolRupees !== undefined && <>Pool ₹{rupeesIN(totalPoolRupees)}</>}
-          {participants !== undefined && <> · {participants.toLocaleString('en-IN')} creators</>}
-        </p>
-      )}
-      {tierGroups.map((group) => {
-        const isTop1 = group.fromRank === 1 && group.toRank === 1;
-        const isTop3 = group.toRank <= 3;
-        const containsHighlight =
-          highlightRank !== null && highlightRank >= group.fromRank && highlightRank <= group.toRank;
-        const expanded = expandedTier === group.tierIndex;
-        const tierEntries = (entries || []).filter(
-          (e) => e.rank >= group.fromRank && e.rank <= group.toRank && e.qualifies !== false,
-        );
-
-        return (
-          <div
-            key={`tier-${group.tierIndex}-${group.fromRank}`}
-            className={cn(
-              'rounded-xl border transition-colors',
-              containsHighlight ? 'border-[#E86412] bg-[#FFF1E6]' : 'border-[#F0E9E2] bg-white',
-              isTop1 && 'shadow-sm',
-            )}
-          >
-            <button
-              type="button"
+          return (
+            <div
+              key={`tier-${group.tierIndex}-${group.fromRank}`}
               className={cn(
-                'flex w-full items-center gap-3 px-3 py-2.5 text-left',
-                tierEntries.length > 0 && 'cursor-pointer hover:bg-[#FFFCF7]/80',
+                'flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors',
+                'border-[#F0E9E2] bg-white',
+                isTop1 && 'shadow-sm',
               )}
-              onClick={() => {
-                if (tierEntries.length > 0) {
-                  setExpandedTier(expanded ? null : group.tierIndex);
-                }
-              }}
             >
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 {isTop1 ? (
@@ -159,40 +128,75 @@ export function TierLeaderboard({
                   ) : null}
                 </p>
               </div>
-              {tierEntries.length > 0 && (
-                <span className="text-[#9E9E9E]">
-                  {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (!qualifyingEntries.length) {
+    return (
+      <p className="rounded-lg bg-[#FFFCF7] p-3 text-xs text-text-secondary">
+        No qualifying creators yet. Leaderboard will appear once creators have verified posts.
+      </p>
+    );
+  }
+
+  return (
+    <div className={cn('space-y-1.5', className)}>
+      {qualifyingEntries.map((entry) => {
+        const isTop1 = entry.rank === 1;
+        const isHighlighted = entry.creatorId === highlightCreatorId;
+        const payout = entry.projectedPayoutRupees ?? paiseToRupees(entry.projectedPayoutPaise ?? 0);
+
+        return (
+          <div
+            key={entry.creatorId}
+            className={cn(
+              'rounded-xl border transition-colors overflow-hidden',
+              isHighlighted ? 'border-[#F5D4BC]' : 'border-[#F0E9E2]',
+              isTop1 && !isHighlighted && 'shadow-sm',
+            )}
+          >
+            <div
+              className={cn(
+                'flex items-center gap-3 px-3 py-2.5',
+                isHighlighted ? 'bg-[#FFF8F3]' : 'bg-white',
+              )}
+            >
+              {isTop1 ? (
+                <Trophy className="h-5 w-5 shrink-0 text-[#E86412]" aria-hidden />
+              ) : (
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center text-sm font-medium text-[#9E9E9E]">
+                  #{entry.rank}
                 </span>
               )}
-            </button>
-            {containsHighlight && highlightRank !== null && (
-              <p className="border-t border-[#F0E9E2] px-3 py-1.5 text-xs text-[#9A460C]">
-                You&apos;re rank {highlightRank} · projected ₹
-                {rupeesIN(
-                  creatorByRank.get(highlightRank)?.projectedPayoutRupees ??
-                    paiseToRupees(creatorByRank.get(highlightRank)?.projectedPayoutPaise ?? 0),
-                )}
-              </p>
-            )}
-            {expanded && tierEntries.length > 0 && (
-              <ul className="max-h-48 overflow-y-auto border-t border-[#F0E9E2] px-2 py-1">
-                {tierEntries.map((e) => (
-                  <li
-                    key={e.creatorId}
-                    className={cn(
-                      'flex items-center justify-between rounded-lg px-2 py-1 text-xs',
-                      e.creatorId === highlightCreatorId && 'bg-[#FFF1E6]',
-                    )}
-                  >
-                    <span className="truncate text-[#212121]">
-                      #{e.rank} · {e.creatorId.slice(-8)}
-                    </span>
-                    <span className="text-text-secondary">
-                      {e.views !== undefined ? `${e.views.toLocaleString('en-IN')} views` : ''}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className={cn(
+                  'truncate text-[#212121]',
+                  isTop1 ? 'font-semibold' : 'font-medium',
+                )}>
+                  {isTop1 && '#1 · '}{entry.creatorId.slice(-8)}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  {entry.views !== undefined ? `${entry.views.toLocaleString('en-IN')} views` : ''}
+                </span>
+              </div>
+              
+              <span className={cn(
+                'shrink-0 font-medium text-[#212121]',
+                isTop1 && 'text-base',
+              )}>
+                ₹{rupeesIN(payout)}
+              </span>
+            </div>
+            
+            {isHighlighted && (
+              <div className="border-t border-[#F5D4BC] bg-[#FFF8F3] px-3 py-1.5 text-xs text-[#B85C1B]">
+                You&apos;re rank {entry.rank} · projected ₹{rupeesIN(payout)}
+              </div>
             )}
           </div>
         );

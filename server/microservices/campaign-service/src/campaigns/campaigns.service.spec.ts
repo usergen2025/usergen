@@ -74,6 +74,10 @@ describe('CampaignsService wallet sync retry', () => {
     emitLeaderboardUpdated: jest.fn(),
   };
 
+  const mockCampaignFinalizationService: any = {
+    finalizeCampaign: jest.fn(),
+  };
+
   let service: CampaignsService;
   const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -104,6 +108,7 @@ describe('CampaignsService wallet sync retry', () => {
       mockConfigService,
       mockCampaignMediaService,
       mockNotificationService,
+      mockCampaignFinalizationService,
     );
   });
 
@@ -497,6 +502,7 @@ describe('CampaignsService wallet sync retry', () => {
     const submissionId = 'sub-int-1';
     const createdAt = new Date('2026-02-01T00:00:00.000Z');
     const futureDeadline = new Date('2099-06-15T12:00:00.000Z');
+    const futureStart = new Date('2099-06-16T00:00:00.000Z');
     const futureEnd = new Date('2099-12-31T12:00:00.000Z');
     const campaignRow: any = {
       id: campaignId,
@@ -506,7 +512,7 @@ describe('CampaignsService wallet sync retry', () => {
       status: 'DRAFT',
       createdAt,
       deadlineToApply: futureDeadline,
-      startDate: createdAt,
+      startDate: futureStart,
       endDate: futureEnd,
       payoutRate: 500,
       totalBudget: 5000,
@@ -628,7 +634,7 @@ describe('CampaignsService wallet sync retry', () => {
         name: 'Integration Campaign',
         description: 'Lifecycle',
         deadlineToApply: futureDeadline.toISOString(),
-        startDate: createdAt.toISOString(),
+        startDate: futureStart.toISOString(),
         endDate: futureEnd.toISOString(),
         payoutRate: 500,
         totalBudget: 5000,

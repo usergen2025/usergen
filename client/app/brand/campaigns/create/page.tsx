@@ -101,8 +101,8 @@ export default function CreateCampaignPage() {
       showToast('Campaign end date is required', 'error');
       return false;
     }
-    if (cmpYmd(formData.deadlineToApply, formData.startDate) > 0) {
-      showToast('Campaign start must be on or after the apply deadline.', 'error');
+    if (cmpYmd(formData.deadlineToApply, formData.startDate) >= 0) {
+      showToast('Campaign start must be at least one day after the apply deadline.', 'error');
       return false;
     }
     if (cmpYmd(formData.startDate, formData.endDate) >= 0) {
@@ -220,7 +220,7 @@ export default function CreateCampaignPage() {
     ? parseDate(formData.startDate, 'yyyy-MM-dd', new Date())
     : undefined;
   const startMin = formData.deadlineToApply
-    ? parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date())
+    ? addDays(parseDate(formData.deadlineToApply, 'yyyy-MM-dd', new Date()), 1)
     : todayStart;
   const endMin = formData.startDate
     ? addDays(parseDate(formData.startDate, 'yyyy-MM-dd', new Date()), 1)

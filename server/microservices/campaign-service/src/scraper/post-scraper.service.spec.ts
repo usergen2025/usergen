@@ -79,14 +79,21 @@ describe('PostScraperService', () => {
     const notificationService = {
       emitLeaderboardUpdated: jest.fn(),
     };
+    const configService = {
+      get: jest.fn().mockImplementation((key: string, defaultValue?: string) => {
+        if (key === 'MANUAL_SCRAPE_COOLDOWN_SECONDS') return '21600';
+        return defaultValue;
+      }),
+    };
     const service = new PostScraperService(
       databaseService as any,
       apifyClient as any,
       new PostValidationService(),
       campaignsService as any,
       notificationService as any,
+      configService as any,
     );
-    return { service, databaseService, apifyClient, campaignsService, notificationService };
+    return { service, databaseService, apifyClient, campaignsService, notificationService, configService };
   };
 
   const runExecute = async (

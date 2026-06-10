@@ -7901,10 +7901,7 @@ Read everything on screen smoothly.`}
                             }}
                           >
                             {/* Record Card with Gradient Border */}
-                            <div className="relative w-full p-[clamp(0.75rem,1.17vh,12px)] rounded-[8px]" style={{
-                              background: 'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), linear-gradient(114.13deg, rgba(232, 100, 18, 0.4) 35.62%, rgba(254, 89, 191, 0.4) 48.81%, rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)'
-                            }}>
-                              <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
+                            <div className="bg-white rounded-[8px] p-[clamp(0.5rem,0.78vh,8px)] w-full">
                                 {/* Record Area */}
                                 <div className="box-border flex flex-col justify-center items-center p-[clamp(1rem,1.56vh,16px)] gap-[clamp(0.75rem,1.17vh,12px)] w-full h-full bg-white border-2 border-dashed border-[#E0E0E0] rounded-[20px]">
                                   {/* Best Practices Title */}
@@ -7954,7 +7951,6 @@ Read everything on screen smoothly.`}
 
                                 </div>
                               </div>
-                            </div>
                           </div>
                         ) : voices.length === 0 ? (
                           <div 

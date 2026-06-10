@@ -40,6 +40,8 @@ interface Campaign {
   deadlineToApply: string;
   startDate: string;
   endDate: string;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
   totalBudget: number;
   budgetUsed: number;
   remainingBudget?: number;
@@ -74,13 +76,40 @@ interface CampaignStateRow {
 
 function formatDate(dateString: string) {
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return date.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
 }
 
 function formatLineDate(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  return d.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+}
+
+function formatCampaignDate(
+  dateString: string,
+  type: 'deadline' | 'start' | 'end',
+) {
+  const date = new Date(dateString);
+  const dateOnly = date.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+  if (type === 'deadline' || type === 'end') {
+    return `${dateOnly}, 11:59 PM`;
+  }
+  return `${dateOnly}, 12:00 AM`;
 }
 
 function getDaysRemaining(dateString: string) {
@@ -237,10 +266,14 @@ function CreatorStateCampaignCard({
   const campaign = row.campaign;
   const latestPostSubmission = row.postSubmissions[0];
   const now = new Date();
-  const campaignStart = new Date(campaign.startDate);
-  const campaignEnd = new Date(campaign.endDate);
-  const hasStarted = campaignStart <= now;
-  const hasEnded = campaignEnd < now;
+  const effectiveStart = campaign.actualStartDate
+    ? new Date(campaign.actualStartDate)
+    : new Date(campaign.startDate);
+  const effectiveEnd = campaign.actualEndDate
+    ? new Date(campaign.actualEndDate)
+    : new Date(campaign.endDate);
+  const hasStarted = effectiveStart <= now;
+  const hasEnded = effectiveEnd < now;
   const isFinalPostVerified = latestPostSubmission?.status === 'VERIFIED';
   const hasPendingFinalPost = latestPostSubmission?.status === 'PENDING_REVIEW';
   const canSubmitFinalPost = !isFinalPostVerified && !hasPendingFinalPost && !hasEnded;

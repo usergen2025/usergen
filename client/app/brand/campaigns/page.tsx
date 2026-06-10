@@ -323,21 +323,53 @@ export default function CampaignsPage() {
 function formatPostedAt(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  const hasTime = /T\d{1,2}:/.test(iso) && (d.getHours() !== 0 || d.getMinutes() !== 0);
-  if (hasTime) {
-    return d.toLocaleString('en-GB', {
+  return d.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata',
+  });
+}
+
+function formatLineDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+}
+
+function formatCampaignDate(
+  dateString: string,
+  type: 'deadline' | 'start' | 'end',
+  wasManual = false,
+) {
+  const date = new Date(dateString);
+  const dateOnly = date.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+  if (wasManual) {
+    return date.toLocaleString('en-IN', {
       day: 'numeric',
       month: 'long',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata',
     });
   }
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-}
-
-function formatLineDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  if (type === 'deadline' || type === 'end') {
+    return `${dateOnly}, 11:59 PM`;
+  }
+  return `${dateOnly}, 12:00 AM`;
 }
 
 function getDaysRemaining(dateString: string) {

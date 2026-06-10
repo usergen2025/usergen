@@ -16,7 +16,8 @@ export type CampaignNotificationType =
   | 'CAMPAIGN_FINALIZED_BRAND'
   | 'CAMPAIGN_FINALIZED_CREATOR_WIN'
   | 'CAMPAIGN_FINALIZED_CREATOR_DROPPED'
-  | 'CAMPAIGN_REFUNDED_EXCEPTION';
+  | 'CAMPAIGN_REFUNDED_EXCEPTION'
+  | 'CAMPAIGN_STARTED';
 
 interface NotificationPayload {
   userId: string;
@@ -194,6 +195,30 @@ export class CampaignNotificationService {
       title: 'Post Verified',
       message: `Your post for "${campaignName}" has been verified! Earnings will begin accruing.`,
       data: { campaignId, postId },
+    });
+  }
+
+  async notifyCampaignStarted(params: {
+    creatorId: string;
+    campaignId: string;
+    campaignName: string;
+  }) {
+    const { creatorId, campaignId, campaignName } = params;
+
+    this.campaignEventsGateway.notifyUser(creatorId, {
+      type: 'campaign:started',
+      campaignId,
+      campaignName,
+      message: `"${campaignName}" has started — you can now submit your final post link.`,
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.createInAppNotification({
+      userId: creatorId,
+      type: 'CAMPAIGN_STARTED',
+      title: 'Campaign Started',
+      message: `"${campaignName}" has started! You can now submit your final post link.`,
+      data: { campaignId },
     });
   }
 

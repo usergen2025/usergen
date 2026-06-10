@@ -30,9 +30,12 @@ import {
 import Tooltip from '@/components/ui/Tooltip';
 import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
-import { LeaderboardCard, PrizePoolSummary } from '@/components/campaigns/LeaderboardCard';
+import { LeaderboardCard } from '@/components/campaigns/LeaderboardCard';
 import { LeaderboardRefreshButton } from '@/components/campaigns/LeaderboardRefreshButton';
 import { ScrapeHistoryTable } from '@/components/campaigns/ScrapeHistoryTable';
+import { StartCampaignButton } from '@/components/campaigns/StartCampaignButton';
+import { EndCampaignButton } from '@/components/campaigns/EndCampaignButton';
+import { CountdownTimer } from '@/components/ui/CountdownTimer';
 import { useAuth } from '@/hooks/useAuth';
 
 interface Applicant {
@@ -61,6 +64,8 @@ interface CampaignDetails {
   deadlineToApply: string;
   startDate: string;
   endDate: string;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
   description: string;
   views: number;
   targetViews: number;
@@ -71,6 +76,8 @@ interface CampaignDetails {
   finalizedAt?: string | null;
   finalizationError?: string | null;
   gracePeriodHours?: number;
+  manualScrapeCooldownSec?: number;
+  lastManualScrapeAt?: string | null;
 }
 
 interface ApplicationRow {
@@ -327,9 +334,60 @@ export default function CampaignDetailsPage() {
     }
   };
 
-  const formatDate = (dateString: string) => {
+  const formatDate = (dateString: string, showTime = true) => {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const options: Intl.DateTimeFormatOptions = {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'Asia/Kolkata',
+    };
+    if (showTime) {
+      options.hour = '2-digit';
+      options.minute = '2-digit';
+      options.hour12 = true;
+    }
+    return date.toLocaleString('en-IN', options);
+  };
+
+  const formatCampaignDate = (
+    dateString: string,
+    type: 'deadline' | 'start' | 'end' | 'posted',
+    wasManual = false,
+  ) => {
+    const date = new Date(dateString);
+    const dateOnly = date.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'Asia/Kolkata',
+    });
+    if (type === 'posted') {
+      return date.toLocaleString('en-IN', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata',
+      });
+    }
+    if (wasManual) {
+      return date.toLocaleString('en-IN', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata',
+      });
+    }
+    if (type === 'deadline' || type === 'end') {
+      return `${dateOnly}, 11:59 PM`;
+    }
+    return `${dateOnly}, 12:00 AM`;
   };
 
   const getDaysRemaining = (dateString: string) => {
@@ -349,11 +407,16 @@ export default function CampaignDetailsPage() {
 
   const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
   const graceHours = campaign.gracePeriodHours ?? 24;
+  const effectiveEndDate = campaign.actualEndDate ?? campaign.endDate;
+  const effectiveStartDate = campaign.actualStartDate ?? campaign.startDate;
   const finalizeEligibleAt =
-    new Date(campaign.endDate).getTime() + graceHours * 60 * 60 * 1000;
+    new Date(effectiveEndDate).getTime() + graceHours * 60 * 60 * 1000;
   const canFinalizeNow = Date.now() >= finalizeEligibleAt;
   const budgetProgress =
     campaign.totalBudget > 0 ? (campaign.budgetUsed / campaign.totalBudget) * 100 : 0;
+  const now = new Date();
+  const hasStarted = new Date(effectiveStartDate) <= now;
+  const hasEnded = new Date(effectiveEndDate) < now;
 
   const tabApplicants =
     activeReviewTab === 'applicants'
@@ -390,9 +453,10 @@ export default function CampaignDetailsPage() {
   return (
     <div className="brand-page-shell">
       {/* Header */}
-      <div className="mb-3 flex flex-col gap-3 sm:mb-5 md:flex-row md:items-start md:justify-between md:gap-4">
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex items-start gap-2 sm:gap-3">
+      <div className="mb-3 space-y-3 sm:mb-5">
+        {/* Row 1: Back + Title | Action Buttons */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <Link
               href="/brand/campaigns"
               className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-white/50"
@@ -401,49 +465,24 @@ export default function CampaignDetailsPage() {
             </Link>
             <h1 className="brand-campaign-page-title min-w-0 flex-1 truncate text-[#212121]">{campaign.name}</h1>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <BrandStatusPill status={toPublicStatus(campaign.status)} />
-            <span className="brand-campaign-meta text-text-secondary">Posted: {formatDate(campaign.postedAt)}</span>
-          </div>
-
-          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:gap-6">
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
-              <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
-                <BrandIconChip size="sm">
-                  <Eye className="h-3 w-3" strokeWidth={1.8} />
-                </BrandIconChip>
-                <span>
-                  {campaign.views.toLocaleString()} / {campaign.targetViews.toLocaleString()} views
-                </span>
-              </div>
-              <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
-                <BrandIconChip size="sm">
-                  <Calendar className="h-3 w-3" strokeWidth={1.8} />
-                </BrandIconChip>
-                <span className={cn(daysRemaining < 0 && 'text-red-600')}>
-                  {formatDate(campaign.deadlineToApply)}
-                  {daysRemaining >= 0 && ` · ${daysRemaining}d left`}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex min-w-0 sm:justify-end md:text-right">
-              <div className="inline-flex max-w-full items-center gap-1.5 brand-campaign-row text-[#212121]">
-                <BrandIconChip size="sm">
-                  <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
-                </BrandIconChip>
-                <span className="min-w-0 truncate">
-                  {formatDate(campaign.startDate)} – {formatDate(campaign.endDate)}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <p className="brand-campaign-meta line-clamp-3 leading-relaxed text-text-secondary">{campaign.description}</p>
-        </div>
-
-        <div className="flex shrink-0 gap-2 self-start md:pt-0.5">
+          <div className="flex shrink-0 flex-wrap gap-2">
+          {campaign.status === 'LIVE' && (
+            <StartCampaignButton
+              campaignId={campaignId}
+              startDate={campaign.startDate}
+              actualStartDate={campaign.actualStartDate}
+              onStarted={() => void loadCampaign()}
+            />
+          )}
+          <EndCampaignButton
+            campaignId={campaignId}
+            status={campaign.status}
+            actualStartDate={campaign.actualStartDate}
+            actualEndDate={campaign.actualEndDate}
+            startDate={campaign.startDate}
+            payoutModel={campaign.payoutModel}
+            onEnded={() => void loadCampaign()}
+          />
           <BrandPrimaryButton
             type="button"
             className="!h-10 !min-h-10 !w-10 !rounded-full !px-0 !py-0 !shadow-[0_8px_22px_rgba(242,126,53,0.35)]"
@@ -479,29 +518,92 @@ export default function CampaignDetailsPage() {
             <Pencil className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </div>
+        </div>
+
+        {/* Row 2: Status + Posted Date */}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <BrandStatusPill status={toPublicStatus(campaign.status)} />
+          <span className="brand-campaign-meta text-text-secondary">Posted: {formatCampaignDate(campaign.postedAt, 'posted')}</span>
+        </div>
+
+        {/* Row 3: Views | Budget */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+            <BrandIconChip size="sm">
+              <Eye className="h-3 w-3" strokeWidth={1.8} />
+            </BrandIconChip>
+            <span>{campaign.views.toLocaleString('en-IN')} views</span>
+          </div>
+          <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+            <BrandIconChip size="sm">
+              <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
+            </BrandIconChip>
+            <span>₹{campaign.totalBudget.toLocaleString('en-IN')} budget</span>
+          </div>
+        </div>
+
+        {/* Row 4: Deadline | Timeline */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+            <BrandIconChip size="sm">
+              <Calendar className="h-3 w-3" strokeWidth={1.8} />
+            </BrandIconChip>
+            <span className={cn(daysRemaining < 0 && 'text-red-600')}>
+              {campaign.actualStartDate
+                ? formatCampaignDate(campaign.actualStartDate, 'deadline', true)
+                : formatCampaignDate(campaign.deadlineToApply, 'deadline')}
+              {!campaign.actualStartDate && daysRemaining >= 0 && ` · ${daysRemaining}d left`}
+              {campaign.actualStartDate && ' (manually started)'}
+            </span>
+          </div>
+          <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
+            <BrandIconChip size="sm">
+              <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
+            </BrandIconChip>
+            <span className="min-w-0 truncate">
+              {formatCampaignDate(
+                campaign.actualStartDate || campaign.startDate,
+                'start',
+                !!campaign.actualStartDate
+              )}{' '}
+              –{' '}
+              {formatCampaignDate(
+                campaign.actualEndDate || campaign.endDate,
+                'end',
+                !!campaign.actualEndDate
+              )}
+            </span>
+          </div>
+        </div>
+
+        {/* Row 4: Description */}
+        <p className="brand-campaign-meta line-clamp-3 leading-relaxed text-text-secondary">{campaign.description}</p>
       </div>
 
-      {/* Stats Cards */}
-      <div className="mb-3 brand-gradient-frame p-2.5 sm:mb-5 sm:p-3">
-        <div className="grid grid-cols-1 gap-2 sm:gap-3 md:grid-cols-3">
-          <DetailStatTile
-            label="Total views"
-            value={campaign.views.toLocaleString('en-IN')}
-            icon={<Eye className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
-          />
-          <DetailStatTile
-            label="Budget used"
-            value={`${campaign.budgetUsed.toLocaleString('en-IN')} / ${campaign.totalBudget.toLocaleString('en-IN')}`}
-            icon={<IndianRupee className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
-            progress={budgetProgress}
-          />
-          <DetailStatTile
-            label="Duration"
-            value={`${Math.floor((new Date().getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} / ${Math.floor((new Date(campaign.endDate).getTime() - new Date(campaign.startDate).getTime()) / (1000 * 60 * 60 * 24))} d`}
-            icon={<CalendarRange className="h-3 w-3" strokeWidth={1.8} aria-hidden />}
-          />
+      {/* Countdown Timer Card */}
+      {!hasEnded && campaign.status !== 'COMPLETED' && (
+        <div className="mb-3 brand-gradient-frame rounded-[20px] p-2.5 sm:p-3 shadow-card sm:mb-5">
+          <div className="rounded-[17px] bg-white/95 p-5 sm:p-6">
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-sm font-heading font-medium text-[#616161]">
+                {campaign.status === 'LIVE' && !hasStarted
+                  ? 'Deadline to apply'
+                  : 'Campaign ends in'}
+              </span>
+              <CountdownTimer
+                targetDate={
+                  campaign.status === 'LIVE' && !hasStarted
+                    ? campaign.deadlineToApply
+                    : effectiveEndDate
+                }
+                variant="default"
+                size="lg"
+                showSeparators={false}
+              />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="brand-gradient-frame mb-3 flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
       <div className="rounded-[18px] bg-white/95 p-3 shadow-sm sm:p-4">
@@ -607,22 +709,22 @@ export default function CampaignDetailsPage() {
           <LeaderboardRefreshButton
             campaignId={campaignId}
             isPrivileged={isPrivileged}
+            cooldownSec={campaign.manualScrapeCooldownSec || 60}
+            lastManualScrapeAt={campaign.lastManualScrapeAt}
             onRefreshComplete={() => setLeaderboardRefreshKey((k) => k + 1)}
           />
           {isPrivileged && <ScrapeHistoryTable campaignId={campaignId} />}
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <PrizePoolSummary campaignId={campaignId} />
-            <LeaderboardCard
-              campaignId={campaignId}
-              showSnapshot
-              refreshToken={leaderboardRefreshKey}
-            />
-          </div>
+          <LeaderboardCard
+            campaignId={campaignId}
+            showSnapshot
+            refreshToken={leaderboardRefreshKey}
+          />
         </div>
       )}
 
       {campaign.payoutModel === 'POOL' &&
         (campaign.status === 'COMPLETED' ||
+          Boolean(campaign.actualEndDate) ||
           new Date(campaign.endDate).getTime() < Date.now()) && (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#E8E2DB] bg-white p-3">
             <div>
@@ -910,7 +1012,15 @@ function ApplicantCard({
 }) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleString('en-IN', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata',
+    });
   };
 
   return (

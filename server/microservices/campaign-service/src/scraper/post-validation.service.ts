@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Campaign } from '@prisma/client';
 import { ApifyReelResult, ScrapeResultStatus } from './apify.types';
+import { startOfIstDay } from '../campaigns/utils/date-compare.util';
 
 export type ValidationOutcome =
   | { ok: true; scrape: ApifyReelResult }
@@ -9,7 +10,7 @@ export type ValidationOutcome =
 @Injectable()
 export class PostValidationService {
   validate(
-    campaign: Pick<Campaign, 'startDate'>,
+    campaign: Pick<Campaign, 'startDate' | 'actualStartDate'>,
     scrape: ApifyReelResult | null | undefined,
   ): ValidationOutcome {
     if (!scrape) {
@@ -29,12 +30,14 @@ export class PostValidationService {
     if (Number.isNaN(postDate.getTime())) {
       return { ok: false, reason: 'ERROR', detail: 'Invalid post timestamp from scrape result' };
     }
-    const campaignStart = new Date(campaign.startDate);
-    if (postDate < campaignStart) {
+    const effectiveStartDate = campaign.actualStartDate
+      ? new Date(campaign.actualStartDate)
+      : startOfIstDay(campaign.startDate);
+    if (postDate < effectiveStartDate) {
       return {
         ok: false,
         reason: 'PRE_CAMPAIGN',
-        detail: `Post was published ${postDate.toISOString()} before campaign start ${campaignStart.toISOString()}`,
+        detail: `Post was published ${postDate.toISOString()} before campaign start ${effectiveStartDate.toISOString()}`,
       };
     }
     return { ok: true, scrape };

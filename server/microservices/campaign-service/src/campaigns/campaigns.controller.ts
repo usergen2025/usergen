@@ -170,6 +170,32 @@ export class CampaignsController {
     return this.campaignsService.resumeCampaign(id, user.id);
   }
 
+  @Get('campaigns/:id/pending-applications-count')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  getPendingApplicationsCount(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.campaignsService.getPendingApplicationsCount(id, user.id);
+  }
+
+  @Post('campaigns/:id/start')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  startCampaign(
+    @Param('id') id: string,
+    @Body() body: { handlePendingAs?: 'REJECT_ALL' | 'KEEP_PENDING' },
+    @CurrentUser() user: any,
+  ) {
+    return this.campaignsService.startCampaignManually(id, user.id, body);
+  }
+
+  @Post('campaigns/:id/end')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  endCampaign(
+    @Param('id') id: string,
+    @Body() body: { skipGracePeriod?: boolean },
+    @CurrentUser() user: any,
+  ) {
+    return this.campaignsService.endCampaignManually(id, user.id, body);
+  }
+
   @Post('campaigns/:id/top-up')
   @Roles('BRAND', 'ADMIN', 'OWNER')
   topUpCampaign(@Param('id') id: string, @Body() body: { amount: number }, @CurrentUser() user: any) {
@@ -401,6 +427,10 @@ export class CampaignsController {
       entries: leaderboard.entries.map((entry) => ({
         ...entry,
         projectedPayoutPaise: entry.projectedPayoutPaise.toString(),
+      })),
+      tierGroups: leaderboard.tierGroups?.map((group) => ({
+        ...group,
+        payoutPaise: group.payoutPaise.toString(),
       })),
     };
   }

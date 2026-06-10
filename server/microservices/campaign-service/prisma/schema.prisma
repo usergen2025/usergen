@@ -111,6 +111,10 @@ model Campaign {
   exceptionRefundAmountPaise BigInt?
   manualScrapeCooldownSec Int      @default(21600)
   lastManualScrapeAt        DateTime?
+  actualStartDate           DateTime?
+  actualEndDate             DateTime?
+  manuallyStartedBy         String?
+  manuallyEndedBy           String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   submissions     Submission[]
