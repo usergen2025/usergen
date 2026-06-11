@@ -133,6 +133,14 @@ const MAGNIFIC_MUSIC_MOODS: readonly string[] = [
 const MAGNIFIC_GENRE_SET = new Set(MAGNIFIC_MUSIC_GENRES.map((g) => g.toLowerCase()));
 const MAGNIFIC_MOOD_SET = new Set(MAGNIFIC_MUSIC_MOODS.map((m) => m.toLowerCase()));
 
+export type BrandIntegrationLevel = 'full' | 'subtle' | 'none';
+
+export interface BrandRelevanceAssessment {
+  relevanceScore: number;
+  integrationLevel: BrandIntegrationLevel;
+  reasoning: string;
+}
+
 /** Thrown when the chat model refuses script generation (caller may retry text-only without images). */
 export class OpenAIScriptRefusalError extends Error {
   constructor(message: string) {
@@ -380,6 +388,92 @@ FACTUAL ACCURACY (web search returned no reliable facts):
     return '';
   }
 
+  /**
+   * Evaluate whether the user's video topic is semantically related to an attached brand/logo.
+   * Prevents forcing unrelated brand mentions (e.g. spices logo + IPL cricket match).
+   */
+  private async assessBrandRelevance(
+    userPrompt: string,
+    brandName: string,
+    brandContext?: string,
+  ): Promise<BrandRelevanceAssessment> {
+    const defaultFull: BrandRelevanceAssessment = {
+      relevanceScore: 1,
+      integrationLevel: 'full',
+      reasoning: 'Relevance check skipped or unavailable; defaulting to full integration.',
+    };
+
+    if (!this.openai || !userPrompt?.trim() || !brandName?.trim()) {
+      return defaultFull;
+    }
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: this.configService.get<string>('OPENAI_MODEL_GPT4') || 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `You evaluate whether a video topic is related to an attached brand/logo for script generation.
+Return JSON only: { "relevanceScore": number (0-1), "integrationLevel": "full"|"subtle"|"none", "reasoning": string }
+Rules:
+- relevanceScore > 0.7 → integrationLevel "full" (brand is central to the video topic)
+- relevanceScore 0.3-0.7 → integrationLevel "subtle" (tangential; at most one brief sponsor mention)
+- relevanceScore < 0.3 → integrationLevel "none" (unrelated; do NOT weave brand into voiceover; visual watermark only)
+Examples of "none": cricket match video + food/spices brand logo; sports recap + unrelated cosmetics brand.
+Examples of "full": product launch video + that product's brand logo; company promo + company logo.`,
+          },
+          {
+            role: 'user',
+            content: `Video topic: "${userPrompt.trim()}"
+Brand name: "${brandName.trim()}"
+${brandContext ? `Brand context: ${brandContext.trim()}` : ''}
+
+Assess relevance and recommend integration level.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        max_tokens: 300,
+      });
+
+      const extracted = extractAssistantText(completion.choices[0]?.message);
+      if (extracted.ok !== true) return defaultFull;
+
+      const parsed = JSON.parse(extracted.text) as {
+        relevanceScore?: number;
+        integrationLevel?: BrandIntegrationLevel;
+        reasoning?: string;
+      };
+
+      const score = typeof parsed.relevanceScore === 'number'
+        ? Math.max(0, Math.min(1, parsed.relevanceScore))
+        : 1;
+
+      let integrationLevel: BrandIntegrationLevel = parsed.integrationLevel ?? 'full';
+      if (!['full', 'subtle', 'none'].includes(integrationLevel)) {
+        integrationLevel = score > 0.7 ? 'full' : score >= 0.3 ? 'subtle' : 'none';
+      }
+
+      const result: BrandRelevanceAssessment = {
+        relevanceScore: score,
+        integrationLevel,
+        reasoning: parsed.reasoning || `Score ${score} → ${integrationLevel}`,
+      };
+
+      this.logger.log(
+        `Brand relevance: "${brandName}" vs topic "${userPrompt.substring(0, 60)}..." → ${integrationLevel} (${score})`,
+        'ScriptsService',
+      );
+      return result;
+    } catch (err: any) {
+      this.logger.warn(
+        `Brand relevance check failed: ${err?.message}; defaulting to full integration`,
+        'ScriptsService',
+      );
+      return defaultFull;
+    }
+  }
+
   private buildVideoScriptRichUserText(
     request: VideoScriptGenerationRequest,
     analyzedAssets: VideoScriptAnalyzedAsset[],
@@ -390,6 +484,7 @@ FACTUAL ACCURACY (web search returned no reliable facts):
     language: 'english' | 'hindi' | 'hinglish',
     groundedFactsContext?: string,
     searchAttemptedButEmpty?: boolean,
+    brandIntegrationLevel: BrandIntegrationLevel = 'full',
   ): string {
     let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
 
@@ -404,11 +499,11 @@ CRITICAL DURATION REQUIREMENTS:
       const logoAssets = analyzedAssets.filter((a) => a.category === 'logo');
       const productAssets = analyzedAssets.filter((a) => a.category === 'product');
 
-      if (logoAssets.length > 0) {
+      if (logoAssets.length > 0 && brandIntegrationLevel !== 'none') {
         const logoAsset = logoAssets[0];
         const brandName = logoAsset.extractedText || (logoAsset as any).brandName;
 
-        if (brandName) {
+        if (brandName && brandIntegrationLevel === 'full') {
           textPrompt += `\n\nCRITICAL BRAND INFORMATION:
 - Brand name: "${brandName}"
 - You MUST mention "${brandName}" naturally in the voiceover multiple times throughout the script
@@ -416,12 +511,24 @@ CRITICAL DURATION REQUIREMENTS:
 - Do NOT use generic terms like "our product" or "the company" - use "${brandName}" instead
 - Emphasize "${brandName}" in key moments and call-to-action scenes
 - Use the logo image(s) provided as visual reference for brand identity and style`;
-        } else {
+        } else if (brandName && brandIntegrationLevel === 'subtle') {
+          textPrompt += `\n\nBRAND NOTE (subtle integration only):
+- A logo for "${brandName}" is attached but the video topic is only loosely related to this brand
+- Do NOT force "${brandName}" into the main narrative or product messaging
+- At most one brief, natural sponsor/watermark acknowledgment is acceptable (e.g. "presented by ${brandName}")
+- Focus the script on the user's requested topic; brand visual overlays are handled separately in post-production`;
+        } else if (!brandName) {
           textPrompt += `\n\nBRAND CONTEXT:
 - Use the logo image(s) provided as visual reference for brand identity
-- Extract brand name from the logo and incorporate it naturally into the script
+- Extract brand name from the logo and incorporate it naturally into the script only if it fits the topic
 - Use brand colors and style elements when describing visuals`;
         }
+      } else if (logoAssets.length > 0 && brandIntegrationLevel === 'none') {
+        textPrompt += `\n\nBRAND NOTE (no voiceover integration):
+- A logo/brand asset is attached but it is unrelated to the video topic
+- Do NOT mention the brand name in the voiceover or weave brand/product messaging into the script
+- Write the script purely about the user's requested topic
+- Brand visual overlays (corner badge, end card) are applied in post-production only`;
       }
 
       if (productAssets.length > 0) {
@@ -452,6 +559,7 @@ CRITICAL DURATION REQUIREMENTS:
     language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
     groundedFactsContext?: string,
     searchAttemptedButEmpty?: boolean,
+    brandIntegrationLevel: BrandIntegrationLevel = 'full',
   ): Promise<OpenAI.Chat.Completions.ChatCompletionUserMessageParam> {
     const list = analyzedAssets ?? [];
     const hasAnalyzedAssets = list.length > 0;
@@ -476,6 +584,7 @@ CRITICAL DURATION REQUIREMENTS:
         language,
         groundedFactsContext,
         searchAttemptedButEmpty,
+        brandIntegrationLevel,
       );
       content.push({ type: 'text', text: textPrompt });
 
@@ -522,6 +631,7 @@ CRITICAL DURATION REQUIREMENTS:
         language,
         groundedFactsContext,
         searchAttemptedButEmpty,
+        brandIntegrationLevel,
       );
       if (opts.textOnlyRetryNote) {
         text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
@@ -541,6 +651,7 @@ CRITICAL DURATION REQUIREMENTS:
         language,
         groundedFactsContext,
         searchAttemptedButEmpty,
+        brandIntegrationLevel,
       ),
     };
   }
@@ -666,6 +777,26 @@ CRITICAL DURATION REQUIREMENTS:
 
       // Request avatar_image_prompt for avatar styles even when client does not send hasAvatar
       const effectiveHasAvatar = request.hasAvatar === true || AVATAR_VIDEO_STYLES.includes(request.videoStyle);
+
+      // Assess brand/topic relevance before injecting brand into prompts
+      let brandIntegrationLevel: BrandIntegrationLevel = 'full';
+      const logoAssetForRelevance = analyzedAssets?.find((a) => a.category === 'logo');
+      const brandNameForRelevance =
+        logoBrandName ||
+        logoAssetForRelevance?.extractedText ||
+        (logoAssetForRelevance as any)?.brandName;
+      if (brandNameForRelevance && request.userPrompt) {
+        const brandContext =
+          logoAssetForRelevance?.visualScriptContext ||
+          (logoAssetForRelevance?.productInfo as { description?: string } | undefined)?.description;
+        const relevance = await this.assessBrandRelevance(
+          request.userPrompt,
+          brandNameForRelevance,
+          brandContext,
+        );
+        brandIntegrationLevel = relevance.integrationLevel;
+      }
+
       // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle, 
@@ -676,6 +807,7 @@ CRITICAL DURATION REQUIREMENTS:
         analyzedAssets,
         urlContentContext,
         logoBrandName,
+        brandIntegrationLevel,
       );
       
       // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
@@ -736,6 +868,7 @@ CRITICAL DURATION REQUIREMENTS:
           language,
           groundedFactsContext,
           searchAttemptedButEmpty,
+          brandIntegrationLevel,
         );
         return [
           { role: 'system' as const, content: systemPrompt },
@@ -1313,6 +1446,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     analyzedAssets?: VideoScriptAnalyzedAsset[],
     urlContentContext?: string, // Content extracted from URL assets
     logoBrandNameOverride?: string,
+    brandIntegrationLevel: BrandIntegrationLevel = 'full',
   ): string {
     // Language-specific descriptions
     const languageDescriptions = {
@@ -1359,17 +1493,22 @@ The visual_style_guide you create should be a synthesis of these tag preferences
       const productAssets = analyzedAssets.filter(a => a.category === 'product');
       const backgroundAssets = analyzedAssets.filter(a => a.category === 'background' || a.category === 'environment');
       
-      if (logoAsset) {
+      if (logoAsset && brandIntegrationLevel !== 'none') {
         const brandName = logoBrandNameOverride ||
                          logoAsset.extractedText ||
                          (logoAsset as any).brandName ||
                          (logoAsset.productInfo as any)?.name ||
                          undefined;
 
-        if (brandName) {
+        if (brandName && brandIntegrationLevel === 'full') {
           assetContext += `\n\nBRAND INFORMATION:\n- Brand name: ${brandName}\n- You MUST mention "${brandName}" naturally in the voiceover when appropriate\n- Emphasize the brand name in key moments\n- Use the brand name authentically throughout the script\n- When referring to the product or service, use "${brandName}" instead of generic terms\n`;
+        } else if (brandName && brandIntegrationLevel === 'subtle') {
+          assetContext += `\n\nBRAND NOTE (subtle):\n- Logo for "${brandName}" is attached but only loosely related to the video topic\n- Do NOT center the script on this brand; at most one brief sponsor mention is acceptable\n- Focus voiceover on the user's requested topic\n`;
         }
-        assetContext += `- When generating broll_image_prompt and broll_video_prompt, assume the logo will be provided as a reference image (last in order). Describe placement (e.g. on product, lower-third) if needed; do not ask the image model to draw the brand name.\n`;
+        // DISABLED: Scene-basis logo integration
+        // assetContext += `- When generating broll_image_prompt and broll_video_prompt, assume the logo will be provided as a reference image (last in order). Describe placement (e.g. on product, lower-third) if needed; do not ask the image model to draw the brand name.\n`;
+      } else if (logoAsset && brandIntegrationLevel === 'none') {
+        assetContext += `\n\nBRAND NOTE:\n- A logo asset is attached but unrelated to the video topic — do NOT mention the brand in voiceover\n- Brand visual overlays (corner badge, end card) are handled in post-production\n`;
       }
       
       if (productAssets && productAssets.length > 0) {

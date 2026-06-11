@@ -1331,9 +1331,10 @@ export class ImageGenerationProcessor extends WorkerHost {
           'Match the subject, product, and style from the reference image(s) where applicable; only change angle, lighting, or background as needed.',
         );
       }
-      if (hasLogo) {
-        refInstructions.push('Use the logo from the logo reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third). Do not redraw or recreate the logo – use the exact logo from the logo reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
-      }
+      // DISABLED: Scene-basis logo integration
+      // if (hasLogo) {
+      //   refInstructions.push('Use the logo from the logo reference image. Place it naturally in the scene (e.g. on the product, packaging, or as a subtle lower-third). Do not redraw or recreate the logo – use the exact logo from the logo reference image. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+      // }
       if (refInstructions.length > 0) {
         finalPrompt = `${finalPrompt}\n\n${refInstructions.join(' ')}`;
       }

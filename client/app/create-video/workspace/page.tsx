@@ -359,6 +359,7 @@ function WorkspacePageContent() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('images');
   const [generatingVideos, setGeneratingVideos] = useState<Set<number>>(new Set());
   const [regeneratingImageScenes, setRegeneratingImageScenes] = useState<Set<number>>(new Set());
+  const [regeneratingVideoScenes, setRegeneratingVideoScenes] = useState<Set<number>>(new Set());
   const [failedGenerations, setFailedGenerations] = useState<Set<number>>(new Set());
   const [playingVideo, setPlayingVideo] = useState<number | null>(null);
   // Use ref instead of state to avoid infinite re-renders when setting video elements
@@ -402,6 +403,7 @@ function WorkspacePageContent() {
   const videoJobIdsRef = useRef<Map<number, Set<string>>>(new Map());
   const jobToSceneRef = useRef<Map<string, number>>(new Map());
   const imageRegenJobToSceneRef = useRef<Map<string, number>>(new Map());
+  const videoRegenJobToSceneRef = useRef<Map<string, number>>(new Map());
   const processedJobIdsRef = useRef<Set<string>>(new Set());
   const processedImageJobIdsRef = useRef<Set<string>>(new Set());
   const unsubscribeFromJobRef = useRef<((jobId: string) => void) | null>(null);
@@ -1516,6 +1518,28 @@ function WorkspacePageContent() {
     };
   }, []);
 
+  const updateTabInUrl = useCallback(
+    (mode: 'images' | 'videos') => {
+      if (!projectId) return;
+      const params = new URLSearchParams(searchParams?.toString() || '');
+      params.set('projectId', projectId);
+      params.set('startMode', mode);
+      router.replace(`/create-video/workspace?${params.toString()}`, { scroll: false });
+    },
+    [projectId, searchParams, router],
+  );
+
+  const handleSwitchToVideos = useCallback(() => {
+    setWorkspaceMode('videos');
+    updateTabInUrl('videos');
+  }, [updateTabInUrl]);
+
+  const handleBackToImages = useCallback(() => {
+    setWorkspaceMode('images');
+    setFailedGenerations(new Set());
+    updateTabInUrl('images');
+  }, [updateTabInUrl]);
+
   // Handle image regeneration
   const handleRegenerate = async (sceneIndexOverride?: number) => {
     if (!projectId) return;
@@ -1594,9 +1618,96 @@ function WorkspacePageContent() {
     }
   };
 
+  const handleRegenerateVideo = async (sceneIndexOverride?: number) => {
+    if (!projectId) return;
+
+    const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
+    const currentScene = scenes[sceneIndex];
+    if (!currentScene) return;
+
+    const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
+    const image = brollImages.find((img) => img.sceneNumber === sceneNumber);
+
+    if (!image?.imageUrl) {
+      showToast('Source image not found. Cannot regenerate video without source image.', 'warning');
+      return;
+    }
+
+    const activeJobs = videoJobIdsRef.current.get(sceneNumber);
+    if (activeJobs && activeJobs.size > 0) {
+      showToast('Video generation already in progress for this scene', 'warning');
+      return;
+    }
+
+    try {
+      setBrollVideos((prev) => prev.filter((vid) => vid.sceneNumber !== sceneNumber));
+      setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
+      setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
+      showToast('Regenerating video...', 'info');
+
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true);
+
+      if (response.success && response.data?.existing && response.data?.video) {
+        const existingVideo = response.data.video;
+        setBrollVideos((prev) => {
+          const exists = prev.some((vid) => vid.sceneNumber === sceneNumber);
+          if (exists) {
+            return prev.map((vid) => (vid.sceneNumber === sceneNumber ? { ...existingVideo, sceneNumber } : vid));
+          }
+          return [...prev, { ...existingVideo, sceneNumber }];
+        });
+        setRegeneratingVideoScenes((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
+        setGeneratingVideos((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
+        showToast('Video already exists for this scene', 'info');
+        return;
+      }
+
+      if (response.success && response.data?.jobId) {
+        const jobId = response.data.jobId;
+        const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+        videoRegenJobToSceneRef.current.set(jobId, sceneNumber);
+        if (!videoJobIdsRef.current.has(sceneNumber)) {
+          videoJobIdsRef.current.set(sceneNumber, new Set());
+        }
+        videoJobIdsRef.current.get(sceneNumber)!.add(jobId);
+        jobToSceneRef.current.set(jobId, sceneNumber);
+        subscribeToJobRef.current?.(jobId, queueType);
+        showToast('Video regeneration started', 'success');
+        return;
+      }
+
+      throw new Error(response.message || 'Could not start video regeneration');
+    } catch (error: any) {
+      console.error('Failed to regenerate video:', error);
+      setRegeneratingVideoScenes((prev) => {
+        const next = new Set(prev);
+        next.delete(sceneNumber);
+        return next;
+      });
+      setGeneratingVideos((prev) => {
+        const next = new Set(prev);
+        next.delete(sceneNumber);
+        return next;
+      });
+      showToast(error?.message || 'Failed to regenerate video', 'error');
+    }
+  };
+
   const handleSceneRegenerate = async (sceneIndex: number) => {
     setSelectedSceneIndex(sceneIndex);
-    await handleRegenerate(sceneIndex);
+    if (workspaceMode === 'videos') {
+      await handleRegenerateVideo(sceneIndex);
+    } else {
+      await handleRegenerate(sceneIndex);
+    }
   };
 
   // Handle convert to videos (uses batch API)
@@ -1612,7 +1723,7 @@ function WorkspacePageContent() {
 
     if (scenesNeedingVideos.length === 0) {
       showToast('All scenes already have videos', 'info');
-      setWorkspaceMode('videos');
+      handleSwitchToVideos();
       return;
     }
 
@@ -2140,8 +2251,14 @@ function WorkspacePageContent() {
           next.delete(sceneNumber);
           return next;
         });
+        setRegeneratingVideoScenes((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
 
         unsubscribeFromJobRef.current?.(jobId);
+        videoRegenJobToSceneRef.current.delete(jobId);
 
         const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
         if (expectedJobs) {
@@ -2179,6 +2296,11 @@ function WorkspacePageContent() {
             next.delete(sceneNumber);
             return next;
           });
+          setRegeneratingVideoScenes((prev) => {
+            const next = new Set(prev);
+            next.delete(sceneNumber);
+            return next;
+          });
           setFailedGenerations((prev) => new Set(prev).add(sceneNumber));
           const expectedJobs = videoJobIdsRef.current.get(sceneNumber);
           if (expectedJobs) {
@@ -2190,6 +2312,7 @@ function WorkspacePageContent() {
           showToast(`Video generation finished without output for Scene ${sceneNumber}`, 'warning');
         }
         jobToSceneRef.current.delete(jobId);
+        videoRegenJobToSceneRef.current.delete(jobId);
       } else if (update.state === 'failed') {
         const jobId = update.jobId;
         const sceneNumber =
@@ -2198,6 +2321,11 @@ function WorkspacePageContent() {
 
         if (sceneNumber != null) {
           setGeneratingVideos((prev) => {
+            const next = new Set(prev);
+            next.delete(sceneNumber);
+            return next;
+          });
+          setRegeneratingVideoScenes((prev) => {
             const next = new Set(prev);
             next.delete(sceneNumber);
             return next;
@@ -2216,6 +2344,7 @@ function WorkspacePageContent() {
         }
 
         jobToSceneRef.current.delete(jobId);
+        videoRegenJobToSceneRef.current.delete(jobId);
         unsubscribeFromJobRef.current?.(jobId);
       }
     }
@@ -2307,23 +2436,23 @@ function WorkspacePageContent() {
       
       if (successfulVideos >= totalScenesNeeded) {
         // All videos generated successfully
-        setWorkspaceMode('videos');
+        handleSwitchToVideos();
         showToast('All videos generated successfully!', 'success');
       } else if (failedGenerations.size > 0) {
         // Some videos failed
         const failedCount = failedGenerations.size;
         if (successfulVideos > 0) {
           // Partial success - switch to videos mode but warn
-          setWorkspaceMode('videos');
+          handleSwitchToVideos();
           showToast(`${failedCount} video(s) failed to generate. You can retry from images view.`, 'warning');
         } else {
           // All failed - go back to images mode
-          setWorkspaceMode('images');
+          handleBackToImages();
           showToast('Video generation failed. Please try again.', 'error');
         }
       }
     }
-  }, [generatingVideos.size, brollVideos.length, scenes.length, failedGenerations.size, workspaceMode, showToast]);
+  }, [generatingVideos.size, brollVideos.length, scenes.length, failedGenerations.size, workspaceMode, showToast, handleSwitchToVideos, handleBackToImages]);
 
   // Resume rendering polling if project was loading during rendering
   useEffect(() => {
@@ -2332,17 +2461,12 @@ function WorkspacePageContent() {
     }
   }, [project, workspaceMode, startRenderingPolling]);
 
-  // Handle switching back to images mode
-  const handleBackToImages = useCallback(() => {
-    setWorkspaceMode('images');
-    setFailedGenerations(new Set());
-  }, []);
-
   // Preview/caption: keep hooks above any early return (Rules of Hooks)
   const currentScene = scenes[selectedSceneIndex];
   const currentSceneNumber = currentScene?.scene_number || currentScene?.sceneNumber || (selectedSceneIndex + 1);
   const currentImageUrl = getImageUrl(currentSceneNumber);
   const isRegeneratingCurrentImage = regeneratingImageScenes.has(currentSceneNumber);
+  const isRegeneratingCurrentVideo = regeneratingVideoScenes.has(currentSceneNumber);
   const currentSceneText = currentScene ? getSceneText(currentScene) : '';
   const isSingleClipStyle = useMemo(
     () => isSingleClipVideoStyle(project?.style),
@@ -2361,7 +2485,7 @@ function WorkspacePageContent() {
       (isSingleClipStyle && singleClipPreviewUrl) ||
         currentImageUrl ||
         currentBrollVideoUrl,
-    ) && !isRegeneratingCurrentImage;
+    ) && !isRegeneratingCurrentImage && !isRegeneratingCurrentVideo;
   const currentAudioForScene = audioFiles.find((af) => af.sceneNumber === currentSceneNumber);
 
   useEffect(() => {
@@ -2686,7 +2810,7 @@ function WorkspacePageContent() {
                 Images
               </button>
               <button
-                onClick={() => setWorkspaceMode('videos')}
+                onClick={handleSwitchToVideos}
                 className={cn(
                   "px-4 py-1.5 rounded-full text-[clamp(11px,1.17vh,13px)] font-medium transition-all",
                   workspaceMode === 'videos' 
@@ -2752,6 +2876,9 @@ function WorkspacePageContent() {
                 const isSelected = index === selectedSceneIndex;
                 const isGenerating = generatingVideos.has(sceneNumber);
                 const isRegeneratingImage = regeneratingImageScenes.has(sceneNumber);
+                const isRegeneratingVideo = regeneratingVideoScenes.has(sceneNumber);
+                const isRegeneratingScene =
+                  workspaceMode === 'videos' ? isRegeneratingVideo : isRegeneratingImage;
                 const hasVideo = !!videoUrl;
 
                 return (
@@ -2775,7 +2902,7 @@ function WorkspacePageContent() {
                       isSingleClipStyle && "opacity-80"
                     )}>
                       <div className="h-[clamp(73px,11vh,113px)] w-auto aspect-[9/16] max-w-[clamp(58px,7.8vw,90px)] rounded-[12px] overflow-hidden flex-shrink-0 relative">
-                        {workspaceMode === 'videos' && hasVideo && !isRegeneratingImage ? (
+                        {workspaceMode === 'videos' && hasVideo && !isRegeneratingVideo ? (
                           <video
                             src={videoUrl}
                             className="w-full h-full object-cover"
@@ -2787,7 +2914,7 @@ function WorkspacePageContent() {
                               target.style.opacity = '0.5';
                             }}
                           />
-                        ) : (workspaceMode === 'converting' || isGenerating || isRegeneratingImage) ? (
+                        ) : (workspaceMode === 'converting' || isGenerating || isRegeneratingScene) ? (
                           <div className="w-full h-full relative overflow-hidden">
                             {/* Skeleton shimmer animation */}
                             <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
@@ -2855,12 +2982,12 @@ function WorkspacePageContent() {
                                 e.stopPropagation();
                                 await handleSceneRegenerate(index);
                               }}
-                              disabled={isRegeneratingImage}
+                              disabled={isRegeneratingScene}
                               className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors disabled:opacity-50 disabled:pointer-events-none"
-                              title="Regenerate scene"
-                              aria-label={`Regenerate scene ${sceneNumber}`}
+                              title={workspaceMode === 'videos' ? 'Regenerate video' : 'Regenerate image'}
+                              aria-label={`Regenerate ${workspaceMode === 'videos' ? 'video' : 'image'} for scene ${sceneNumber}`}
                             >
-                              {isRegeneratingImage ? (
+                              {isRegeneratingScene ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                               ) : (
                                 <RefreshCw className="w-3.5 h-3.5" />
@@ -2941,7 +3068,25 @@ function WorkspacePageContent() {
                 aspectRatio: previewAspectRatio
               }}
             >
-              {isRegeneratingCurrentImage ? (
+              {isRegeneratingCurrentVideo ? (
+                <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div
+                      className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                      style={{
+                        animation: 'shimmer 1.5s infinite',
+                        transform: 'translateX(-100%)',
+                      }}
+                    />
+                  </div>
+                  <div className="relative z-10 flex flex-col items-center justify-center px-4 text-center">
+                    <Loader2 className="w-[clamp(40px,5vh,48px)] h-[clamp(40px,5vh,48px)] text-gray-500 animate-spin" />
+                    <span className="text-[clamp(14px,1.76vh,18px)] text-gray-600 mt-2">Regenerating video…</span>
+                    <span className="text-[clamp(11px,1.27vh,13px)] text-gray-400 mt-1">Scene {currentSceneNumber}</span>
+                  </div>
+                </div>
+              ) : isRegeneratingCurrentImage ? (
                 <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden">
                   <div className="absolute inset-0 bg-gradient-to-r from-gray-200 via-gray-100 to-gray-200 animate-pulse" />
                   <div className="absolute inset-0 overflow-hidden">
@@ -3082,7 +3227,7 @@ function WorkspacePageContent() {
                 Images
               </button>
               <button
-                onClick={() => setWorkspaceMode('videos')}
+                onClick={handleSwitchToVideos}
                 className={cn(
                   "px-4 py-1.5 rounded-full text-[12px] font-medium transition-all",
                   workspaceMode === 'videos'

@@ -5,6 +5,7 @@ import { LoggerService } from '../common/logger/logger.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import { HeyGenProvider } from './providers/heygen.provider';
 import { BytePlusImageProvider } from './providers/byteplus-image.provider';
+import { FalImageProvider } from './providers/fal-image.provider';
 import { AvatarQueueService } from './queue/avatar-queue.service';
 import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
@@ -94,6 +95,7 @@ export class AvatarsService {
     private readonly publicUrlService: PublicUrlService,
     private readonly heygenProvider: HeyGenProvider,
     private readonly bytePlusImageProvider: BytePlusImageProvider,
+    private readonly falImageProvider: FalImageProvider,
     private readonly configService: ConfigService,
     @Inject(forwardRef(() => AvatarQueueService))
     private readonly avatarQueueService: AvatarQueueService,
@@ -555,6 +557,85 @@ export class AvatarsService {
   }
 
   /**
+   * Ensure avatar original image is accessible via public HTTP URL for FAL multi-reference generation.
+   */
+  private async ensureAvatarPublicUrl(
+    avatar: { id: string; userId: string; originalImageUrl?: string | null },
+    localImagePath?: string | null,
+  ): Promise<string> {
+    const originalImageUrl = avatar.originalImageUrl;
+    if (originalImageUrl && (originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://'))) {
+      return originalImageUrl;
+    }
+
+    const buffer = localImagePath && fs.existsSync(localImagePath)
+      ? fs.readFileSync(localImagePath)
+      : null;
+
+    if (!buffer) {
+      throw new BadRequestException('Avatar original image not found for public URL resolution');
+    }
+
+    const uploadResult = await this.publicUrlService.uploadFromBuffer(
+      buffer,
+      `avatars/${avatar.userId}/${avatar.id}`,
+      `original_${Date.now()}.jpg`,
+      'image/jpeg',
+    );
+
+    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl || uploadResult.localUrl;
+    if (!publicUrl || (!publicUrl.startsWith('http://') && !publicUrl.startsWith('https://'))) {
+      const backendBase =
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace(/\/ws$/, '') ||
+        'http://localhost:9001';
+      if (publicUrl?.startsWith('/')) {
+        return `${backendBase.replace(/\/$/, '')}${publicUrl}`;
+      }
+      throw new BadRequestException('Failed to resolve public URL for avatar original image');
+    }
+
+    return publicUrl;
+  }
+
+  /**
+   * Ensure product image URL is publicly accessible for FAL multi-reference generation.
+   */
+  private async ensureProductPublicUrl(productImageUrl: string): Promise<string> {
+    const trimmed = productImageUrl.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+
+    const productBuf = await this.downloadImageBufferForPreview(trimmed);
+    if (!productBuf) {
+      throw new BadRequestException(`Product image not accessible: ${trimmed}`);
+    }
+
+    const uploadResult = await this.publicUrlService.uploadFromBuffer(
+      productBuf,
+      'avatars/previews/product-refs',
+      `product_ref_${Date.now()}.jpg`,
+      'image/jpeg',
+    );
+
+    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl || uploadResult.localUrl;
+    if (publicUrl && (publicUrl.startsWith('http://') || publicUrl.startsWith('https://'))) {
+      return publicUrl;
+    }
+
+    const backendBase =
+      this.configService.get<string>('BACKEND_BASE_URL') ||
+      this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace(/\/ws$/, '') ||
+      'http://localhost:9001';
+    if (publicUrl?.startsWith('/')) {
+      return `${backendBase.replace(/\/$/, '')}${publicUrl}`;
+    }
+
+    throw new BadRequestException('Failed to resolve public URL for product image');
+  }
+
+  /**
    * Rough avatar+product layout as a single JPEG reference for BytePlus (avatar-product preview).
    */
   private async buildAvatarProductPreviewComposite(
@@ -837,21 +918,9 @@ export class AvatarsService {
 
     let imageBuffer = fs.readFileSync(imagePath);
 
-    if (style === 'AVATAR_PRODUCT' && productImageUrl?.trim()) {
-      const productBuf = await this.downloadImageBufferForPreview(productImageUrl.trim());
-      if (productBuf) {
-        const composite = await this.buildAvatarProductPreviewComposite(imageBuffer, productBuf);
-        if (composite) {
-          imageBuffer = Buffer.from(composite);
-          this.logger.log(
-            `Avatar preview: using avatar+product composite as BytePlus reference (${imageBuffer.length} bytes)`,
-            'AvatarsService',
-          );
-        }
-      }
-    }
-
     const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
+    const useFalMultiReference =
+      style === 'AVATAR_PRODUCT' && !!productImageUrl?.trim() && avatarVisualStylePreset !== 'original';
 
     let resultImageBuffer: Buffer;
 
@@ -895,15 +964,37 @@ export class AvatarsService {
         sceneHint,
       });
 
-      if (style === 'AVATAR_PRODUCT' && productImageUrl?.trim()) {
+      if (useFalMultiReference) {
+        const avatarPublicUrl = await this.ensureAvatarPublicUrl(avatar, imagePath);
+        const productPublicUrl = await this.ensureProductPublicUrl(productImageUrl!.trim());
         effectivePrompt +=
-          ' The reference image is a rough composite: presenter with product. Refine into a polished photorealistic product-demo frame; keep the same person identity and the same product; natural interaction; full product visible in frame.';
-      }
+          ' [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the product reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product.] [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions. Keep the same person identity and the same product; natural interaction; full product visible in frame.]';
 
-      const imageBase64 = imageBuffer.toString('base64');
-      const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
+        this.logger.log(
+          `Avatar preview AVATAR_PRODUCT: using FAL nano-banana-pro with multi-reference (avatar + product)`,
+          'AvatarsService',
+        );
 
-      if (useBottomHalfFraming) {
+        const falResult = await this.falImageProvider.generateImage({
+          prompt: effectivePrompt,
+          modelId: 'fal-ai/nano-banana-pro',
+          aspectRatio: '9:16',
+          resolution: '2K',
+          referenceImages: [avatarPublicUrl, productPublicUrl],
+        });
+
+        const downloaded = await axios.get(falResult.imageUrl, {
+          responseType: 'arraybuffer',
+          timeout: 90000,
+        });
+        const largeBuffer = Buffer.from(downloaded.data);
+        resultImageBuffer = await sharp(largeBuffer)
+          .resize(1080, 1920, { fit: 'fill', position: 'center' })
+          .jpeg({ quality: 95 })
+          .toBuffer();
+      } else if (useBottomHalfFraming) {
+        const imageBase64 = imageBuffer.toString('base64');
+        const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
         const bytePlusSize = '2304x2048';
         const result = await this.bytePlusImageProvider.generateImageVariant(
           base64DataUri,
@@ -932,6 +1023,8 @@ export class AvatarsService {
           .jpeg()
           .toBuffer();
       } else {
+        const imageBase64 = imageBuffer.toString('base64');
+        const base64DataUri = `data:image/jpeg;base64,${imageBase64}`;
         const bytePlusSize = '1440x2560';
         const result = await this.bytePlusImageProvider.generateImageVariant(
           base64DataUri,

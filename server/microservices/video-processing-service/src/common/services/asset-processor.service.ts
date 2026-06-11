@@ -110,16 +110,17 @@ export class AssetProcessorService {
     };
 
     const productAssets = this.getProductAssets(assets);
-    const logoAssets = assets.filter(a => a.category === 'logo');
+    // DISABLED: Scene-basis logo integration — logo excluded from reference images
+    // const logoAssets = assets.filter(a => a.category === 'logo');
     const restAssets = assets.filter(
       a => a.category !== 'product' && a.category !== 'logo' && isReferenceImageAsset(a),
     );
 
     const productUrls = productAssets.map(toUrl).filter((u): u is string => !!u);
-    const logoUrls = logoAssets.map(toUrl).filter((u): u is string => !!u);
+    // DISABLED: const logoUrls = logoAssets.map(toUrl).filter((u): u is string => !!u);
     const restUrls = restAssets.map(toUrl).filter((u): u is string => !!u);
 
-    const all = [...productUrls, ...logoUrls, ...restUrls];
+    const all = [...productUrls, ...restUrls];
     return all.slice(0, maxRefs);
   }
 
@@ -162,9 +163,10 @@ export class AssetProcessorService {
       enhancements.push('DO NOT: generate a "similar" product, create a "styled" version, add or remove product features, change the color scheme, alter the packaging design, or modify any product branding.');
     }
 
-    if (logoAsset) {
-      enhancements.push('Use the logo from the logo reference image; place it naturally in the scene; do not generate or redraw brand text – use the exact logo from the reference. Spell the brand name exactly as in the reference logo; do not add or change letters.');
-    }
+    // DISABLED: Scene-basis logo integration
+    // if (logoAsset) {
+    //   enhancements.push('Use the logo from the logo reference image; place it naturally in the scene; do not generate or redraw brand text – use the exact logo from the reference. Spell the brand name exactly as in the reference logo; do not add or change letters.');
+    // }
 
     const backgroundAssets = this.getBackgroundAssets(assets);
     if (backgroundAssets.length > 0) {
@@ -225,11 +227,11 @@ export class AssetProcessorService {
     // Always include product assets
     relevantAssets.push(...this.getProductAssets(assets));
     
-    // Include logo for branding/key scenes (every 3rd scene or first/last)
-    if (sceneNumber === 1 || sceneNumber % 3 === 0) {
-      const logo = this.getLogoAsset(assets);
-      if (logo) relevantAssets.push(logo);
-    }
+    // DISABLED: Scene-basis logo integration
+    // if (sceneNumber === 1 || sceneNumber % 3 === 0) {
+    //   const logo = this.getLogoAsset(assets);
+    //   if (logo) relevantAssets.push(logo);
+    // }
     
     // Include background assets for context
     relevantAssets.push(...this.getBackgroundAssets(assets).slice(0, 1));
@@ -246,9 +248,9 @@ export class AssetProcessorService {
     // Background assets are primary for cutout style
     relevantAssets.push(...this.getBackgroundAssets(assets));
     
-    // Include logo for overlay
-    const logo = this.getLogoAsset(assets);
-    if (logo) relevantAssets.push(logo);
+    // DISABLED: Scene-basis logo integration
+    // const logo = this.getLogoAsset(assets);
+    // if (logo) relevantAssets.push(logo);
     
     // Include product assets when relevant
     if (sceneNumber % 2 === 0) {
@@ -267,9 +269,9 @@ export class AssetProcessorService {
     // Background assets for avatar background
     relevantAssets.push(...this.getBackgroundAssets(assets));
     
-    // Logo for watermark (every scene)
-    const logo = this.getLogoAsset(assets);
-    if (logo) relevantAssets.push(logo);
+    // DISABLED: Scene-basis logo integration
+    // const logo = this.getLogoAsset(assets);
+    // if (logo) relevantAssets.push(logo);
     
     return relevantAssets;
   }
@@ -284,10 +286,11 @@ export class AssetProcessorService {
       // Odd scenes: background for top-half b-roll in composite
       relevantAssets.push(...this.getBackgroundAssets(assets));
     } else {
-      // Even scenes: product + logo for full-frame b-roll
+      // Even scenes: product for full-frame b-roll
       relevantAssets.push(...this.getProductAssets(assets));
-      const logo = this.getLogoAsset(assets);
-      if (logo) relevantAssets.push(logo);
+      // DISABLED: Scene-basis logo integration
+      // const logo = this.getLogoAsset(assets);
+      // if (logo) relevantAssets.push(logo);
     }
     
     return relevantAssets;
@@ -302,9 +305,9 @@ export class AssetProcessorService {
     // Product assets are primary
     relevantAssets.push(...this.getProductAssets(assets));
     
-    // Logo for branding context
-    const logo = this.getLogoAsset(assets);
-    if (logo) relevantAssets.push(logo);
+    // DISABLED: Scene-basis logo integration
+    // const logo = this.getLogoAsset(assets);
+    // if (logo) relevantAssets.push(logo);
     
     return relevantAssets;
   }
