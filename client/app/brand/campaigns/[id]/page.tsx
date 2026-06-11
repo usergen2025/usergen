@@ -31,7 +31,6 @@ import Tooltip from '@/components/ui/Tooltip';
 import { CampaignWatermarkedPreviewModal } from '@/components/campaigns/CampaignWatermarkedPreviewModal';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
 import { LeaderboardCard } from '@/components/campaigns/LeaderboardCard';
-import { LeaderboardRefreshButton } from '@/components/campaigns/LeaderboardRefreshButton';
 import { ScrapeHistoryTable } from '@/components/campaigns/ScrapeHistoryTable';
 import { StartCampaignButton } from '@/components/campaigns/StartCampaignButton';
 import { EndCampaignButton } from '@/components/campaigns/EndCampaignButton';
@@ -134,7 +133,8 @@ export default function CampaignDetailsPage() {
   const [campaign, setCampaign] = useState<CampaignDetails | null>(null);
   const [allApplicants, setAllApplicants] = useState<Applicant[]>([]);
   const [postSubmissions, setPostSubmissions] = useState<PostSubmission[]>([]);
-  const [viewInputs, setViewInputs] = useState<Record<string, string>>({});
+  // Manual views update state - commented out since Apify scraper handles this automatically
+  // const [viewInputs, setViewInputs] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [showShortlistConfirm, setShowShortlistConfirm] = useState(false);
   const [selectedApplicant, setSelectedApplicant] = useState<Applicant | null>(null);
@@ -706,19 +706,17 @@ export default function CampaignDetailsPage() {
 
       {campaign.payoutModel === 'POOL' && (
         <div className="mb-3 space-y-3">
-          <LeaderboardRefreshButton
-            campaignId={campaignId}
-            isPrivileged={isPrivileged}
-            cooldownSec={campaign.manualScrapeCooldownSec || 60}
-            lastManualScrapeAt={campaign.lastManualScrapeAt}
-            onRefreshComplete={() => setLeaderboardRefreshKey((k) => k + 1)}
-          />
-          {isPrivileged && <ScrapeHistoryTable campaignId={campaignId} />}
           <LeaderboardCard
             campaignId={campaignId}
             showSnapshot
             refreshToken={leaderboardRefreshKey}
+            isPrivileged={isPrivileged}
+            cooldownSec={campaign.manualScrapeCooldownSec || 60}
+            lastManualScrapeAt={campaign.lastManualScrapeAt}
+            onRefreshComplete={() => setLeaderboardRefreshKey((k) => k + 1)}
+            showRefreshButton
           />
+          {isPrivileged && <ScrapeHistoryTable campaignId={campaignId} />}
         </div>
       )}
 
@@ -858,7 +856,8 @@ export default function CampaignDetailsPage() {
                   </div>
                 </div>
                 {submission.status === 'VERIFIED' ? (
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                    {/* Manual views update UI - commented out since Apify scraper handles this automatically
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <input
                         value={viewInputs[submission.id] || ''}
@@ -894,6 +893,7 @@ export default function CampaignDetailsPage() {
                         Update views
                       </BrandPrimaryButton>
                     </div>
+                    */}
                     {campaign.payoutModel === 'POOL' && (
                       <BrandSecondaryButton
                         type="button"

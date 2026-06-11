@@ -389,14 +389,13 @@ export default function CreatorCampaignDetailPage() {
 
       {/* Prize pool & live leaderboard for POOL campaigns */}
       {campaign.payoutModel === 'POOL' && (
-        <div className="brand-gradient-frame mb-5 rounded-[20px] p-2.5 sm:p-3 shadow-card sm:mb-6">
-          <div className="rounded-[18px] bg-white/95 p-4 sm:p-6">
-            <LeaderboardCard
-              campaignId={id}
-              highlightCreatorId={application?.creatorId}
-              showSnapshot
-            />
-          </div>
+        <div className="mb-5 sm:mb-6">
+          <LeaderboardCard
+            campaignId={id}
+            highlightCreatorId={application?.creatorId}
+            showSnapshot
+            showRefreshButton={false}
+          />
         </div>
       )}
 
