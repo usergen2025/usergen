@@ -1014,6 +1014,30 @@ class ApiClient {
     return response.data;
   }
 
+  async validateVoice(voiceId: string): Promise<ApiResponse<{
+    usable: boolean;
+    reason?: string;
+    voiceName?: string;
+  }>> {
+    const voiceServiceUrl = VOICE_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.get<ApiResponse<{
+      usable: boolean;
+      reason?: string;
+      voiceName?: string;
+    }>>(
+      `${voiceServiceUrl}/voice/voices/${voiceId}/validate`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async cloneVoice(data: {
     name: string;
     audioFile: File;

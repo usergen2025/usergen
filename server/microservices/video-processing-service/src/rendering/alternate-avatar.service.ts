@@ -67,7 +67,7 @@ export class AlternateAvatarService {
     const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
     const maxPoll = this.renderingService.calculateMaxPollingAttempts(sceneAudioDuration);
 
-    const completedVideo = await this.renderingService.generateAndPollAvatarIVUnified(
+    const completedVideo = await this.renderingService.generateAndPollAvatarVideoUnified(
       project,
       {
         image_key: imageKeyToUse,

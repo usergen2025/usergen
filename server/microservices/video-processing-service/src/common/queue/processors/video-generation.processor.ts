@@ -369,10 +369,11 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(20);
 
-    // Generate video using HeyGen Avatar IV
+    const pipelineMode = this.heygenVideoProvider.getAvatarPipelineMode();
+    const engineType = this.heygenVideoProvider.getAvatarEngineType();
     console.log(
-      `[VideoGenerationProcessor] Generating Avatar IV video for AVATAR_PRODUCT scene ${sceneNumber} ` +
-      `with image_key: ${heygenImageKey}, audio: ${audioAssetId || audioUrl}`
+      `[VideoGenerationProcessor] Generating HeyGen avatar video for AVATAR_PRODUCT scene ${sceneNumber} ` +
+      `(pipeline=${pipelineMode}, engine=${engineType}, image_key: ${heygenImageKey}, audio: ${audioAssetId || audioUrl})`,
     );
     
     let videoResponse: { video_id: string };
@@ -382,6 +383,7 @@ export class VideoGenerationProcessor extends WorkerHost {
         ((project as any).voiceId as string) ||
         this.configService.get<string>('HEYGEN_DEFAULT_VOICE_ID') ||
         '';
+      const projectMeta = ((project as any).metadata as Record<string, unknown>) || {};
       const v3Ctx =
         audioAssetId || audioUrl || (fullScript.trim() && voiceId.trim())
           ? {
@@ -389,12 +391,18 @@ export class VideoGenerationProcessor extends WorkerHost {
               voiceId,
               projectId,
               ...(audioAssetId ? { audioAssetId } : {}),
+              ...(typeof projectMeta.heygenV3ImageAssetId === 'string'
+                ? { cachedV3ImageAssetId: projectMeta.heygenV3ImageAssetId }
+                : {}),
+              ...(typeof projectMeta.heygenV3AvatarId === 'string'
+                ? { cachedV3AvatarId: projectMeta.heygenV3AvatarId }
+                : {}),
             }
           : undefined;
 
       await job.updateProgress(35);
 
-      const start = await this.heygenVideoProvider.generateAvatarIVVideoUnified(
+      const start = await this.heygenVideoProvider.generateAvatarVideoUnified(
         {
           image_key: heygenImageKey,
           video_title: `Scene ${sceneNumber} - ${projectId}`,
@@ -409,7 +417,7 @@ export class VideoGenerationProcessor extends WorkerHost {
       await job.updateProgress(40);
 
       console.log(
-        `[VideoGenerationProcessor] Polling video ${start.video_id} until complete (v3=${start.useV3Polling})...`,
+        `[VideoGenerationProcessor] Polling video ${start.video_id} until complete (pipeline=${start.pipeline}, v3=${start.useV3Polling})...`,
       );
       const completedVideo = await this.heygenVideoProvider.pollAvatarVideoUntilCompleteUnified(
         start,
@@ -479,7 +487,7 @@ export class VideoGenerationProcessor extends WorkerHost {
         publicUrl,
         duration: duration,
         heygenImageKey, // Store image_key used
-        generationMethod: 'heygen-avatar-iv',
+        generationMethod: start.pipeline === 'legacy_av4' ? 'heygen-avatar-iv' : `heygen-${start.pipeline}`,
         style: 'AVATAR_PRODUCT',
         source: 'ai-video', // Content source type for tracking
         contentType: 'video',

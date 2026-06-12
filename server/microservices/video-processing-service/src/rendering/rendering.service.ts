@@ -53,15 +53,10 @@ export class RenderingService {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
 
-  /**
-   * HeyGen Avatar IV: legacy /video/av4 or v3 Photo Avatar pipeline + unified polling.
-   */
-  async generateAndPollAvatarIVUnified(
-    project: { id: string; script?: unknown; voiceId?: string | null },
+  private buildHeyGenV3Context(
+    project: { id: string; script?: unknown; voiceId?: string | null; metadata?: unknown },
     request: HeyGenAvatarIVRequest,
-    maxPollingAttempts: number,
-    intervalMs = 5000,
-  ): Promise<HeyGenVideoStatus> {
+  ) {
     const fullScript = aggregateVoiceoversFromScript(project.script);
     const voiceId =
       (project.voiceId as string) ||
@@ -69,27 +64,61 @@ export class RenderingService {
       '';
     const uploadedAudioId = request.audio_asset_id?.trim();
     const uploadedAudioUrl = request.audio_url?.trim();
-    const v3Ctx =
-      uploadedAudioId || uploadedAudioUrl || (fullScript.trim() && voiceId.trim())
-        ? {
-            fullScriptText: fullScript,
-            voiceId,
-            projectId: project.id,
-            ...(uploadedAudioId ? { audioAssetId: uploadedAudioId } : {}),
-          }
-        : undefined;
+    if (!uploadedAudioId && !uploadedAudioUrl && !(fullScript.trim() && voiceId.trim())) {
+      return undefined;
+    }
+    const meta = (project.metadata as Record<string, unknown>) || {};
+    return {
+      fullScriptText: fullScript,
+      voiceId,
+      projectId: project.id,
+      ...(uploadedAudioId ? { audioAssetId: uploadedAudioId } : {}),
+      ...(typeof meta.heygenV3ImageAssetId === 'string'
+        ? { cachedV3ImageAssetId: meta.heygenV3ImageAssetId }
+        : {}),
+      ...(typeof meta.heygenV3AvatarId === 'string'
+        ? { cachedV3AvatarId: meta.heygenV3AvatarId }
+        : {}),
+    };
+  }
+
+  /**
+   * HeyGen avatar video: legacy /video/av4 or v3 pipelines + unified polling.
+   */
+  async generateAndPollAvatarVideoUnified(
+    project: { id: string; script?: unknown; voiceId?: string | null; metadata?: unknown },
+    request: HeyGenAvatarIVRequest,
+    maxPollingAttempts: number,
+    intervalMs = 5000,
+  ): Promise<HeyGenVideoStatus> {
+    const v3Ctx = this.buildHeyGenV3Context(project, request);
     const pipelineMode = this.heygenVideoProvider.getAvatarPipelineMode();
+    const engineType = this.heygenVideoProvider.getAvatarEngineType();
+    const uploadedAudioId = request.audio_asset_id?.trim();
     await this.projectLog
-      .logProject(project.id, 'INFO', `HeyGen Avatar IV start: pipeline=${pipelineMode}, stitched_audio_upload=${uploadedAudioId ? 'yes' : 'no'}`, {
-        op: 'heygen_avatar_iv',
-      })
+      .logProject(
+        project.id,
+        'INFO',
+        `HeyGen video start: pipeline=${pipelineMode}, engine=${engineType}, stitched_audio_upload=${uploadedAudioId ? 'yes' : 'no'}`,
+        { op: 'heygen_video' },
+      )
       .catch(() => {});
-    const start = await this.heygenVideoProvider.generateAvatarIVVideoUnified(request, v3Ctx);
+    const start = await this.heygenVideoProvider.generateAvatarVideoUnified(request, v3Ctx);
     return this.heygenVideoProvider.pollAvatarVideoUntilCompleteUnified(
       start,
       maxPollingAttempts,
       intervalMs,
     );
+  }
+
+  /** @deprecated Use generateAndPollAvatarVideoUnified */
+  async generateAndPollAvatarIVUnified(
+    project: { id: string; script?: unknown; voiceId?: string | null; metadata?: unknown },
+    request: HeyGenAvatarIVRequest,
+    maxPollingAttempts: number,
+    intervalMs = 5000,
+  ): Promise<HeyGenVideoStatus> {
+    return this.generateAndPollAvatarVideoUnified(project, request, maxPollingAttempts, intervalMs);
   }
 
   private paymentServiceBase(): string {
@@ -1416,7 +1445,7 @@ export class RenderingService {
     const totalAudioDurationHNH = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsHNH = this.calculateMaxPollingAttempts(totalAudioDurationHNH);
 
-    const completedVideo = await this.generateAndPollAvatarIVUnified(
+    const completedVideo = await this.generateAndPollAvatarVideoUnified(
       project,
       {
         image_key: imageKeyToUse,
@@ -1846,7 +1875,7 @@ export class RenderingService {
     const totalAudioDurationCutout = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsCutout = this.calculateMaxPollingAttempts(totalAudioDurationCutout);
 
-    const completedVideo = await this.generateAndPollAvatarIVUnified(
+    const completedVideo = await this.generateAndPollAvatarVideoUnified(
       project,
       {
         image_key: imageKeyCutout,
@@ -2429,7 +2458,7 @@ export class RenderingService {
     const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
     const maxPollingAttemptsAlternate = this.calculateMaxPollingAttempts(sceneAudioDuration);
 
-    const completedVideo = await this.generateAndPollAvatarIVUnified(
+    const completedVideo = await this.generateAndPollAvatarVideoUnified(
       project,
       {
         image_key: imageKeyToUse,
@@ -2784,7 +2813,7 @@ export class RenderingService {
     const totalAudioDurationAvatarOnly = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
     const maxPollingAttemptsAvatarOnly = this.calculateMaxPollingAttempts(totalAudioDurationAvatarOnly);
 
-    const completedVideo = await this.generateAndPollAvatarIVUnified(
+    const completedVideo = await this.generateAndPollAvatarVideoUnified(
       project,
       {
         image_key: imageKeyAvatarOnly,

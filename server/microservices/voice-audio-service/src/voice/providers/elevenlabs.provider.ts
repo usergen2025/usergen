@@ -9,6 +9,12 @@ export interface VerifiedVoiceLanguage {
   preview_url?: string | null;
 }
 
+export interface ElevenLabsVoiceSharing {
+  status?: string;
+  enabled_in_library?: boolean;
+  public_owner_id?: string;
+}
+
 export interface ElevenLabsVoice {
   voice_id: string;
   name: string;
@@ -23,6 +29,19 @@ export interface ElevenLabsVoice {
     style?: number;
     use_speaker_boost?: boolean;
   } | null;
+  is_owner?: boolean | null;
+  sharing?: ElevenLabsVoiceSharing | null;
+  permission_on_resource?: string | null;
+}
+
+export function isVoiceUsable(voice: ElevenLabsVoice): boolean {
+  if (voice.sharing?.status === 'copied_disabled') {
+    return false;
+  }
+  if (voice.category === 'professional' && voice.sharing?.enabled_in_library === false) {
+    return false;
+  }
+  return true;
 }
 
 export interface ElevenLabsVoicesResponse {
@@ -125,13 +144,23 @@ export class ElevenLabsProvider {
         },
       });
 
+      // Filter out disabled/unusable voices
+      let filteredVoices = response.data.voices.filter((voice) => {
+        if (!isVoiceUsable(voice)) {
+          console.log(
+            `[ElevenLabs] Filtering unusable voice: ${voice.name} (${voice.voice_id}), status=${voice.sharing?.status ?? 'unknown'}`,
+          );
+          return false;
+        }
+        return true;
+      });
+
       // Filter by language if specified
-      let filteredVoices = response.data.voices;
       if (options?.language) {
         const languageCode = this.mapLanguageToCode(options.language);
         if (languageCode) {
-          filteredVoices = response.data.voices.filter(voice => 
-            this.voiceSupportsLanguage(voice, languageCode)
+          filteredVoices = filteredVoices.filter((voice) =>
+            this.voiceSupportsLanguage(voice, languageCode),
           );
         }
       }
@@ -252,6 +281,15 @@ export class ElevenLabsProvider {
           },
         }
       );
+
+      if (response.status >= 400) {
+        const errorDetail =
+          response.data?.detail?.message ||
+          response.data?.message ||
+          `HTTP ${response.status}`;
+        console.error('[ElevenLabs] TTS with-timestamps failed:', response.data);
+        throw new Error(`ElevenLabs speech generation failed: ${errorDetail}`);
+      }
 
       // Response contains audio_base64 and alignment data
       const { audio_base64, alignment, normalized_alignment } = response.data;

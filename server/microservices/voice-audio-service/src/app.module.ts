@@ -4,6 +4,7 @@ import { VoiceController } from './voice/voice.controller';
 import { VoiceService } from './voice/voice.service';
 import { ElevenLabsProvider } from './voice/providers/elevenlabs.provider';
 import { PublicUrlService } from './common/storage/public-url.service';
+import { DatabaseModule } from './common/database/database.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { PublicUrlService } from './common/storage/public-url.service';
         '.env',
       ],
     }),
+    DatabaseModule,
   ],
   controllers: [VoiceController],
   providers: [VoiceService, ElevenLabsProvider, PublicUrlService],

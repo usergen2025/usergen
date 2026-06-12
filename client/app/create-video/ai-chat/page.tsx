@@ -3542,6 +3542,22 @@ function AIChatPageContent() {
   // Handle proceed with selected voice
   const handleProceedWithVoice = async () => {
     if (selectedVoiceId) {
+      try {
+        const validation = await apiClient.validateVoice(selectedVoiceId);
+        if (!validation.success || !validation.data?.usable) {
+          showToast(
+            validation.data?.reason || 'Selected voice is no longer available. Please choose another voice.',
+            'error',
+          );
+          setSelectedVoiceId(null);
+          return;
+        }
+      } catch (error: any) {
+        console.error('Failed to validate selected voice:', error);
+        showToast('Failed to validate selected voice. Please try again.', 'error');
+        return;
+      }
+
       // Mark as confirmed and move to confirmed substep
       setVoiceConfirmed(true);
       setVoiceSubstep('confirmed');

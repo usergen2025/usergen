@@ -684,6 +684,16 @@ function VoicePageContent() {
 
     if (hasLibrarySelection && selectedVoice) {
       try {
+        const validation = await apiClient.validateVoice(selectedVoice.voice_id);
+        if (!validation.success || !validation.data?.usable) {
+          showToast(
+            validation.data?.reason || 'Selected voice is no longer available. Please choose another voice.',
+            'error',
+          );
+          setSelectedVoice(null);
+          return;
+        }
+
         // Check if voice changed or audio needs regeneration
         const currentVoiceId = project?.voiceId;
         const newVoiceId = selectedVoice.voice_id;

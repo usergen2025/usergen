@@ -5,8 +5,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import axios from 'axios';
-import { ElevenLabsProvider, ElevenLabsVoice, GenerateSpeechRequest } from './providers/elevenlabs.provider';
+import { ElevenLabsProvider, ElevenLabsVoice, GenerateSpeechRequest, isVoiceUsable } from './providers/elevenlabs.provider';
 import { PublicUrlService } from '../common/storage/public-url.service';
+import { DatabaseService } from '../common/database/database.service';
 import type { Multer } from 'multer';
 
 /**
@@ -29,6 +30,7 @@ export class VoiceService {
     private readonly elevenLabsProvider: ElevenLabsProvider,
     private readonly configService: ConfigService,
     private readonly publicUrlService: PublicUrlService,
+    private readonly databaseService: DatabaseService,
   ) {
     // Create uploads directory for storing generated audio files
     this.uploadsDir = path.join(process.cwd(), 'uploads', 'audio');
@@ -79,21 +81,80 @@ export class VoiceService {
   }
 
   /**
-   * Get list of available voices from ElevenLabs
+   * Get list of available voices from ElevenLabs, scoped to the requesting user.
    */
-  async getVoices(options?: {
-    pageSize?: number;
-    search?: string;
-    category?: string;
-    language?: 'english' | 'hindi' | 'hinglish';
-  }): Promise<ElevenLabsVoice[]> {
+  async getVoices(
+    userId: string | null,
+    options?: {
+      pageSize?: number;
+      search?: string;
+      category?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
+    },
+  ): Promise<ElevenLabsVoice[]> {
     const response = await this.elevenLabsProvider.listVoices({
       pageSize: options?.pageSize || 100,
       search: options?.search,
       category: options?.category,
       language: options?.language,
     });
-    return response.voices;
+
+    const userCloneIds = userId
+      ? new Set(
+          (
+            await this.databaseService.clonedVoice.findMany({
+              where: { userId },
+              select: { elevenlabsId: true },
+            })
+          ).map((clone) => clone.elevenlabsId),
+        )
+      : new Set<string>();
+
+    return response.voices.filter((voice) => {
+      if (voice.category === 'cloned') {
+        if (!userId) {
+          return false;
+        }
+        return userCloneIds.has(voice.voice_id);
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Validate whether a voice can be used for TTS generation.
+   */
+  async validateVoiceUsable(voiceId: string): Promise<{
+    usable: boolean;
+    reason?: string;
+    voiceName?: string;
+  }> {
+    try {
+      const voice = await this.elevenLabsProvider.getVoice(voiceId);
+
+      if (!isVoiceUsable(voice)) {
+        return {
+          usable: false,
+          reason: 'This voice has been disabled by its owner. Please select a different voice.',
+          voiceName: voice.name,
+        };
+      }
+
+      return { usable: true, voiceName: voice.name };
+    } catch (error: any) {
+      const message = error?.message || '';
+      if (
+        message.includes('voice_access_denied') ||
+        message.toLowerCase().includes('disabled') ||
+        message.includes('403')
+      ) {
+        return {
+          usable: false,
+          reason: 'This voice is no longer available. Please select a different voice.',
+        };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -988,17 +1049,43 @@ export class VoiceService {
       remove_background_noise?: boolean;
     }
   ): Promise<{ voice_id: string; requires_verification: boolean }> {
-    return await this.elevenLabsProvider.cloneVoice(name, audioFiles, options);
+    const result = await this.elevenLabsProvider.cloneVoice(name, audioFiles, options);
+
+    await this.databaseService.clonedVoice.upsert({
+      where: { elevenlabsId: result.voice_id },
+      create: {
+        elevenlabsId: result.voice_id,
+        userId,
+        name,
+        description: options?.description,
+      },
+      update: {
+        userId,
+        name,
+        description: options?.description,
+      },
+    });
+
+    return result;
   }
 
   /**
    * Get voices that support speech-to-speech conversion
    */
-  async getSpeechToSpeechVoices(options?: {
-    search?: string;
-    language?: 'english' | 'hindi' | 'hinglish';
-  }): Promise<any[]> {
-    return await this.elevenLabsProvider.getSpeechToSpeechVoices(options);
+  async getSpeechToSpeechVoices(
+    userId: string | null,
+    options?: {
+      search?: string;
+      language?: 'english' | 'hindi' | 'hinglish';
+    },
+  ): Promise<any[]> {
+    const voices = await this.getVoices(userId, {
+      search: options?.search,
+      language: options?.language,
+      pageSize: 100,
+    });
+    console.log(`[VoiceService] Returning ${voices.length} speech-to-speech voices for user ${userId ?? 'anonymous'}`);
+    return voices;
   }
 
   /**

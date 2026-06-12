@@ -320,12 +320,14 @@ export class VoiceController {
     }
   })
   async getVoices(
+    @Request() req: any,
     @Query('search') search?: string,
     @Query('category') category?: string,
     @Query('pageSize') pageSize?: number,
     @Query('language') language?: 'english' | 'hindi' | 'hinglish',
   ) {
-    const voices = await this.voiceService.getVoices({
+    const userId = this.extractUserIdFromToken(req);
+    const voices = await this.voiceService.getVoices(userId, {
       search,
       category,
       pageSize: pageSize || 100,
@@ -336,6 +338,23 @@ export class VoiceController {
       success: true,
       data: voices,
       message: 'Voices retrieved successfully',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  @Get('voices/:voiceId/validate')
+  @ApiOperation({
+    summary: 'Validate voice usability',
+    description: 'Check whether a voice is available for text-to-speech generation.',
+  })
+  @ApiBearerAuth('JWT-auth')
+  async validateVoice(@Param('voiceId') voiceId: string) {
+    const result = await this.voiceService.validateVoiceUsable(voiceId);
+
+    return {
+      success: true,
+      data: result,
+      message: result.usable ? 'Voice is available' : 'Voice is not available',
       timestamp: new Date().toISOString(),
     };
   }
@@ -505,10 +524,12 @@ export class VoiceController {
     },
   })
   async getSpeechToSpeechVoices(
+    @Request() req: any,
     @Query('search') search?: string,
     @Query('language') language?: 'english' | 'hindi' | 'hinglish',
   ) {
-    const voices = await this.voiceService.getSpeechToSpeechVoices({
+    const userId = this.extractUserIdFromToken(req);
+    const voices = await this.voiceService.getSpeechToSpeechVoices(userId, {
       search,
       language,
     });
