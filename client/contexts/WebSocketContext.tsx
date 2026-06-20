@@ -12,6 +12,7 @@ export interface JobStatusUpdate {
     | 'audio-generation'
     | 'image-generation'
     | 'video-generation'
+    | 'avatar-video-generation'
     | 'scene-composite'
     | 'stock-download'
     | 'brand-packaging'

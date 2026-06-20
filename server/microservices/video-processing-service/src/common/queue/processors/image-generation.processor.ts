@@ -1254,9 +1254,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     } else if (project.style === 'AVATAR_CUTOUT') {
       finalAspectRatio = '9:16';
     } else if (project.style === 'ALTERNATE') {
-      // For ALTERNATE style: odd scenes use 3:4 (top half for half-n-half), even scenes use 9:16 (full b-roll)
-      finalAspectRatio = (sceneNumber % 2 === 1) ? '3:4' : '9:16';
-      console.log(`[ImageGenerationProcessor] ALTERNATE style: Scene ${sceneNumber} is ${sceneNumber % 2 === 1 ? 'odd' : 'even'}, using aspect ratio ${finalAspectRatio}`);
+      // ALTERNATE b-roll scenes use full 9:16 (avatar scenes don't generate b-roll images)
+      finalAspectRatio = '9:16';
+      console.log(`[ImageGenerationProcessor] ALTERNATE style: Scene ${sceneNumber} using aspect ratio ${finalAspectRatio}`);
     }
 
     // Use provided aspect ratio or default from video style

@@ -1106,8 +1106,9 @@ CRITICAL DURATION REQUIREMENTS:
         if (styleParams && styleParams.colorPalette) {
           const stylePrefix = this.buildStylePrefix(styleParams);
           
-          // Only process if this is a b-roll or half-n-half scene (for ALTERNATE style)
-          const isBrollScene = request.existingScript.video_type !== 'Alternating' || sceneData.type === 'b-roll' || sceneData.type === 'half-n-half';
+          // Only process b-roll scenes (for ALTERNATE style, avatar scenes have no b-roll prompts)
+          const sceneType = (sceneData.type || '').toLowerCase();
+          const isBrollScene = request.existingScript.video_type !== 'Alternating' || sceneType === 'b-roll' || sceneType === 'broll';
           
           if (isBrollScene) {
             // Normalize image prompt
@@ -1769,10 +1770,9 @@ Guidelines:
 Your task is to script a balanced, engaging alternating-scene video with smooth narrative continuity for an Indian audience.
 
 CRITICAL RENDERING REQUIREMENTS (MUST READ):
-- ALL scenes require b-roll images to be generated
-- Odd-numbered scenes (1, 3, 5, ...): Use 3:4 b-roll images for the top half (type: "half-n-half")
-- Even-numbered scenes (2, 4, 6, ...): Use full-screen 9:16 b-roll images (type: "b-roll")
-- Therefore, EVERY scene MUST have a broll_image_prompt, regardless of type
+- Odd-numbered scenes (1, 3, 5, ...): Full-screen 9:16 b-roll (type: "b-roll") — MUST have broll_image_prompt and broll_video_prompt
+- Even-numbered scenes (2, 4, 6, ...): Full-screen 9:16 avatar talking head (type: "avatar") — voiceover, avatar_action, avatar_motion only; NO broll_image_prompt or broll_video_prompt
+- Only b-roll-type scenes require b-roll image generation
 
 CRITICAL VISUAL CONSISTENCY REQUIREMENTS:
 - ALL b-roll images must share the SAME visual style, color palette, lighting, mood, and aesthetic
@@ -1828,27 +1828,27 @@ Output Format:
   "scene_plan": [
     {
       "scene_number": 1,
-      "type": "half-n-half",
+      "type": "b-roll",
       "time_range": "0-7s",
       "voiceover": "${lang.alternate}",
-      "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. REQUIRED for ALL scenes. If reference images show a hero garment or product, state it is the same item as in the reference image(s), not a newly invented design.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: one plausible still — e.g. Indian woman in upscale boutique wearing the same dress as in the reference image(s), natural light, single viewpoint]. REQUIRED for ALL scenes (odd scenes = 3:4 for top half, even scenes = full 9:16).",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]. REQUIRED for ALL scenes.",
-      "stock_search_term": "keywords for stock footage search",
-      "avatar_action": "Describe Indian avatar's expression and delivery for this half-n-half scene.",
-      "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
-    },
-    {
-      "scene_number": 2,
-      "type": "b-roll",
-      "time_range": "7-14s",
-      "voiceover": "${lang.alternate}",
-      "broll_visual_description": "Describe Indian visuals — markets, roads, cafes, offices, villages, festivals, etc.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
+      "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. If reference images show a hero garment or product, state it is the same item as in the reference image(s), not a newly invented design.",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: one plausible full-screen 9:16 still — e.g. Indian woman in upscale boutique wearing the same dress as in the reference image(s), natural light, single viewpoint].",
+      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion].",
       "stock_search_term": "keywords for stock footage search",
       "avatar_action": null,
       "avatar_motion": null
+    },
+    {
+      "scene_number": 2,
+      "type": "avatar",
+      "time_range": "7-14s",
+      "voiceover": "${lang.alternate}",
+      "broll_visual_description": null,
+      "broll_image_prompt": null,
+      "broll_video_prompt": null,
+      "stock_search_term": null,
+      "avatar_action": "Describe Indian avatar's expression and delivery for this full-screen avatar scene.",
+      "avatar_motion": "Give a single word describing avatar's motion such as 'nod', 'smile', 'blink'"
     }
   ],
   "notes": {
@@ -1860,17 +1860,17 @@ Output Format:
 
 CRITICAL PROMPT GENERATION RULES:
 1. FIRST, determine the visual_style_guide based on the user's topic/idea - this is the MOST IMPORTANT step
-2. The visual_style_guide MUST be consistent across ALL scenes (both avatar-type and b-roll-type)
-3. EVERY scene (regardless of type) MUST have a broll_image_prompt - this is REQUIRED for rendering
+2. The visual_style_guide MUST be consistent across ALL b-roll scenes
+3. ONLY b-roll-type scenes MUST have broll_image_prompt and broll_video_prompt — avatar-type scenes must NOT include b-roll prompts
 4. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
 5. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: specific description]"
-6. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
-7. Use the EXACT same wording for style parameters in every scene prompt (both avatar and b-roll scenes)
-8. Only the scene-specific part should vary between scenes
-9. Extract the style parameters from visual_style_guide and use them verbatim in every prompt
-10. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused image
-11. For avatar-type scenes, generate broll_image_prompt based on the voiceover context and visual style guide
-12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
+6. EVERY broll_image_prompt must produce PHOTOREALISTIC full-screen 9:16 output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
+7. Use the EXACT same wording for style parameters in every b-roll scene prompt
+8. Only the scene-specific part should vary between b-roll scenes
+9. Extract the style parameters from visual_style_guide and use them verbatim in every b-roll prompt
+10. NEVER generate grids, collages, split-screen, or multiple images in one - each b-roll scene must be ONE single focused image
+11. Avatar-type scenes require voiceover, avatar_action, and avatar_motion only
+12. You MUST include top-level "video_topic" and ensure every b-roll scene's prompts tie to this topic so the global context is never lost
 
 Guidelines:
 - Use ${lang.dialogue} voiceover across all scenes.
@@ -2732,10 +2732,12 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
 
     // Normalize each scene's prompts
     scenes.forEach((scene: any) => {
-      // For ALTERNATE style, ALL scenes (both avatar and b-roll type) need b-roll images
+      // For ALTERNATE style, only b-roll-type scenes need b-roll image prompts
       const videoType = (scriptData.video_type || '').toLowerCase();
+      const sceneType = (scene.type || '').toLowerCase();
+      const isAlternateAvatarScene = videoType === 'alternating' && sceneType === 'avatar';
 
-      if (videoType === 'alternating' && !scene.broll_image_prompt && scene.broll_visual_description) {
+      if (videoType === 'alternating' && !isAlternateAvatarScene && !scene.broll_image_prompt && scene.broll_visual_description) {
         const sceneSpecific = scene.broll_visual_description || sceneFallback;
         scene.broll_image_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}]`;
       }
@@ -3072,8 +3074,9 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
     const videoType = (scriptData.video_type || '').toLowerCase();
     const firstScene = scenes.find((s: any) => {
       if (videoType === 'alternating') {
-        // For ALTERNATE style, check both "half-n-half" (odd) and "b-roll" (even) scenes
-        return (s.type === 'b-roll' || s.type === 'half-n-half') && (s.broll_image_prompt || s.broll_video_prompt);
+        // For ALTERNATE style, validate b-roll scenes only
+        const t = (s.type || '').toLowerCase();
+        return (t === 'b-roll' || t === 'broll') && (s.broll_image_prompt || s.broll_video_prompt);
       }
       return s.broll_image_prompt || s.broll_video_prompt;
     });
@@ -3088,9 +3091,9 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
 
     // Check all b-roll scenes
     scenes.forEach((scene: any, index: number) => {
-      // For ALTERNATE style, process both "half-n-half" (odd scenes) and "b-roll" (even scenes)
-      // Skip only if type is explicitly "avatar" (old format)
-      if (videoType === 'alternating' && scene.type === 'avatar') {
+      // For ALTERNATE style, skip avatar scenes (no b-roll prompts to validate)
+      const sceneType = (scene.type || '').toLowerCase();
+      if (videoType === 'alternating' && (sceneType === 'avatar' || sceneType === 'half-n-half')) {
         return;
       }
 

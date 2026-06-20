@@ -277,22 +277,18 @@ export class AssetProcessorService {
   }
 
   /**
-   * ALTERNATE: Rotate assets between odd/even scenes (odd = half-n-half top b-roll, even = full 9:16 b-roll)
+   * ALTERNATE: Odd scenes = full b-roll, even scenes = full avatar (or explicit scene.type)
    */
   private getAssetsForAlternate(assets: AnalyzedAsset[], sceneNumber: number): AnalyzedAsset[] {
     const relevantAssets: AnalyzedAsset[] = [];
-    
+
     if (sceneNumber % 2 === 1) {
-      // Odd scenes: background for top-half b-roll in composite
       relevantAssets.push(...this.getBackgroundAssets(assets));
-    } else {
-      // Even scenes: product for full-frame b-roll
       relevantAssets.push(...this.getProductAssets(assets));
-      // DISABLED: Scene-basis logo integration
-      // const logo = this.getLogoAsset(assets);
-      // if (logo) relevantAssets.push(logo);
+    } else {
+      relevantAssets.push(...this.getBackgroundAssets(assets));
     }
-    
+
     return relevantAssets;
   }
 

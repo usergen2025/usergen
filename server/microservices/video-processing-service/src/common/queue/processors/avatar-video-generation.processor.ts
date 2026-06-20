@@ -7,7 +7,6 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../../database/database.service';
 import { AlternateAvatarService } from '../../../rendering/alternate-avatar.service';
-import { QueueManagerService } from '../queue-manager.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { VideoService } from '../../../video/video.service';
 import { UserNotificationService } from '../../../notifications/user-notification.service';
@@ -17,7 +16,7 @@ export interface AvatarVideoGenerationJobData {
   userId: string;
   sceneNumber: number;
   authToken?: string;
-  sceneJobId?: string; // For client subscription - emit with this jobId
+  sceneJobId?: string; // Legacy composite flow; prefer job.id for subscriptions
 }
 
 @Processor('avatar-video-generation', {
@@ -31,7 +30,6 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly alternateAvatarService: AlternateAvatarService,
-    private readonly queueManager: QueueManagerService,
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly videoService: VideoService,
     private readonly userNotificationService: UserNotificationService,
@@ -63,8 +61,8 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<AvatarVideoGenerationJobData>): Promise<any> {
-    const { projectId, userId, sceneNumber, authToken, sceneJobId } = job.data;
-    const emitJobId = sceneJobId || job.id!;
+    const { projectId, userId, sceneNumber, authToken } = job.data;
+    const emitJobId = job.id!;
 
     try {
       const project = await this.databaseService.videoProject.findFirst({
@@ -99,21 +97,24 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         }
       }
 
-      // Avatar cache check (Phase 9): skip generation if valid cache exists
       const audioBuffer = fs.readFileSync(audioPath);
       const audioHash = crypto.createHash('sha256').update(audioBuffer).digest('hex');
       const cacheEntry = metadata.avatarVideoCache?.[sceneNumber];
       let avatarVideoPath: string;
+      let avatarEntry: any;
+
       if (cacheEntry?.audioHash === audioHash && cacheEntry?.localPath && fs.existsSync(cacheEntry.localPath)) {
         avatarVideoPath = cacheEntry.localPath;
+        avatarEntry = {
+          sceneNumber,
+          jobId: emitJobId,
+          localPath: avatarVideoPath,
+          localUrl: cacheEntry.localUrl,
+          duration: audioFile.duration,
+          sceneType: 'avatar',
+        };
         const avatarVideos = ((project as any).avatarVideos as any[]) || [];
         const existingIdx = avatarVideos.findIndex((v: any) => v.sceneNumber === sceneNumber);
-        const avatarEntry = {
-          sceneNumber,
-          localPath: avatarVideoPath,
-          localUrl: cacheEntry.localUrl || `/uploads/videos/${userId}/avatars/${projectId}/alternate/${((project.avatarMode as string) || 'PREMIUM').toLowerCase()}/avatar_scene_${sceneNumber}_${projectId}.mp4`,
-          duration: audioFile.duration,
-        };
         if (existingIdx >= 0) {
           avatarVideos[existingIdx] = avatarEntry;
         } else {
@@ -129,17 +130,19 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           userId,
           sceneNumber,
           audioPath,
-          authToken
+          authToken,
         );
 
         const relativePath = path.relative(this.uploadsDir, avatarVideoPath);
         const localUrl = `/uploads/${relativePath.replace(/\\/g, '/')}`;
 
-        const avatarEntry = {
+        avatarEntry = {
           sceneNumber,
+          jobId: emitJobId,
           localPath: avatarVideoPath,
           localUrl,
           duration: audioFile.duration,
+          sceneType: 'avatar',
         };
 
         const latestProj = await this.databaseService.videoProject.findUnique({
@@ -171,29 +174,14 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         });
       }
 
-      // Emit progress (Phase 8)
       await this.jobStatusGateway.notifyJobStatus(userId, {
         jobId: emitJobId,
-        queueType: 'scene-composite',
-        state: 'progress',
-        metadata: { stage: 'avatar_complete', sceneNumber },
-        progress: 66,
+        queueType: 'avatar-video-generation',
+        state: 'completed',
+        result: { success: true, video: avatarEntry },
+        progress: 100,
       }).catch(() => {});
 
-      const latestProject = await this.databaseService.videoProject.findUnique({
-        where: { id: projectId },
-      });
-      const bRollVideoTasks = latestProject ? ((latestProject as any).bRollVideoTasks as any[]) || [] : [];
-      const hasBroll = bRollVideoTasks.some((v: any) => v.sceneNumber === sceneNumber);
-
-      if (hasBroll) {
-        await this.queueManager.addSceneCompositeJob({
-          projectId,
-          userId,
-          sceneNumber,
-          sceneJobId: emitJobId,
-        });
-      }
       this.userNotificationService
         .notifyProcessingEvent({
           userId,
@@ -201,13 +189,13 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           type: 'AVATAR_PREVIEW_READY',
           operation: 'avatar-video-generation',
           status: 'completed',
-          title: 'Avatar preview ready',
+          title: 'Avatar scene ready',
           message: `Avatar video is ready for scene ${sceneNumber}.`,
           data: { sceneNumber, jobId: emitJobId, queueType: 'avatar-video-generation' },
         })
         .catch(() => {});
 
-      return { success: true, localPath: avatarVideoPath };
+      return { success: true, localPath: avatarVideoPath, video: avatarEntry };
     } catch (error: any) {
       console.error(`[AvatarVideoGenerationProcessor] Error for job ${job.id}:`, error);
 
@@ -223,7 +211,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
 
       await this.jobStatusGateway.notifyJobStatus(userId, {
         jobId: emitJobId,
-        queueType: 'scene-composite',
+        queueType: 'avatar-video-generation',
         state: 'failed',
         error: error.message,
         metadata: { sceneNumber },

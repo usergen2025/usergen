@@ -2483,7 +2483,7 @@ export class RenderingService {
     const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
-    // Avatar IV produces 9:16; crop to bottom 960px (same as HALF_N_HALF)
+    // Avatar IV produces 9:16; ensure full 1080x1920 (no half-n-half crop)
     const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
     if (!videoRes) {
       throw new Error('Failed to get video resolution for avatar video');
@@ -2494,29 +2494,41 @@ export class RenderingService {
       const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
       await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
       if (!fs.existsSync(scaledPath)) throw new Error('Video scaling failed');
-      const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
-      await this.videoCompositor.cropVideo(scaledPath, croppedPath, 0, 960, 1080, 960);
-      try { fs.unlinkSync(scaledPath); } catch (e) { /* ignore */ }
-      if (fs.existsSync(croppedPath)) {
-        fs.unlinkSync(avatarVideoPath);
-        fs.renameSync(croppedPath, avatarVideoPath);
-      }
-    } else {
-      const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
-      await this.videoCompositor.cropVideo(avatarVideoPath, croppedPath, 0, 960, 1080, 960);
-      if (fs.existsSync(croppedPath)) {
-        fs.unlinkSync(avatarVideoPath);
-        fs.renameSync(croppedPath, avatarVideoPath);
-      }
+      fs.unlinkSync(avatarVideoPath);
+      fs.renameSync(scaledPath, avatarVideoPath);
     }
 
     return avatarVideoPath;
   }
 
+  private getAlternateSceneRole(scene: any, sceneNumber: number): 'b-roll' | 'avatar' {
+    const sceneType = (scene?.type || '').toLowerCase();
+    if (sceneType === 'avatar') return 'avatar';
+    if (sceneType === 'b-roll' || sceneType === 'broll' || sceneType === 'half-n-half') return 'b-roll';
+    return sceneNumber % 2 === 1 ? 'b-roll' : 'avatar';
+  }
+
+  private resolveAlternateAvatarVideoPath(avatarEntry: any): string | null {
+    if (!avatarEntry) return null;
+    if (avatarEntry.localPath) {
+      const p = path.isAbsolute(avatarEntry.localPath)
+        ? avatarEntry.localPath
+        : path.resolve(avatarEntry.localPath);
+      if (fs.existsSync(p)) return p;
+    }
+    if (avatarEntry.localUrl) {
+      const rel = (avatarEntry.localUrl as string).replace(/^\/uploads\//, '').replace(/\//g, path.sep);
+      const full = path.join(this.uploadsDir, rel);
+      if (fs.existsSync(full)) return full;
+    }
+    return null;
+  }
+
   /**
-   * Process ALTERNATE style (simplified - avatar and compositing done during Convert to Videos):
-   * - Odd scenes: pre-composed (b-roll+avatar) from bRollVideoTasks, already has audio (isComposite)
-   * - Even scenes: b-roll from bRollVideoTasks, add audio (full 9:16)
+   * Process ALTERNATE style (b-roll-only + avatar-only):
+   * - B-roll scenes: full 9:16 from bRollVideoTasks + scene audio
+   * - Avatar scenes: full 9:16 from avatarVideos (HeyGen includes audio)
+   * - Legacy: pre-composed isComposite entries in bRollVideoTasks still supported
    * - Stitch all scene videos together
    */
   private async processAlternate(
@@ -2559,16 +2571,41 @@ export class RenderingService {
       return null;
     };
 
+    const avatarVideos = ((project as any).avatarVideos as any[]) || [];
     const sceneVideoPaths: string[] = [];
     const sceneDurations: number[] = [];
 
     for (const scene of sortedScenes) {
       const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
-      const videoEntry = bRollVideos.find((v: any) => v.sceneNumber === sceneNumber);
+      const role = this.getAlternateSceneRole(scene, sceneNumber);
       const audioFile = audioFiles.find((af: any) => af.sceneNumber === sceneNumber);
 
+      if (role === 'avatar') {
+        const avatarEntry = avatarVideos.find((v: any) => v.sceneNumber === sceneNumber);
+        const avatarPath = this.resolveAlternateAvatarVideoPath(avatarEntry);
+        if (!avatarPath) {
+          throw new Error(`Missing avatar video for scene ${sceneNumber}`);
+        }
+        const avatarRes = await this.videoCompositor.getVideoResolution(avatarPath);
+        if (avatarRes && (avatarRes.width !== 1080 || avatarRes.height !== 1920)) {
+          const scaledPath = path.join(userDir, `avatar_scaled_${sceneNumber}_${projectId}.mp4`);
+          await this.videoCompositor.scaleVideoToDimensions(avatarPath, scaledPath, 1080, 1920);
+          if (fs.existsSync(scaledPath)) {
+            sceneVideoPaths.push(path.resolve(scaledPath));
+          } else {
+            sceneVideoPaths.push(path.resolve(avatarPath));
+          }
+        } else {
+          sceneVideoPaths.push(path.resolve(avatarPath));
+        }
+        sceneDurations.push(audioFile?.duration || avatarEntry?.duration || 0);
+        console.log(`[RenderingService] ALTERNATE: Using full-screen avatar scene ${sceneNumber}`);
+        continue;
+      }
+
+      const videoEntry = bRollVideos.find((v: any) => v.sceneNumber === sceneNumber);
       if (!videoEntry || (!videoEntry.localPath && !videoEntry.localUrl)) {
-        throw new Error(`Missing video for scene ${sceneNumber}`);
+        throw new Error(`Missing b-roll video for scene ${sceneNumber}`);
       }
 
       // Resolve video path (supports both regular and stock videos)
@@ -2577,8 +2614,7 @@ export class RenderingService {
         videoPath = path.isAbsolute(videoEntry.localPath) ? videoEntry.localPath : path.resolve(videoEntry.localPath);
       } else if (videoEntry.localUrl) {
         const urlPath = (videoEntry.localUrl as string).startsWith('/uploads') ? videoEntry.localUrl : videoEntry.localUrl;
-        
-        // Handle different localUrl formats
+
         if (urlPath.includes('/uploads/stock/')) {
           const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
           videoPath = path.join(mediaServiceDir, urlPath);
@@ -2587,8 +2623,7 @@ export class RenderingService {
           videoPath = path.join(userDir, rel);
         }
       }
-      
-      // Check primary path, then try stock fallback
+
       if (!videoPath || !fs.existsSync(videoPath)) {
         if (videoEntry.localUrl && videoEntry.localUrl.includes('/uploads/stock/')) {
           const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
@@ -2599,37 +2634,36 @@ export class RenderingService {
           }
         }
       }
-      
+
       if (!videoPath || !fs.existsSync(videoPath)) {
         throw new Error(`Video file not found for scene ${sceneNumber}`);
       }
 
-      const isComposite = !!(videoEntry as any).isComposite;
+      const isLegacyComposite = !!(videoEntry as any).isComposite;
 
-      if (isComposite) {
-        // Odd scene: pre-composed half-n-half (already has audio)
+      if (isLegacyComposite) {
         sceneVideoPaths.push(path.resolve(videoPath));
         sceneDurations.push(audioFile?.duration || 0);
-        console.log(`[RenderingService] ALTERNATE: Using pre-composed scene ${sceneNumber}`);
-      } else {
-        // Even scene: add audio to full 9:16 b-roll
-        if (!audioFile) throw new Error(`Missing audio for scene ${sceneNumber}`);
-        const audioPath = resolveAudioPath(audioFile);
-        if (!audioPath || !fs.existsSync(audioPath)) {
-          throw new Error(`Audio file not found for scene ${sceneNumber}`);
-        }
-        const brollRes = await this.videoCompositor.getVideoResolution(videoPath);
-        if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
-          const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
-          await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
-          if (fs.existsSync(scaledPath)) videoPath = scaledPath;
-        }
-        const completePath = path.join(userDir, `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
-        await this.videoCompositor.addAudioToVideo(videoPath, audioPath, completePath);
-        sceneVideoPaths.push(path.resolve(completePath));
-        sceneDurations.push(audioFile.duration || 0);
-        console.log(`[RenderingService] ALTERNATE: Processed even (full b-roll) scene ${sceneNumber} with audio`);
+        console.log(`[RenderingService] ALTERNATE: Using legacy pre-composed scene ${sceneNumber}`);
+        continue;
       }
+
+      if (!audioFile) throw new Error(`Missing audio for scene ${sceneNumber}`);
+      const audioPath = resolveAudioPath(audioFile);
+      if (!audioPath || !fs.existsSync(audioPath)) {
+        throw new Error(`Audio file not found for scene ${sceneNumber}`);
+      }
+      const brollRes = await this.videoCompositor.getVideoResolution(videoPath);
+      if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
+        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+        await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
+        if (fs.existsSync(scaledPath)) videoPath = scaledPath;
+      }
+      const completePath = path.join(userDir, `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
+      await this.videoCompositor.addAudioToVideo(videoPath, audioPath, completePath);
+      sceneVideoPaths.push(path.resolve(completePath));
+      sceneDurations.push(audioFile.duration || 0);
+      console.log(`[RenderingService] ALTERNATE: Processed full b-roll scene ${sceneNumber} with audio`);
     }
 
     if (sceneVideoPaths.length === 0) {

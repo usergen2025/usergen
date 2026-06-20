@@ -15,6 +15,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { ModelSelector } from '@/components/create-video/ModelSelector';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
+import { getVideoJobQueueType, isAlternateAvatarScene } from '@/lib/video/alternateScene';
 
 interface BrollVideo {
   sceneNumber: number;
@@ -32,6 +33,7 @@ interface BrollVideo {
 interface Scene {
   scene_number?: number;
   sceneNumber?: number;
+  type?: string;
   voiceover?: string;
 }
 
@@ -54,6 +56,7 @@ function BrollVideosPageContent() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<any[]>([]);
   const [brollVideos, setBrollVideos] = useState<BrollVideo[]>([]);
+  const [avatarVideos, setAvatarVideos] = useState<BrollVideo[]>([]);
   const [loading, setLoading] = useState(true);
   const [dbLoaded, setDbLoaded] = useState(false); // Track DB load completion
   const [regenerating, setRegenerating] = useState<Record<number, boolean>>({});
@@ -77,7 +80,7 @@ function BrollVideosPageContent() {
       sceneNumber: update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber,
     });
     
-    if (update.queueType === 'video-generation' || update.queueType === 'scene-composite' || update.queueType === 'stock-download') {
+    if (update.queueType === 'video-generation' || update.queueType === 'avatar-video-generation' || update.queueType === 'scene-composite' || update.queueType === 'stock-download') {
       if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
@@ -115,8 +118,29 @@ function BrollVideosPageContent() {
           );
         }
         
-        // Update local state immediately with WebSocket data (includes localPath and localUrl)
-        // Create new array reference to ensure React re-renders
+        // Update local state immediately with WebSocket data
+        if (update.queueType === 'avatar-video-generation') {
+          setAvatarVideos(prev => {
+            const newVideos = [...prev];
+            const existingIndex = newVideos.findIndex(v => {
+              const vSceneNumber = typeof v.sceneNumber === 'number'
+                ? v.sceneNumber
+                : parseInt(String(v.sceneNumber || 0), 10);
+              return vSceneNumber === normalizedSceneNumber;
+            });
+            const updatedVideo: BrollVideo = {
+              ...video,
+              jobId,
+              sceneNumber: normalizedSceneNumber,
+              localPath: video.localPath || video.local_path,
+              localUrl: video.localUrl || video.local_url,
+              videoUrl: video.videoUrl || video.video_url,
+            };
+            if (existingIndex >= 0) newVideos[existingIndex] = updatedVideo;
+            else newVideos.push(updatedVideo);
+            return newVideos.sort((a, b) => (a.sceneNumber || 0) - (b.sceneNumber || 0));
+          });
+        } else {
         setBrollVideos(prev => {
           console.log('[BrollVideos] 🔄 Updating state - Before:', prev.length, 'videos');
           
@@ -170,6 +194,7 @@ function BrollVideosPageContent() {
           console.log('[BrollVideos] ✅ State updated - After:', sorted.length, 'videos');
           return sorted;
         });
+        }
         
         // Force re-render by updating key
         setUpdateKey(prev => {
@@ -318,12 +343,15 @@ function BrollVideosPageContent() {
       // All scenes with images need videos
       return brollImages.map(img => img.sceneNumber);
     } else if (style === 'ALTERNATE') {
-      // All scenes with images need videos (images are already filtered to only b-roll scenes)
+      // All ALTERNATE scenes need a video (b-roll or avatar)
+      if (scenes.length > 0) {
+        return scenes.map((scene, index) => scene.scene_number || scene.sceneNumber || (index + 1));
+      }
       return brollImages.map(img => img.sceneNumber);
     }
     
     return brollImages.map(img => img.sceneNumber);
-  }, [project, brollImages]);
+  }, [project, brollImages, scenes]);
 
   // Load project and videos
   useEffect(() => {
@@ -372,6 +400,14 @@ function BrollVideosPageContent() {
             setBrollImages(images);
           }
           
+          // Load avatar videos (ALTERNATE avatar scenes)
+          if ((response.data as any).avatarVideos) {
+            const avatars = Array.isArray((response.data as any).avatarVideos)
+              ? (response.data as any).avatarVideos
+              : [];
+            setAvatarVideos(avatars);
+          }
+
           // Load B-roll videos - ensure all videos are loaded and sorted
           if (response.data.bRollVideoTasks) {
             const videos = Array.isArray(response.data.bRollVideoTasks) 
@@ -442,10 +478,29 @@ function BrollVideosPageContent() {
       // Check which scenes are missing videos
       // IMPORTANT: Check database (project.bRollVideoTasks) FIRST, then state
       const missingScenes = scenesNeedingVideos.filter(sceneNumber => {
-        // Normalize sceneNumber for comparison (ensure it's a number)
         const normalizedSceneNumber = typeof sceneNumber === 'number' 
           ? sceneNumber 
           : parseInt(String(sceneNumber), 10);
+
+        const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === normalizedSceneNumber);
+        const isAvatarScene = (project as any)?.style === 'ALTERNATE'
+          && isAlternateAvatarScene(scene, normalizedSceneNumber);
+
+        if (isAvatarScene) {
+          const projectAvatars = ((project as any).avatarVideos as any[]) || [];
+          const hasAvatarInDB = projectAvatars.some((v: any) => {
+            const n = typeof v.sceneNumber === 'number' ? v.sceneNumber : parseInt(String(v.sceneNumber || 0), 10);
+            return n === normalizedSceneNumber && (v.localUrl || v.localPath);
+          });
+          const hasAvatarInState = avatarVideos.some(v => {
+            const n = typeof v.sceneNumber === 'number' ? v.sceneNumber : parseInt(String(v.sceneNumber || 0), 10);
+            return n === normalizedSceneNumber && (v.localPath || v.localUrl || v.videoUrl);
+          });
+          const hasVideo = hasAvatarInDB || hasAvatarInState;
+          const isGenerating = generatingVideos.has(normalizedSceneNumber);
+          const hasActiveJobs = (activeJobsBySceneRef.current.get(normalizedSceneNumber)?.size || 0) > 0;
+          return !hasVideo && !isGenerating && !hasActiveJobs;
+        }
         
         // Check database first (most reliable source)
         const projectVideos = ((project.bRollVideoTasks as any[]) || []);
@@ -510,9 +565,15 @@ function BrollVideosPageContent() {
 
       // Generate videos for missing scenes (all at once, non-blocking)
       const promises = missingScenes.map((sceneNumber) => {
-        const image = brollImages.find(img => img.sceneNumber === sceneNumber);
-        if (!image || !image.imageUrl) {
-          return Promise.resolve();
+        const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
+        const isAvatarScene = (project as any)?.style === 'ALTERNATE'
+          && isAlternateAvatarScene(scene, sceneNumber);
+
+        if (!isAvatarScene) {
+          const image = brollImages.find(img => img.sceneNumber === sceneNumber);
+          if (!image || !image.imageUrl) {
+            return Promise.resolve();
+          }
         }
 
         // Update state immediately
@@ -526,8 +587,14 @@ function BrollVideosPageContent() {
           .then(response => {
             // Handle existing video response
             if (response.success && response.data?.existing && response.data?.video) {
-              // Video already exists in DB, add to state
               const existingVideo = response.data.video;
+              if (response.data?.type === 'avatar') {
+                setAvatarVideos(prev => {
+                  const exists = prev.some(vid => vid.sceneNumber === sceneNumber);
+                  if (!exists) return [...prev, existingVideo].sort((a, b) => (a.sceneNumber || 0) - (b.sceneNumber || 0));
+                  return prev.map(vid => vid.sceneNumber === sceneNumber ? existingVideo : vid);
+                });
+              } else {
               setBrollVideos(prev => {
                 const exists = prev.some(vid => vid.sceneNumber === sceneNumber);
                 if (!exists) {
@@ -537,6 +604,7 @@ function BrollVideosPageContent() {
                   vid.sceneNumber === sceneNumber ? existingVideo : vid
                 );
               });
+              }
               setGeneratingVideos(prev => {
                 const next = new Set(prev);
                 next.delete(sceneNumber);
@@ -549,7 +617,7 @@ function BrollVideosPageContent() {
             // Handle new job creation
             if (response.success && response.data?.jobId) {
               const jobId = response.data.jobId;
-              const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+              const queueType = getVideoJobQueueType(response.data?.type);
 
               if (!activeJobsBySceneRef.current.has(sceneNumber)) {
                 activeJobsBySceneRef.current.set(sceneNumber, new Set());
@@ -596,14 +664,15 @@ function BrollVideosPageContent() {
   const handleRetryAvatar = async (sceneNumber: number) => {
     if (!projectId) return;
     const style = (project as any)?.style;
-    if (style !== 'ALTERNATE' || sceneNumber % 2 !== 1) return;
+    const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
+    if (style !== 'ALTERNATE' || !isAlternateAvatarScene(scene, sceneNumber)) return;
 
     setRetryingAvatar(prev => ({ ...prev, [sceneNumber]: true }));
     try {
       const response = await apiClient.retryAvatar(projectId, sceneNumber);
       if (response.success && response.data?.jobId) {
         const jobId = response.data.jobId;
-        const queueType = (response.data as any)?.type === 'scene' ? 'scene-composite' : 'video-generation';
+        const queueType = getVideoJobQueueType((response.data as any)?.type);
         if (!activeJobsBySceneRef.current.has(sceneNumber)) {
           activeJobsBySceneRef.current.set(sceneNumber, new Set());
         }
@@ -695,7 +764,7 @@ function BrollVideosPageContent() {
       // Handle new job creation
       if (response.success && response.data?.jobId) {
         const jobId = response.data.jobId;
-        const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+        const queueType = getVideoJobQueueType(response.data?.type);
         if (!activeJobsBySceneRef.current.has(sceneNumber)) {
           activeJobsBySceneRef.current.set(sceneNumber, new Set());
         }
@@ -848,7 +917,17 @@ function BrollVideosPageContent() {
               {scenesNeedingVideos
                 .sort((a, b) => a - b) // Sort scene numbers
                 .map((sceneNumber) => {
-                const video = brollVideos.find(vid => {
+                const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
+                const isAvatarScene = (project as any)?.style === 'ALTERNATE'
+                  && isAlternateAvatarScene(scene, sceneNumber);
+                const video = isAvatarScene
+                  ? avatarVideos.find(vid => {
+                      const vidSceneNumber = typeof vid.sceneNumber === 'number'
+                        ? vid.sceneNumber
+                        : parseInt(String(vid.sceneNumber || 0), 10);
+                      return vidSceneNumber === sceneNumber;
+                    })
+                  : brollVideos.find(vid => {
                   const vidSceneNumber = typeof vid.sceneNumber === 'number' 
                     ? vid.sceneNumber 
                     : parseInt(String(vid.sceneNumber || 0), 10);
@@ -916,7 +995,7 @@ function BrollVideosPageContent() {
                         </div>
                       )}
                       <div className="absolute top-2 right-2 bg-background/90 px-2 py-1 rounded text-xs font-medium">
-                        Scene {sceneNumber}
+                        {isAvatarScene ? `Avatar ${sceneNumber}` : `Scene ${sceneNumber}`}
                       </div>
                       {video?.duration && (
                         <div className="absolute bottom-2 left-2 bg-background/90 px-2 py-1 rounded text-xs">
@@ -934,9 +1013,9 @@ function BrollVideosPageContent() {
                       )}
                       
                       {(project as any)?.style === 'ALTERNATE' &&
-                       sceneNumber % 2 === 1 &&
+                       isAlternateAvatarScene(scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber), sceneNumber) &&
                        failedAvatarScenes.includes(sceneNumber) &&
-                       video && (
+                       !video && (
                         <Button
                           variant="outline"
                           size="sm"

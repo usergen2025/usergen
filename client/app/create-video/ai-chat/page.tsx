@@ -24,6 +24,7 @@ import ImagePreview from '@/components/ui/ImagePreview';
 import SceneEditInput from '@/components/ui/SceneEditInput';
 import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
+import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
 
 // Define asset types
 interface Asset {
@@ -3765,30 +3766,30 @@ function AIChatPageContent() {
           return undefined;
         };
         
-        // Helper function to determine the correct aspect ratio for stock videos based on video style
-        // HALF_N_HALF: All scenes need 1080x960 (9:8) -> use 1:1 stock videos
-        // ALTERNATE: Odd scenes need 1080x960 (9:8) -> use 1:1, Even scenes need 1080x1920 (9:16) -> use 9:16
-        // Others (AVATAR_CUTOUT, PRODUCT_ONLY, B_ROLL_ONLY): All scenes need 9:16
-        const getStockAspectRatio = (sceneNumber: number): '9:16' | '1:1' => {
+        // ALTERNATE: All b-roll scenes use 9:16 stock; avatar scenes skip stock download
+        const getStockAspectRatio = (scene: any, sceneNumber: number): '9:16' | '1:1' | null => {
           const style = selectedVideoStyle || 
             (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
           
           const normalizedStyle = style?.toUpperCase().replace(/-/g, '_');
           
           if (normalizedStyle === 'HALF_N_HALF') {
-            // HALF_N_HALF: All scenes use 1:1 (will be scaled to 1080x960)
             return '1:1';
           } else if (normalizedStyle === 'ALTERNATE') {
-            // ALTERNATE: Odd scenes use 1:1 (half-n-half), Even scenes use 9:16 (full screen)
-            return sceneNumber % 2 === 1 ? '1:1' : '9:16';
+            if (isAlternateAvatarScene(scene, sceneNumber)) return null;
+            return '9:16';
           }
-          // Default to 9:16 for AVATAR_CUTOUT, PRODUCT_ONLY, B_ROLL_ONLY, etc.
           return '9:16';
         };
         
         // Process each scene: search -> download -> save to backend
         const processPromises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number || (index + 1);
+          const aspectRatio = getStockAspectRatio(scene, sceneNumber);
+          if (!aspectRatio) {
+            console.log(`[AIChat] Skipping stock download for ALTERNATE avatar scene ${sceneNumber}`);
+            return { sceneNumber, success: true, skipped: true };
+          }
           const searchTerm = scene.stock_search_term || scene.broll_visual_description?.substring(0, 50) || 'professional video background';
           
           // CRITICAL FIX: Use audio duration instead of script time_range
@@ -3806,8 +3807,7 @@ function AIChatPageContent() {
             console.log(`[AIChat] Scene ${sceneNumber}: No audio duration, falling back to time_range → ${sceneDuration}s`);
           }
           
-          // Determine correct aspect ratio based on video style and scene number
-          const aspectRatio = getStockAspectRatio(sceneNumber);
+          // Determine correct aspect ratio based on video style and scene type
           
           console.log(`[AIChat] Scene ${sceneNumber} using search term: "${searchTerm}", duration: ${sceneDuration}s, aspectRatio: ${aspectRatio}`);
           
@@ -3843,7 +3843,7 @@ function AIChatPageContent() {
             console.log(`[AIChat] Found stock video for scene ${sceneNumber}: ${stockResult.title} (id: ${stockResult.id}, duration: ${stockResult.durationSeconds}s)`);
             
             // Step 2: Download the stock video with trimming to target duration
-            // For 1:1 aspect ratio videos (HALF_N_HALF or ALTERNATE odd), scale to 1080x960
+            // For 1:1 aspect ratio videos (HALF_N_HALF only), scale to 1080x960
             const needsScaling = aspectRatio === '1:1';
             const downloadParams = new URLSearchParams({
               type: 'video',
@@ -4202,16 +4202,15 @@ function AIChatPageContent() {
                      `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
           }
           
-          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
-            if (sceneNumber % 2 === 1) {
-              prompt = scene.broll_visual_description || 
-                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
-            } else {
-              prompt = scene.broll_visual_description || 
-                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
-            }
+          if ((styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateAvatarScene(scene, sceneNumber)) {
+            console.log(`[AIChat] Skipping b-roll image for ALTERNATE avatar scene ${sceneNumber}`);
+            return;
+          }
+
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateBrollScene(scene, sceneNumber)) {
+            prompt = scene.broll_visual_description ||
+                     (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                     `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
           }
           
           if (!prompt) {
@@ -4342,9 +4341,12 @@ function AIChatPageContent() {
         
         const promises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number || (index + 1);
+
+          if ((styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateAvatarScene(scene, sceneNumber)) {
+            console.log(`[AIChat] Skipping b-roll image for ALTERNATE avatar scene ${sceneNumber}`);
+            return;
+          }
           
-          // For ALTERNATE style, ALL scenes need b-roll images (odd: 3:4 top half, even: full 9:16)
-          // So we need to handle cases where avatar-type scenes might not have broll_image_prompt
           let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
           
           // For B_ROLL_ONLY style, fallback prompt if empty
@@ -4353,19 +4355,10 @@ function AIChatPageContent() {
                      (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
                      `Scene ${sceneNumber} full-screen b-roll for B-roll Only style`;
           }
-          // For ALTERNATE style, if prompt is empty, generate fallback based on scene number
-          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
-            if (sceneNumber % 2 === 1) {
-              // Odd scene: 3:4 b-roll for top half (half-n-half)
-              prompt = scene.broll_visual_description || 
-                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
-            } else {
-              // Even scene: full 9:16 b-roll
-              prompt = scene.broll_visual_description || 
-                       (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                       `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
-            }
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateBrollScene(scene, sceneNumber)) {
+            prompt = scene.broll_visual_description || 
+                     (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+                     `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
           }
           
           // Skip if still no prompt (shouldn't happen, but safety check)
@@ -4681,17 +4674,14 @@ function AIChatPageContent() {
 
         const promises = scenes.map(async (scene: any, index: number) => {
           const sceneNumber = scene.scene_number ?? (index + 1);
+          if ((styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateAvatarScene(scene, sceneNumber)) {
+            return;
+          }
           let prompt = scene.broll_image_prompt || scene.broll_visual_description || scene.broll || scene.prompt || '';
-          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE')) {
-            if (sceneNumber % 2 === 1) {
-              prompt = scene.broll_visual_description ||
-                (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                `Scene ${sceneNumber} b-roll for half-n-half composition (top half)`;
-            } else {
-              prompt = scene.broll_visual_description ||
-                (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
-                `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
-            }
+          if (!prompt && (styleToUse === 'alternate' || styleToUse === 'ALTERNATE') && isAlternateBrollScene(scene, sceneNumber)) {
+            prompt = scene.broll_visual_description ||
+              (scene.voiceover ? `B-roll supporting: ${scene.voiceover.substring(0, 100)}` : '') ||
+              `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
           }
           if (!prompt) return;
           const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') ? 'model-4' : 'model-1';
@@ -5103,7 +5093,7 @@ function AIChatPageContent() {
   /** Shared preview pipeline for library (after visual-style) and generate-with-AI (after text-to-image). */
   const runAvatarPreviewFlow = async (
     rollbackSubstep: AvatarSubstep,
-    options?: { avatarId?: string },
+    options?: { avatarId?: string; interimPreviewUrl?: string | null },
   ) => {
     const avatarIdForPreview = options?.avatarId ?? selectedAvatarId;
     if (!selectedAvatarVisualStyle) {
@@ -5129,7 +5119,7 @@ function AIChatPageContent() {
       
       setIsGeneratingAvatarPreview(true);
       setAvatarSubstep('avatar-preview');
-      setAvatarPreviewUrl(null);
+      setAvatarPreviewUrl(options?.interimPreviewUrl ?? null);
       setAvatarPreviewOriginalUrl(null);
       setAvatarPreviewImageKey(null);
       
@@ -5227,7 +5217,10 @@ function AIChatPageContent() {
         }
 
         showToast('Avatar generated successfully!', 'success');
-        await runAvatarPreviewFlow('text-generation', { avatarId: response.avatarId });
+        await runAvatarPreviewFlow('text-generation', {
+          avatarId: response.avatarId,
+          interimPreviewUrl: response.avatarUrl ?? response.thumbnailUrl ?? null,
+        });
       } else {
         throw new Error(response.error || 'Failed to generate avatar');
       }

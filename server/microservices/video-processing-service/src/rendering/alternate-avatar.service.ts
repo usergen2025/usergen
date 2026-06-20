@@ -27,8 +27,8 @@ export class AlternateAvatarService {
   }
 
   /**
-   * Generate a per-scene avatar video for ALTERNATE style (odd / half-n-half scenes)
-   * Returns the local file path of the generated avatar video
+   * Generate a per-scene full-screen avatar video for ALTERNATE style (avatar scenes)
+   * Returns the local file path of the generated avatar video (1080x1920)
    */
   async generateAlternateSceneAvatarVideo(
     projectId: string,
@@ -86,26 +86,16 @@ export class AlternateAvatarService {
     const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
-    if (avatarMode === 'PREMIUM') {
-      const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
-      if (!videoRes) throw new Error('Failed to get video resolution for avatar video');
+    // Ensure full 9:16 (1080x1920) output — no half-n-half cropping
+    const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
+    if (!videoRes) throw new Error('Failed to get video resolution for avatar video');
 
-      const needCrop = videoRes.width !== 1080 || videoRes.height !== 1920;
-      let pathToCrop = avatarVideoPath;
-
-      if (needCrop && (videoRes.width !== 1080 || videoRes.height !== 1920)) {
-        const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
-        await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
-        if (fs.existsSync(scaledPath)) pathToCrop = scaledPath;
-      }
-
-      const croppedPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_cropped_${projectId}.mp4`);
-      await this.videoCompositor.cropVideo(pathToCrop, croppedPath, 0, 960, 1080, 960);
-
-      if (fs.existsSync(croppedPath)) {
-        if (pathToCrop !== avatarVideoPath && fs.existsSync(pathToCrop)) fs.unlinkSync(pathToCrop);
+    if (videoRes.width !== 1080 || videoRes.height !== 1920) {
+      const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
+      await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
+      if (fs.existsSync(scaledPath)) {
         if (fs.existsSync(avatarVideoPath)) fs.unlinkSync(avatarVideoPath);
-        fs.renameSync(croppedPath, avatarVideoPath);
+        fs.renameSync(scaledPath, avatarVideoPath);
       }
     }
 

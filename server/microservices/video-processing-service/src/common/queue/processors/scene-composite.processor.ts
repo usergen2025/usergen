@@ -69,6 +69,10 @@ export class SceneCompositeProcessor extends WorkerHost {
       throw new Error('Project not found');
     }
 
+    if (project.style === 'ALTERNATE') {
+      throw new Error('Scene composite is not used for ALTERNATE style (b-roll + avatar-only flow)');
+    }
+
     const bRollVideoTasks = ((project as any).bRollVideoTasks as any[]) || [];
     const avatarVideos = ((project as any).avatarVideos as any[]) || [];
     const metadata = ((project as any).metadata as any) || {};

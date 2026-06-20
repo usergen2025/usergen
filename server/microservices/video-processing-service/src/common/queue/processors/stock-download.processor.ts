@@ -56,7 +56,7 @@ export class StockDownloadProcessor extends WorkerHost {
 
       // Determine aspect ratio based on video style
       // HALF_N_HALF: All scenes need 1080x960 (9:8) -> use 1:1 stock videos
-      // ALTERNATE: Odd scenes need 1080x960 (9:8) -> use 1:1, Even scenes need 9:16
+      // ALTERNATE: All b-roll scenes use full 9:16 stock footage
       // Others: Use 9:16
       let aspectRatio: '9:16' | '1:1' = '9:16';
       let targetWidth: number | undefined;
@@ -65,11 +65,6 @@ export class StockDownloadProcessor extends WorkerHost {
       const normalizedStyle = videoStyle?.toUpperCase().replace(/-/g, '_');
       
       if (normalizedStyle === 'HALF_N_HALF') {
-        aspectRatio = '1:1';
-        targetWidth = 1080;
-        targetHeight = 960;
-      } else if (normalizedStyle === 'ALTERNATE' && sceneNumber % 2 === 1) {
-        // Odd scenes in ALTERNATE style use 1:1 (half-n-half composition)
         aspectRatio = '1:1';
         targetWidth = 1080;
         targetHeight = 960;

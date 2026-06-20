@@ -661,6 +661,7 @@ export class HeyGenVideoProvider {
 
   /**
    * POST /v3/videos — animate image directly (type=image). Equivalent to create_video_from_image.
+   * Supports engine selection for Avatar V / Avatar IV quality.
    */
   async createV3ImageVideo(params: {
     imageAssetId?: string;
@@ -675,6 +676,7 @@ export class HeyGenVideoProvider {
     audioUrl?: string;
     script?: string;
     voiceId?: string;
+    engine?: { type: 'avatar_v' } | { type: 'avatar_iv' };
   }): Promise<string> {
     const imageAssetId = params.imageAssetId?.trim();
     const imageUrl = params.imageUrl?.trim();
@@ -697,7 +699,10 @@ export class HeyGenVideoProvider {
     };
     if (params.fit) body.fit = params.fit;
     if (params.motionPrompt) body.motion_prompt = params.motionPrompt;
-    if (params.expressiveness) body.expressiveness = params.expressiveness;
+    if (params.engine?.type !== 'avatar_v' && params.expressiveness) {
+      body.expressiveness = params.expressiveness;
+    }
+    if (params.engine) body.engine = params.engine;
 
     if (useAudio) {
       if (audioAssetId) body.audio_asset_id = audioAssetId;
@@ -863,6 +868,7 @@ export class HeyGenVideoProvider {
 
   /**
    * v3 image pipeline: image_key → v3 asset → POST /v3/videos type=image.
+   * Now supports engine selection (avatar_v / avatar_iv).
    */
   private async startV3ImageVideoPipeline(
     request: HeyGenAvatarIVRequest,
@@ -891,6 +897,7 @@ export class HeyGenVideoProvider {
       aspectRatio: request.video_orientation === 'landscape' ? '16:9' : '9:16',
       fit: request.fit || 'cover',
       motionPrompt: request.custom_motion_prompt,
+      engine: { type: engine },
       ...(engine !== 'avatar_v' ? { expressiveness: 'medium' as const } : {}),
       ...audioParams,
     });

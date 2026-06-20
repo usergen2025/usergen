@@ -13,6 +13,9 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import axios from 'axios';
 import sharp from 'sharp';
+import OpenAI from 'openai';
+import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
+import { extractAssistantText } from '../common/openai/openai-completion.util';
 
 export interface UploadImageDto {
   imageBuffer: Buffer;
@@ -87,8 +90,43 @@ const INDIAN_APPEARANCE_MENTIONED =
 const LOCATION_MOOD_PATTERN =
   /\b(street|market|outdoor|cityscape|traffic|festival|crowd|bustling|urban\s+street|indian\s+street|road|highway|village\s+lane)\b/gi;
 
+export type AvatarIntentType = 'human' | 'character' | 'object' | 'animal' | 'abstract';
+
+export interface AvatarIntentClassification {
+  type: AvatarIntentType;
+  shouldApplyEthnicity: boolean;
+  shouldApplyPhotorealism: boolean;
+  enhancedPrompt: string;
+  confidence: number;
+}
+
+const AVATAR_INTENT_CLASSIFICATION_SYSTEM_PROMPT = `You are an avatar prompt classifier for a video generation platform. Analyze the user's avatar description and determine what type of avatar they want to create.
+
+Return JSON:
+{
+  "type": "human" | "character" | "object" | "animal" | "abstract",
+  "shouldApplyEthnicity": boolean,
+  "shouldApplyPhotorealism": boolean,
+  "enhancedPrompt": "improved prompt for image generation",
+  "confidence": 0.0-1.0
+}
+
+Classification rules:
+- "human": Real person descriptions (man, woman, professional presenter, etc.)
+- "character": Animated/cartoon/mascot/fictional beings (3D character, anime style, etc.)
+- "object": Inanimate objects given life/personality (talking bat, animated ball, etc.)
+- "animal": Animal-based characters (cartoon dog, friendly cat mascot, etc.)
+- "abstract": Abstract or artistic representations
+
+shouldApplyEthnicity: Only true when type is "human" AND user did NOT specify ethnicity/appearance
+shouldApplyPhotorealism: Only true when type is "human" and realistic style is implied
+
+enhancedPrompt: Improve the prompt for better image generation while preserving user intent. Add helpful style descriptors but do NOT change the core subject. Do NOT add a human person unless the user asked for one.`;
+
 @Injectable()
 export class AvatarsService {
+  private openai: OpenAI | null = null;
+
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
@@ -99,7 +137,13 @@ export class AvatarsService {
     private readonly configService: ConfigService,
     @Inject(forwardRef(() => AvatarQueueService))
     private readonly avatarQueueService: AvatarQueueService,
-  ) {}
+  ) {
+    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    const baseUrl = this.configService.get<string>('OPENAI_BASE_URL');
+    if (apiKey) {
+      this.openai = createConfiguredOpenAI(apiKey, baseUrl);
+    }
+  }
 
   /**
    * Upload image to HeyGen and get image_key
@@ -413,8 +457,10 @@ export class AvatarsService {
    */
   private resolveIndianAppearanceSuffix(
     appearancePrompt: string,
-    opts?: { language?: string },
+    opts?: { language?: string; skipEthnicity?: boolean },
   ): string {
+    if (opts?.skipEthnicity) return '';
+
     const mode = (this.configService.get<string>('DEFAULT_AVATAR_ETHNICITY') || 'indian')
       .trim()
       .toLowerCase();
@@ -428,27 +474,377 @@ export class AvatarsService {
     return ', South Asian Indian appearance, natural Indian facial features and skin tone';
   }
 
+  private isAvatarIntentClassificationEnabled(): boolean {
+    const mode = (this.configService.get<string>('AVATAR_INTENT_CLASSIFICATION_ENABLED') || 'on')
+      .trim()
+      .toLowerCase();
+    return mode !== 'off';
+  }
+
+  private getPassthroughClassification(userPrompt: string): AvatarIntentClassification {
+    return {
+      type: 'abstract',
+      shouldApplyEthnicity: false,
+      shouldApplyPhotorealism: false,
+      enhancedPrompt: userPrompt.trim(),
+      confidence: 0,
+    };
+  }
+
+  private getHumanDefaultClassification(userPrompt: string): AvatarIntentClassification {
+    return {
+      type: 'human',
+      shouldApplyEthnicity: true,
+      shouldApplyPhotorealism: true,
+      enhancedPrompt: userPrompt.trim(),
+      confidence: 0,
+    };
+  }
+
+  private getDefaultClassification(userPrompt: string): AvatarIntentClassification {
+    const fallback =
+      (this.configService.get<string>('AVATAR_INTENT_CLASSIFICATION_FALLBACK') || 'human')
+        .trim()
+        .toLowerCase();
+    return fallback === 'human'
+      ? this.getHumanDefaultClassification(userPrompt)
+      : this.getPassthroughClassification(userPrompt);
+  }
+
+  private resolveAvatarIntentFromAvatar(avatar: {
+    generationMetadata?: unknown;
+  }): AvatarIntentClassification | null {
+    const metadata = (avatar.generationMetadata as Record<string, unknown>) || {};
+    const stored = metadata.avatarIntentClassification;
+    if (!stored || typeof stored !== 'object') {
+      return null;
+    }
+    const originalPrompt =
+      typeof metadata.originalPrompt === 'string' ? metadata.originalPrompt : '';
+    return this.normalizeAvatarIntentClassification(stored, originalPrompt);
+  }
+
+  private shouldSkipHumanVariantTransform(
+    classification: AvatarIntentClassification | null,
+    avatar: { generationMetadata?: unknown },
+  ): boolean {
+    const metadata = (avatar.generationMetadata as Record<string, unknown>) || {};
+    if (metadata.generatedFromText !== true) return false;
+    if (!classification) return false;
+    return classification.type !== 'human';
+  }
+
+  private async resizeAvatarImageBuffer(
+    imageBuffer: Buffer,
+    useBottomHalfFraming: boolean,
+  ): Promise<Buffer> {
+    if (useBottomHalfFraming) {
+      const halfBuffer = await sharp(imageBuffer)
+        .resize(1080, 960, { fit: 'cover', position: 'center' })
+        .jpeg({ quality: 95 })
+        .toBuffer();
+      const whiteHeight = 960;
+      const whiteTop = await sharp({
+        create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .jpeg()
+        .toBuffer();
+      return sharp({
+        create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .composite([
+          { input: whiteTop, top: 0, left: 0 },
+          { input: halfBuffer, top: whiteHeight, left: 0 },
+        ])
+        .jpeg()
+        .toBuffer();
+    }
+
+    return sharp(imageBuffer)
+      .resize(1080, 1920, { fit: 'cover', position: 'center' })
+      .jpeg({ quality: 95 })
+      .toBuffer();
+  }
+
+  private normalizeAvatarIntentClassification(
+    raw: unknown,
+    userPrompt: string,
+  ): AvatarIntentClassification {
+    const fallback = this.getPassthroughClassification(userPrompt);
+    if (!raw || typeof raw !== 'object') return fallback;
+
+    const data = raw as Record<string, unknown>;
+    const validTypes: AvatarIntentType[] = ['human', 'character', 'object', 'animal', 'abstract'];
+    const type = validTypes.includes(data.type as AvatarIntentType)
+      ? (data.type as AvatarIntentType)
+      : 'abstract';
+    const enhancedPrompt =
+      typeof data.enhancedPrompt === 'string' && data.enhancedPrompt.trim().length > 0
+        ? data.enhancedPrompt.trim()
+        : userPrompt.trim();
+    const confidence =
+      typeof data.confidence === 'number' && Number.isFinite(data.confidence)
+        ? Math.min(1, Math.max(0, data.confidence))
+        : 0.5;
+
+    const shouldApplyEthnicity =
+      typeof data.shouldApplyEthnicity === 'boolean'
+        ? data.shouldApplyEthnicity
+        : type === 'human' && !INDIAN_APPEARANCE_MENTIONED.test(userPrompt);
+    const shouldApplyPhotorealism =
+      typeof data.shouldApplyPhotorealism === 'boolean'
+        ? data.shouldApplyPhotorealism
+        : type === 'human';
+
+    return {
+      type,
+      shouldApplyEthnicity,
+      shouldApplyPhotorealism,
+      enhancedPrompt,
+      confidence,
+    };
+  }
+
+  private async classifyAvatarIntent(userPrompt: string): Promise<AvatarIntentClassification> {
+    const trimmedPrompt = userPrompt.trim();
+    if (!trimmedPrompt) {
+      return this.getPassthroughClassification(trimmedPrompt);
+    }
+
+    if (!this.isAvatarIntentClassificationEnabled() || !this.openai) {
+      return this.getDefaultClassification(trimmedPrompt);
+    }
+
+    const model =
+      this.configService.get<string>('AVATAR_INTENT_CLASSIFICATION_MODEL') || 'gpt-4o-mini';
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: AVATAR_INTENT_CLASSIFICATION_SYSTEM_PROMPT },
+          { role: 'user', content: trimmedPrompt },
+        ],
+        response_format: { type: 'json_object' },
+        max_tokens: 300,
+        temperature: 0.1,
+      });
+
+      const extracted = extractAssistantText(completion.choices?.[0]?.message);
+      if (extracted.ok === false) {
+        if (extracted.reason === 'refusal') {
+          throw new Error(`OpenAI refused classification: ${extracted.refusal}`);
+        }
+        throw new Error('Empty classification response');
+      }
+
+      const parsed = JSON.parse(extracted.text);
+      const classification = this.normalizeAvatarIntentClassification(parsed, trimmedPrompt);
+
+      this.logger.log(
+        `Avatar intent classified: type=${classification.type}, ethnicity=${classification.shouldApplyEthnicity}, photorealism=${classification.shouldApplyPhotorealism}, confidence=${classification.confidence}`,
+        'AvatarsService',
+      );
+
+      return classification;
+    } catch (error: any) {
+      this.logger.warn(
+        `Avatar intent classification failed: ${error?.message || error}`,
+        'AvatarsService',
+      );
+      return this.getDefaultClassification(trimmedPrompt);
+    }
+  }
+
+  private appendTextToImagePresetEnhancements(
+    base: string,
+    params: {
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+      classification: AvatarIntentClassification;
+    },
+  ): string {
+    const { avatarVisualStylePreset, script, classification } = params;
+    const preset = avatarVisualStylePreset || 'original';
+    const visualGuide = script?.visual_style_guide;
+    const isHuman = classification.type === 'human';
+
+    if (preset === 'original') {
+      return base;
+    }
+
+    if (preset === 'random') {
+      if (isHuman) {
+        const fromScript =
+          script?.avatar_image_prompt && typeof script.avatar_image_prompt === 'string'
+            ? script.avatar_image_prompt.trim()
+            : '';
+        if (fromScript) {
+          return `${base} ${fromScript}, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
+        }
+      }
+      const framingHint = isHuman
+        ? 'Natural varied professional framing and composition'
+        : 'Front-facing, centered composition, expressive and suitable for video presentation';
+      return `${base} ${framingHint}, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
+    }
+
+    if (PRESET_POSE_PROMPTS[preset]) {
+      if (isHuman) {
+        return `${base} ${this.buildNamedPresetAvatarPrompt(preset, visualGuide)}`;
+      }
+      const lighting = this.formatAvatarLightingFromStyleGuide(visualGuide);
+      const background =
+        PRESET_BACKGROUND_PROMPTS[preset] || PRESET_BACKGROUND_PROMPTS['front-facing'];
+      return `${base} Front-facing, looking directly at camera, ${background}, ${lighting}, solid controlled background, no outdoor street scene, no crowd`;
+    }
+
+    return base;
+  }
+
+  private buildHumanAvatarPrompt(
+    params: {
+      appearancePrompt: string;
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+      language?: string;
+    },
+    classification: AvatarIntentClassification,
+  ): string {
+    const { appearancePrompt, avatarVisualStylePreset, script, language } = params;
+    const subject =
+      classification.enhancedPrompt.trim() +
+      (classification.shouldApplyEthnicity
+        ? this.resolveIndianAppearanceSuffix(classification.enhancedPrompt, { language })
+        : '');
+
+    let base = `Professional portrait photograph of ${subject}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
+
+    base = this.appendTextToImagePresetEnhancements(base, {
+      avatarVisualStylePreset,
+      script,
+      classification,
+    });
+
+    return base;
+  }
+
+  private buildCharacterAvatarPrompt(
+    params: {
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    },
+    classification: AvatarIntentClassification,
+  ): string {
+    const { avatarVisualStylePreset, script } = params;
+    let base = `3D animated character, stylized cartoon style, ${classification.enhancedPrompt}. Vibrant colors, expressive features, professional character design, front-facing, suitable for video presentation, studio or neutral background, good lighting.`;
+
+    base = this.appendTextToImagePresetEnhancements(base, {
+      avatarVisualStylePreset,
+      script,
+      classification,
+    });
+
+    return base;
+  }
+
+  private buildObjectAvatarPrompt(
+    params: {
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    },
+    classification: AvatarIntentClassification,
+  ): string {
+    const { avatarVisualStylePreset, script } = params;
+    let base = `Anthropomorphic animated character, ${classification.enhancedPrompt}. Expressive eyes and mouth, cartoon style, friendly character design, front-facing, centered composition, suitable for video presentation, studio or neutral background, good lighting. No human person, no human body, no human holding the object.`;
+
+    base = this.appendTextToImagePresetEnhancements(base, {
+      avatarVisualStylePreset,
+      script,
+      classification,
+    });
+
+    return base;
+  }
+
+  private buildAnimalAvatarPrompt(
+    params: {
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    },
+    classification: AvatarIntentClassification,
+  ): string {
+    const { avatarVisualStylePreset, script } = params;
+    let base = `Cartoon animal character, anthropomorphic, ${classification.enhancedPrompt}. Friendly expression, animated style, front-facing, suitable for video presentation, studio or neutral background, good lighting.`;
+
+    base = this.appendTextToImagePresetEnhancements(base, {
+      avatarVisualStylePreset,
+      script,
+      classification,
+    });
+
+    return base;
+  }
+
+  private buildAbstractAvatarPrompt(
+    params: {
+      avatarVisualStylePreset?: string | null;
+      script?: { avatar_image_prompt?: string; visual_style_guide?: any };
+    },
+    classification: AvatarIntentClassification,
+  ): string {
+    const { avatarVisualStylePreset, script } = params;
+    let base = `${classification.enhancedPrompt}. High quality, detailed, expressive, professional design, front-facing, suitable for video presentation, studio or neutral background, good lighting.`;
+
+    base = this.appendTextToImagePresetEnhancements(base, {
+      avatarVisualStylePreset,
+      script,
+      classification,
+    });
+
+    return base;
+  }
+
   private appendAvatarStyleSuffixes(
     effectivePrompt: string,
     style: string | undefined,
     useBottomHalfFraming: boolean,
+    classification?: AvatarIntentClassification,
   ): string {
     let prompt = effectivePrompt;
     const norm = normalizeStyleToBackend(style);
-    if (norm !== 'ANIMATED_AVATAR') {
+    const isNonHumanType =
+      classification?.type === 'character' ||
+      classification?.type === 'object' ||
+      classification?.type === 'animal' ||
+      classification?.type === 'abstract';
+    const shouldApplyPhotorealism =
+      classification == null
+        ? norm !== 'ANIMATED_AVATAR'
+        : classification.shouldApplyPhotorealism && norm !== 'ANIMATED_AVATAR';
+
+    if (shouldApplyPhotorealism) {
       prompt =
         'Photorealistic, real person, real-life photograph, preserve face and appearance, do NOT stylize or animate, documentary style. ' +
         prompt;
+    } else if (isNonHumanType || norm === 'ANIMATED_AVATAR') {
+      prompt =
+        'High quality, detailed, expressive, professional character design. ' +
+        prompt;
     }
+
     if (norm === 'AVATAR_CUTOUT') {
       prompt +=
         ', solid plain background, simple uniform background, no complex background elements, studio lighting with clean backdrop';
     }
+
     if (useBottomHalfFraming && norm !== 'AVATAR_CUTOUT') {
-      prompt +=
-        ' Person faces the camera directly, front-facing, looking straight ahead.' +
-        AVATAR_PLATE_STUDIO_SUFFIX;
+      const facingSuffix = classification?.type === 'human' || classification == null
+        ? ' Person faces the camera directly, front-facing, looking straight ahead.'
+        : ' Subject faces the camera directly, front-facing, looking straight ahead.';
+      prompt += facingSuffix + AVATAR_PLATE_STUDIO_SUFFIX;
     }
+
     return prompt;
   }
 
@@ -461,10 +857,60 @@ export class AvatarsService {
     script?: { avatar_image_prompt?: string; visual_style_guide?: any };
     useBottomHalfFraming: boolean;
     sceneHint?: string;
+    classification?: AvatarIntentClassification | null;
+    originalPrompt?: string;
   }): string {
-    const { style, avatarVisualStylePreset, script, useBottomHalfFraming, sceneHint = '' } = params;
+    const {
+      style,
+      avatarVisualStylePreset,
+      script,
+      useBottomHalfFraming,
+      sceneHint = '',
+      classification,
+    } = params;
     const avatarImagePrompt = script?.avatar_image_prompt;
     const visualGuide = script?.visual_style_guide;
+
+    if (classification && classification.type !== 'human') {
+      const scriptWithoutHumanAvatarPrompt = {
+        ...script,
+        avatar_image_prompt: undefined,
+      };
+      let base: string;
+      switch (classification.type) {
+        case 'character':
+          base = this.buildCharacterAvatarPrompt(
+            { avatarVisualStylePreset, script: scriptWithoutHumanAvatarPrompt },
+            classification,
+          );
+          break;
+        case 'object':
+          base = this.buildObjectAvatarPrompt(
+            { avatarVisualStylePreset, script: scriptWithoutHumanAvatarPrompt },
+            classification,
+          );
+          break;
+        case 'animal':
+          base = this.buildAnimalAvatarPrompt(
+            { avatarVisualStylePreset, script: scriptWithoutHumanAvatarPrompt },
+            classification,
+          );
+          break;
+        default:
+          base = this.buildAbstractAvatarPrompt(
+            { avatarVisualStylePreset, script: scriptWithoutHumanAvatarPrompt },
+            classification,
+          );
+          break;
+      }
+      return this.appendAvatarStyleSuffixes(
+        `${base}${sceneHint}`,
+        style,
+        useBottomHalfFraming,
+        classification,
+      );
+    }
+
     let effectivePrompt: string;
 
     if (style === 'ANIMATED_AVATAR') {
@@ -498,7 +944,12 @@ export class AvatarsService {
         this.buildNamedPresetAvatarPrompt(avatarVisualStylePreset, visualGuide) + sceneHint;
     }
 
-    return this.appendAvatarStyleSuffixes(effectivePrompt, style, useBottomHalfFraming);
+    return this.appendAvatarStyleSuffixes(
+      effectivePrompt,
+      style,
+      useBottomHalfFraming,
+      classification ?? undefined,
+    );
   }
 
   private buildAvatarProductPreviewSceneHint(script: any, previewSceneIndex: number): string {
@@ -672,40 +1123,61 @@ export class AvatarsService {
    * Build BytePlus text-to-image prompt from appearance description + visual style preset (AI Chat).
    * Library originals stay the resized JPEG from this output — not preview composites or cutouts.
    */
-  private buildEnhancedPromptForTextToImage(params: {
+  private async buildEnhancedPromptForTextToImage(params: {
     appearancePrompt: string;
     avatarVisualStylePreset?: string | null;
     script?: { avatar_image_prompt?: string; visual_style_guide?: any };
     videoStyle?: string;
     language?: string;
-  }): string {
+  }): Promise<{ prompt: string; classification: AvatarIntentClassification }> {
     const { appearancePrompt, avatarVisualStylePreset, script, videoStyle, language } = params;
-    const appearance =
-      appearancePrompt.trim() +
-      this.resolveIndianAppearanceSuffix(appearancePrompt, { language });
-    let base = `Professional portrait photograph of ${appearance}. High quality, realistic, clear facial features, good lighting, studio quality, suitable for video presentation. Upper body visible, looking at camera.`;
+    const classification = await this.classifyAvatarIntent(appearancePrompt);
 
-    const preset = avatarVisualStylePreset || 'original';
-    const visualGuide = script?.visual_style_guide;
-    if (preset === 'original') {
-      // Keep base portrait; video framing handled in preview pipeline
-    } else if (preset === 'random') {
-      const fromScript =
-        script?.avatar_image_prompt && typeof script.avatar_image_prompt === 'string'
-          ? script.avatar_image_prompt.trim()
-          : '';
-      if (fromScript) {
-        base = `${base} ${fromScript}, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
-      } else {
-        base = `${base} Natural varied professional framing and composition, ${this.formatAvatarLightingFromStyleGuide(visualGuide)}`;
-      }
-    } else if (PRESET_POSE_PROMPTS[preset]) {
-      base = `${base} ${this.buildNamedPresetAvatarPrompt(preset, visualGuide)}`;
+    let base: string;
+    switch (classification.type) {
+      case 'human':
+        base = this.buildHumanAvatarPrompt(
+          { appearancePrompt, avatarVisualStylePreset, script, language },
+          classification,
+        );
+        break;
+      case 'character':
+        base = this.buildCharacterAvatarPrompt(
+          { avatarVisualStylePreset, script },
+          classification,
+        );
+        break;
+      case 'object':
+        base = this.buildObjectAvatarPrompt(
+          { avatarVisualStylePreset, script },
+          classification,
+        );
+        break;
+      case 'animal':
+        base = this.buildAnimalAvatarPrompt(
+          { avatarVisualStylePreset, script },
+          classification,
+        );
+        break;
+      default:
+        base = this.buildAbstractAvatarPrompt(
+          { avatarVisualStylePreset, script },
+          classification,
+        );
+        break;
     }
 
     const norm = normalizeStyleToBackend(videoStyle);
-    const useBottomHalfFraming = norm === 'HALF_N_HALF' || norm === 'ALTERNATE';
-    return this.appendAvatarStyleSuffixes(base, videoStyle, useBottomHalfFraming);
+    // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
+    const useBottomHalfFraming = norm === 'HALF_N_HALF';
+    const prompt = this.appendAvatarStyleSuffixes(
+      base,
+      videoStyle,
+      useBottomHalfFraming,
+      classification,
+    );
+
+    return { prompt, classification };
   }
 
   /**
@@ -761,44 +1233,31 @@ export class AvatarsService {
     }
 
     const imageBuffer = fs.readFileSync(imagePath);
-    const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
+    // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
+    const useBottomHalfFraming = style === 'HALF_N_HALF';
+    const classification = this.resolveAvatarIntentFromAvatar(avatar);
+    const skipHumanVariant = this.shouldSkipHumanVariantTransform(classification, avatar);
+    const metadata = (avatar.generationMetadata as Record<string, unknown>) || {};
+    const originalPrompt =
+      typeof metadata.originalPrompt === 'string' ? metadata.originalPrompt : undefined;
+
+    this.logger.log(
+      `Avatar project image intent: type=${classification?.type ?? 'none'}, skipVariant=${skipHumanVariant}, path=${skipHumanVariant || (avatarVisualStylePreset === 'original' && style !== 'ANIMATED_AVATAR') ? 'resize-only' : 'img2img'}`,
+      'AvatarsService',
+    );
 
     let resultImageBuffer: Buffer;
 
-    if (avatarVisualStylePreset === 'original' && style !== 'ANIMATED_AVATAR') {
-      // Original: Sharp resize/crop only, no BytePlus
-      if (useBottomHalfFraming) {
-        const halfBuffer = await sharp(imageBuffer)
-          .resize(1080, 960, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 95 })
-          .toBuffer();
-        const whiteHeight = 960;
-        const whiteTop = await sharp({
-          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
-        })
-          .jpeg()
-          .toBuffer();
-        resultImageBuffer = await sharp({
-          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
-        })
-          .composite([
-            { input: whiteTop, top: 0, left: 0 },
-            { input: halfBuffer, top: whiteHeight, left: 0 },
-          ])
-          .jpeg()
-          .toBuffer();
-      } else {
-        resultImageBuffer = await sharp(imageBuffer)
-          .resize(1080, 1920, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 95 })
-          .toBuffer();
-      }
+    if ((avatarVisualStylePreset === 'original' || skipHumanVariant) && style !== 'ANIMATED_AVATAR') {
+      resultImageBuffer = await this.resizeAvatarImageBuffer(imageBuffer, useBottomHalfFraming);
     } else {
       const effectivePrompt = this.buildAvatarVariantEffectivePrompt({
         style,
         avatarVisualStylePreset,
         script,
         useBottomHalfFraming,
+        classification,
+        originalPrompt,
       });
 
       const imageBase64 = imageBuffer.toString('base64');
@@ -918,39 +1377,28 @@ export class AvatarsService {
 
     let imageBuffer = fs.readFileSync(imagePath);
 
-    const useBottomHalfFraming = style === 'HALF_N_HALF' || style === 'ALTERNATE';
+    // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
+    const useBottomHalfFraming = style === 'HALF_N_HALF';
+    const classification = this.resolveAvatarIntentFromAvatar(avatar);
+    const skipHumanVariant = this.shouldSkipHumanVariantTransform(classification, avatar);
+    const metadata = (avatar.generationMetadata as Record<string, unknown>) || {};
+    const originalPrompt =
+      typeof metadata.originalPrompt === 'string' ? metadata.originalPrompt : undefined;
+    const useResizeOnlyPath =
+      (avatarVisualStylePreset === 'original' || skipHumanVariant) && style !== 'ANIMATED_AVATAR';
+
+    this.logger.log(
+      `Avatar preview intent: type=${classification?.type ?? 'none'}, skipVariant=${skipHumanVariant}, path=${useResizeOnlyPath ? 'resize-only' : 'img2img'}, enhancedPrompt=${classification?.enhancedPrompt?.substring(0, 80) ?? 'n/a'}`,
+      'AvatarsService',
+    );
+
     const useFalMultiReference =
       style === 'AVATAR_PRODUCT' && !!productImageUrl?.trim() && avatarVisualStylePreset !== 'original';
 
     let resultImageBuffer: Buffer;
 
-    if (avatarVisualStylePreset === 'original' && style !== 'ANIMATED_AVATAR') {
-      if (useBottomHalfFraming) {
-        const halfBuffer = await sharp(imageBuffer)
-          .resize(1080, 960, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 95 })
-          .toBuffer();
-        const whiteHeight = 960;
-        const whiteTop = await sharp({
-          create: { width: 1080, height: whiteHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
-        })
-          .jpeg()
-          .toBuffer();
-        resultImageBuffer = await sharp({
-          create: { width: 1080, height: 1920, channels: 3, background: { r: 255, g: 255, b: 255 } },
-        })
-          .composite([
-            { input: whiteTop, top: 0, left: 0 },
-            { input: halfBuffer, top: whiteHeight, left: 0 },
-          ])
-          .jpeg()
-          .toBuffer();
-      } else {
-        resultImageBuffer = await sharp(imageBuffer)
-          .resize(1080, 1920, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 95 })
-          .toBuffer();
-      }
+    if (useResizeOnlyPath) {
+      resultImageBuffer = await this.resizeAvatarImageBuffer(imageBuffer, useBottomHalfFraming);
     } else {
       const sceneHint =
         style === 'AVATAR_PRODUCT'
@@ -962,6 +1410,8 @@ export class AvatarsService {
         script,
         useBottomHalfFraming,
         sceneHint,
+        classification,
+        originalPrompt,
       });
 
       if (useFalMultiReference) {
@@ -1204,7 +1654,7 @@ export class AvatarsService {
     );
 
     try {
-      const enhancedPrompt = this.buildEnhancedPromptForTextToImage({
+      const { prompt: enhancedPrompt, classification } = await this.buildEnhancedPromptForTextToImage({
         appearancePrompt: prompt,
         avatarVisualStylePreset,
         script,
@@ -1213,7 +1663,8 @@ export class AvatarsService {
       });
 
       const backendStyle = normalizeStyleToBackend(style);
-      const useBottomHalfFraming = backendStyle === 'HALF_N_HALF' || backendStyle === 'ALTERNATE';
+      // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
+      const useBottomHalfFraming = backendStyle === 'HALF_N_HALF';
 
       let imageBuffer: Buffer;
 
@@ -1323,6 +1774,13 @@ export class AvatarsService {
             generatedFromText: true,
             originalPrompt: prompt,
             enhancedPrompt,
+            avatarIntentClassification: {
+              type: classification.type,
+              shouldApplyEthnicity: classification.shouldApplyEthnicity,
+              shouldApplyPhotorealism: classification.shouldApplyPhotorealism,
+              enhancedPrompt: classification.enhancedPrompt,
+              confidence: classification.confidence,
+            },
             projectId,
             style,
             avatarVisualStylePreset: avatarVisualStylePreset ?? undefined,

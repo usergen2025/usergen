@@ -144,7 +144,7 @@ export class QueueManagerService {
   }
 
   /**
-   * Add avatar video generation job to queue (for ALTERNATE odd / half-n-half scenes)
+   * Add avatar video generation job to queue (for ALTERNATE avatar scenes)
    */
   async addAvatarVideoGenerationJob(data: JobData): Promise<string> {
     const job = await this.avatarVideoQueue.add(
@@ -162,7 +162,7 @@ export class QueueManagerService {
   }
 
   /**
-   * Add scene composite job to queue (b-roll + avatar for ALTERNATE odd / half-n-half scenes)
+   * Add scene composite job to queue (HALF_N_HALF per-scene compositing only; not used for ALTERNATE)
    */
   async addSceneCompositeJob(data: JobData): Promise<string> {
     const jobId = `composite-${data.projectId}-${data.sceneNumber}`;

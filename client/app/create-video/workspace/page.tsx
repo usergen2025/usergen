@@ -25,10 +25,12 @@ import BRollSelectionModal, { BRollSelection } from '@/components/create-video/B
 import { GradientTabBar } from '@/components/ui/GradientTabBar';
 import { isSingleClipVideoStyle } from '@/lib/workspace/singleClipStyle';
 import { longestWord } from '@/lib/workspace/captionBounds';
+import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
 
 interface Scene {
   scene_number?: number;
   sceneNumber?: number;
+  type?: string;
   voiceover?: string;
   broll?: string;
   prompt?: string;
@@ -293,6 +295,7 @@ function WorkspacePageContent() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<BrollImage[]>([]);
   const [brollVideos, setBrollVideos] = useState<BrollVideo[]>([]);
+  const [avatarVideos, setAvatarVideos] = useState<BrollVideo[]>([]);
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [durations, setDurations] = useState<Record<number, number>>({});
   const [selectedSceneIndex, setSelectedSceneIndex] = useState(0);
@@ -505,7 +508,32 @@ function WorkspacePageContent() {
   };
 
   // Get image URL for scene - prioritize GCS URLs, fallback to local
+  // For ALTERNATE avatar scenes, return the avatar preview URL instead of b-roll image
   const getImageUrl = (sceneNumber: number): string | null => {
+    // Check if this is an ALTERNATE avatar scene - these don't have b-roll images
+    const scene = scenes.find(s => (s.scene_number || s.sceneNumber) === sceneNumber);
+    const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber);
+    
+    if (isAvatarScene) {
+      // Return avatar preview URL for avatar scenes (check multiple fallback locations)
+      const avatarUrl = project?.metadata?.avatarPublicImageUrl ||
+                        project?.metadata?.avatarPreviewUrl ||
+                        project?.metadata?.avatarImageUrl ||
+                        project?.metadata?.avatarLocalUrl ||
+                        project?.metadata?.avatarGcsUrl ||
+                        project?.avatarUrl;
+      
+      if (avatarUrl && typeof avatarUrl === 'string') {
+        if (avatarUrl.startsWith('http')) {
+          return avatarUrl;
+        }
+        const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+        return `${VIDEO_SERVICE_BASE_URL}${avatarUrl.startsWith('/') ? '' : '/'}${avatarUrl}`;
+      }
+      return null;
+    }
+    
+    // For b-roll scenes, look in brollImages
     const image = brollImages.find(img => img.sceneNumber === sceneNumber);
     if (!image) return null;
 
@@ -540,8 +568,17 @@ function WorkspacePageContent() {
   };
 
   // Get video URL for scene - prioritize GCS URLs, fallback to local
+  // For ALTERNATE avatar scenes, look in avatarVideos instead of brollVideos
   const getVideoUrl = (sceneNumber: number): string | null => {
-    const video = brollVideos.find(vid => vid.sceneNumber === sceneNumber);
+    // Check if this is an ALTERNATE avatar scene
+    const scene = scenes.find(s => (s.scene_number || s.sceneNumber) === sceneNumber);
+    const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber);
+    
+    // For ALTERNATE avatar scenes, look in avatarVideos
+    const video = isAvatarScene
+      ? avatarVideos.find(vid => vid.sceneNumber === sceneNumber)
+      : brollVideos.find(vid => vid.sceneNumber === sceneNumber);
+    
     if (!video) return null;
 
     // Priority 1: Use publicUrl (GCS URL if available, backend URL otherwise)
@@ -757,6 +794,14 @@ function WorkspacePageContent() {
               // Default: if videos exist, set to videos mode
               setWorkspaceMode('videos');
             }
+          }
+
+          // Load avatar videos (for ALTERNATE style avatar scenes)
+          if (projectData.avatarVideos) {
+            const avVideos = Array.isArray(projectData.avatarVideos)
+              ? projectData.avatarVideos
+              : [];
+            setAvatarVideos(avVideos);
           }
 
           // Check if project is already completed or rendering
@@ -1550,16 +1595,11 @@ function WorkspacePageContent() {
 
     const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
     
-    // For ALTERNATE style, ALL scenes need b-roll images
-    // Even scenes (half-n-half) need b-roll for the top half
-    // So we need to check multiple fields and handle missing prompts
+    // For ALTERNATE style, only b-roll-type scenes need b-roll image prompts
     let prompt = currentScene.broll_image_prompt || currentScene.broll_prompt || currentScene.broll_visual_description || '';
     
-    // For ALTERNATE style, if prompt is empty and it's an odd (half-n-half) scene,
-    // we still need a b-roll image for the top half
-    if (!prompt && project?.style === 'ALTERNATE' && sceneNumber % 2 === 1) {
-      // Try to use broll_visual_description or generate a fallback
-      prompt = currentScene.broll_visual_description || `Scene ${sceneNumber} b-roll for half-n-half composition`;
+    if (!prompt && project?.style === 'ALTERNATE' && isAlternateBrollScene(currentScene, sceneNumber)) {
+      prompt = currentScene.broll_visual_description || `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
     }
 
     if (!prompt) {
@@ -1672,7 +1712,7 @@ function WorkspacePageContent() {
 
       if (response.success && response.data?.jobId) {
         const jobId = response.data.jobId;
-        const queueType = response.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+        const queueType = getVideoJobQueueType(response.data?.type);
         videoRegenJobToSceneRef.current.set(jobId, sceneNumber);
         if (!videoJobIdsRef.current.has(sceneNumber)) {
           videoJobIdsRef.current.set(sceneNumber, new Set());
@@ -1716,6 +1756,13 @@ function WorkspacePageContent() {
 
     const scenesNeedingVideos = scenes.filter((scene, index) => {
       const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
+      if (project?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber)) {
+        const avatarVideos = ((project as any)?.avatarVideos as any[]) || [];
+        const hasAvatar = avatarVideos.some(
+          (v: any) => v.sceneNumber === sceneNumber && (v.localUrl || v.localPath),
+        );
+        return !hasAvatar;
+      }
       const hasImage = brollImages.some(img => img.sceneNumber === sceneNumber);
       const hasVideo = brollVideos.some(vid => vid.sceneNumber === sceneNumber);
       return hasImage && !hasVideo;
@@ -1749,7 +1796,7 @@ function WorkspacePageContent() {
             }
             if (r.success && r.data?.jobId) {
               const jobId = r.data.jobId;
-              const queueType = r.data?.type === 'scene' ? 'scene-composite' : 'video-generation';
+              const queueType = getVideoJobQueueType(r.data?.type);
               if (!videoJobIdsRef.current.has(sceneNumber)) {
                 videoJobIdsRef.current.set(sceneNumber, new Set());
               }
@@ -1775,7 +1822,7 @@ function WorkspacePageContent() {
         videoJobIdsRef.current.get(sceneNumber)!.add(jobId);
         jobToSceneRef.current.set(jobId, sceneNumber);
         setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
-        const queueType = type === 'scene' ? 'scene-composite' : 'video-generation';
+        const queueType = getVideoJobQueueType(type);
         subscribeToJob(jobId, queueType);
         console.log(`[Workspace] Subscribed to ${queueType} job ${jobId} for scene ${sceneNumber}`);
       }
@@ -2037,9 +2084,7 @@ function WorkspacePageContent() {
           targetAspectRatio:
             project?.style === 'HALF_N_HALF'
               ? '9:8'
-              : project?.style === 'ALTERNATE' && brollModalSceneNumber % 2 === 1
-                ? '9:8'
-                : '9:16',
+              : '9:16',
         }),
       });
 
@@ -2059,6 +2104,9 @@ function WorkspacePageContent() {
             }
             if (pd.bRollVideoTasks) {
               setBrollVideos(Array.isArray(pd.bRollVideoTasks) ? pd.bRollVideoTasks : []);
+            }
+            if (pd.avatarVideos) {
+              setAvatarVideos(Array.isArray(pd.avatarVideos) ? pd.avatarVideos : []);
             }
             if (pd.script) {
               const script = typeof pd.script === 'string' ? JSON.parse(pd.script) : pd.script;
@@ -2184,17 +2232,95 @@ function WorkspacePageContent() {
     }
 
     const isVideo = update.queueType === 'video-generation';
+    const isAvatar = update.queueType === 'avatar-video-generation';
     const isComposite = update.queueType === 'scene-composite';
     const sceneNum = update.result?.video?.sceneNumber ?? update.metadata?.sceneNumber;
 
     if (update.state === 'progress' && isComposite && sceneNum) {
-      // Progress events for ALTERNATE odd / half-n-half scenes (broll_complete, avatar_complete, compositing)
-      // Optionally update per-scene progress UI; for now we just log
-      console.log('[Workspace] Scene progress:', sceneNum, update.metadata?.stage);
+      console.log('[Workspace] Legacy scene-composite progress:', sceneNum, update.metadata?.stage);
       return;
     }
 
-    if (isVideo || isComposite) {
+    if (isVideo || isAvatar || isComposite) {
+      if (update.state === 'completed' && update.result?.success && isAvatar) {
+        const video = update.result.video;
+        const jobId = update.jobId;
+        const sceneNumber =
+          normalizeSceneNumber(video?.sceneNumber) ??
+          normalizeSceneNumber(update.metadata?.sceneNumber) ??
+          jobToSceneRef.current.get(jobId);
+        
+        console.log('[Workspace] 🎬 Avatar video completed via WebSocket:', {
+          jobId,
+          sceneNumber,
+          hasVideo: !!video,
+          localUrl: video?.localUrl || video?.local_url,
+        });
+        
+        if (sceneNumber != null) {
+          // Update avatarVideos state with the completed video from WebSocket
+          if (video) {
+            const updatedVideo: BrollVideo = {
+              ...video,
+              jobId,
+              sceneNumber,
+              localPath: video.localPath || video.local_path,
+              localUrl: video.localUrl || video.local_url,
+              videoUrl: video.videoUrl || video.video_url,
+            };
+            console.log('[Workspace] ✅ Updating avatarVideos state with:', updatedVideo);
+            setAvatarVideos((prev) => {
+              const exists = prev.some((v) => normalizeSceneNumber(v.sceneNumber) === sceneNumber);
+              const updated = exists
+                ? prev.map((v) => normalizeSceneNumber(v.sceneNumber) === sceneNumber ? updatedVideo : v)
+                : [...prev, updatedVideo];
+              console.log('[Workspace] 📊 avatarVideos state updated:', updated.length, 'videos');
+              return updated;
+            });
+          }
+          setGeneratingVideos((prev) => {
+            const next = new Set(prev);
+            next.delete(sceneNumber);
+            return next;
+          });
+          setRegeneratingVideoScenes((prev) => {
+            const next = new Set(prev);
+            next.delete(sceneNumber);
+            return next;
+          });
+          showToast(`Avatar video generated for Scene ${sceneNumber}`, 'success');
+        }
+        processedJobIdsRef.current.add(jobId);
+        unsubscribeFromJobRef.current?.(jobId);
+        jobToSceneRef.current.delete(jobId);
+        
+        // Delay project refresh to avoid race condition with database commit
+        // Don't overwrite avatarVideos since we just updated it from WebSocket
+        if (projectId) {
+          setTimeout(() => {
+            apiClient.getVideoProject(projectId).then((refreshed) => {
+              if (refreshed.success && refreshed.data) {
+                // Update project but preserve the avatarVideos we just set from WebSocket
+                setProject(refreshed.data);
+                // Only update avatarVideos from server if it has more videos than our current state
+                // This prevents race condition where server returns stale data
+                setAvatarVideos((currentAvatarVideos) => {
+                  const serverAvatarVideos = Array.isArray(refreshed.data.avatarVideos) ? refreshed.data.avatarVideos : [];
+                  // Keep the version with more complete data (more videos or same count)
+                  if (serverAvatarVideos.length > currentAvatarVideos.length) {
+                    console.log('[Workspace] 🔄 Server has more avatar videos, updating state');
+                    return serverAvatarVideos;
+                  }
+                  console.log('[Workspace] ⏭️ Keeping WebSocket avatarVideos (server has same or fewer)');
+                  return currentAvatarVideos;
+                });
+              }
+            }).catch(() => {});
+          }, 1000); // 1 second delay to allow database commit
+        }
+        return;
+      }
+
       if (update.state === 'completed' && update.result?.success && update.result?.video) {
         const video = update.result.video;
         const jobId = update.jobId;
@@ -2430,9 +2556,24 @@ function WorkspacePageContent() {
     
     // Check if there are no more scenes being generated
     if (generatingVideos.size === 0 && scenes.length > 0) {
-      // Count successful videos
-      const successfulVideos = brollVideos.length;
+      // For ALTERNATE style, count both brollVideos (b-roll scenes) AND avatarVideos (avatar scenes)
+      // For other styles, only count brollVideos
+      const isAlternateStyle = project?.style === 'ALTERNATE';
+      const successfulVideos = isAlternateStyle 
+        ? brollVideos.length + avatarVideos.length 
+        : brollVideos.length;
       const totalScenesNeeded = scenes.length;
+      
+      console.log('[Workspace] Completion check:', {
+        style: project?.style,
+        isAlternateStyle,
+        brollVideos: brollVideos.length,
+        avatarVideos: avatarVideos.length,
+        successfulVideos,
+        totalScenesNeeded,
+        generatingVideos: generatingVideos.size,
+        failedGenerations: failedGenerations.size,
+      });
       
       if (successfulVideos >= totalScenesNeeded) {
         // All videos generated successfully
@@ -2452,7 +2593,7 @@ function WorkspacePageContent() {
         }
       }
     }
-  }, [generatingVideos.size, brollVideos.length, scenes.length, failedGenerations.size, workspaceMode, showToast, handleSwitchToVideos, handleBackToImages]);
+  }, [generatingVideos.size, brollVideos.length, avatarVideos.length, scenes.length, failedGenerations.size, workspaceMode, project?.style, showToast, handleSwitchToVideos, handleBackToImages]);
 
   // Resume rendering polling if project was loading during rendering
   useEffect(() => {
@@ -2495,11 +2636,8 @@ function WorkspacePageContent() {
   const previewAspectRatio = useMemo(() => {
     const style = project?.style;
     if (style === 'HALF_N_HALF') return '9/16';
-    if (style === 'ALTERNATE') {
-      return currentSceneNumber % 2 === 1 ? '9/16' : '9/16';
-    }
     return '9/16';
-  }, [project?.style, currentSceneNumber]);
+  }, [project?.style]);
 
   const previewCaptionText = useMemo(() => {
     const base =
@@ -3686,9 +3824,7 @@ function WorkspacePageContent() {
         targetAspectRatio={
           project?.style === 'HALF_N_HALF'
             ? '9:8'
-            : project?.style === 'ALTERNATE' && brollModalSceneNumber % 2 === 1
-              ? '9:8'
-              : '9:16'
+            : '9:16'
         }
         stockVideoDurationParams={
           workspaceMode === 'videos'

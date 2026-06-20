@@ -1399,7 +1399,7 @@ class ApiClient {
     sceneNumber: number, 
     modelId?: string,
     force: boolean = false
-  ): Promise<ApiResponse<{ jobId: string; type?: 'scene'; existing?: boolean; video?: any }>> {
+  ): Promise<ApiResponse<{ jobId: string; type?: 'scene' | 'avatar' | 'broll'; existing?: boolean; video?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
@@ -1417,7 +1417,7 @@ class ApiClient {
     return response.data;
   }
 
-  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging'): Promise<ApiResponse<any>> {
+  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'avatar-video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging'): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

@@ -17,6 +17,7 @@ export interface JobStatusUpdate {
     | 'audio-generation'
     | 'image-generation'
     | 'video-generation'
+    | 'avatar-video-generation'
     | 'scene-composite'
     | 'stock-download'
     | 'brand-packaging'
@@ -154,8 +155,16 @@ export class JobStatusGateway implements OnGatewayInit, OnGatewayConnection, OnG
         jobId: data.jobId,
         queueType: data.queueType,
         state: data.state,
-        sceneNumber: data.queueType === 'image-generation' ? data.result?.image?.sceneNumber : data.queueType === 'video-generation' ? data.result?.video?.sceneNumber : undefined,
-        localUrl: data.queueType === 'image-generation' ? data.result?.image?.localUrl : data.queueType === 'video-generation' ? data.result?.video?.localUrl : undefined,
+        sceneNumber: data.queueType === 'image-generation' 
+          ? data.result?.image?.sceneNumber 
+          : (data.queueType === 'video-generation' || data.queueType === 'avatar-video-generation')
+            ? data.result?.video?.sceneNumber 
+            : undefined,
+        localUrl: data.queueType === 'image-generation' 
+          ? data.result?.image?.localUrl 
+          : (data.queueType === 'video-generation' || data.queueType === 'avatar-video-generation')
+            ? data.result?.video?.localUrl 
+            : undefined,
         userRoomSize,
         jobRoomSize,
       });

@@ -16,6 +16,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 import { useWebSocket, JobStatusUpdate } from '@/hooks/useWebSocket';
 import { ModelSelector } from '@/components/create-video/ModelSelector';
+import { isAlternateAvatarScene } from '@/lib/video/alternateScene';
 
 interface BrollImage {
   sceneNumber: number;
@@ -260,6 +261,7 @@ function BrollImagesPageContent() {
   }, [projectIdFromUrl, projectId]);
 
   // Determine which scenes need B-roll images based on video style
+  // For ALTERNATE, show all scenes (b-roll scenes need images, avatar scenes show avatar preview)
   const scenesNeedingBroll = useMemo((): Scene[] => {
     if (!project || !scenes.length) return [];
     
@@ -269,11 +271,8 @@ function BrollImagesPageContent() {
       // All scenes need B-roll
       return scenes;
     } else if (style === 'ALTERNATE') {
-      // Only scenes with type "b-roll" need B-roll images
-      return scenes.filter((scene) => {
-        const sceneType = scene.type?.toLowerCase();
-        return sceneType === 'b-roll' || sceneType === 'broll';
-      });
+      // Show all scenes - b-roll scenes need images, avatar scenes show avatar preview
+      return scenes;
     } else if (style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR' || style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
       // No per-scene B-roll images for these styles
       return [];
@@ -281,6 +280,31 @@ function BrollImagesPageContent() {
     
     return scenes;
   }, [project, scenes]);
+
+  // Get avatar preview URL for ALTERNATE avatar scenes
+  // Check multiple metadata locations for fallback (same approach as workspace page)
+  const getAvatarPreviewUrl = (): string | null => {
+    if (!project) return null;
+    
+    // Try multiple sources for avatar image URL
+    const avatarUrl = project.metadata?.avatarPublicImageUrl ||
+                      project.metadata?.avatarPreviewUrl ||
+                      project.metadata?.avatarImageUrl ||
+                      project.metadata?.avatarLocalUrl ||
+                      project.metadata?.avatarGcsUrl ||
+                      project.avatarUrl;
+    
+    if (avatarUrl && typeof avatarUrl === 'string') {
+      // If it's already a full URL, return as-is
+      if (avatarUrl.startsWith('http')) {
+        return avatarUrl;
+      }
+      // Otherwise, prepend the video service base URL
+      const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+      return `${VIDEO_SERVICE_BASE_URL}${avatarUrl.startsWith('/') ? '' : '/'}${avatarUrl}`;
+    }
+    return null;
+  };
 
   // Load project and images
   useEffect(() => {
@@ -377,8 +401,14 @@ function BrollImagesPageContent() {
       
       // Check which scenes are missing images
       // IMPORTANT: Check database (project.bRollImages) FIRST, then state
+      // Avatar scenes in ALTERNATE style don't need b-roll images
       const missingScenes = scenesNeedingBroll.filter((scene, index) => {
         const sceneNumber = normalizeSceneNumber(scene, index);
+        
+        // Skip avatar scenes - they use the avatar preview, not b-roll images
+        if (project.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber)) {
+          return false;
+        }
         
         // Check database first (most reliable source)
         const projectImages = ((project.bRollImages as any[]) || []);
@@ -745,6 +775,10 @@ function BrollImagesPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {scenesNeedingBroll.map((scene, index) => {
                 const sceneNumber = normalizeSceneNumber(scene, index);
+                // Check if this is an ALTERNATE avatar scene
+                const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber);
+                const avatarPreviewUrl = getAvatarPreviewUrl();
+                
                 const image = brollImages.find(img => {
                   const imgSceneNumber = typeof img.sceneNumber === 'number' 
                     ? img.sceneNumber 
@@ -754,8 +788,12 @@ function BrollImagesPageContent() {
                 const voiceover = getSceneVoiceover(sceneNumber);
                 const isRegenerating = regenerating[sceneNumber] || generatingImages.has(sceneNumber);
                 
+                // For avatar scenes, use the avatar preview URL
+                const displayImageUrl = isAvatarScene ? avatarPreviewUrl : (image ? getImageUrl(image) : null);
+                const hasDisplayImage = isAvatarScene ? !!avatarPreviewUrl : !!image;
+                
                 // Debug logging for render
-                if (image) {
+                if (image && !isAvatarScene) {
                   console.log(`[BrollImages] 🎨 Rendering scene ${sceneNumber}:`, {
                     hasImage: !!image,
                     sceneNumber: image.sceneNumber,
@@ -773,23 +811,21 @@ function BrollImagesPageContent() {
                   <Card key={`${sceneNumber}-${updateKey}`} className="overflow-hidden">
                     <div className="relative aspect-[9/16] bg-primary-light/20 cursor-pointer group">
                       {/* Show loader if regenerating OR if no image exists */}
-                      {!isRegenerating && image ? (
+                      {(!isRegenerating || isAvatarScene) && hasDisplayImage && displayImageUrl ? (
                         <>
                           <img
-                            src={getImageUrl(image)}
-                            alt={`Scene ${sceneNumber}`}
+                            src={displayImageUrl}
+                            alt={isAvatarScene ? `Avatar Scene ${sceneNumber}` : `Scene ${sceneNumber}`}
                             className="w-full h-full object-cover"
-                            onClick={() => handleImageClick(getImageUrl(image))}
+                            onClick={() => displayImageUrl && handleImageClick(displayImageUrl)}
                             onLoad={() => {
-                              console.log(`[BrollImages] ✅ Image loaded for scene ${sceneNumber}:`, getImageUrl(image));
+                              console.log(`[BrollImages] ✅ Image loaded for scene ${sceneNumber}:`, displayImageUrl);
                             }}
                             onError={(e) => {
-                              console.error('Image failed to load:', getImageUrl(image));
-                              console.error('Image data:', image);
-                              console.error('Error event:', e);
+                              console.error('Image failed to load:', displayImageUrl);
                               const target = e.target as HTMLImageElement;
-                              // Try BytePlus URL if local URL fails
-                              if (image.imageUrl && image.localUrl) {
+                              // Try BytePlus URL if local URL fails (only for b-roll images)
+                              if (!isAvatarScene && image?.imageUrl && image?.localUrl) {
                                 console.log('Trying BytePlus URL as fallback:', image.imageUrl);
                                 target.src = image.imageUrl;
                               } else {
@@ -805,13 +841,17 @@ function BrollImagesPageContent() {
                             </span>
                           </div>
                         </>
+                      ) : isAvatarScene && !avatarPreviewUrl ? (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-sm text-text-secondary">Avatar preview not available</span>
+                        </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <Loader2 className="w-8 h-8 animate-spin text-primary" />
                         </div>
                       )}
                       <div className="absolute top-2 right-2 bg-background/90 px-2 py-1 rounded text-xs font-medium">
-                        Scene {sceneNumber}
+                        {isAvatarScene ? `Avatar ${sceneNumber}` : `Scene ${sceneNumber}`}
                       </div>
                     </div>
                     
@@ -823,40 +863,47 @@ function BrollImagesPageContent() {
                         </div>
                       )}
                       
-                      {/* Split button with Regenerate and Model Selector */}
-                      <div className="flex items-stretch border border-border rounded-md overflow-hidden">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRegenerate(sceneNumber)}
-                          disabled={isRegenerating}
-                          className="flex-1 rounded-none border-0 border-r border-border"
-                        >
-                          {isRegenerating ? (
-                            <>
-                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              Regenerating...
-                            </>
-                          ) : (
-                            <>
-                              <RefreshCw className="w-4 h-4 mr-2" />
-                              Regenerate
-                            </>
-                          )}
-                        </Button>
-                        
-                        {/* Model selector - integrated as part of button */}
-                        <ModelSelector
-                          selectedModelId={selectedModels[sceneNumber] ?? 'model-1'}
-                          onModelSelect={(modelId) => {
-                            setSelectedModels(prev => ({
-                              ...prev,
-                              [sceneNumber]: modelId,
-                            }));
-                          }}
-                          disabled={isRegenerating}
-                        />
-                      </div>
+                      {/* Split button with Regenerate and Model Selector - only for b-roll scenes */}
+                      {!isAvatarScene && (
+                        <div className="flex items-stretch border border-border rounded-md overflow-hidden">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleRegenerate(sceneNumber)}
+                            disabled={isRegenerating}
+                            className="flex-1 rounded-none border-0 border-r border-border"
+                          >
+                            {isRegenerating ? (
+                              <>
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                Regenerating...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="w-4 h-4 mr-2" />
+                                Regenerate
+                              </>
+                            )}
+                          </Button>
+                          
+                          {/* Model selector - integrated as part of button */}
+                          <ModelSelector
+                            selectedModelId={selectedModels[sceneNumber] ?? 'model-1'}
+                            onModelSelect={(modelId) => {
+                              setSelectedModels(prev => ({
+                                ...prev,
+                                [sceneNumber]: modelId,
+                              }));
+                            }}
+                            disabled={isRegenerating}
+                          />
+                        </div>
+                      )}
+                      {isAvatarScene && (
+                        <div className="text-xs text-text-secondary text-center py-2">
+                          Avatar scene - lip-sync video generated on next step
+                        </div>
+                      )}
                     </div>
                   </Card>
                 );
