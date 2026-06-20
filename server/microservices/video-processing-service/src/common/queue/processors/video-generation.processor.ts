@@ -278,14 +278,22 @@ export class VideoGenerationProcessor extends WorkerHost {
         const filename = path.basename(imagePath);
         heygenImageKey = await this.heygenVideoProvider.uploadImageAndGetKey(imagePath, filename);
 
-        // Cache the key back into bRollImages so subsequent runs reuse it
-        image.heygenImageKey = heygenImageKey;
-
-        await this.databaseService.videoProject.update({
-          where: { id: projectId },
-          data: {
-            bRollImages: bRollImages as any,
-          } as any,
+        // Cache the key back into bRollImages so subsequent runs reuse it.
+        // Re-read under a row lock (the HeyGen upload above can race with other
+        // scene workers) so we only mutate the matching scene's entry.
+        await this.databaseService.withProjectLock(projectId, async (tx) => {
+          const latest = await tx.videoProject.findUnique({ where: { id: projectId } });
+          const latestImages = ((latest as any)?.bRollImages as any[]) || [];
+          const target = latestImages.find((img: any) => img.sceneNumber === sceneNumber);
+          if (target) {
+            target.heygenImageKey = heygenImageKey;
+          }
+          await tx.videoProject.update({
+            where: { id: projectId },
+            data: {
+              bRollImages: latestImages as any,
+            } as any,
+          });
         });
 
         console.log(
@@ -467,15 +475,6 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       await job.updateProgress(90);
 
-      // Update project
-      const latestProject = await this.databaseService.videoProject.findUnique({
-        where: { id: projectId },
-      });
-
-      if (!latestProject) {
-        throw new Error('Project not found');
-      }
-
       const videoData = {
         sceneNumber,
         jobId: job.id!,
@@ -493,20 +492,31 @@ export class VideoGenerationProcessor extends WorkerHost {
         contentType: 'video',
       };
 
-      const bRollVideoTasks = ((latestProject as any).bRollVideoTasks as any[]) || [];
-      const existingIndex = bRollVideoTasks.findIndex((vid: any) => vid.sceneNumber === sceneNumber);
+      // Serialize the read-modify-write so concurrent scene workers cannot
+      // clobber each other's bRollVideoTasks entries (lost-update race).
+      await this.databaseService.withProjectLock(projectId, async (tx) => {
+        const latestProject = await tx.videoProject.findUnique({
+          where: { id: projectId },
+        });
+        if (!latestProject) {
+          throw new Error('Project not found');
+        }
 
-      if (existingIndex >= 0) {
-        bRollVideoTasks[existingIndex] = videoData;
-      } else {
-        bRollVideoTasks.push(videoData);
-      }
+        const bRollVideoTasks = ((latestProject as any).bRollVideoTasks as any[]) || [];
+        const existingIndex = bRollVideoTasks.findIndex((vid: any) => vid.sceneNumber === sceneNumber);
 
-      await this.databaseService.videoProject.update({
-        where: { id: projectId },
-        data: {
-          bRollVideoTasks: bRollVideoTasks as any,
-        } as any,
+        if (existingIndex >= 0) {
+          bRollVideoTasks[existingIndex] = videoData;
+        } else {
+          bRollVideoTasks.push(videoData);
+        }
+
+        await tx.videoProject.update({
+          where: { id: projectId },
+          data: {
+            bRollVideoTasks: bRollVideoTasks as any,
+          } as any,
+        });
       });
 
       await job.updateProgress(100);
@@ -762,16 +772,6 @@ export class VideoGenerationProcessor extends WorkerHost {
 
     await job.updateProgress(93);
 
-    // CRITICAL: Re-fetch project data right before updating to avoid race conditions
-    // Multiple workers may be updating concurrently, so we need the latest state
-    const latestProject = await this.databaseService.videoProject.findUnique({
-      where: { id: projectId },
-    });
-
-    if (!latestProject) {
-      throw new Error('Project not found');
-    }
-
     const videoData = {
       sceneNumber,
       jobId: job.id!, // Include jobId for unique identification
@@ -789,22 +789,31 @@ export class VideoGenerationProcessor extends WorkerHost {
       contentType: 'video',
     };
 
-    // Get latest bRollVideoTasks array from database to avoid race conditions
-    const bRollVideoTasks = ((latestProject as any).bRollVideoTasks as any[]) || [];
-    const existingIndex = bRollVideoTasks.findIndex((vid: any) => vid.sceneNumber === sceneNumber);
+    // Serialize the read-modify-write under a row lock so concurrent scene
+    // workers cannot clobber each other's bRollVideoTasks entries.
+    await this.databaseService.withProjectLock(projectId, async (tx) => {
+      const latestProject = await tx.videoProject.findUnique({
+        where: { id: projectId },
+      });
+      if (!latestProject) {
+        throw new Error('Project not found');
+      }
 
-    if (existingIndex >= 0) {
-      bRollVideoTasks[existingIndex] = videoData;
-    } else {
-      bRollVideoTasks.push(videoData);
-    }
+      const bRollVideoTasks = ((latestProject as any).bRollVideoTasks as any[]) || [];
+      const existingIndex = bRollVideoTasks.findIndex((vid: any) => vid.sceneNumber === sceneNumber);
 
-    // Atomic update with latest data
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        bRollVideoTasks: bRollVideoTasks as any,
-      } as any,
+      if (existingIndex >= 0) {
+        bRollVideoTasks[existingIndex] = videoData;
+      } else {
+        bRollVideoTasks.push(videoData);
+      }
+
+      await tx.videoProject.update({
+        where: { id: projectId },
+        data: {
+          bRollVideoTasks: bRollVideoTasks as any,
+        } as any,
+      });
     });
 
     await job.updateProgress(100);

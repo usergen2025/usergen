@@ -121,7 +121,10 @@ export class VideoCompositorProvider {
     }
 
     // CRITICAL: Normalize both videos to same frame rate (24fps) before compositing
-    // This ensures both inputs to vstack have the same frame rate, preventing jerky playback
+    // so vstack receives matching frame rates. We use the duration-preserving
+    // `fps` filter (NOT `-r ... -vsync cfr`, which can retime the video stream
+    // independently of its audio) and copy audio untouched. This keeps the
+    // bottom HeyGen avatar's lip-sync intact.
     const targetFps = 24;
     const normalizedTopPath = path.join(outputDir, `normalized_top_${Date.now()}.mp4`);
     const normalizedBottomPath = path.join(outputDir, `normalized_bottom_${Date.now()}.mp4`);
@@ -129,18 +132,16 @@ export class VideoCompositorProvider {
     try {
       const normalizeTopCommand = `
         ffmpeg -i "${finalTopPath}" \
-        -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
+        -vf "fps=${targetFps}" -c:v libx264 -preset medium -crf 23 \
         -c:a copy \
-        -vsync cfr \
         -y "${normalizedTopPath}"
       `.replace(/\s+/g, ' ').trim();
       execSync(normalizeTopCommand, { stdio: 'inherit' });
 
       const normalizeBottomCommand = `
         ffmpeg -i "${finalBottomPath}" \
-        -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
+        -vf "fps=${targetFps}" -c:v libx264 -preset medium -crf 23 \
         -c:a copy \
-        -vsync cfr \
         -y "${normalizedBottomPath}"
       `.replace(/\s+/g, ' ').trim();
       execSync(normalizeBottomCommand, { stdio: 'inherit' });
@@ -209,195 +210,115 @@ export class VideoCompositorProvider {
   }
 
   /**
-   * Concatenate multiple videos into one
-   * @param videoPaths Array of video file paths in order
-   * @param outputPath Path for output video
+   * Probe a media file's primary video/audio stream characteristics.
+   * Each property is queried independently so we never depend on ffprobe
+   * field-ordering quirks across versions.
    */
-  async concatenateVideos(videoPaths: string[], outputPath: string): Promise<string> {
+  private getStreamMeta(filePath: string): {
+    width: number;
+    height: number;
+    fps: number;
+    vcodec: string;
+    acodec: string | null;
+    hasAudio: boolean;
+    sampleRate: number;
+    channels: number;
+  } {
+    const probe = (args: string): string => {
+      try {
+        return execSync(`ffprobe -v error ${args} "${filePath}"`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        return '';
+      }
+    };
+
+    const width = Number(probe(`-select_streams v:0 -show_entries stream=width -of csv=p=0`)) || 0;
+    const height = Number(probe(`-select_streams v:0 -show_entries stream=height -of csv=p=0`)) || 0;
+    const vcodec = probe(`-select_streams v:0 -show_entries stream=codec_name -of csv=p=0`);
+    const acodec = probe(`-select_streams a:0 -show_entries stream=codec_name -of csv=p=0`);
+    const rFrame = probe(`-select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0`);
+    // Audio layout matters for stream-copy concat: AAC streams with different
+    // sample rates / channel counts CANNOT be safely concatenated with -c copy
+    // (the muxed track inherits the first segment's params, so later segments
+    // decode as static/garbled). Probe them so the uniformity test is accurate.
+    const sampleRate = Number(probe(`-select_streams a:0 -show_entries stream=sample_rate -of csv=p=0`)) || 0;
+    const channels = Number(probe(`-select_streams a:0 -show_entries stream=channels -of csv=p=0`)) || 0;
+
+    let fps = 0;
+    if (rFrame && rFrame.includes('/')) {
+      const [num, den] = rFrame.split('/').map(Number);
+      if (num > 0 && den > 0) fps = num / den;
+    } else if (rFrame) {
+      const parsed = Number(rFrame);
+      if (parsed > 0) fps = parsed;
+    }
+
+    return {
+      width,
+      height,
+      fps,
+      vcodec,
+      acodec: acodec || null,
+      hasAudio: Boolean(acodec),
+      sampleRate,
+      channels,
+    };
+  }
+
+  /**
+   * Sync-safe concatenation used by every render style.
+   *
+   * Lip-sync preservation strategy:
+   *  1. If all clips already share resolution, codecs, fps and audio layout,
+   *     concatenate with `-c copy` (no re-encode at all → perfect A/V timing).
+   *  2. Otherwise normalize each clip with a duration-preserving `fps` filter
+   *     (NOT `-r ... -vsync cfr`, which can retime video independently of audio)
+   *     and re-encode audio with `aresample=async=1` so the audio timeline stays
+   *     locked to the video timeline. Clips missing audio get a matched silent
+   *     track so the stream layout is uniform for the final stream-copy concat.
+   */
+  private async runSyncSafeConcat(videoPaths: string[], outputPath: string): Promise<string> {
     this.checkFFmpeg();
 
     if (videoPaths.length === 0) {
       throw new Error('No videos to concatenate');
     }
 
-    if (videoPaths.length === 1) {
-      // If only one video, just copy it
-      fs.copyFileSync(videoPaths[0], outputPath);
-      return outputPath;
-    }
-
-    // Ensure output directory exists
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
+    const absoluteOutputDir = path.isAbsolute(outputDir) ? outputDir : path.resolve(outputDir);
 
-    // Convert all paths to absolute paths before writing to concat list
-    // FFmpeg concat interprets paths relative to the concat list file's directory
-    // So we need absolute paths to avoid duplication issues
-    const absolutePaths = videoPaths.map(vp => {
-      // If path is already absolute, use it as-is
+    const absolutePaths = videoPaths.map((vp) => {
       if (path.isAbsolute(vp)) {
-        if (!fs.existsSync(vp)) {
-          throw new Error(`Video file not found: ${vp}`);
-        }
+        if (!fs.existsSync(vp)) throw new Error(`Video file not found: ${vp}`);
         return vp;
       }
-      // If path is relative, resolve it from current working directory
       const absolutePath = path.resolve(vp);
       if (!fs.existsSync(absolutePath)) {
-        // Try resolving from output directory as fallback
-        const fallbackPath = path.resolve(outputDir, vp);
-        if (fs.existsSync(fallbackPath)) {
-          return fallbackPath;
-        }
+        const fallbackPath = path.resolve(absoluteOutputDir, vp);
+        if (fs.existsSync(fallbackPath)) return fallbackPath;
         throw new Error(`Video file not found: ${vp} (tried: ${absolutePath}, ${fallbackPath})`);
       }
       return absolutePath;
     });
 
-    // Normalize all videos to same frame rate and format before concatenation
-    // This prevents duration issues and frame rate mismatches
-    const normalizedPaths: string[] = [];
-    const targetFps = 24; // Standardize to 24fps
-    
-    console.log(`[VideoCompositor] Normalizing ${absolutePaths.length} videos to ${targetFps}fps before concatenation...`);
-    
-    // Ensure outputDir is absolute to avoid path duplication in concat list
-    const absoluteOutputDir = path.isAbsolute(outputDir) ? outputDir : path.resolve(outputDir);
-    
-    for (let i = 0; i < absolutePaths.length; i++) {
-      const normalizedPath = path.resolve(absoluteOutputDir, `normalized_${i}_${Date.now()}.mp4`);
-      
-      try {
-        // Normalize: same frame rate, same codec, same resolution, ensure proper duration
-        const normalizeCommand = `
-          ffmpeg -i "${absolutePaths[i]}" \
-          -r ${targetFps} -c:v libx264 -preset medium -crf 23 \
-          -c:a aac -b:a 192k \
-          -pix_fmt yuv420p \
-          -vsync cfr \
-          -y "${normalizedPath}"
-        `.replace(/\s+/g, ' ').trim();
-        
-        execSync(normalizeCommand, { stdio: 'inherit' });
-        
-        // Verify normalized video exists
-        if (fs.existsSync(normalizedPath)) {
-          normalizedPaths.push(normalizedPath);
-          console.log(`[VideoCompositor] Normalized video ${i + 1}/${absolutePaths.length}: ${normalizedPath}`);
-        } else {
-          throw new Error(`Normalized video not created: ${normalizedPath}`);
-        }
-      } catch (error: any) {
-        // Cleanup any normalized files created so far
-        normalizedPaths.forEach(p => {
-          if (fs.existsSync(p)) {
-            try {
-              fs.unlinkSync(p);
-            } catch (e) {
-              console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
-            }
-          }
-        });
-        throw new Error(`Failed to normalize video ${i + 1} (${absolutePaths[i]}): ${error.message}`);
-      }
-    }
-    
-    // Create a temporary file list for FFmpeg concat using normalized videos
-    const listPath = path.resolve(absoluteOutputDir, `concat_list_${Date.now()}.txt`);
-    // Use absolute paths in the concat list to avoid path duplication
-    // FFmpeg concat interprets paths relative to the concat list file's directory
-    // So we must use absolute paths to prevent duplication
-    const listContent = normalizedPaths.map(vp => {
-      // Ensure path is absolute
-      const absPath = path.isAbsolute(vp) ? vp : path.resolve(vp);
-      // Escape single quotes for shell safety
-      return `file '${absPath.replace(/'/g, "'\\''")}'`;
-    }).join('\n');
-    fs.writeFileSync(listPath, listContent);
-
-    console.log(`[VideoCompositor] Concatenating ${normalizedPaths.length} normalized videos...`);
-
-    try {
-      // Use concat demuxer with stream copy after normalization (faster, maintains quality)
-      // Since videos are already normalized, we can use copy for faster processing
-      const ffmpegCommand = `
-        ffmpeg -f concat -safe 0 -i "${listPath}" \
-        -c copy \
-        -y "${outputPath}"
-      `.replace(/\s+/g, ' ').trim();
-
-      execSync(ffmpegCommand, { stdio: 'inherit' });
-      
-      // Clean up temporary files
-      normalizedPaths.forEach(p => {
-        if (fs.existsSync(p)) {
-          try {
-            fs.unlinkSync(p);
-          } catch (e) {
-            console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
-          }
-        }
-      });
-      if (fs.existsSync(listPath)) {
-        fs.unlinkSync(listPath);
-      }
-      
-      console.log(`[VideoCompositor] Videos concatenated successfully: ${outputPath}`);
-      return outputPath;
-    } catch (error: any) {
-      // Clean up temporary files on error
-      normalizedPaths.forEach(p => {
-        if (fs.existsSync(p)) {
-          try {
-            fs.unlinkSync(p);
-          } catch (e) {
-            console.warn(`[VideoCompositor] Failed to cleanup normalized file: ${p}`);
-          }
-        }
-      });
-      if (fs.existsSync(listPath)) {
-        fs.unlinkSync(listPath);
-      }
-      console.error(`[VideoCompositor] FFmpeg concatenation error:`, error.message);
-      throw new Error(`Failed to concatenate videos: ${error.message}`);
-    }
-  }
-
-  /**
-   * Concatenate HeyGen translated clips without forcing CFR re-encode (preserves lip-sync).
-   * Falls back to video-only fps normalization with audio stream copy if concat copy fails.
-   */
-  async concatenateVideosForTranslation(videoPaths: string[], outputPath: string): Promise<string> {
-    this.checkFFmpeg();
-
-    if (videoPaths.length === 0) {
-      throw new Error('No videos to concatenate');
-    }
-
-    if (videoPaths.length === 1) {
-      fs.copyFileSync(videoPaths[0], outputPath);
+    if (absolutePaths.length === 1) {
+      fs.copyFileSync(absolutePaths[0], outputPath);
       return outputPath;
     }
-
-    const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    const absolutePaths = videoPaths.map((vp) => {
-      const abs = path.isAbsolute(vp) ? vp : path.resolve(vp);
-      if (!fs.existsSync(abs)) {
-        throw new Error(`Video file not found: ${vp}`);
-      }
-      return abs;
-    });
 
     const tryConcatCopy = (paths: string[]): boolean => {
-      const listPath = path.join(outputDir, `concat_tr_${Date.now()}.txt`);
+      const listPath = path.resolve(
+        absoluteOutputDir,
+        `concat_list_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`,
+      );
       const listContent = paths
-        .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+        .map((p) => `file '${path.resolve(p).replace(/'/g, "'\\''")}'`)
         .join('\n');
       fs.writeFileSync(listPath, listContent);
       try {
@@ -409,7 +330,7 @@ export class VideoCompositorProvider {
         execSync(cmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
         return fs.existsSync(outputPath);
       } catch (err: any) {
-        console.warn(`[VideoCompositor] Translation concat copy failed: ${err?.message || err}`);
+        console.warn(`[VideoCompositor] Concat copy failed: ${err?.message || err}`);
         return false;
       } finally {
         if (fs.existsSync(listPath)) {
@@ -422,32 +343,103 @@ export class VideoCompositorProvider {
       }
     };
 
-    if (tryConcatCopy(absolutePaths)) {
-      console.log(`[VideoCompositor] Translation clips concatenated via stream copy`);
+    const metas = absolutePaths.map((p) => ({ path: p, ...this.getStreamMeta(p) }));
+    const first = metas[0];
+    const uniform = metas.every(
+      (m) =>
+        m.width === first.width &&
+        m.height === first.height &&
+        m.width > 0 &&
+        m.height > 0 &&
+        m.vcodec === first.vcodec &&
+        m.hasAudio === first.hasAudio &&
+        m.acodec === first.acodec &&
+        // Audio layout must match too, otherwise -c copy concat corrupts the
+        // later segments (e.g. HeyGen avatar audio 44.1k/stereo mixed with
+        // 48k/mono b-roll TTS audio plays back as static after scene 1).
+        m.sampleRate === first.sampleRate &&
+        m.channels === first.channels &&
+        Math.abs(m.fps - first.fps) < 0.05,
+    );
+
+    // Fast path: identical clips concatenate losslessly with perfect A/V sync.
+    if (uniform && tryConcatCopy(absolutePaths)) {
+      console.log(`[VideoCompositor] Concatenated ${absolutePaths.length} clips via stream copy (lossless)`);
       return outputPath;
     }
 
+    // Slow path: normalize each clip with duration-preserving fps + locked audio.
+    const targetWidth = first.width > 0 ? first.width : 1080;
+    const targetHeight = first.height > 0 ? first.height : 1920;
+    const detectedFps = metas.map((m) => m.fps).filter((f) => f > 0);
+    const targetFps =
+      detectedFps.length > 0 && detectedFps.every((f) => Math.abs(f - detectedFps[0]) < 0.05)
+        ? Math.round(detectedFps[0] * 1000) / 1000
+        : 24;
+    const anyAudio = metas.some((m) => m.hasAudio);
+
+    console.log(
+      `[VideoCompositor] Normalizing ${absolutePaths.length} clips to ${targetWidth}x${targetHeight}@${targetFps}fps ` +
+        `(audio sync-locked) before concatenation...`,
+    );
+
     const normalizedPaths: string[] = [];
     try {
-      for (let i = 0; i < absolutePaths.length; i++) {
-        const normalizedPath = path.join(outputDir, `tr_norm_${i}_${Date.now()}.mp4`);
-        const normalizeCommand = `
-          ffmpeg -y -i "${absolutePaths[i]}" \
-          -vf "fps=24" -c:v libx264 -preset medium -crf 23 \
-          -c:a copy -movflags +faststart \
-          "${normalizedPath}"
-        `.replace(/\s+/g, ' ').trim();
-        execSync(normalizeCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+      for (let i = 0; i < metas.length; i++) {
+        const meta = metas[i];
+        const normalizedPath = path.resolve(absoluteOutputDir, `normalized_${i}_${Date.now()}.mp4`);
+        // `fps` filter resamples frames to hit target fps WITHOUT changing clip
+        // duration, so audio stays aligned. scale+crop guarantees uniform size.
+        const vf = `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=${targetFps}`;
+
+        let cmd: string;
+        if (meta.hasAudio) {
+          // Force a single canonical audio layout (AAC / 48kHz / stereo) on
+          // EVERY clip. `-ac 2` is essential: without it a mono clip and a
+          // stereo clip stay mismatched after normalization and the final
+          // stream-copy concat re-introduces the static-audio corruption.
+          cmd = `
+            ffmpeg -y -i "${meta.path}" \
+            -vf "${vf}" \
+            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -c:a aac -b:a 192k -ar 48000 -ac 2 -af "aresample=async=1:first_pts=0" \
+            -movflags +faststart \
+            "${normalizedPath}"
+          `.replace(/\s+/g, ' ').trim();
+        } else if (anyAudio) {
+          // Add a matched silent track so every clip has the same stream layout.
+          cmd = `
+            ffmpeg -y -i "${meta.path}" \
+            -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+            -vf "${vf}" \
+            -map 0:v:0 -map 1:a:0 \
+            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -c:a aac -b:a 192k -ar 48000 -ac 2 \
+            -shortest -movflags +faststart \
+            "${normalizedPath}"
+          `.replace(/\s+/g, ' ').trim();
+        } else {
+          cmd = `
+            ffmpeg -y -i "${meta.path}" \
+            -vf "${vf}" \
+            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -an -movflags +faststart \
+            "${normalizedPath}"
+          `.replace(/\s+/g, ' ').trim();
+        }
+
+        execSync(cmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
         if (!fs.existsSync(normalizedPath)) {
           throw new Error(`Normalized clip not created: ${normalizedPath}`);
         }
         normalizedPaths.push(normalizedPath);
+        console.log(`[VideoCompositor] Normalized clip ${i + 1}/${metas.length}`);
       }
 
       if (!tryConcatCopy(normalizedPaths)) {
-        throw new Error('Translation concat failed after normalization');
+        throw new Error('Concat failed after sync-safe normalization');
       }
-      console.log(`[VideoCompositor] Translation clips concatenated after audio-preserving normalize`);
+      console.log(`[VideoCompositor] Concatenated ${normalizedPaths.length} clips after sync-safe normalize`);
       return outputPath;
     } finally {
       normalizedPaths.forEach((p) => {
@@ -460,6 +452,25 @@ export class VideoCompositorProvider {
         }
       });
     }
+  }
+
+  /**
+   * Concatenate multiple videos into one.
+   * Delegates to the sync-safe concat path so lip-sync is preserved across
+   * every render style (ALTERNATE, CUTOUT b-roll stitch, PRODUCT_ONLY, etc.).
+   * @param videoPaths Array of video file paths in order
+   * @param outputPath Path for output video
+   */
+  async concatenateVideos(videoPaths: string[], outputPath: string): Promise<string> {
+    return this.runSyncSafeConcat(videoPaths, outputPath);
+  }
+
+  /**
+   * Concatenate HeyGen translated clips while preserving embedded lip-sync.
+   * Uses the same sync-safe path as the main render flow.
+   */
+  async concatenateVideosForTranslation(videoPaths: string[], outputPath: string): Promise<string> {
+    return this.runSyncSafeConcat(videoPaths, outputPath);
   }
 
   /**
@@ -530,31 +541,18 @@ export class VideoCompositorProvider {
     }
     
     console.log(`[VideoCompositor] Scaling video from ${currentRes.width}x${currentRes.height} to ${targetWidth}x${targetHeight}`);
-    
-    // Get original frame rate to preserve it
-    let targetFps = '24/1'; // Default frame rate
-    try {
-      const fpsCommand = `ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`;
-      const fpsOutput = execSync(fpsCommand, { encoding: 'utf-8' }).trim();
-      if (fpsOutput && fpsOutput !== '0/0' && fpsOutput !== 'N/A') {
-        targetFps = fpsOutput;
-        console.log(`[VideoCompositor] Detected frame rate: ${targetFps}`);
-      } else {
-        console.warn(`[VideoCompositor] Could not detect frame rate, using default 24fps`);
-      }
-    } catch (e) {
-      console.warn(`[VideoCompositor] Could not detect frame rate, using default 24fps: ${e}`);
-    }
-    
-    // Scale video to exact dimensions (crop if needed to maintain aspect ratio)
-    // Preserve original frame rate to prevent jerky playback
+
+    // Scale video to exact dimensions (crop if needed to maintain aspect ratio).
+    // We deliberately do NOT pass `-r` / `-vsync cfr` here: scaling does not
+    // change the frame rate, and forcing a frame-rate pass can drop/duplicate
+    // frames and retime the video stream independently of its (copied) audio,
+    // which manifests as lip-sync drift. Keeping audio as a pure copy and
+    // leaving the video timeline untouched preserves A/V alignment exactly.
     const ffmpegCommand = `
       ffmpeg -i "${videoPath}" \
       -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight}" \
-      -r ${targetFps} \
       -c:v libx264 -preset medium -crf 23 \
       -c:a copy \
-      -vsync cfr \
       -y "${outputPath}"
     `.replace(/\s+/g, ' ').trim();
     
@@ -1137,14 +1135,37 @@ export class VideoCompositorProvider {
         -filter_complex "[1:v]chromakey=color=0x00FF00:similarity=0.25:blend=0:yuv=1[avatar_no_bg]; \
         [0:v][avatar_no_bg]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
         -map "[v]" -c:v libx264 -preset medium -crf 23 \
-        -map 0:a -c:a aac -b:a 192k \
+        -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
     } else if (usePngSequence) {
       // Use PNG sequence directly for overlay (BEST alpha preservation)
       console.log(`[VideoCompositor] Using PNG sequence for overlay with proper alpha...`);
-      const fps = pngMetadata.fps || 30;
-      
+
+      // Resolve avatar playback fps so the PNG sequence spans exactly the same
+      // duration as the b-roll/master audio (input 0). A wrong fps here makes the
+      // avatar mouth run ahead of / behind the voice. Prefer the fps captured at
+      // background-removal time; otherwise derive it from frame count ÷ b-roll
+      // duration so the avatar timeline matches the audio timeline precisely.
+      let fps = pngMetadata.fps && pngMetadata.fps > 0 ? pngMetadata.fps : 0;
+      if (!fps) {
+        try {
+          const frameCount = fs
+            .readdirSync(pngSequenceDir)
+            .filter((f) => f.toLowerCase().endsWith('.png')).length;
+          const brollDuration = await this.getVideoDuration(brollVideoPath);
+          if (frameCount > 0 && brollDuration > 0) {
+            fps = frameCount / brollDuration;
+            console.log(
+              `[VideoCompositor] Derived avatar PNG fps=${fps.toFixed(3)} from ${frameCount} frames over ${brollDuration.toFixed(2)}s`,
+            );
+          }
+        } catch (e) {
+          console.warn(`[VideoCompositor] Could not derive PNG fps, falling back to 30: ${e}`);
+        }
+      }
+      if (!fps || !Number.isFinite(fps)) fps = 30;
+
       // FFmpeg can read PNG sequence and overlay directly
       // This is the most reliable way to preserve alpha
       ffmpegCommand = `
@@ -1154,7 +1175,7 @@ export class VideoCompositorProvider {
         [0:v][scaled_avatar]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
         -map "[v]" -c:v libx264 -preset medium -crf 23 \
         -pix_fmt yuv420p \
-        -map 0:a -c:a aac -b:a 192k \
+        -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
     } else {
@@ -1168,7 +1189,7 @@ export class VideoCompositorProvider {
         [0:v][scaled_avatar]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
         -map "[v]" -c:v libx264 -preset medium -crf 23 \
         -pix_fmt yuv420p \
-        -map 0:a -c:a aac -b:a 192k \
+        -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
     }
@@ -1352,9 +1373,13 @@ export class VideoCompositorProvider {
     console.log(`[VideoCompositor] Adding audio to video...`);
 
     try {
+      // `aresample=async=1:first_pts=0` anchors the audio to presentation
+      // timestamp 0 and corrects any sample drift so the muxed track stays
+      // aligned with the (stream-copied) video, preventing lip-sync drift.
       const ffmpegCommand = `
         ffmpeg -i "${videoPath}" -i "${audioPath}" \
-        -c:v copy -c:a aac -b:a 192k \
+        -c:v copy -c:a aac -b:a 192k -ar 48000 \
+        -af "aresample=async=1:first_pts=0" \
         -map 0:v:0 -map 1:a:0 \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();

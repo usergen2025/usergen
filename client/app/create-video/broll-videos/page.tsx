@@ -703,10 +703,13 @@ function BrollVideosPageContent() {
     });
     
     const image = brollImages.find(img => img.sceneNumber === sceneNumber);
-    
-    // If video generation failed previously, we still need the image as source
-    // But we're regenerating VIDEO, not the image
-    if (!image || !image.imageUrl) {
+
+    const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
+    const isAvatarScene = (project as any)?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber);
+
+    // ALTERNATE avatar scenes are generated from the project avatar image + scene
+    // audio (HeyGen Avatar IV), so they don't have/need a b-roll source image.
+    if (!isAvatarScene && (!image || !image.imageUrl)) {
       showToast('Source image not found for this scene. Cannot generate video without source image.', 'warning');
       return;
     }
@@ -719,13 +722,18 @@ function BrollVideosPageContent() {
     }
 
     try {
-      // REMOVE OLD VIDEO IMMEDIATELY to show loader
-      setBrollVideos(prev => prev.filter(vid => {
-        const vidSceneNumber = typeof vid.sceneNumber === 'number' 
-          ? vid.sceneNumber 
+      // REMOVE OLD VIDEO IMMEDIATELY to show loader (avatar scenes live in avatarVideos)
+      const removeForScene = (vid: BrollVideo) => {
+        const vidSceneNumber = typeof vid.sceneNumber === 'number'
+          ? vid.sceneNumber
           : parseInt(String(vid.sceneNumber || 0), 10);
         return vidSceneNumber !== sceneNumber;
-      }));
+      };
+      if (isAvatarScene) {
+        setAvatarVideos(prev => prev.filter(removeForScene));
+      } else {
+        setBrollVideos(prev => prev.filter(removeForScene));
+      }
       
       // Set regenerating state to show loader
       setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));

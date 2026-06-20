@@ -113,16 +113,19 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           duration: audioFile.duration,
           sceneType: 'avatar',
         };
-        const avatarVideos = ((project as any).avatarVideos as any[]) || [];
-        const existingIdx = avatarVideos.findIndex((v: any) => v.sceneNumber === sceneNumber);
-        if (existingIdx >= 0) {
-          avatarVideos[existingIdx] = avatarEntry;
-        } else {
-          avatarVideos.push(avatarEntry);
-        }
-        await this.databaseService.videoProject.update({
-          where: { id: projectId },
-          data: { avatarVideos: avatarVideos as any } as any,
+        await this.databaseService.withProjectLock(projectId, async (tx) => {
+          const latest = await tx.videoProject.findUnique({ where: { id: projectId } });
+          const avatarVideos = ((latest as any)?.avatarVideos as any[]) || [];
+          const existingIdx = avatarVideos.findIndex((v: any) => v.sceneNumber === sceneNumber);
+          if (existingIdx >= 0) {
+            avatarVideos[existingIdx] = avatarEntry;
+          } else {
+            avatarVideos.push(avatarEntry);
+          }
+          await tx.videoProject.update({
+            where: { id: projectId },
+            data: { avatarVideos: avatarVideos as any } as any,
+          });
         });
       } else {
         avatarVideoPath = await this.alternateAvatarService.generateAlternateSceneAvatarVideo(
@@ -145,32 +148,34 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           sceneType: 'avatar',
         };
 
-        const latestProj = await this.databaseService.videoProject.findUnique({
-          where: { id: projectId },
-        });
-        if (!latestProj) throw new Error('Project not found');
+        await this.databaseService.withProjectLock(projectId, async (tx) => {
+          const latestProj = await tx.videoProject.findUnique({
+            where: { id: projectId },
+          });
+          if (!latestProj) throw new Error('Project not found');
 
-        const avVideos = ((latestProj as any).avatarVideos as any[]) || [];
-        const idx = avVideos.findIndex((v: any) => v.sceneNumber === sceneNumber);
-        if (idx >= 0) avVideos[idx] = avatarEntry;
-        else avVideos.push(avatarEntry);
+          const avVideos = ((latestProj as any).avatarVideos as any[]) || [];
+          const idx = avVideos.findIndex((v: any) => v.sceneNumber === sceneNumber);
+          if (idx >= 0) avVideos[idx] = avatarEntry;
+          else avVideos.push(avatarEntry);
 
-        const meta = ((latestProj as any).metadata as any) || {};
-        const cache = meta.avatarVideoCache || {};
-        cache[sceneNumber] = {
-          localPath: avatarVideoPath,
-          localUrl,
-          audioHash,
-          generatedAt: new Date().toISOString(),
-        };
+          const meta = ((latestProj as any).metadata as any) || {};
+          const cache = meta.avatarVideoCache || {};
+          cache[sceneNumber] = {
+            localPath: avatarVideoPath,
+            localUrl,
+            audioHash,
+            generatedAt: new Date().toISOString(),
+          };
 
-        const failed = (meta.failedAvatarScenes || []).filter((s: number) => s !== sceneNumber);
-        await this.databaseService.videoProject.update({
-          where: { id: projectId },
-          data: {
-            avatarVideos: avVideos as any,
-            metadata: { ...meta, avatarVideoCache: cache, failedAvatarScenes: failed } as any,
-          } as any,
+          const failed = (meta.failedAvatarScenes || []).filter((s: number) => s !== sceneNumber);
+          await tx.videoProject.update({
+            where: { id: projectId },
+            data: {
+              avatarVideos: avVideos as any,
+              metadata: { ...meta, avatarVideoCache: cache, failedAvatarScenes: failed } as any,
+            } as any,
+          });
         });
       }
 
@@ -199,15 +204,17 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     } catch (error: any) {
       console.error(`[AvatarVideoGenerationProcessor] Error for job ${job.id}:`, error);
 
-      const meta = (await this.databaseService.videoProject.findFirst({ where: { id: projectId } }))?.metadata as any;
-      const failedScenes = meta?.failedAvatarScenes || [];
-      if (!failedScenes.includes(sceneNumber)) {
-        failedScenes.push(sceneNumber);
-        await this.databaseService.videoProject.update({
-          where: { id: projectId },
-          data: { metadata: { ...meta, failedAvatarScenes: failedScenes } as any } as any,
-        }).catch(() => {});
-      }
+      await this.databaseService.withProjectLock(projectId, async (tx) => {
+        const meta = ((await tx.videoProject.findUnique({ where: { id: projectId } }))?.metadata as any) || {};
+        const failedScenes = meta?.failedAvatarScenes || [];
+        if (!failedScenes.includes(sceneNumber)) {
+          failedScenes.push(sceneNumber);
+          await tx.videoProject.update({
+            where: { id: projectId },
+            data: { metadata: { ...meta, failedAvatarScenes: failedScenes } as any } as any,
+          });
+        }
+      }).catch(() => {});
 
       await this.jobStatusGateway.notifyJobStatus(userId, {
         jobId: emitJobId,

@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 @Injectable()
 export class DatabaseService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -42,6 +42,28 @@ export class DatabaseService extends PrismaClient implements OnModuleInit, OnMod
     } catch (error) {
       return false;
     }
+  }
+
+  /**
+   * Run `fn` inside a transaction that holds a row-level lock on the given
+   * video project. This serializes concurrent read-modify-write operations on
+   * the project's JSON columns (e.g. avatarVideos, bRollVideoTasks, metadata)
+   * so that parallel BullMQ workers cannot clobber each other's updates
+   * (lost-update race). The lock is released when the transaction commits.
+   *
+   * IMPORTANT: keep `fn` short — do NOT perform external/network calls inside
+   * it, or the row lock will be held for the duration of those calls.
+   */
+  async withProjectLock<T>(
+    projectId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.$transaction(async (tx) => {
+      // Acquire a row-level lock; concurrent transactions targeting the same
+      // project block here until this transaction commits.
+      await tx.$queryRaw`SELECT id FROM "video_projects" WHERE id = ${projectId} FOR UPDATE`;
+      return fn(tx);
+    });
   }
 }
 

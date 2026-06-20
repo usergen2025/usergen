@@ -245,6 +245,12 @@ export class RenderingService {
     const metadata = result.metadata;
     if (projectStyle === 'AVATAR_ONLY' || projectStyle === 'ANIMATED_AVATAR') {
       metadata.singleClipStyle = true;
+      // For single-clip styles the avatar clip is only ever produced by an
+      // explicit user export (startRendering or postProcessExport — both reach
+      // here). This marker lets the workspace distinguish "exported, show the
+      // completed screen" from "clip not yet exported, stay on the editing
+      // page" so reloads land on the right view.
+      metadata.finalExportedAt = new Date().toISOString();
     }
 
     await this.databaseService.videoProject.update({

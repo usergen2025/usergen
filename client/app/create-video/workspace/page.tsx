@@ -846,7 +846,15 @@ function WorkspacePageContent() {
           // Check if project is already completed or rendering
           if (projectData.status === 'COMPLETED' && hasFinalVideo(projectData)) {
             applyProjectVideoUrls(projectData);
-            if (isSingleClipVideoStyle(projectData.style)) {
+            // Single-clip styles can be COMPLETED while still in the editing
+            // stage (their clip + the editable captions/music page). Only jump
+            // to the completed screen once the user has actually exported
+            // (marked by metadata.finalExportedAt); otherwise stay on the
+            // videos editing page.
+            const singleClipNotExported =
+              isSingleClipVideoStyle(projectData.style) &&
+              !(projectData.metadata as any)?.finalExportedAt;
+            if (singleClipNotExported) {
               setWorkspaceMode('videos');
             } else {
               setWorkspaceMode('completed');
@@ -1705,9 +1713,12 @@ function WorkspacePageContent() {
     if (!currentScene) return;
 
     const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
+    const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(currentScene, sceneNumber);
     const image = brollImages.find((img) => img.sceneNumber === sceneNumber);
 
-    if (!image?.imageUrl) {
+    // ALTERNATE avatar scenes are generated from the project avatar image + scene
+    // audio (HeyGen Avatar IV), so they don't have/need a b-roll source image.
+    if (!isAvatarScene && !image?.imageUrl) {
       showToast('Source image not found. Cannot regenerate video without source image.', 'warning');
       return;
     }
@@ -1719,7 +1730,11 @@ function WorkspacePageContent() {
     }
 
     try {
-      setBrollVideos((prev) => prev.filter((vid) => vid.sceneNumber !== sceneNumber));
+      if (isAvatarScene) {
+        setAvatarVideos((prev) => prev.filter((vid) => vid.sceneNumber !== sceneNumber));
+      } else {
+        setBrollVideos((prev) => prev.filter((vid) => vid.sceneNumber !== sceneNumber));
+      }
       setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
       setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
       showToast('Regenerating video...', 'info');
@@ -2730,9 +2745,14 @@ function WorkspacePageContent() {
   const previewPlayerReady =
     Boolean(previewPlaybackUrl) && isPreviewReady(project || {});
 
+  // In `completed` mode the dedicated completed view owns the whole area, so
+  // the main workspace must be hidden for ALL styles (previously single-clip
+  // was excepted, which caused the completed view to render on top of the
+  // videos page). The pre-export editing page is unaffected because it runs in
+  // `videos` mode, not `completed`.
   const showMainWorkspace =
     workspaceMode !== 'rendering' &&
-    !(workspaceMode === 'completed' && finalReady && !isSingleClipStyle);
+    !(workspaceMode === 'completed' && finalReady);
 
   return (
     <div className="relative h-full min-h-0 flex flex-col overflow-hidden">
