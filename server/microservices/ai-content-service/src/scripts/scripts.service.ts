@@ -3245,4 +3245,51 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
       }, 500);
     });
   }
+
+  /**
+   * Translate per-scene voiceover text for translated video captions.
+   */
+  async translateVoiceovers(params: {
+    scenes: Array<{ sceneNumber: number; voiceover: string }>;
+    targetLanguage: string;
+  }): Promise<Array<{ sceneNumber: number; voiceover: string }>> {
+    const { scenes, targetLanguage } = params;
+    if (!scenes?.length) return [];
+
+    if (!this.openai) {
+      return scenes.map((s) => ({
+        sceneNumber: s.sceneNumber,
+        voiceover: `[${targetLanguage}] ${s.voiceover}`,
+      }));
+    }
+
+    const systemPrompt = `You translate video voiceover lines for on-screen captions. Target language: ${targetLanguage}.
+Return JSON: { "scenes": [ { "sceneNumber": number, "voiceover": "translated text" } ] }
+Preserve meaning and approximate length. Do not add quotes or scene labels.`;
+
+    const userContent = JSON.stringify({ scenes });
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 4000,
+    });
+
+    const extracted = extractAssistantText(completion.choices?.[0]?.message);
+    if (extracted.ok === false) {
+      throw new Error('Failed to translate voiceovers');
+    }
+
+    const parsed = JSON.parse(extracted.text);
+    const out = Array.isArray(parsed.scenes) ? parsed.scenes : [];
+    return out.map((s: any) => ({
+      sceneNumber: Number(s.sceneNumber),
+      voiceover: String(s.voiceover || ''),
+    }));
+  }
 }

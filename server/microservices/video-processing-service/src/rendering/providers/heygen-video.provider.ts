@@ -101,6 +101,25 @@ export type HeyGenAvatarIVUnifiedStart = Pick<
   'video_id' | 'useV3Polling'
 >;
 
+export interface HeyGenVideoTranslationRequest {
+  videoUrl: string;
+  outputLanguage: string;
+  mode?: 'speed' | 'precision';
+  translateAudioOnly?: boolean;
+  disableMusicTrack?: boolean;
+  title?: string;
+  inputLanguage?: string;
+  speakerNum?: number;
+}
+
+export interface HeyGenVideoTranslationStatus {
+  id: string;
+  status: string;
+  videoUrl?: string;
+  error?: string;
+  captionUrl?: string;
+}
+
 @Injectable()
 export class HeyGenVideoProvider {
   private axiosInstance: AxiosInstance;
@@ -1108,5 +1127,146 @@ export class HeyGenVideoProvider {
         }`,
       );
     }
+  }
+
+  private cachedTranslationLanguages: string[] | null = null;
+  private cachedTranslationLanguagesAt = 0;
+  private readonly translationLanguagesCacheMs = 60 * 60 * 1000;
+
+  /**
+   * List supported HeyGen video translation target languages (v3).
+   */
+  async listVideoTranslationLanguages(forceRefresh = false): Promise<string[]> {
+    const now = Date.now();
+    if (
+      !forceRefresh &&
+      this.cachedTranslationLanguages &&
+      now - this.cachedTranslationLanguagesAt < this.translationLanguagesCacheMs
+    ) {
+      return this.cachedTranslationLanguages;
+    }
+
+    try {
+      const response = await this.axiosV3.get('/v3/video-translations/languages');
+      const data = response.data?.data ?? response.data;
+      const languages: string[] =
+        data?.languages ??
+        data?.output_languages ??
+        (Array.isArray(data) ? data : []);
+      if (!Array.isArray(languages) || languages.length === 0) {
+        throw new Error('Empty language list from HeyGen');
+      }
+      this.cachedTranslationLanguages = languages.map(String);
+      this.cachedTranslationLanguagesAt = now;
+      return this.cachedTranslationLanguages;
+    } catch (error: any) {
+      console.error('[HeyGen] listVideoTranslationLanguages error:', error.response?.data || error.message);
+      if (this.cachedTranslationLanguages?.length) {
+        return this.cachedTranslationLanguages;
+      }
+      throw new Error(
+        `Failed to list HeyGen translation languages: ${
+          error.response?.data?.error?.message || error.message
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Create a HeyGen v3 video translation job (single target language).
+   */
+  async createVideoTranslation(
+    request: HeyGenVideoTranslationRequest,
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      video: { type: 'url', url: request.videoUrl },
+      output_languages: [request.outputLanguage],
+      mode: request.mode ?? 'precision',
+      translate_audio_only: request.translateAudioOnly ?? false,
+      disable_music_track: request.disableMusicTrack ?? true,
+      enable_dynamic_duration: true,
+    };
+    if (request.title) body.title = request.title;
+    if (request.inputLanguage) body.input_language = request.inputLanguage;
+    if (request.speakerNum != null) body.speaker_num = request.speakerNum;
+
+    try {
+      const response = await this.axiosV3.post('/v3/video-translations', body);
+      const data = response.data?.data ?? response.data;
+      const ids: string[] =
+        data?.video_translation_ids ??
+        (data?.video_translation_id ? [data.video_translation_id] : []);
+      const id = ids[0] || data?.id;
+      if (!id) {
+        console.error('[HeyGen] createVideoTranslation response:', JSON.stringify(response.data));
+        throw new Error('HeyGen did not return video_translation_id');
+      }
+      console.log(`[HeyGen] Video translation created: ${id} -> ${request.outputLanguage}`);
+      return String(id);
+    } catch (error: any) {
+      console.error('[HeyGen] createVideoTranslation error:', error.response?.data || error.message);
+      throw new Error(
+        `Failed to create HeyGen video translation: ${
+          error.response?.data?.error?.message || error.message
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Poll HeyGen v3 video translation status.
+   */
+  async getVideoTranslationStatus(translationId: string): Promise<HeyGenVideoTranslationStatus> {
+    try {
+      const response = await this.axiosV3.get(`/v3/video-translations/${translationId}`);
+      const data = response.data?.data ?? response.data;
+      const status = String(data?.status ?? data?.state ?? 'unknown').toLowerCase();
+      const videoUrl =
+        data?.video_url ??
+        data?.url ??
+        data?.output?.video_url ??
+        data?.translated_video_url;
+      const error =
+        data?.error?.message ??
+        data?.error_message ??
+        (typeof data?.error === 'string' ? data.error : undefined);
+      return {
+        id: translationId,
+        status,
+        videoUrl: videoUrl ? String(videoUrl) : undefined,
+        error: error ? String(error) : undefined,
+        captionUrl: data?.caption_url ? String(data.caption_url) : undefined,
+      };
+    } catch (error: any) {
+      console.error('[HeyGen] getVideoTranslationStatus error:', error.response?.data || error.message);
+      throw new Error(
+        `Failed to get HeyGen translation status: ${
+          error.response?.data?.error?.message || error.message
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Poll until translation completes or fails.
+   */
+  async pollVideoTranslationUntilComplete(
+    translationId: string,
+    maxAttempts = 120,
+    intervalMs = 5000,
+  ): Promise<HeyGenVideoTranslationStatus> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const status = await this.getVideoTranslationStatus(translationId);
+      if (['completed', 'success', 'done'].includes(status.status) && status.videoUrl) {
+        return status;
+      }
+      if (['failed', 'error'].includes(status.status)) {
+        throw new Error(status.error || `HeyGen translation failed (${status.status})`);
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    }
+    throw new Error(`HeyGen translation timed out after ${maxAttempts} attempts`);
   }
 }

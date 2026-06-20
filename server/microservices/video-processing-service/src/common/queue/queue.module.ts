@@ -9,6 +9,7 @@ import { AvatarVideoGenerationProcessor } from './processors/avatar-video-genera
 import { SceneCompositeProcessor } from './processors/scene-composite.processor';
 import { StockDownloadProcessor } from './processors/stock-download.processor';
 import { PreviewDerivativesProcessor } from './processors/preview-derivatives.processor';
+import { VideoTranslationProcessor } from './processors/video-translation.processor';
 import { DatabaseModule } from '../database/database.module';
 import { RenderingModule } from '../../rendering/rendering.module';
 import { WebSocketModule } from '../websocket/websocket.module';
@@ -40,6 +41,7 @@ import { BrandModule } from '../../brand/brand.module';
       { name: 'stock-download' },
       { name: 'preview-derivatives' },
       { name: 'brand-packaging' },
+      { name: 'video-translation' },
     ),
   ],
   providers: [
@@ -51,6 +53,7 @@ import { BrandModule } from '../../brand/brand.module';
     SceneCompositeProcessor,
     StockDownloadProcessor,
     PreviewDerivativesProcessor,
+    VideoTranslationProcessor,
     AssetProcessorService,
   ],
   exports: [QueueManagerService, PreviewModule],

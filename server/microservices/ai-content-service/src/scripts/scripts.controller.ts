@@ -509,4 +509,22 @@ export class ScriptsController {
       );
     }
   }
+
+  @Post('translate-voiceovers')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Translate scene voiceovers for translated video captions' })
+  async translateVoiceovers(
+    @Body() body: { scenes: Array<{ sceneNumber: number; voiceover: string }>; targetLanguage: string },
+  ) {
+    const scenes = await this.scriptsService.translateVoiceovers({
+      scenes: body.scenes || [],
+      targetLanguage: body.targetLanguage,
+    });
+    return {
+      success: true,
+      data: { scenes },
+      message: 'Voiceovers translated',
+      timestamp: new Date().toISOString(),
+    };
+  }
 }

@@ -231,6 +231,56 @@ export class RenderingService {
     totalDuration: number,
     styleLabel: string,
   ): Promise<{ publicUrl: string; localVideoUrl: string; finalDuration: number }> {
+    const result = await this.finalizeVariant(
+      projectId,
+      userId,
+      project,
+      pathForUpload,
+      userDir,
+      totalDuration,
+      styleLabel,
+    );
+
+    const projectStyle = String(project?.style || styleLabel || '');
+    const metadata = result.metadata;
+    if (projectStyle === 'AVATAR_ONLY' || projectStyle === 'ANIMATED_AVATAR') {
+      metadata.singleClipStyle = true;
+    }
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'COMPLETED',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        videoUrl: result.publicUrl || result.localVideoUrl,
+        duration: result.finalDuration,
+        currentStep: 'COMPLETED',
+        completedAt: new Date(),
+        metadata: metadata as any,
+      } as any,
+    });
+
+    await this.enqueuePreviewDerivatives(projectId, userId, result.publicUrl || result.localVideoUrl);
+    await this.chargeFinalRenderCredits(projectId, userId);
+    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
+
+    console.log(`[RenderingService] ${styleLabel} video completed: ${result.publicUrl || result.localVideoUrl}`);
+    return result;
+  }
+
+  /**
+   * Brand packaging + GCS upload without mutating project.videoUrl (used for translation variants).
+   */
+  async finalizeVariant(
+    projectId: string,
+    userId: string,
+    project: any,
+    pathForUpload: string,
+    userDir: string,
+    totalDuration: number,
+    styleLabel: string,
+  ): Promise<{ publicUrl: string; localVideoUrl: string; finalDuration: number; metadata: Record<string, unknown> }> {
     let finalPath = pathForUpload;
     let finalDuration = totalDuration;
 
@@ -359,33 +409,136 @@ export class RenderingService {
       console.warn(`[RenderingService] GCS upload failed for ${styleLabel} final video: ${error.message}`);
     }
 
-    const projectStyle = String(
-      freshProject?.style || project?.style || styleLabel || '',
+    return { publicUrl: publicUrl || localVideoUrl, localVideoUrl, finalDuration, metadata };
+  }
+
+  /**
+   * Apply background music, captions, and return path ready for finalizeVariant.
+   */
+  async postProcessVideoPath(
+    project: any,
+    sourcePath: string,
+    userDir: string,
+    projectId: string,
+    audioFiles: any[],
+    styleLabel: string,
+    captionAudioFiles?: any[],
+  ): Promise<{ pathForUpload: string; totalDuration: number }> {
+    const sortedAudioFiles = [...(captionAudioFiles ?? audioFiles)].sort(
+      (a, b) => (a.sceneNumber ?? 0) - (b.sceneNumber ?? 0),
     );
-    if (projectStyle === 'AVATAR_ONLY' || projectStyle === 'ANIMATED_AVATAR') {
-      metadata.singleClipStyle = true;
+    const probedDuration = await this.videoCompositor.getVideoDuration(sourcePath).catch(() => 0);
+    const summedDuration = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    const totalDuration = probedDuration > 0 ? probedDuration : summedDuration;
+
+    let pathForUpload = await this.applyBackgroundMusicIfEnabled(
+      project,
+      sourcePath,
+      userDir,
+      projectId,
+    );
+
+    if (project.captionsEnabled && project.captionSettings) {
+      try {
+        const captionedPath = await this.addCaptionsToFinalVideo(
+          pathForUpload,
+          userDir,
+          projectId,
+          sortedAudioFiles,
+          project.captionSettings,
+        );
+        if (captionedPath) {
+          pathForUpload = captionedPath;
+        }
+      } catch (captionError: any) {
+        console.error(
+          `[RenderingService] ${styleLabel}: Failed to add captions: ${captionError.message}`,
+        );
+      }
     }
 
-    await this.databaseService.videoProject.update({
-      where: { id: projectId },
-      data: {
-        status: 'COMPLETED',
-        renderingStatus: 'completed' as any,
-        renderingProgress: 100 as any,
-        videoUrl: publicUrl || localVideoUrl,
-        duration: finalDuration,
-        currentStep: 'COMPLETED',
-        completedAt: new Date(),
-        metadata: metadata as any,
-      } as any,
-    });
+    return { pathForUpload, totalDuration };
+  }
 
-    await this.enqueuePreviewDerivatives(projectId, userId, publicUrl || localVideoUrl);
-    await this.chargeFinalRenderCredits(projectId, userId);
-    await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
+  /**
+   * Concatenate scene video paths (already with audio) and return stitched duration.
+   */
+  async concatenateSceneClips(
+    sceneVideoPaths: string[],
+    outputPath: string,
+    fallbackDuration = 0,
+  ): Promise<number> {
+    const absolutePaths = sceneVideoPaths
+      .map((vp) => (vp && fs.existsSync(vp) ? path.resolve(vp) : null))
+      .filter(Boolean) as string[];
 
-    console.log(`[RenderingService] ${styleLabel} video completed: ${publicUrl || localVideoUrl}`);
-    return { publicUrl: publicUrl || localVideoUrl, localVideoUrl, finalDuration };
+    if (absolutePaths.length === 0) {
+      throw new Error('No valid scene videos to stitch together');
+    }
+
+    await this.videoCompositor.concatenateVideos(absolutePaths, outputPath);
+
+    try {
+      return await this.videoCompositor.getVideoDuration(outputPath);
+    } catch {
+      return fallbackDuration;
+    }
+  }
+
+  /** Concatenate translated HeyGen clips while preserving embedded audio sync. */
+  async concatenateTranslatedSceneClips(
+    sceneVideoPaths: string[],
+    outputPath: string,
+    fallbackDuration = 0,
+  ): Promise<number> {
+    const absolutePaths = sceneVideoPaths
+      .map((vp) => (vp && fs.existsSync(vp) ? path.resolve(vp) : null))
+      .filter(Boolean) as string[];
+
+    if (absolutePaths.length === 0) {
+      throw new Error('No valid scene videos to stitch together');
+    }
+
+    await this.videoCompositor.concatenateVideosForTranslation(absolutePaths, outputPath);
+
+    try {
+      return await this.videoCompositor.getVideoDuration(outputPath);
+    } catch {
+      return fallbackDuration;
+    }
+  }
+
+  getAlternateSceneRolePublic(scene: any, sceneNumber: number): 'b-roll' | 'avatar' {
+    return this.getAlternateSceneRole(scene, sceneNumber);
+  }
+
+  resolveLocalVideoPath(localPath?: string, localUrl?: string): string | null {
+    if (localPath) {
+      const p = path.isAbsolute(localPath) ? localPath : path.resolve(localPath);
+      if (fs.existsSync(p)) return p;
+    }
+    if (localUrl) {
+      const rel = (localUrl as string).replace(/^\/uploads\//, '').replace(/\//g, path.sep);
+      const full = path.join(this.uploadsDir, rel);
+      if (fs.existsSync(full)) return full;
+    }
+    return null;
+  }
+
+  getUploadsDir(): string {
+    return this.uploadsDir;
+  }
+
+  getVideoCompositor(): VideoCompositorProvider {
+    return this.videoCompositor;
+  }
+
+  getPublicUrlService(): PublicUrlService {
+    return this.publicUrlService;
+  }
+
+  getAudioFilePathPublic(audioFile: any): string | null {
+    return this.getAudioFilePath(audioFile);
   }
 
   private findExistingSourceVideoPath(

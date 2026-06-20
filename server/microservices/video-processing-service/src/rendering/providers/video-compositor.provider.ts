@@ -366,6 +366,103 @@ export class VideoCompositorProvider {
   }
 
   /**
+   * Concatenate HeyGen translated clips without forcing CFR re-encode (preserves lip-sync).
+   * Falls back to video-only fps normalization with audio stream copy if concat copy fails.
+   */
+  async concatenateVideosForTranslation(videoPaths: string[], outputPath: string): Promise<string> {
+    this.checkFFmpeg();
+
+    if (videoPaths.length === 0) {
+      throw new Error('No videos to concatenate');
+    }
+
+    if (videoPaths.length === 1) {
+      fs.copyFileSync(videoPaths[0], outputPath);
+      return outputPath;
+    }
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const absolutePaths = videoPaths.map((vp) => {
+      const abs = path.isAbsolute(vp) ? vp : path.resolve(vp);
+      if (!fs.existsSync(abs)) {
+        throw new Error(`Video file not found: ${vp}`);
+      }
+      return abs;
+    });
+
+    const tryConcatCopy = (paths: string[]): boolean => {
+      const listPath = path.join(outputDir, `concat_tr_${Date.now()}.txt`);
+      const listContent = paths
+        .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+        .join('\n');
+      fs.writeFileSync(listPath, listContent);
+      try {
+        const cmd = `
+          ffmpeg -f concat -safe 0 -i "${listPath}" \
+          -c copy -movflags +faststart \
+          -y "${outputPath}"
+        `.replace(/\s+/g, ' ').trim();
+        execSync(cmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+        return fs.existsSync(outputPath);
+      } catch (err: any) {
+        console.warn(`[VideoCompositor] Translation concat copy failed: ${err?.message || err}`);
+        return false;
+      } finally {
+        if (fs.existsSync(listPath)) {
+          try {
+            fs.unlinkSync(listPath);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+
+    if (tryConcatCopy(absolutePaths)) {
+      console.log(`[VideoCompositor] Translation clips concatenated via stream copy`);
+      return outputPath;
+    }
+
+    const normalizedPaths: string[] = [];
+    try {
+      for (let i = 0; i < absolutePaths.length; i++) {
+        const normalizedPath = path.join(outputDir, `tr_norm_${i}_${Date.now()}.mp4`);
+        const normalizeCommand = `
+          ffmpeg -y -i "${absolutePaths[i]}" \
+          -vf "fps=24" -c:v libx264 -preset medium -crf 23 \
+          -c:a copy -movflags +faststart \
+          "${normalizedPath}"
+        `.replace(/\s+/g, ' ').trim();
+        execSync(normalizeCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+        if (!fs.existsSync(normalizedPath)) {
+          throw new Error(`Normalized clip not created: ${normalizedPath}`);
+        }
+        normalizedPaths.push(normalizedPath);
+      }
+
+      if (!tryConcatCopy(normalizedPaths)) {
+        throw new Error('Translation concat failed after normalization');
+      }
+      console.log(`[VideoCompositor] Translation clips concatenated after audio-preserving normalize`);
+      return outputPath;
+    } finally {
+      normalizedPaths.forEach((p) => {
+        if (fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch {
+            // ignore
+          }
+        }
+      });
+    }
+  }
+
+  /**
    * Get video duration in seconds
    */
   async getVideoDuration(videoPath: string): Promise<number> {
@@ -1269,6 +1366,24 @@ export class VideoCompositorProvider {
       console.error(`[VideoCompositor] FFmpeg add audio error:`, error.message);
       throw new Error(`Failed to add audio to video: ${error.message}`);
     }
+  }
+
+  async trimVideo(inputPath: string, outputPath: string, startSec: number, durationSec: number): Promise<string> {
+    this.checkFFmpeg();
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+    const cmd = `ffmpeg -ss ${startSec} -i "${inputPath}" -t ${durationSec} -c:v libx264 -preset medium -crf 23 -c:a aac -y "${outputPath}"`.replace(/\s+/g, ' ').trim();
+    execSync(cmd, { stdio: 'inherit' });
+    return outputPath;
+  }
+
+  async loopVideoToDuration(inputPath: string, outputPath: string, targetDurationSec: number): Promise<string> {
+    this.checkFFmpeg();
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+    const cmd = `ffmpeg -stream_loop -1 -i "${inputPath}" -t ${targetDurationSec} -c:v libx264 -preset medium -crf 23 -c:a aac -shortest -y "${outputPath}"`.replace(/\s+/g, ' ').trim();
+    execSync(cmd, { stdio: 'inherit' });
+    return outputPath;
   }
 
   /**

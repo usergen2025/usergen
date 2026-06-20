@@ -1417,7 +1417,114 @@ class ApiClient {
     return response.data;
   }
 
-  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'avatar-video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging'): Promise<ApiResponse<any>> {
+  async getTranslationLanguages(): Promise<ApiResponse<{ languages: string[] }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<{ languages: string[] }>>(
+      `${videoServiceUrl}/video-projects/translation-languages`,
+      { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } },
+    );
+    return response.data;
+  }
+
+  async getOperationCreditCost(operationType: string): Promise<ApiResponse<{ operationType: string; creditCost: number }>> {
+    const paymentServiceUrl = PAYMENT_SERVICE_URL;
+    const response = await axios.get<ApiResponse<{ operationType: string; creditCost: number }>>(
+      `${paymentServiceUrl}/pricing/${encodeURIComponent(operationType)}/cost`,
+    );
+    return response.data;
+  }
+
+  async getVideoTranslations(projectId: string): Promise<ApiResponse<{ translations: any[] }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+    const response = await axios.get<ApiResponse<{ translations: any[] }>>(
+      `${videoServiceUrl}/video-projects/${projectId}/translations`,
+      { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } },
+    );
+    return response.data;
+  }
+
+  async createVideoTranslations(
+    projectId: string,
+    languages: string[],
+  ): Promise<ApiResponse<{ variants: any[]; jobs: { variantId: string; jobId: string; language: string }[] }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+    const response = await axios.post(
+      `${videoServiceUrl}/video-projects/${projectId}/translations`,
+      { languages },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return response.data;
+  }
+
+  async deleteVideoTranslation(projectId: string, variantId: string): Promise<ApiResponse<null>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+    const response = await axios.delete(
+      `${videoServiceUrl}/video-projects/${projectId}/translations/${variantId}`,
+      { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } },
+    );
+    return response.data;
+  }
+
+  /** Download clean final translated video (no preview watermark) via Next.js proxy. */
+  async downloadVideoTranslation(projectId: string, variantId: string): Promise<Blob> {
+    const token = this.getToken();
+    if (!token) {
+      throw new Error('Please log in to download');
+    }
+    const response = await axios.get(
+      `/api/video/${projectId}/translations/${variantId}/download`,
+      {
+        responseType: 'blob',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        validateStatus: (status) => status < 500,
+      },
+    );
+
+    const contentType = String(response.headers['content-type'] || '');
+    if (response.status !== 200) {
+      if (contentType.includes('json') || contentType.includes('text')) {
+        const text =
+          response.data instanceof Blob
+            ? await response.data.text()
+            : String(response.data);
+        try {
+          const parsed = JSON.parse(text) as { message?: string };
+          throw new Error(parsed.message || `Download failed (${response.status})`);
+        } catch (e) {
+          if (e instanceof Error && !e.message.startsWith('Download failed')) throw e;
+          throw new Error(`Download failed (${response.status})`);
+        }
+      }
+      throw new Error(`Download failed (${response.status})`);
+    }
+
+    const blob = response.data as Blob;
+    if (!contentType.includes('video') && blob.size < 4096) {
+      const text = await blob.text();
+      try {
+        const parsed = JSON.parse(text) as { message?: string };
+        throw new Error(parsed.message || 'Download failed');
+      } catch (e) {
+        if (e instanceof Error && e.message !== 'Download failed') throw e;
+        throw new Error('Download failed: unexpected response from server');
+      }
+    }
+
+    return blob;
+  }
+
+  async getQueueJobStatus(jobId: string, queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'avatar-video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging' | 'video-translation'): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 

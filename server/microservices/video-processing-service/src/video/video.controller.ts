@@ -42,6 +42,7 @@ import { execSync } from 'child_process';
 import type { Multer } from 'multer';
 import axios from 'axios';
 import { BrandPackagingService } from '../brand/brand-packaging.service';
+import { VideoTranslationService } from '../rendering/video-translation.service';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -55,6 +56,7 @@ export class VideoController {
     private readonly publicUrlService: PublicUrlService,
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly brandPackagingService: BrandPackagingService,
+    private readonly videoTranslationService: VideoTranslationService,
   ) {}
 
   /**
@@ -291,6 +293,18 @@ export class VideoController {
         default: 'video-model-1',
       },
     };
+  }
+
+  @Get('translation-languages')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'List HeyGen-supported video translation languages' })
+  async listTranslationLanguages(@Request() req: any) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+    const languages = await this.videoTranslationService.listSupportedLanguages();
+    return { success: true, data: { languages } };
   }
 
   @Get(':projectId/download-url')
@@ -612,6 +626,96 @@ export class VideoController {
 
     const authToken = req.headers?.authorization || null;
     return await this.renderingService.postProcessExport(projectId, userId, authToken);
+  }
+
+  @Get(':projectId/translations')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({ summary: 'List translation variants for a project' })
+  async getProjectTranslations(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) throw new HttpException('Authentication failed', HttpStatus.UNAUTHORIZED);
+    const translations = await this.videoTranslationService.getTranslations(projectId, userId);
+    return { success: true, data: { translations } };
+  }
+
+  @Get(':projectId/translations/:variantId')
+  @ApiBearerAuth('JWT-auth')
+  async getProjectTranslation(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('variantId') variantId: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) throw new HttpException('Authentication failed', HttpStatus.UNAUTHORIZED);
+    const variant = await this.videoTranslationService.getTranslation(projectId, userId, variantId);
+    return { success: true, data: { variant } };
+  }
+
+  @Post(':projectId/translations')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Request video translation into one or more languages' })
+  async createProjectTranslations(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body: { languages: string[] },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) throw new HttpException('Authentication failed', HttpStatus.UNAUTHORIZED);
+    const authToken = req.headers?.authorization;
+    const result = await this.videoTranslationService.requestTranslation(
+      projectId,
+      userId,
+      body.languages || [],
+      authToken,
+    );
+    return {
+      success: true,
+      data: result,
+      message: 'Translation jobs queued',
+    };
+  }
+
+  @Delete(':projectId/translations/:variantId')
+  @ApiBearerAuth('JWT-auth')
+  async deleteProjectTranslation(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('variantId') variantId: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) throw new HttpException('Authentication failed', HttpStatus.UNAUTHORIZED);
+    await this.videoTranslationService.deleteTranslation(projectId, userId, variantId);
+    return { success: true, message: 'Translation variant deleted' };
+  }
+
+  @Get(':projectId/translations/:variantId/download')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiParam({ name: 'variantId', description: 'Translation variant ID' })
+  @ApiOperation({
+    summary: 'Download clean translated video',
+    description: 'Streams the final translated video (no preview watermark) as an attachment',
+  })
+  async downloadTranslationVariant(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Param('variantId') variantId: string,
+    @Query('disposition') disposition: string | undefined,
+    @Res() res: Response,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('User ID is required', HttpStatus.UNAUTHORIZED);
+    }
+    const mode = disposition === 'inline' ? 'inline' : 'attachment';
+    await this.videoService.streamTranslationVariantDownload(
+      projectId,
+      variantId,
+      userId,
+      res,
+      mode,
+    );
   }
 
   @Get(':projectId/rendering-status')
@@ -2048,7 +2152,7 @@ export class VideoController {
   async getQueueJobStatus(
     @Request() req: any,
     @Param('jobId') jobId: string,
-    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'avatar-video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging',
+    @Query('queueType') queueType: 'audio-generation' | 'image-generation' | 'video-generation' | 'avatar-video-generation' | 'scene-composite' | 'stock-download' | 'brand-packaging' | 'video-translation',
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {

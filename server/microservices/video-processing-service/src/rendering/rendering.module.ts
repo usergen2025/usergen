@@ -19,6 +19,9 @@ import { QueueModule } from '../common/queue/queue.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ProjectLogModule } from '../common/logging/project-log.module';
 import { BrandModule } from '../brand/brand.module';
+import { VideoTranslationService } from './video-translation.service';
+import { WebSocketModule } from '../common/websocket/websocket.module';
+import { PreviewModule } from '../preview/preview.module';
 
 @Module({
   imports: [
@@ -30,6 +33,8 @@ import { BrandModule } from '../brand/brand.module';
     NotificationsModule,
     ProjectLogModule,
     BrandModule,
+    WebSocketModule,
+    PreviewModule,
     forwardRef(() => QueueModule),
   ],
   providers: [
@@ -44,6 +49,7 @@ import { BrandModule } from '../brand/brand.module';
     HeyGenVideoProvider,
     HtmlCaptionLayerProvider,
     CaptionPlaywrightHealthService,
+    VideoTranslationService,
   ],
   exports: [
     RenderingService,
@@ -58,6 +64,7 @@ import { BrandModule } from '../brand/brand.module';
     CompositorModule,
     HtmlCaptionLayerProvider,
     CaptionPlaywrightHealthService,
+    VideoTranslationService,
   ],
 })
 export class RenderingModule {}

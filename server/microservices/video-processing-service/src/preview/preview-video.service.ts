@@ -23,6 +23,8 @@ export interface BuildWatermarkedPreviewInput {
   audioFiles?: PreviewAudioScene[] | null;
   /** Project metadata (logoBrand, brandPackagingApplied) */
   projectMetadata?: Record<string, unknown> | null;
+  /** Override preview/thumb filenames (defaults to projectId) */
+  outputKey?: string;
 }
 
 export interface BuildWatermarkedPreviewResult {
@@ -70,7 +72,8 @@ export class PreviewVideoService {
   async buildWatermarkedPreview(
     input: BuildWatermarkedPreviewInput,
   ): Promise<BuildWatermarkedPreviewResult> {
-    const { projectId, userId, sourceVideoUrl, audioFiles, projectMetadata } = input;
+    const { projectId, userId, sourceVideoUrl, audioFiles, projectMetadata, outputKey } = input;
+    const fileKey = outputKey || projectId;
     const sourceHash = PreviewVideoService.computeSourceHash(sourceVideoUrl);
 
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), `preview-${projectId}-`));
@@ -145,11 +148,11 @@ export class PreviewVideoService {
       if (!fs.existsSync(previewDir)) {
         fs.mkdirSync(previewDir, { recursive: true });
       }
-      const previewFilename = `${projectId}_preview.mp4`;
+      const previewFilename = `${fileKey}_preview.mp4`;
       const persistentPreviewPath = path.join(previewDir, previewFilename);
       fs.copyFileSync(previewPath, persistentPreviewPath);
 
-      const thumbFilename = `${projectId}_thumb.jpg`;
+      const thumbFilename = `${fileKey}_thumb.jpg`;
       const previewUpload = await this.publicUrlService.uploadFromPath(
         persistentPreviewPath,
         `videos/${userId}/previews`,

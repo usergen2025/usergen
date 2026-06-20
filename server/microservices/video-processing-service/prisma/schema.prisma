@@ -89,6 +89,9 @@ model VideoProject {
   // Metadata & Configuration History
   configurationHistory Json?          // Store changes over time for audit
   metadata          Json?             // Additional metadata
+
+  // Multi-language translation variants (same project, multiple output languages)
+  videoTranslations Json?            // Array: VideoTranslationVariant[]
   
   // Timestamps
   createdAt         DateTime          @default(now())

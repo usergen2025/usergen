@@ -13,6 +13,7 @@ export enum JobType {
   STOCK_DOWNLOAD = 'stock-download',
   PREVIEW_DERIVATIVES = 'preview-derivatives',
   BRAND_PACKAGING = 'brand-packaging',
+  VIDEO_TRANSLATION = 'video-translation',
 }
 
 export interface JobData {
@@ -40,6 +41,7 @@ export class QueueManagerService {
     @InjectQueue('stock-download') private stockDownloadQueue: Queue,
     @InjectQueue('preview-derivatives') private previewDerivativesQueue: Queue,
     @InjectQueue('brand-packaging') private brandPackagingQueue: Queue,
+    @InjectQueue('video-translation') private videoTranslationQueue: Queue,
     private readonly configService: ConfigService,
   ) {
     this.concurrencyPerUser = parseInt(
@@ -273,6 +275,25 @@ export class QueueManagerService {
   }
 
   /**
+   * Add video translation job (one target language variant).
+   */
+  async addVideoTranslationJob(data: JobData & { variantId: string; language: string }): Promise<string> {
+    const jobId = `translation-${data.projectId}-${data.variantId}-${Date.now()}`;
+    const job = await this.videoTranslationQueue.add(
+      `translation-${data.projectId}-${data.language}-${data.userId}`,
+      data,
+      {
+        jobId,
+        attempts: this.maxAttempts,
+        removeOnComplete: { age: 3600, count: 100 },
+        removeOnFail: { age: 86400, count: 50 },
+      },
+    );
+    console.log(`[QueueManager] Added video translation job: ${job.id}`);
+    return job.id!;
+  }
+
+  /**
    * Get job status
    */
   async getJobStatus(queueName: JobType, jobId: string) {
@@ -301,6 +322,9 @@ export class QueueManagerService {
         break;
       case JobType.BRAND_PACKAGING:
         queue = this.brandPackagingQueue;
+        break;
+      case JobType.VIDEO_TRANSLATION:
+        queue = this.videoTranslationQueue;
         break;
       default:
         throw new Error(`Unknown queue: ${queueName}`);

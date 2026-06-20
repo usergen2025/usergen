@@ -62,6 +62,12 @@ export const DEFAULT_PRICING: Array<{
     description: 'Remove watermark from final video',
     creditCost: 100,
   },
+  {
+    operationType: 'VIDEO_TRANSLATION',
+    displayName: 'Video Translation',
+    description: 'Translate completed video into another language via HeyGen',
+    creditCost: 50,
+  },
 ];
 
 @Injectable()

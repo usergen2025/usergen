@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X, Languages } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import {
   getFinalVideoUrl,
@@ -26,6 +26,7 @@ import { GradientTabBar } from '@/components/ui/GradientTabBar';
 import { isSingleClipVideoStyle } from '@/lib/workspace/singleClipStyle';
 import { longestWord } from '@/lib/workspace/captionBounds';
 import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
+import { VideoTranslationsPanel } from '@/components/create-video/VideoTranslationsPanel';
 
 interface Scene {
   scene_number?: number;
@@ -374,6 +375,44 @@ function WorkspacePageContent() {
   const [renderingStage, setRenderingStage] = useState<string>('pending');
   const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
   const [previewPlaybackUrl, setPreviewPlaybackUrl] = useState<string | null>(null);
+  const [translationPlaybackOverride, setTranslationPlaybackOverride] = useState<string | null>(null);
+  const [selectedTranslationVariantId, setSelectedTranslationVariantId] = useState<'original' | string>('original');
+  const [isDownloadingTranslation, setIsDownloadingTranslation] = useState(false);
+  const [showTranslateModal, setShowTranslateModal] = useState(false);
+
+  const handleCompletedDownload = useCallback(async () => {
+    if (selectedTranslationVariantId !== 'original') {
+      try {
+        setIsDownloadingTranslation(true);
+        showToast('Preparing download…', 'info');
+        const blob = await apiClient.downloadVideoTranslation(projectId!, selectedTranslationVariantId);
+        const variant = ((project as any)?.videoTranslations as Array<{ id: string; language?: string }> | undefined)?.find(
+          (v) => v.id === selectedTranslationVariantId,
+        );
+        const langSuffix = variant?.language
+          ? String(variant.language).replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 40)
+          : 'translation';
+        const base = project?.title
+          ? String(project.title).replace(/[^\w\s-]/g, '').trim() || 'video'
+          : `project-${projectId}`;
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${base}-${langSuffix}.mp4`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(link.href);
+        showToast('Download started', 'success');
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Download failed';
+        showToast(message, 'error');
+      } finally {
+        setIsDownloadingTranslation(false);
+      }
+      return;
+    }
+    await downloadFinalVideo();
+  }, [selectedTranslationVariantId, downloadFinalVideo, project, projectId, showToast]);
   const [previewPreparing, setPreviewPreparing] = useState(false);
   const [previewGenerationError, setPreviewGenerationError] = useState<string | null>(null);
   const previewPollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -2768,150 +2807,213 @@ function WorkspacePageContent() {
                 <h2 className="font-heading text-[clamp(14px,2.34vh,24px)] font-medium leading-[clamp(14px,2.34vh,24px)] text-[#212121]">Workspace</h2>
               </div>
 
-              {/* Right: Export button */}
+              {/* Right: Translate button */}
               <button
                 type="button"
-                onClick={() => void downloadFinalVideo()}
-                disabled={!finalReady || isDownloadingFinal}
+                onClick={() => setShowTranslateModal(true)}
+                disabled={!finalReady}
                 className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isDownloadingFinal ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
-                ) : null}
+                <Languages className="w-4 h-4 text-white shrink-0" />
                 <span className="font-heading font-semibold text-[clamp(12px,1.37vh,14px)] leading-[clamp(12px,1.37vh,14px)] text-white">
-                  Download
+                  Translate
                 </span>
               </button>
             </div>
 
-            {/* Main content - Video Preview centered */}
-            <div className="flex-1 flex flex-col items-center justify-center min-h-0 py-4">
-              {(() => {
-                const bp = (project?.metadata as Record<string, unknown> | undefined)
-                  ?.brandPackaging as { status?: string } | undefined;
-                const bpStatus = bp?.status;
-                if (bpStatus === 'pending' || bpStatus === 'processing') {
-                  return (
-                    <p className="mb-3 text-center text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 max-w-md">
-                      Preparing brand assets… Download for the final video with your logo.
-                    </p>
-                  );
-                }
-                return (
-                  <p className="mb-3 text-center text-xs text-gray-500 max-w-md">
-                    Preview — download for the final branded video.
-                  </p>
-                );
-              })()}
-              {/* Video player container - 9:16 aspect ratio */}
-              <div className="relative h-[60vh] max-h-[500px] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black">
-                {previewPlayerReady ? (
-                  <>
-                    <video
-                      src={previewPlaybackUrl ?? undefined}
-                      className="w-full h-full object-contain"
-                      controls
-                      controlsList="nodownload noremoteplayback"
-                      disablePictureInPicture
-                      onContextMenu={(e) => e.preventDefault()}
-                      autoPlay={false}
-                      playsInline
-                    >
-                      Your browser does not support the video tag.
-                    </video>
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
-                      <div className="w-16 h-16 bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center">
-                        <Play className="w-8 h-8 text-white ml-1" fill="white" />
-                      </div>
-                    </div>
-                  </>
-                ) : previewGenerationError ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/90 z-10 px-6 text-center">
-                    <p className="font-heading text-sm">Preview could not be prepared.</p>
-                    <p className="text-xs text-white/70 max-w-[240px]">{previewGenerationError}</p>
-                    <button
-                      type="button"
-                      onClick={handleRetryPreview}
-                      className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                      Retry preview
-                    </button>
-                  </div>
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/90 z-10">
-                    <Loader2 className="w-10 h-10 animate-spin text-white" />
-                    <p className="font-heading text-sm">Preparing preview…</p>
-                    {finalReady ? (
-                      <p className="text-xs text-white/60">Download is available for the clean final video.</p>
-                    ) : null}
-                  </div>
+            {/* Main content — languages sidebar + centered preview + empty right column */}
+            <div className="flex flex-col lg:flex-row items-stretch lg:items-start gap-4 lg:gap-[clamp(12px,1.39vw,20px)] flex-1 min-h-0 overflow-y-auto lg:overflow-y-hidden px-0 pb-4 lg:pb-0">
+              {/* Left sidebar — language variants */}
+              <div
+                className={cn(
+                  'flex-col items-start p-[clamp(12px,1.56vh,16px)] gap-[clamp(6px,0.98vh,8px)] w-full lg:basis-[clamp(280px,28vw,360px)] lg:min-w-[280px] lg:max-w-[360px] h-auto lg:h-full min-h-[200px] lg:min-h-0 bg-white/95 shadow-[0px_1px_12px_rgba(242,126,53,0.12)] overflow-hidden shrink-0',
+                  'hidden lg:flex lg:relative lg:rounded-[20px]',
+                  'fixed left-0 z-40 flex w-[86vw] max-w-[340px] min-[560px]:w-[70vw] min-[560px]:max-w-[420px] rounded-r-2xl border border-[#EFE5DF] transition-transform duration-300 ease-out lg:transition-none',
+                  leftDrawerOpen
+                    ? 'translate-x-0 opacity-100 pointer-events-auto'
+                    : '-translate-x-full opacity-0 pointer-events-none lg:translate-x-0 lg:opacity-100 lg:pointer-events-auto',
                 )}
+                style={
+                  leftDrawerOpen
+                    ? {
+                        top: `${mobileDrawerFrame.top}px`,
+                        height: `${mobileDrawerFrame.height}px`,
+                        maxHeight: `${mobileDrawerFrame.height}px`,
+                      }
+                    : undefined
+                }
+              >
+                <VideoTranslationsPanel
+                  projectId={projectId!}
+                  originalLanguageLabel="Original"
+                  originalVideoUrl={finalVideoUrl || getFinalVideoUrl(project || {})}
+                  initialTranslations={(project as any)?.videoTranslations || []}
+                  onPlaybackUrlChange={(url, variantId) => {
+                    setTranslationPlaybackOverride(url);
+                    setSelectedTranslationVariantId(variantId);
+                  }}
+                  modalOpen={showTranslateModal}
+                  onModalOpenChange={setShowTranslateModal}
+                  layout="sidebar"
+                  onSelectItem={() => setLeftDrawerOpen(false)}
+                  videoServiceBase={VIDEO_SERVICE_ORIGIN}
+                />
               </div>
 
-              {/* Export & Share section */}
-              <div className="mt-8 text-center space-y-4">
-                <h3 className="font-heading text-[clamp(18px,2.34vh,24px)] font-semibold text-[#212121]">Export & Share</h3>
-                <div className="flex justify-center gap-6">
-                  {/* Download */}
-                  <button
-                    type="button"
-                    onClick={() => void downloadFinalVideo()}
-                    disabled={!finalReady || isDownloadingFinal}
-                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    <span className="text-xs text-gray-600">Download</span>
-                  </button>
-                  
-                  {/* Instagram */}
-                  <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
-                    <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zM12 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/>
-                    </svg>
-                    <span className="text-xs text-gray-600">Instagram</span>
-                  </button>
-                  
-                  {/* Facebook */}
-                  <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
-                    <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-                    </svg>
-                    <span className="text-xs text-gray-600">Facebook</span>
-                  </button>
-                  
-                  {/* Share */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const shareUrl =
-                        typeof window !== 'undefined'
-                          ? window.location.href
-                          : projectId
-                            ? `/create-video/workspace?projectId=${projectId}`
-                            : '';
-                      if (navigator.share) {
-                        void navigator.share({
-                          title: project?.title || 'My Video',
-                          url: shareUrl,
-                        });
-                      } else {
-                        void navigator.clipboard.writeText(shareUrl);
-                        showToast('Link copied to clipboard!', 'success');
-                      }
-                    }}
-                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]"
-                  >
-                    <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-                    </svg>
-                    <span className="text-xs text-gray-600">Share</span>
-                  </button>
+              {/* Center — preview + export */}
+              <div className="relative flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-full min-w-0 lg:flex-1 lg:max-w-[520px] lg:min-w-[340px] max-w-[min(520px,calc(100vw-2rem))] min-[560px]:max-w-[min(620px,calc(100vw-1rem))] mx-auto h-auto lg:h-full shrink-0 min-h-0">
+                {/* Mobile languages drawer rail */}
+                <button
+                  type="button"
+                  onClick={() => setLeftDrawerOpen(true)}
+                  className="lg:hidden absolute left-[-10px] min-[560px]:left-[-14px] top-1/2 -translate-y-1/2 z-30 inline-flex flex-col items-center justify-center gap-1 h-[46%] min-h-[180px] max-h-[280px] w-8 min-[560px]:w-10 rounded-r-2xl border border-[#E0D5CF] bg-white/95 shadow-sm"
+                  aria-label="Open languages drawer"
+                >
+                  <Languages className="w-3.5 h-3.5 text-[#8B6C5C]" />
+                  <span className="[writing-mode:vertical-rl] rotate-180 text-[10px] tracking-[0.08em] font-heading text-[#8B6C5C]">
+                    LANGS
+                  </span>
+                </button>
+
+                {(() => {
+                  const bp = (project?.metadata as Record<string, unknown> | undefined)
+                    ?.brandPackaging as { status?: string } | undefined;
+                  const bpStatus = bp?.status;
+                  if (bpStatus === 'pending' || bpStatus === 'processing') {
+                    return (
+                      <p className="mb-1 text-center text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 max-w-md">
+                        Preparing brand assets… Download for the final video with your logo.
+                      </p>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Video player container - 9:16 aspect ratio */}
+                <div className="relative w-full flex-1 flex items-center justify-center min-h-[min(60vh,560px)] lg:min-h-0">
+                  <div className="relative h-full max-h-[min(70vh,640px)] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black w-auto">
+                    {previewPlayerReady ? (
+                      <>
+                        <video
+                          src={(translationPlaybackOverride ?? previewPlaybackUrl) ?? undefined}
+                          className="w-full h-full object-contain"
+                          controls
+                          controlsList="nodownload noremoteplayback"
+                          disablePictureInPicture
+                          onContextMenu={(e) => e.preventDefault()}
+                          autoPlay={false}
+                          playsInline
+                        >
+                          Your browser does not support the video tag.
+                        </video>
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
+                          <div className="w-16 h-16 bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center">
+                            <Play className="w-8 h-8 text-white ml-1" fill="white" />
+                          </div>
+                        </div>
+                      </>
+                    ) : previewGenerationError ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-white/90 z-10 px-6 text-center">
+                        <p className="font-heading text-sm">Preview could not be prepared.</p>
+                        <p className="text-xs text-white/70 max-w-[240px]">{previewGenerationError}</p>
+                        <button
+                          type="button"
+                          onClick={handleRetryPreview}
+                          className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          Retry preview
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white/90 z-10">
+                        <Loader2 className="w-10 h-10 animate-spin text-white" />
+                        <p className="font-heading text-sm">Preparing preview…</p>
+                        {finalReady ? (
+                          <p className="text-xs text-white/60">Download is available for the clean final video.</p>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Export & Share section */}
+                <div className="mt-4 lg:mt-6 text-center space-y-4 w-full shrink-0">
+                  <h3 className="font-heading text-[clamp(18px,2.34vh,24px)] font-semibold text-[#212121]">
+                    Export & Share
+                  </h3>
+                  <div className="flex justify-center gap-6">
+                    <button
+                      type="button"
+                      onClick={() => void handleCompletedDownload()}
+                      disabled={!finalReady || isDownloadingFinal || isDownloadingTranslation}
+                      className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      <span className="text-xs text-gray-600">Download</span>
+                    </button>
+
+                    <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
+                      <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zM12 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
+                      </svg>
+                      <span className="text-xs text-gray-600">Instagram</span>
+                    </button>
+
+                    <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
+                      <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                      </svg>
+                      <span className="text-xs text-gray-600">Facebook</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const shareUrl =
+                          typeof window !== 'undefined'
+                            ? window.location.href
+                            : projectId
+                              ? `/create-video/workspace?projectId=${projectId}`
+                              : '';
+                        if (navigator.share) {
+                          void navigator.share({
+                            title: project?.title || 'My Video',
+                            url: shareUrl,
+                          });
+                        } else {
+                          void navigator.clipboard.writeText(shareUrl);
+                          showToast('Link copied to clipboard!', 'success');
+                        }
+                      }}
+                      className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]"
+                    >
+                      <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                      </svg>
+                      <span className="text-xs text-gray-600">Share</span>
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {/* Right spacer — matches settings drawer width on main workspace */}
+              <div
+                className="hidden lg:block lg:basis-[clamp(320px,26.7vw,384px)] lg:min-w-[320px] lg:max-w-[384px] shrink-0"
+                aria-hidden="true"
+              />
             </div>
+
+            {leftDrawerOpen && (
+              <button
+                type="button"
+                aria-label="Close languages drawer"
+                className="lg:hidden fixed inset-0 z-30 bg-black/30"
+                onClick={() => setLeftDrawerOpen(false)}
+              />
+            )}
           </div>
         </div>
       )}

@@ -21,7 +21,8 @@ export interface JobStatusUpdate {
     | 'scene-composite'
     | 'stock-download'
     | 'brand-packaging'
-    | 'preview-derivatives';
+    | 'preview-derivatives'
+    | 'video-translation';
   state: 'completed' | 'failed' | 'processing' | 'progress';
   result?: any;
   progress?: number;

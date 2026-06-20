@@ -24,6 +24,7 @@ import { PublicUrlService } from '../common/storage/public-url.service';
 import { parseGcsPublicUrl } from '@shared/storage';
 import { normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
 import { parseMetadataAssets, metadataHasLogoAsset } from '@shared/brand';
+import { parseVideoTranslations } from './video-translation.types';
 
 @Injectable()
 export class VideoService {
@@ -1157,6 +1158,111 @@ export class VideoService {
         const status = fetchErr?.response?.status;
         console.warn(
           `[VideoService] streamFinalVideoDownload upstream ${status ?? 'error'} for ${projectId}: ${fetchErr?.message}`,
+        );
+        throw new HttpException(
+          'Failed to stream video from storage',
+          status === 404 ? HttpStatus.NOT_FOUND : HttpStatus.BAD_GATEWAY,
+        );
+      }
+    }
+
+    throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);
+  }
+
+  /**
+   * Stream the clean final video for a translation variant (no preview watermark).
+   */
+  async streamTranslationVariantDownload(
+    projectId: string,
+    variantId: string,
+    userId: string,
+    res: Response,
+    disposition: 'attachment' | 'inline' = 'attachment',
+  ): Promise<void> {
+    const { data: project } = await this.getProject(projectId, userId);
+    const variants = parseVideoTranslations((project as any).videoTranslations);
+    const variant = variants.find((v) => v.id === variantId);
+    if (!variant) {
+      throw new NotFoundException('Translation variant not found');
+    }
+    if (variant.status !== 'completed' || !variant.videoUrl) {
+      throw new NotFoundException('Translated video not available');
+    }
+
+    const safeLang = String(variant.language || 'translation')
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .slice(0, 40) || 'translation';
+    const base = this.buildFinalVideoFilename(project.title).replace(/\.mp4$/i, '');
+    const filename = `${base}-${safeLang}.mp4`;
+
+    const contentDisposition =
+      disposition === 'inline'
+        ? `inline; filename="${filename}"`
+        : `attachment; filename="${filename}"`;
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', contentDisposition);
+
+    const videoUrl = variant.videoUrl;
+    const uploadsDir =
+      this.configService.get<string>('UPLOADS_DIR') ||
+      path.join(process.cwd(), 'uploads');
+
+    const localFromVariant = variant.localVideoUrl?.startsWith('/uploads/')
+      ? path.join(uploadsDir, variant.localVideoUrl.replace(/^\/uploads\//, ''))
+      : null;
+    if (localFromVariant && fs.existsSync(localFromVariant)) {
+      const stat = fs.statSync(localFromVariant);
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(localFromVariant).pipe(res);
+      return;
+    }
+
+    if (videoUrl.startsWith('/uploads/') || videoUrl.startsWith('uploads/')) {
+      const relative = videoUrl.replace(/^\/?uploads\//, '');
+      const localPath = path.join(uploadsDir, relative);
+      if (!fs.existsSync(localPath)) {
+        throw new NotFoundException('Video file not found on server');
+      }
+      const stat = fs.statSync(localPath);
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(localPath).pipe(res);
+      return;
+    }
+
+    if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+      try {
+        const response = await axios.get(videoUrl, {
+          responseType: 'stream',
+          timeout: 300000,
+          maxRedirects: 5,
+          validateStatus: (s) => s >= 200 && s < 400,
+        });
+        const contentLength = response.headers['content-length'];
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength);
+        }
+        response.data.pipe(res);
+        response.data.on('error', (streamErr: Error) => {
+          console.warn(
+            `[VideoService] streamTranslationVariantDownload stream error for ${projectId}/${variantId}: ${streamErr.message}`,
+          );
+          if (!res.headersSent) {
+            res.status(HttpStatus.BAD_GATEWAY).json({
+              success: false,
+              message: 'Failed to stream video from storage',
+            });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      } catch (fetchErr: any) {
+        const status = fetchErr?.response?.status;
+        console.warn(
+          `[VideoService] streamTranslationVariantDownload upstream ${status ?? 'error'} for ${projectId}/${variantId}: ${fetchErr?.message}`,
         );
         throw new HttpException(
           'Failed to stream video from storage',
