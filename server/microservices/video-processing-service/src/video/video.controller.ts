@@ -22,6 +22,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiBody } 
 import { VideoService } from './video.service';
 import { RenderingService } from '../rendering/rendering.service';
 import { VideoCompositorProvider } from '../rendering/providers/video-compositor.provider';
+import { HeyGenVideoProvider, HeyGenAudioType } from '../rendering/providers/heygen-video.provider';
 import { QueueManagerService } from '../common/queue/queue-manager.service';
 import { ModelRegistryService } from '../rendering/providers/model-registry.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
@@ -57,6 +58,7 @@ export class VideoController {
     private readonly videoCompositor: VideoCompositorProvider,
     private readonly brandPackagingService: BrandPackagingService,
     private readonly videoTranslationService: VideoTranslationService,
+    private readonly heygenVideoProvider: HeyGenVideoProvider,
   ) {}
 
   /**
@@ -2338,6 +2340,220 @@ export class VideoController {
         originalName: file.originalname || filename,
       },
       message: 'Music file uploaded successfully',
+    };
+  }
+
+  @Get('music/search')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Search HeyGen background music',
+    description:
+      'Search HeyGen audio catalog using natural language. Returns tracks ranked by semantic similarity, each with a pre-signed download URL (WAV format).',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Music tracks found',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            tracks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: 'Track ID' },
+                  name: { type: 'string', description: 'Track name' },
+                  description: { type: 'string', description: 'Track description' },
+                  audio_url: { type: 'string', description: 'Pre-signed download URL (time-limited)' },
+                  duration: { type: 'number', description: 'Duration in seconds' },
+                  score: { type: 'number', description: 'Semantic similarity score (0-1)' },
+                  type: { type: 'string', enum: ['music', 'sound_effects'] },
+                },
+              },
+            },
+            hasMore: { type: 'boolean' },
+            nextToken: { type: 'string' },
+          },
+        },
+      },
+    },
+  })
+  async searchHeyGenMusic(
+    @Request() req: any,
+    @Query('query') query: string,
+    @Query('type') type?: 'music' | 'sound_effects',
+    @Query('limit') limit?: number,
+    @Query('minScore') minScore?: number,
+    @Query('token') token?: string,
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      throw new BadRequestException('Query parameter is required');
+    }
+
+    const audioType: HeyGenAudioType = type === 'sound_effects' ? 'sound_effects' : 'music';
+    const parsedLimit = limit ? Math.min(Math.max(parseInt(String(limit), 10), 1), 50) : 10;
+    const parsedMinScore = minScore ? Math.min(Math.max(parseFloat(String(minScore)), 0), 1) : 0.7;
+
+    console.log(
+      `[VideoController] Searching HeyGen music: query="${query}", type=${audioType}, limit=${parsedLimit}`,
+    );
+
+    const result = await this.heygenVideoProvider.searchAudioSounds(query.trim(), {
+      type: audioType,
+      limit: parsedLimit,
+      minScore: parsedMinScore,
+      token,
+    });
+
+    return {
+      success: true,
+      data: {
+        tracks: result.tracks,
+        hasMore: result.hasMore,
+        nextToken: result.nextToken,
+      },
+      message: `Found ${result.tracks.length} ${audioType === 'music' ? 'music tracks' : 'sound effects'}`,
+    };
+  }
+
+  @Post(':projectId/set-heygen-music')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Project ID' })
+  @ApiOperation({
+    summary: 'Set HeyGen background music for project',
+    description:
+      'Search HeyGen music catalog and set the best match as background music for the project. ' +
+      'Stores the search query (searchSeed) for re-fetching fresh URLs at export time.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Natural language search query (e.g., "upbeat corporate background music")',
+        },
+        trackId: {
+          type: 'string',
+          description: 'Optional: specific track ID to select (if known from previous search)',
+        },
+        mixVolume: {
+          type: 'number',
+          description: 'Background music volume (0-1, default 0.05)',
+        },
+        fadeInMs: {
+          type: 'number',
+          description: 'Fade-in duration in ms (default 500)',
+        },
+        fadeOutMs: {
+          type: 'number',
+          description: 'Fade-out duration in ms (default 1500)',
+        },
+      },
+      required: ['query'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Background music set' })
+  async setHeyGenBackgroundMusic(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body()
+    body: {
+      query: string;
+      trackId?: string;
+      mixVolume?: number;
+      fadeInMs?: number;
+      fadeOutMs?: number;
+    },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const project = await this.videoService.getProject(projectId, userId);
+    if (!project.success || !project.data) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const { query, trackId, mixVolume, fadeInMs, fadeOutMs } = body;
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      throw new BadRequestException('Query parameter is required');
+    }
+
+    // Search HeyGen music
+    const result = await this.heygenVideoProvider.searchAudioSounds(query.trim(), {
+      type: 'music',
+      limit: 10,
+      minScore: 0.6,
+    });
+
+    if (result.tracks.length === 0) {
+      throw new HttpException(
+        `No background music found for query: "${query}"`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // Find specific track or use best match
+    let selectedTrack = result.tracks[0];
+    if (trackId) {
+      const match = result.tracks.find((t) => t.id === trackId);
+      if (match) {
+        selectedTrack = match;
+      } else {
+        console.warn(`[VideoController] Requested track ${trackId} not found, using best match`);
+      }
+    }
+
+    // Build backgroundMusic object
+    const backgroundMusic = {
+      enabled: true,
+      source: 'heygen',
+      searchSeed: query.trim(),
+      heygenTrackId: selectedTrack.id,
+      heygenTrackName: selectedTrack.name,
+      heygenTrackDuration: selectedTrack.duration,
+      heygenTrackScore: selectedTrack.score,
+      // Note: publicUrl is NOT stored - it will be fetched fresh at export time
+      // because HeyGen URLs are pre-signed and time-limited
+      mixVolume: mixVolume ?? 0.05,
+      voiceDuckTo: 1.0,
+      fadeInMs: fadeInMs ?? 500,
+      fadeOutMs: fadeOutMs ?? 1500,
+    };
+
+    // Update project
+    await this.videoService.updateProject(projectId, userId, {
+      backgroundMusic,
+    });
+
+    console.log(
+      `[VideoController] Set HeyGen BGM for project ${projectId}: "${selectedTrack.name}" (${selectedTrack.duration}s)`,
+    );
+
+    return {
+      success: true,
+      data: {
+        track: {
+          id: selectedTrack.id,
+          name: selectedTrack.name,
+          description: selectedTrack.description,
+          duration: selectedTrack.duration,
+          score: selectedTrack.score,
+        },
+        backgroundMusic,
+      },
+      message: `Background music set: "${selectedTrack.name}"`,
     };
   }
 

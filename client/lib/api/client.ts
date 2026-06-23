@@ -33,7 +33,7 @@ export interface BackgroundMusicSearchSeed {
 
 export interface BackgroundMusicConfig {
   enabled: boolean;
-  source?: 'magnific' | 'upload';
+  source?: 'magnific' | 'upload' | 'heygen';
   externalId?: number;
   title?: string;
   artist?: string;
@@ -47,6 +47,15 @@ export interface BackgroundMusicConfig {
   voiceDuckTo?: number;
   fadeInMs?: number;
   fadeOutMs?: number;
+  // HeyGen-specific fields
+  /** HeyGen track ID (used for verification when re-fetching at export time) */
+  heygenTrackId?: string;
+  /** HeyGen track name */
+  heygenTrackName?: string;
+  /** HeyGen track duration in seconds */
+  heygenTrackDuration?: number;
+  /** HeyGen semantic similarity score (0-1) */
+  heygenTrackScore?: number;
 }
 
 /**

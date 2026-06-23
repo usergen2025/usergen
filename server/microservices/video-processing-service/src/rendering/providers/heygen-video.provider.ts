@@ -120,6 +120,53 @@ export interface HeyGenVideoTranslationStatus {
   captionUrl?: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HeyGen Audio Search Types (Background Music & Sound Effects)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Audio content type for HeyGen audio search */
+export type HeyGenAudioType = 'music' | 'sound_effects';
+
+/** Options for HeyGen audio search */
+export interface HeyGenAudioSearchOptions {
+  /** Audio content type: 'music' (default) or 'sound_effects' */
+  type?: HeyGenAudioType;
+  /** Maximum number of results (1-50, default 10) */
+  limit?: number;
+  /** Minimum semantic similarity score (0-1, default 0.7) */
+  minScore?: number;
+  /** Pagination cursor from previous response */
+  token?: string;
+}
+
+/** Single audio track from HeyGen audio search */
+export interface HeyGenAudioTrack {
+  /** Unique identifier for the track */
+  id: string;
+  /** Display name of the track */
+  name: string;
+  /** Human-readable description of the track */
+  description: string;
+  /** Pre-signed download URL (WAV format, time-limited) */
+  audio_url: string;
+  /** Duration in seconds */
+  duration: number;
+  /** Semantic similarity score (0-1) */
+  score: number;
+  /** Audio content type */
+  type: HeyGenAudioType;
+}
+
+/** Response from HeyGen audio search */
+export interface HeyGenAudioSearchResponse {
+  /** Array of matching audio tracks */
+  tracks: HeyGenAudioTrack[];
+  /** Whether more results are available */
+  hasMore: boolean;
+  /** Cursor for next page (undefined when hasMore is false) */
+  nextToken?: string;
+}
+
 @Injectable()
 export class HeyGenVideoProvider {
   private axiosInstance: AxiosInstance;
@@ -1268,5 +1315,153 @@ export class HeyGenVideoProvider {
       }
     }
     throw new Error(`HeyGen translation timed out after ${maxAttempts} attempts`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // HeyGen Audio Search (Background Music & Sound Effects)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Search HeyGen's audio catalog using semantic/natural language search.
+   * Returns tracks ranked by similarity, each with a pre-signed download URL.
+   * 
+   * @param query Natural language description (e.g., "upbeat corporate background music")
+   * @param options Search options (type, limit, minScore, token for pagination)
+   * @returns Array of audio tracks with pre-signed download URLs
+   */
+  async searchAudioSounds(
+    query: string,
+    options: HeyGenAudioSearchOptions = {},
+  ): Promise<HeyGenAudioSearchResponse> {
+    const {
+      type = 'music',
+      limit = 10,
+      minScore = 0.7,
+      token,
+    } = options;
+
+    try {
+      const params: Record<string, string | number> = {
+        query,
+        type,
+        limit,
+        min_score: minScore,
+      };
+      if (token) {
+        params.token = token;
+      }
+
+      console.log(`[HeyGen] Searching audio catalog: query="${query}", type=${type}, limit=${limit}`);
+
+      const response = await this.axiosV3.get('/v3/audio/sounds', { params });
+      const data = response.data?.data ?? response.data;
+
+      const tracks: HeyGenAudioTrack[] = Array.isArray(data) 
+        ? data 
+        : (data?.data ?? []);
+
+      const result: HeyGenAudioSearchResponse = {
+        tracks,
+        hasMore: response.data?.has_more ?? false,
+        nextToken: response.data?.next_token,
+      };
+
+      console.log(`[HeyGen] Audio search returned ${tracks.length} tracks (hasMore=${result.hasMore})`);
+      return result;
+    } catch (error: any) {
+      console.error('[HeyGen] searchAudioSounds error:', error.response?.data || error.message);
+      throw new Error(
+        `Failed to search HeyGen audio: ${error.response?.data?.error?.message || error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Search for background music by description.
+   * Convenience wrapper for searchAudioSounds with type='music'.
+   */
+  async searchBackgroundMusic(
+    query: string,
+    limit = 10,
+    minScore = 0.7,
+  ): Promise<HeyGenAudioTrack[]> {
+    const result = await this.searchAudioSounds(query, { type: 'music', limit, minScore });
+    return result.tracks;
+  }
+
+  /**
+   * Search for sound effects by description.
+   * Convenience wrapper for searchAudioSounds with type='sound_effects'.
+   */
+  async searchSoundEffects(
+    query: string,
+    limit = 10,
+    minScore = 0.7,
+  ): Promise<HeyGenAudioTrack[]> {
+    const result = await this.searchAudioSounds(query, { type: 'sound_effects', limit, minScore });
+    return result.tracks;
+  }
+
+  /**
+   * Get a fresh pre-signed URL for a specific audio track by re-searching.
+   * HeyGen audio URLs are pre-signed S3 URLs with limited lifetime,
+   * so we need to re-search to get a fresh URL at download time.
+   * 
+   * @param searchQuery The original search query used to find this track
+   * @param trackId Optional: specific track ID to match (for verification)
+   * @returns Fresh audio track with new pre-signed URL, or null if not found
+   */
+  async refreshAudioTrackUrl(
+    searchQuery: string,
+    trackId?: string,
+  ): Promise<HeyGenAudioTrack | null> {
+    try {
+      const result = await this.searchAudioSounds(searchQuery, { type: 'music', limit: 10 });
+      
+      if (trackId) {
+        const matchingTrack = result.tracks.find(t => t.id === trackId);
+        if (matchingTrack) {
+          console.log(`[HeyGen] Refreshed URL for track ${trackId}`);
+          return matchingTrack;
+        }
+        console.warn(`[HeyGen] Track ${trackId} not found in search results, returning best match`);
+      }
+      
+      return result.tracks[0] || null;
+    } catch (error: any) {
+      console.error('[HeyGen] refreshAudioTrackUrl error:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Download audio from HeyGen's pre-signed URL to a local file.
+   * 
+   * @param audioUrl Pre-signed S3 URL from HeyGen audio search
+   * @param destPath Local file path to save the audio
+   * @returns True if download succeeded
+   */
+  async downloadAudioToFile(audioUrl: string, destPath: string): Promise<boolean> {
+    try {
+      console.log(`[HeyGen] Downloading audio to ${destPath}`);
+      
+      const dir = path.dirname(destPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const response = await axios.get(audioUrl, {
+        responseType: 'arraybuffer',
+        maxContentLength: 100 * 1024 * 1024, // 100MB max
+        timeout: 120000, // 2 minutes
+      });
+
+      fs.writeFileSync(destPath, Buffer.from(response.data));
+      console.log(`[HeyGen] Audio downloaded successfully (${response.data.length} bytes)`);
+      return true;
+    } catch (error: any) {
+      console.error('[HeyGen] downloadAudioToFile error:', error.message);
+      return false;
+    }
   }
 }

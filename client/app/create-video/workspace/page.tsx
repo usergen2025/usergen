@@ -74,7 +74,7 @@ interface AudioFile {
 
 type MusicSearchItem = {
   id: string;
-  source: 'magnific';
+  source: 'magnific' | 'heygen';
   externalId: number;
   title: string;
   artistName?: string;
@@ -82,14 +82,21 @@ type MusicSearchItem = {
   moods?: string[];
   coverUrl?: string | null;
   previewUrl?: string | null;
+  audioUrl?: string | null; // HeyGen audio URL
   seconds?: number;
   time?: string;
   isPremium?: boolean;
+  // HeyGen-specific fields
+  heygenTrackId?: string;
+  score?: number;
+  description?: string;
+  duration?: number;
+  durationSeconds?: number;
 };
 
 type BackgroundMusicConfig = {
   enabled: boolean;
-  source?: 'magnific' | 'upload';
+  source?: 'magnific' | 'upload' | 'heygen';
   externalId?: number;
   title?: string;
   artist?: string;
@@ -102,6 +109,11 @@ type BackgroundMusicConfig = {
   mixVolume?: number;
   voiceDuckTo?: number;
   fadeInMs?: number;
+  // HeyGen-specific fields
+  heygenTrackId?: string;
+  heygenTrackName?: string;
+  heygenTrackDuration?: number;
+  heygenTrackScore?: number;
   fadeOutMs?: number;
 };
 
@@ -735,7 +747,8 @@ function WorkspacePageContent() {
           const bgm = (projectData.backgroundMusic || {}) as BackgroundMusicConfig;
           if (bgm && typeof bgm === 'object') {
             setBackgroundMusicEnabled(Boolean(bgm.enabled));
-            setMusicSelected(bgm.publicUrl || bgm.externalId ? bgm : null);
+            // Support both HeyGen (heygenTrackId) and Magnific (externalId) tracks
+            setMusicSelected(bgm.publicUrl || bgm.externalId || bgm.heygenTrackId ? bgm : null);
             setMusicSearchSeed(bgm.searchSeed || null);
           }
           captionHydratedRef.current = true;
@@ -1042,6 +1055,7 @@ function WorkspacePageContent() {
         if (success) return;
       }
 
+      // Try previewUrl first (works for both HeyGen and Magnific)
       if (item.previewUrl) {
         const success = await tryPlayUrl(item.previewUrl);
         if (success) {
@@ -1050,6 +1064,22 @@ function WorkspacePageContent() {
         }
       }
 
+      // HeyGen: try audioUrl if previewUrl failed
+      if (item.audioUrl) {
+        const success = await tryPlayUrl(item.audioUrl);
+        if (success) {
+          musicPreviewUrlCache.current[externalId] = item.audioUrl;
+          return;
+        }
+      }
+
+      // For HeyGen tracks, we can't use the Magnific proxy endpoints
+      if (item.source === 'heygen') {
+        showToast('Could not play preview for this track', 'error');
+        return;
+      }
+
+      // Magnific fallbacks: try preview-info endpoint
       const infoRes = await fetch(`/api/music/${externalId}/preview-info`, { headers: musicHeaders() });
       if (infoRes.ok) {
         const infoJson = await infoRes.json();
@@ -3681,7 +3711,9 @@ function WorkspacePageContent() {
                           <div className="text-center py-6 text-sm text-[#616161]">No music found</div>
                         )}
                         {musicLibraryItems.map((item) => {
-                          const isSelected = musicSelected?.externalId === item.externalId;
+                          const isSelected = item.source === 'heygen' 
+                            ? musicSelected?.heygenTrackId === item.heygenTrackId 
+                            : musicSelected?.externalId === item.externalId;
                           const isPlaying = musicPreviewPlayingId === item.externalId;
                           const isLoadingPreview = musicPreviewLoading === item.externalId;
                           return (
@@ -3689,19 +3721,31 @@ function WorkspacePageContent() {
                               key={item.id}
                               onClick={() => {
                                 if (!projectId) return;
+                                // Build config based on source type
+                                const isHeygen = item.source === 'heygen';
                                 const selected: BackgroundMusicConfig = {
                                   enabled: true,
-                                  source: 'magnific',
+                                  source: item.source,
                                   externalId: item.externalId,
                                   title: item.title,
                                   artist: item.artistName,
-                                  durationSeconds: item.seconds,
-                                  previewUrl: item.previewUrl || undefined,
-                                  searchSeed: musicSearchSeed || undefined,
+                                  durationSeconds: item.durationSeconds || item.seconds,
+                                  previewUrl: item.previewUrl || item.audioUrl || undefined,
+                                  // For HeyGen: store the search query as searchSeed for re-fetching at export time
+                                  searchSeed: isHeygen 
+                                    ? { query: musicSearchInput || musicSearchSeed?.query || 'background music' }
+                                    : musicSearchSeed || undefined,
                                   mixVolume: 0.05,
                                   voiceDuckTo: 1.0,
                                   fadeInMs: 500,
                                   fadeOutMs: 1500,
+                                  // HeyGen-specific fields
+                                  ...(isHeygen && {
+                                    heygenTrackId: item.heygenTrackId,
+                                    heygenTrackName: item.title,
+                                    heygenTrackDuration: item.duration || item.durationSeconds,
+                                    heygenTrackScore: item.score,
+                                  }),
                                 };
                                 setBackgroundMusicEnabled(true);
                                 setMusicSelected(selected);

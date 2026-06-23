@@ -362,6 +362,122 @@ CRITICAL LANGUAGE (OVERRIDES ANY CONFLICTING INSTRUCTIONS FOR DIALOGUE):
 - Every "voiceover" string must be natural, conversational English.`;
   }
 
+  /**
+   * Shared voiceover quality rules injected into every video-style system prompt.
+   * Prioritizes narrative structure and complete spoken lines over generic filler.
+   */
+  private buildVoiceoverQualitySystemBlock(
+    language: 'english' | 'hindi' | 'hinglish',
+    videoStyle?: string,
+  ): string {
+    const lang = this.getVoiceoverLanguageExamples(language);
+    const styleNote = this.getVoiceoverStyleNote(videoStyle);
+
+    return `
+
+CRITICAL VOICEOVER QUALITY (HIGHEST PRIORITY — READ BEFORE VISUAL RULES):
+Voiceover is what the audience hears. It must feel like a polished short-form ad or explainer, NOT random filler.
+
+NARRATIVE ARC (MANDATORY across all scenes):
+- Scene 1 (HOOK): Open with a relatable question, bold claim, surprising fact, or clear problem tied to the user's topic. Do NOT start with generic definitions ("X is...", "Welcome to...", "In this video...").
+- Middle scenes (BODY): Each scene adds ONE specific, concrete point that directly serves the user's topic. Every line must connect to the previous scene — no unrelated tangents or filler.
+- Final scene (CLOSE): Summarize the key takeaway and land with a complete thought — soft CTA, memorable conclusion, or clear next step. NEVER end mid-sentence, on "and/but/so/because", or on an unfinished list.
+
+VOICEOVER WRITING RULES:
+- Each voiceover must be 1–2 complete sentences that sound natural when read aloud (not bullet fragments or labels).
+- Write for the ear: short clauses, active voice, specific details from the user's topic — avoid vague platitudes ("in today's world", "game changer", "revolutionary").
+- Do NOT copy placeholder text from examples — write original, topic-specific copy every time.
+- Do NOT repeat the same phrase across scenes; each scene must advance the story.
+- Stay faithful to the user's topic; do not invent unrelated subplots or generic motivational fluff.
+- The last scene voiceover MUST feel like an intentional ending the listener can act on or remember.
+
+QUALITY EXAMPLES (${language}) — match this depth and completeness, adapted to the user's topic:
+- Hook (scene 1): "${lang.exampleHook}"
+- Body (middle scene): "${lang.exampleBody}"
+- Close (final scene): "${lang.exampleClose}"
+${styleNote}`;
+  }
+
+  private getVoiceoverLanguageExamples(language: 'english' | 'hindi' | 'hinglish'): {
+    exampleHook: string;
+    exampleBody: string;
+    exampleClose: string;
+  } {
+    const examples = {
+      english: {
+        exampleHook:
+          'Ever wonder why working from home feels harder than the office? Most people miss this one shift.',
+        exampleBody:
+          'The real challenge is not your desk — it is protecting focus when everyone can reach you all day long.',
+        exampleClose:
+          'Start with one small boundary today. You will feel the difference by tomorrow — that is how lasting change begins.',
+      },
+      hindi: {
+        exampleHook:
+          'क्या आपने कभी सोचा कि घर से काम करते समय फोकस इतना मुश्किल क्यों लगता है? ज़्यादातर लोग यही गलती करते हैं।',
+        exampleBody:
+          'सबसे बड़ी चुनौती मेज़ नहीं है — असली मुश्किल यह है कि पूरे दिन ध्यान भटकता रहता है।',
+        exampleClose:
+          'आज से एक छोटा नियम अपनाइए। फर्क जल्दी दिखेगा — यही सही शुरुआत है।',
+      },
+      hinglish: {
+        exampleHook:
+          'Ghar se kaam karte ho? Toh yeh common mistake almost sab log karte hain — aur focus yahi pe slip hota hai.',
+        exampleBody:
+          'Asli problem desk nahi hai — distractions constant rehte hain, isliye ek clear routine set karna zaroori hai.',
+        exampleClose:
+          'Aaj se ek chhota rule follow karo. Difference clearly feel hoga — yahi practical start hai.',
+      },
+    };
+    return examples[language] || examples.hinglish;
+  }
+
+  private getVoiceoverStyleNote(videoStyle?: string): string {
+    switch (videoStyle) {
+      case 'PRODUCT_ONLY':
+        return `
+- PRODUCT_ONLY: Every voiceover line must reference specific product name, feature, benefit, or use case from the analyzed product context — not generic "great product" praise.`;
+      case 'AVATAR_PRODUCT':
+        return `
+- AVATAR_PRODUCT: Voiceover should narrate what the presenter is demonstrating; tie each scene to a concrete product benefit or feature.`;
+      case 'AVATAR_ONLY':
+      case 'ANIMATED_AVATAR':
+        return `
+- AVATAR_ONLY: There is no b-roll to carry context — voiceover alone must hold attention. Keep energy and specificity high in every scene.`;
+      case 'ALTERNATE':
+        return `
+- ALTERNATE: Both b-roll and avatar scenes carry voiceover — each line must advance the same narrative; b-roll scenes should not be generic visual captions.`;
+      case 'B_ROLL_ONLY':
+        return `
+- B_ROLL_ONLY: Voiceover drives the story; b-roll illustrates it. Each line must be substantive, not a vague description of what is on screen.`;
+      default:
+        return '';
+    }
+  }
+
+  /** User-message reminder reinforcing voiceover narrative structure. */
+  private buildVoiceoverQualityUserBlock(expectedScenes: { target: number }): string {
+    return `
+
+VOICEOVER QUALITY (MANDATORY):
+- Write original, topic-specific voiceover for every scene — hook in scene 1, build in scenes 2-${Math.max(2, expectedScenes.target - 1)}, clear closing in the final scene.
+- Each voiceover: 1–2 complete spoken sentences; no fragments, no placeholders, no abrupt cutoffs.
+- The final scene must end with a satisfying conclusion or takeaway — never mid-thought.`;
+  }
+
+  private buildVoiceoverQualityRetryNote(issues: string[]): string {
+    return `
+
+VOICEOVER QUALITY FIX (REQUIRED — previous JSON failed quality checks):
+Issues detected: ${issues.join('; ')}
+
+Regenerate the FULL script JSON with these fixes:
+- Expand every voiceover into 1–2 complete, natural spoken sentences tied to the user's topic.
+- Scene 1 must hook the listener; the last scene must close with a clear takeaway (not mid-sentence).
+- Remove any placeholder, generic, or filler lines. Do not shorten voiceovers — improve their substance and flow.
+- Keep the same scene count, time ranges, and visual/b-roll fields unless they were missing.`;
+  }
+
   private buildGroundedFactsUserBlock(
     groundedFactsContext?: string,
     opts?: { searchAttemptedButEmpty?: boolean },
@@ -485,6 +601,7 @@ Assess relevance and recommend integration level.`,
     groundedFactsContext?: string,
     searchAttemptedButEmpty?: boolean,
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
+    qualityRetryNote?: string,
   ): string {
     let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
 
@@ -544,7 +661,11 @@ CRITICAL DURATION REQUIREMENTS:
       groundedFactsContext,
       { searchAttemptedButEmpty },
     );
+    textPrompt += this.buildVoiceoverQualityUserBlock(expectedScenes);
     textPrompt += this.buildCriticalLanguageUserBlock(language);
+    if (qualityRetryNote) {
+      textPrompt += qualityRetryNote;
+    }
     textPrompt += `\n\nReturn the response as a valid JSON object following the specified format.`;
     return textPrompt;
   }
@@ -555,7 +676,7 @@ CRITICAL DURATION REQUIREMENTS:
     duration: string,
     durationSeconds: number,
     expectedScenes: { min: number; max: number; target: number },
-    opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean },
+    opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean; qualityRetryNote?: string },
     language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
     groundedFactsContext?: string,
     searchAttemptedButEmpty?: boolean,
@@ -585,6 +706,7 @@ CRITICAL DURATION REQUIREMENTS:
         groundedFactsContext,
         searchAttemptedButEmpty,
         brandIntegrationLevel,
+        opts.qualityRetryNote,
       );
       content.push({ type: 'text', text: textPrompt });
 
@@ -632,6 +754,7 @@ CRITICAL DURATION REQUIREMENTS:
         groundedFactsContext,
         searchAttemptedButEmpty,
         brandIntegrationLevel,
+        opts.qualityRetryNote,
       );
       if (opts.textOnlyRetryNote) {
         text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
@@ -652,6 +775,7 @@ CRITICAL DURATION REQUIREMENTS:
         groundedFactsContext,
         searchAttemptedButEmpty,
         brandIntegrationLevel,
+        opts.qualityRetryNote,
       ),
     };
   }
@@ -852,19 +976,23 @@ CRITICAL DURATION REQUIREMENTS:
         }
       }
 
-      const factualTemperature = groundedFactsContext
+      const scriptTemperature = groundedFactsContext
         ? Number(this.configService.get<string>('SCRIPT_TEMPERATURE_FACTUAL') || 0.3)
-        : undefined;
+        : Number(this.configService.get<string>('SCRIPT_TEMPERATURE') || 0.45);
 
       const textModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
-      const buildMessages = async (attachVision: boolean, textOnlyRetryNote?: boolean) => {
+      const buildMessages = async (
+        attachVision: boolean,
+        textOnlyRetryNote?: boolean,
+        qualityRetryNote?: string,
+      ) => {
         const userMsg = await this.buildVideoScriptUserMessage(
           request,
           hasAnalyzedAssets ? analyzedAssets : undefined,
           duration,
           durationSeconds,
           expectedScenes,
-          { attachVisionImages: attachVision, textOnlyRetryNote },
+          { attachVisionImages: attachVision, textOnlyRetryNote, qualityRetryNote },
           language,
           groundedFactsContext,
           searchAttemptedButEmpty,
@@ -889,7 +1017,7 @@ CRITICAL DURATION REQUIREMENTS:
           model,
           visionFlag,
           'generateVideoScript',
-          factualTemperature,
+          scriptTemperature,
         );
         completion = first.completion;
         responseContent = first.text;
@@ -904,7 +1032,7 @@ CRITICAL DURATION REQUIREMENTS:
             model,
             visionFlag,
             'generateVideoScript',
-            factualTemperature,
+            scriptTemperature,
           );
           completion = second.completion;
           responseContent = second.text;
@@ -920,6 +1048,38 @@ CRITICAL DURATION REQUIREMENTS:
         throw new Error(
           `OpenAI returned invalid JSON: ${parseErr?.message || parseErr}. First 500 chars: ${responseContent.slice(0, 500)}`,
         );
+      }
+
+      // Retry once if voiceover quality checks fail (abrupt endings, fragments, placeholders)
+      let voiceoverValidation = this.validateVoiceoverQuality(scriptData);
+      if (!voiceoverValidation.valid) {
+        this.logger.warn(
+          `Voiceover quality validation failed: ${voiceoverValidation.issues.join('; ')}. Retrying once...`,
+          'ScriptsService',
+        );
+        try {
+          messages = await buildMessages(visionFlag, false, this.buildVoiceoverQualityRetryNote(voiceoverValidation.issues));
+          const qualityRetry = await this.completeChatWithJsonContent(
+            messages,
+            model,
+            visionFlag,
+            'generateVideoScript-voiceoverRetry',
+            scriptTemperature,
+          );
+          scriptData = JSON.parse(qualityRetry.text);
+          voiceoverValidation = this.validateVoiceoverQuality(scriptData);
+          if (!voiceoverValidation.valid) {
+            this.logger.warn(
+              `Voiceover quality still below target after retry: ${voiceoverValidation.issues.join('; ')}`,
+              'ScriptsService',
+            );
+          }
+        } catch (retryErr: any) {
+          this.logger.warn(
+            `Voiceover quality retry failed, using original script: ${retryErr?.message || retryErr}`,
+            'ScriptsService',
+          );
+        }
       }
 
       // Validate scene count matches duration
@@ -999,7 +1159,17 @@ CRITICAL DURATION REQUIREMENTS:
       // Request avatar_image_prompt for avatar styles so regenerated script retains it
       const effectiveHasAvatar = AVATAR_VIDEO_STYLES.includes(request.videoStyle);
       // Get system prompt (same as script generation to maintain consistency)
-      const systemPrompt = this.getSystemPromptForStyle(request.videoStyle, language, [], undefined, effectiveHasAvatar);
+      const systemPrompt = this.getSystemPromptForStyle(
+        request.videoStyle,
+        language,
+        [],
+        undefined,
+        effectiveHasAvatar,
+        undefined,
+        undefined,
+        undefined,
+        'full',
+      );
       
       // Build conversation history for context
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -1015,6 +1185,9 @@ CRITICAL DURATION REQUIREMENTS:
       ];
       
       const brollIdentitySpatial = `CRITICAL (b-roll): If the video uses reference images for I2I, phrase any hero product or garment as the SAME item as in the reference image(s); do not substitute a different design. Each broll_image_prompt = one frozen documentary still; desk/chair/laptop/person layout must be spatially consistent (no contradictory left-right). broll_video_prompt = one continuous plausible shot with natural motion.`;
+
+      const voiceoverSceneGuidance =
+        'Voiceover must be 1–2 complete, natural spoken sentences tied to the topic — no fragments or placeholders. If this is the final scene, end with a clear closing takeaway.';
 
       // Build the user's request based on operation type
       let userRequest: string;
@@ -1034,7 +1207,7 @@ CRITICAL DURATION REQUIREMENTS:
           ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
-        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
+        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${voiceoverSceneGuidance} ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
       }
       
       let groundedFactsContext: string | undefined;
@@ -1450,27 +1623,34 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
   ): string {
     // Language-specific descriptions
+    const voiceoverExamples = this.getVoiceoverLanguageExamples(language);
     const languageDescriptions = {
       'english': {
         dialogue: 'English dialogue',
-        instruction: 'Voiceover must always be natural, emotional, and conversational English.',
-        example: 'Conversational English dialogue here...',
-        alternate: 'English dialogue or narration here...',
-        cutout: 'Natural conversational English line…',
+        instruction: 'Voiceover must always be natural, emotional, and conversational English — complete sentences that sound polished when read aloud.',
+        exampleHook: voiceoverExamples.exampleHook,
+        exampleBody: voiceoverExamples.exampleBody,
+        exampleClose: voiceoverExamples.exampleClose,
+        alternate: voiceoverExamples.exampleBody,
+        cutout: voiceoverExamples.exampleHook,
       },
       'hindi': {
         dialogue: 'Hindi dialogue',
-        instruction: 'Voiceover must always be natural, emotional, and conversational Hindi.',
-        example: 'Conversational Hindi dialogue here...',
-        alternate: 'Hindi dialogue or narration here...',
-        cutout: 'Natural conversational Hindi line…',
+        instruction: 'Voiceover must always be natural, emotional, and conversational Hindi (Devanagari) — complete sentences that sound polished when read aloud.',
+        exampleHook: voiceoverExamples.exampleHook,
+        exampleBody: voiceoverExamples.exampleBody,
+        exampleClose: voiceoverExamples.exampleClose,
+        alternate: voiceoverExamples.exampleBody,
+        cutout: voiceoverExamples.exampleHook,
       },
       'hinglish': {
         dialogue: 'Hinglish dialogue (mix of Hindi and English)',
-        instruction: 'Voiceover must always be natural, emotional, and conversational Hinglish (mix of Hindi and English).',
-        example: 'Conversational Hinglish dialogue here...',
-        alternate: 'Hinglish dialogue or narration here...',
-        cutout: 'Natural conversational Hinglish line…',
+        instruction: 'Voiceover must always be natural, emotional, and conversational Hinglish (mix of Hindi and English) — complete sentences that sound polished when read aloud.',
+        exampleHook: voiceoverExamples.exampleHook,
+        exampleBody: voiceoverExamples.exampleBody,
+        exampleClose: voiceoverExamples.exampleClose,
+        alternate: voiceoverExamples.exampleBody,
+        cutout: voiceoverExamples.exampleHook,
       },
     };
 
@@ -1719,7 +1899,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Describe Indian-context visuals — e.g., Indian streets, markets, offices, homes, festivals. If reference images define a hero product or garment, say it is the same item as in the reference image(s).",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: documentary photograph, bustling Indian street market with vendors and stalls — one frozen moment, single camera angle]",
       "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: bustling Indian street market with vendors, people walking, stalls, dynamic movement]",
@@ -1730,7 +1910,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 2,
       "time_range": "5-10s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleBody}",
       "broll_visual_description": "Describe next Indian-context visuals",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: documentary style, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description]",
       "broll_video_prompt": "[Color palette: natural earth tones, realistic sky, authentic Indian environment] [Lighting: natural daylight, documentary style] [Mood: documentary, factual, authentic] [Camera: smooth panning, natural perspective] [Time: golden hour evening] [Tone: documentary photograph, authentic local life] [Scene-specific: different scene description with motion]",
@@ -1760,6 +1940,7 @@ CRITICAL PROMPT GENERATION RULES:
 Guidelines:
 - All visuals should reflect Indian context unless user explicitly asks otherwise.
 - ${lang.instruction}
+- Every voiceover must follow the hook → body → close arc; the final scene must land with a complete takeaway.
 - Maintain continuity between avatar and b-roll.
 - B-roll should support, enhance, or contrast the spoken dialogue.
 - Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
@@ -1830,7 +2011,7 @@ Output Format:
       "scene_number": 1,
       "type": "b-roll",
       "time_range": "0-7s",
-      "voiceover": "${lang.alternate}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Describe Indian visuals that support the voiceover — markets, roads, cafes, offices, villages, festivals, etc. If reference images show a hero garment or product, state it is the same item as in the reference image(s), not a newly invented design.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: one plausible full-screen 9:16 still — e.g. Indian woman in upscale boutique wearing the same dress as in the reference image(s), natural light, single viewpoint].",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion].",
@@ -1842,7 +2023,7 @@ Output Format:
       "scene_number": 2,
       "type": "avatar",
       "time_range": "7-14s",
-      "voiceover": "${lang.alternate}",
+      "voiceover": "${lang.exampleBody}",
       "broll_visual_description": null,
       "broll_image_prompt": null,
       "broll_video_prompt": null,
@@ -1940,7 +2121,7 @@ Output Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.cutout}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Describe Indian environment — cafes, offices, markets, metro, festivals, streets, villages.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description with motion]",
@@ -1952,7 +2133,7 @@ Output Format:
     {
       "scene_number": 2,
       "time_range": "5-10s",
-      "voiceover": "${lang.cutout}",
+      "voiceover": "${lang.exampleBody}",
       "broll_visual_description": "Describe next Indian environment",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: different description with motion]",
@@ -2033,7 +2214,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "avatar_action": "Describe avatar's expression and delivery",
       "avatar_motion": "nod", "smile", "gesture", etc.
     }
@@ -2087,7 +2268,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "avatar_action": "Describe avatar's expression and delivery",
       "avatar_motion": "nod", "smile", "gesture", etc.
     }
@@ -2157,7 +2338,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person. Reference I2I: describe the same physical product as in the reference image(s), new angle or setting only; FULL product visible in frame.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference image(s); ENTIRE product in frame, primary label readable; documentary product shot, one angle] [CRITICAL: NO human, NO avatar, NO person in image] [CRITICAL: no tight crop of packaging edges]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas] [CRITICAL: NO human, NO avatar, NO person in video]"
@@ -2228,7 +2409,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Scene-specific b-roll description that may include people when it naturally supports the narrative. Do NOT describe a separate avatar overlay.",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll description with physically plausible human presence when appropriate]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: b-roll with motion, optionally including people in natural positions when appropriate]"
@@ -2312,7 +2493,7 @@ Structure Your Output in This JSON Format:
     {
       "scene_number": 1,
       "time_range": "0-5s",
-      "voiceover": "${lang.example}",
+      "voiceover": "${lang.exampleHook}",
       "broll_visual_description": "Presenter (avatar or person) showcasing/using the product",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product; FULL product visible in frame with presenter] [CRITICAL: no tight crop of product packaging edges]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas]",
@@ -2347,9 +2528,10 @@ Guidelines:
 
   const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
   const regionContext = this.getRegionContext(language);
+  const voiceoverQualityBlock = this.buildVoiceoverQualitySystemBlock(language, style);
 
-  // Append specificity rule, base prompt, asset context, URL context, optional avatar context, and region context
-  return SPECIFICITY_RULE + basePrompt + assetContext + urlContext + avatarContext + regionContext;
+  // Voiceover quality first, then specificity, then style-specific prompt
+  return voiceoverQualityBlock + SPECIFICITY_RULE + basePrompt + assetContext + urlContext + avatarContext + regionContext;
 }
 
   /**
@@ -3000,6 +3182,75 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
     console.log(`[ScriptsService] Expected scenes for ${durationSeconds}s ${videoStyle}: target=${target}, range=${min}-${max}`);
     
     return { min, max, target };
+  }
+
+  /**
+   * Validate voiceover narrative quality (not duration/word budgets).
+   * Checks for placeholders, fragments, abrupt endings, and generic openers.
+   */
+  private validateVoiceoverQuality(scriptData: any): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    const scenes = scriptData?.scenes || scriptData?.scene_plan || [];
+
+    if (scenes.length === 0) {
+      issues.push('No scenes found in script');
+      return { valid: false, issues };
+    }
+
+    const placeholderPatterns = [
+      /conversational .* dialogue here/i,
+      /dialogue or narration here/i,
+      /natural conversational .* line/i,
+      /^voiceover$/i,
+      /placeholder/i,
+    ];
+
+    const genericOpeners = [
+      /^welcome to\b/i,
+      /^in this video\b/i,
+      /^today we (will|are going to)\b/i,
+      /^let'?s (talk|discuss|learn) about what is\b/i,
+      /^(what is|who is|define)\b/i,
+    ];
+
+    const abruptEndings = /\b(and|but|so|because|which|that|or|the|a|an|to|for|with|in|on|at)$/i;
+
+    scenes.forEach((scene: any, index: number) => {
+      const sceneNum = scene.scene_number || scene.sceneNumber || index + 1;
+      const voiceover = (scene.voiceover || '').trim();
+
+      if (!voiceover) {
+        issues.push(`Scene ${sceneNum} is missing voiceover`);
+        return;
+      }
+
+      if (placeholderPatterns.some((pattern) => pattern.test(voiceover))) {
+        issues.push(`Scene ${sceneNum} uses placeholder voiceover text`);
+      }
+
+      const wordCount = voiceover.split(/\s+/).filter(Boolean).length;
+      if (wordCount < 8) {
+        issues.push(`Scene ${sceneNum} voiceover is too short or fragmentary (${wordCount} words)`);
+      }
+
+      if (index === 0 && genericOpeners.some((pattern) => pattern.test(voiceover))) {
+        issues.push('Scene 1 opens with a generic definition or intro instead of a hook');
+      }
+    });
+
+    const lastScene = scenes[scenes.length - 1];
+    const lastVoiceover = (lastScene?.voiceover || '').trim();
+    if (lastVoiceover) {
+      const trimmedForEndCheck = lastVoiceover.replace(/[.!?।"']+$/, '').trim();
+      if (abruptEndings.test(trimmedForEndCheck)) {
+        issues.push('Final scene voiceover ends abruptly mid-thought');
+      }
+      if (!/[.!?।]$/.test(lastVoiceover)) {
+        issues.push('Final scene voiceover lacks proper ending punctuation');
+      }
+    }
+
+    return { valid: issues.length === 0, issues };
   }
 
   /**

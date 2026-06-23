@@ -3871,6 +3871,7 @@ export class RenderingService {
 
   /**
    * When project.backgroundMusic has a public URL and mixing is enabled, mux BGM under the voice track.
+   * @deprecated Use downloadHeyGenMusicAtExport for HeyGen source (preferred)
    */
   private async downloadMagnificMusicAtExport(
     externalId: number,
@@ -3897,15 +3898,68 @@ export class RenderingService {
     return { publicUrl, gcsUrl: d.gcsUrl as string | undefined };
   }
 
+  /**
+   * Download HeyGen background music at export time.
+   * HeyGen audio URLs are pre-signed S3 URLs with limited lifetime,
+   * so we re-search using the original searchSeed to get a fresh URL.
+   * 
+   * @param searchSeed The original search query used to find the track
+   * @param heygenTrackId Optional: specific track ID to match for verification
+   * @param projectId Project ID for logging
+   * @returns Fresh download URL for the audio
+   */
+  private async downloadHeyGenMusicAtExport(
+    searchSeed: string,
+    heygenTrackId: string | undefined,
+    projectId: string,
+  ): Promise<{ publicUrl: string; trackId: string; trackName: string; duration: number }> {
+    console.log(`[RenderingService] BGM: fetching HeyGen music for "${searchSeed}" (project=${projectId})`);
+    
+    // Re-search to get a fresh pre-signed URL
+    const track = await this.heygenVideoProvider.refreshAudioTrackUrl(searchSeed, heygenTrackId);
+    
+    if (!track) {
+      throw new Error(`HeyGen music search returned no results for: "${searchSeed}"`);
+    }
+
+    if (heygenTrackId && track.id !== heygenTrackId) {
+      console.warn(
+        `[RenderingService] BGM: HeyGen track ID mismatch (expected=${heygenTrackId}, got=${track.id}). Using best match.`,
+      );
+    }
+
+    console.log(
+      `[RenderingService] BGM: found HeyGen track "${track.name}" (${track.duration}s, score=${track.score})`,
+    );
+
+    return {
+      publicUrl: track.audio_url,
+      trackId: track.id,
+      trackName: track.name,
+      duration: track.duration,
+    };
+  }
+
   private async applyBackgroundMusicIfEnabled(
     project: { backgroundMusic?: unknown; userId?: string },
     videoWithVoicePath: string,
     userDir: string,
     projectId: string,
   ): Promise<string> {
-    if (!this.isBackgroundMusicMixEnabled()) return videoWithVoicePath;
+    console.log(`[RenderingService] BGM: Checking background music for project ${projectId}`);
+    
+    if (!this.isBackgroundMusicMixEnabled()) {
+      console.log(`[RenderingService] BGM: Background music mixing is DISABLED via config`);
+      return videoWithVoicePath;
+    }
+    
     const bgm = project.backgroundMusic as Record<string, unknown> | null | undefined;
-    if (!bgm || bgm.enabled === false) return videoWithVoicePath;
+    console.log(`[RenderingService] BGM: Config received:`, JSON.stringify(bgm, null, 2));
+    
+    if (!bgm || bgm.enabled === false) {
+      console.log(`[RenderingService] BGM: Skipping - enabled=${bgm?.enabled}, bgm exists=${!!bgm}`);
+      return videoWithVoicePath;
+    }
 
     let url = (bgm.publicUrl || bgm.gcsUrl) as string | undefined;
     const rawExt = bgm.externalId;
@@ -3915,9 +3969,38 @@ export class RenderingService {
         : typeof rawExt === 'string'
           ? parseInt(rawExt, 10)
           : NaN;
-    const source = bgm.source;
+    const source = bgm.source as string | undefined;
+    // searchSeed can be an object { query: '...' } or a string
+    const rawSearchSeed = bgm.searchSeed;
+    const searchSeedQuery = typeof rawSearchSeed === 'string'
+      ? rawSearchSeed
+      : (rawSearchSeed as { query?: string } | null | undefined)?.query;
+    const heygenTrackId = bgm.heygenTrackId as string | undefined;
 
-    if (!url && Number.isFinite(externalId) && externalId >= 1 && source === 'magnific') {
+    // HeyGen source: use semantic search to get fresh pre-signed URL
+    if (source === 'heygen' && searchSeedQuery) {
+      console.log(`[RenderingService] BGM: fetching HeyGen music at export time (searchSeed="${searchSeedQuery}")`);
+      try {
+        const downloaded = await this.downloadHeyGenMusicAtExport(searchSeedQuery, heygenTrackId, projectId);
+        url = downloaded.publicUrl;
+        const merged = {
+          ...bgm,
+          publicUrl: downloaded.publicUrl,
+          heygenTrackId: downloaded.trackId,
+          heygenTrackName: downloaded.trackName,
+          heygenTrackDuration: downloaded.duration,
+        };
+        await this.databaseService.videoProject.update({
+          where: { id: projectId },
+          data: { backgroundMusic: merged } as any,
+        });
+      } catch (dlError: any) {
+        console.warn(`[RenderingService] BGM: HeyGen download failed: ${dlError?.message || dlError}`);
+        return videoWithVoicePath;
+      }
+    }
+    // Magnific source (legacy): use external ID to download
+    else if (!url && Number.isFinite(externalId) && externalId >= 1 && source === 'magnific') {
       console.log(`[RenderingService] BGM: downloading Magnific track ${externalId} at export time...`);
       try {
         const downloaded = await this.downloadMagnificMusicAtExport(externalId, projectId);
@@ -3937,8 +4020,13 @@ export class RenderingService {
       }
     }
 
-    if (!url) return videoWithVoicePath;
+    if (!url) {
+      console.log(`[RenderingService] BGM: No URL available after source handling. source=${source}, searchSeed=${searchSeedQuery}, heygenTrackId=${heygenTrackId}`);
+      return videoWithVoicePath;
+    }
 
+    console.log(`[RenderingService] BGM: Got URL for mixing: ${url.slice(0, 150)}...`);
+    
     const userId = (project as any).userId as string;
     let localBgm: string | null = null;
     try {
@@ -3947,17 +4035,20 @@ export class RenderingService {
         console.warn(`[RenderingService] BGM: could not resolve local file from ${url.slice(0, 120)}`);
         return videoWithVoicePath;
       }
+      console.log(`[RenderingService] BGM: Downloaded to local path: ${localBgm}`);
       const out = path.join(userDir, `final_with_bgm_${projectId}_${Date.now()}.mp4`);
       const mixVol = this.clampBgMusicNumber(bgm.mixVolume, 0.05, 0, 1);
       const voiceVol = this.clampBgMusicNumber(bgm.voiceDuckTo, 1.0, 0, 1);
       const fadeInMs = this.clampBgMusicNumber(bgm.fadeInMs, 500, 0, 5000);
       const fadeOutMs = this.clampBgMusicNumber(bgm.fadeOutMs, 1500, 0, 5000);
+      console.log(`[RenderingService] BGM: Mixing with settings: mixVol=${mixVol}, voiceVol=${voiceVol}, fadeIn=${fadeInMs}ms, fadeOut=${fadeOutMs}ms`);
       await this.videoCompositor.mixVoiceWithBackgroundMusic(videoWithVoicePath, localBgm, out, {
         mixVolume: mixVol,
         voiceDuckTo: voiceVol,
         fadeInSec: fadeInMs / 1000,
         fadeOutSec: fadeOutMs / 1000,
       });
+      console.log(`[RenderingService] BGM: Successfully mixed background music into ${out}`);
       return out;
     } catch (e: any) {
       console.warn(`[RenderingService] BGM mix failed, using voice-only: ${e?.message || e}`);

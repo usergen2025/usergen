@@ -52,6 +52,59 @@ export enum VideoCreationStepDto {
   COMPLETED = 'COMPLETED',
 }
 
+/**
+ * Background music source options.
+ * - heygen: HeyGen audio catalog (recommended, semantic search)
+ * - magnific: Legacy Magnific library
+ * - upload: User-uploaded audio file
+ */
+export enum BackgroundMusicSourceDto {
+  HEYGEN = 'heygen',
+  MAGNIFIC = 'magnific',
+  UPLOAD = 'upload',
+}
+
+/**
+ * Background music configuration for video projects.
+ * Supports HeyGen audio catalog (recommended), Magnific library (legacy), or user uploads.
+ */
+export interface BackgroundMusicDto {
+  /** Whether background music is enabled */
+  enabled: boolean;
+  /** Music source: 'heygen' (recommended), 'magnific' (legacy), or 'upload' */
+  source: BackgroundMusicSourceDto | 'heygen' | 'magnific' | 'upload';
+  
+  // Common fields
+  /** Public URL of the audio file (populated at export time for heygen/magnific) */
+  publicUrl?: string;
+  /** GCS URL of the audio file (if uploaded to cloud storage) */
+  gcsUrl?: string;
+  /** Original search query used to find the track (used for re-fetching fresh URLs) */
+  searchSeed?: string;
+  /** Mix volume for background music (0-1, default 0.05) */
+  mixVolume?: number;
+  /** Voice volume when background music is playing (0-1, default 1.0) */
+  voiceDuckTo?: number;
+  /** Fade-in duration in milliseconds (default 500) */
+  fadeInMs?: number;
+  /** Fade-out duration in milliseconds (default 1500) */
+  fadeOutMs?: number;
+
+  // HeyGen-specific fields
+  /** HeyGen track ID (for verification when re-fetching) */
+  heygenTrackId?: string;
+  /** HeyGen track display name */
+  heygenTrackName?: string;
+  /** HeyGen track duration in seconds */
+  heygenTrackDuration?: number;
+  /** HeyGen track semantic similarity score (0-1) */
+  heygenTrackScore?: number;
+
+  // Magnific-specific fields (legacy)
+  /** Magnific library track external ID */
+  externalId?: number;
+}
+
 export class CreateVideoProjectDto {
   @ApiPropertyOptional()
   @IsOptional()
