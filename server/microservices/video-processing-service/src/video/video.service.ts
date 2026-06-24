@@ -32,6 +32,8 @@ export class VideoService {
   private readonly jwtSecret: string;
   /** Dedupe concurrent ensureProjectAvatarImage calls per project */
   private readonly ensureAvatarImageInFlight = new Map<string, Promise<void>>();
+  /** Dedupe concurrent asset-analysis triggers per project+fingerprint */
+  private readonly assetAnalysisInFlight = new Map<string, Promise<void>>();
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -123,7 +125,7 @@ export class VideoService {
       console.log(
         `[VideoService] Queued asset-analysis for ${project.id}, assets=${assets.length}, logo=${hasLogo}`,
       );
-      this.triggerAssetAnalysis(project.id, userId, assets).catch(error => {
+      this.queueAssetAnalysis(project.id, userId, assets).catch(error => {
         console.error(`[VideoService] Failed to trigger asset analysis for project ${project.id}:`, error.message);
       });
     }
@@ -341,6 +343,9 @@ export class VideoService {
     if (dto.videoUrl !== undefined) updateData.videoUrl = dto.videoUrl;
     if (dto.thumbnailUrl !== undefined) updateData.thumbnailUrl = dto.thumbnailUrl;
     if (dto.duration !== undefined) updateData.duration = dto.duration;
+    let shouldTriggerAssetAnalysis = false;
+    let assetsToAnalyze: Array<{ id: string; url: string; type?: string; category?: string }> = [];
+
     // Merge metadata so partial updates (e.g. script, step) don't wipe generationFlow, aiChatStep, assetAnalysis
     if (dto.metadata !== undefined) {
       const existingMeta = existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
@@ -352,38 +357,51 @@ export class VideoService {
       });
       updateData.metadata = mergedMeta;
 
-      const parsedAssets = parseMetadataAssets(mergedMeta.assets);
-      if (parsedAssets.length > 0) {
-        (updateData.metadata as Record<string, unknown>).assets = parsedAssets;
-        const fingerprint = this.computeAssetsFingerprint(parsedAssets);
-        const priorAnalysis = (existingMeta.assetAnalysis || {}) as Record<string, unknown>;
-        const oldFingerprint = priorAnalysis.assetsFingerprint as string | undefined;
-        const analysisStatus = priorAnalysis.status as string | undefined;
-        const needsAnalysis =
-          fingerprint !== oldFingerprint ||
-          !analysisStatus ||
-          analysisStatus === 'failed' ||
-          (metadataHasLogoAsset(parsedAssets) && !mergedMeta.logoBrand);
+      // Only re-evaluate asset analysis when assets array is explicitly included in the update
+      const assetsExplicitlyUpdated =
+        dto.metadata !== null &&
+        typeof dto.metadata === 'object' &&
+        !Array.isArray(dto.metadata) &&
+        Object.prototype.hasOwnProperty.call(dto.metadata, 'assets');
 
-        if (needsAnalysis) {
-          const nextMeta = { ...(updateData.metadata as Record<string, unknown>) };
-          nextMeta.assetAnalysis = {
-            ...priorAnalysis,
-            status: 'pending',
-            assetsFingerprint: fingerprint,
-            totalAssets: parsedAssets.length,
-            updatedAt: new Date().toISOString(),
-          };
-          if (fingerprint !== oldFingerprint) {
-            delete nextMeta.logoBrand;
-            delete nextMeta.analyzedAssets;
-            delete nextMeta.brandPackaging;
-            delete nextMeta.brandPackagingApplied;
+      if (assetsExplicitlyUpdated) {
+        const parsedAssets = parseMetadataAssets(mergedMeta.assets);
+        (updateData.metadata as Record<string, unknown>).assets = parsedAssets;
+
+        if (parsedAssets.length > 0) {
+          const fingerprint = this.computeAssetsFingerprint(parsedAssets);
+          const priorAnalysis = (existingMeta.assetAnalysis || {}) as Record<string, unknown>;
+          const oldFingerprint = priorAnalysis.assetsFingerprint as string | undefined;
+          const analysisStatus = priorAnalysis.status as string | undefined;
+          const needsAnalysis =
+            fingerprint !== oldFingerprint ||
+            !analysisStatus ||
+            analysisStatus === 'failed' ||
+            (metadataHasLogoAsset(parsedAssets) && !mergedMeta.logoBrand);
+
+          if (needsAnalysis) {
+            const nextMeta = { ...(updateData.metadata as Record<string, unknown>) };
+            nextMeta.assetAnalysis = {
+              ...priorAnalysis,
+              status: 'pending',
+              assetsFingerprint: fingerprint,
+              totalAssets: parsedAssets.length,
+              updatedAt: new Date().toISOString(),
+            };
+            if (fingerprint !== oldFingerprint) {
+              delete nextMeta.logoBrand;
+              delete nextMeta.analyzedAssets;
+              delete nextMeta.brandPackaging;
+              delete nextMeta.brandPackagingApplied;
+              delete nextMeta.productPresentationPlan;
+            }
+            updateData.metadata = nextMeta;
+            shouldTriggerAssetAnalysis = true;
+            assetsToAnalyze = parsedAssets;
+            console.log(
+              `[VideoService] Assets changed for project ${projectId} — will queue asset analysis`,
+            );
           }
-          updateData.metadata = nextMeta;
-          console.log(
-            `[VideoService] Assets changed for project ${projectId} — re-queueing asset analysis`,
-          );
         }
       }
 
@@ -481,26 +499,14 @@ export class VideoService {
         .catch(() => {});
     }
 
-    // Trigger asset analysis if metadata with assets was updated
-    const projectMeta = project.metadata as Record<string, unknown>;
-    const parsedAssets = parseMetadataAssets(projectMeta?.assets);
-    if (parsedAssets.length > 0) {
-      const analysisStatus = (projectMeta?.assetAnalysis as { status?: string } | undefined)?.status;
-
-      if (
-        !analysisStatus ||
-        analysisStatus === 'pending' ||
-        analysisStatus === 'failed' ||
-        (metadataHasLogoAsset(parsedAssets) && !projectMeta?.logoBrand)
-      ) {
-        const hasLogo = metadataHasLogoAsset(parsedAssets);
-        console.log(
-          `[VideoService] Queued asset-analysis for ${projectId}, assets=${parsedAssets.length}, logo=${hasLogo}`,
-        );
-        this.triggerAssetAnalysis(projectId, userId, parsedAssets).catch(error => {
-          console.error(`[VideoService] Failed to trigger asset analysis for project ${projectId}:`, error.message);
-        });
-      }
+    if (shouldTriggerAssetAnalysis && assetsToAnalyze.length > 0) {
+      const hasLogo = metadataHasLogoAsset(assetsToAnalyze);
+      console.log(
+        `[VideoService] Queued asset-analysis for ${projectId}, assets=${assetsToAnalyze.length}, logo=${hasLogo}`,
+      );
+      this.queueAssetAnalysis(projectId, userId, assetsToAnalyze).catch((error) => {
+        console.error(`[VideoService] Failed to trigger asset analysis for project ${projectId}:`, error.message);
+      });
     }
 
     return {
@@ -524,7 +530,7 @@ export class VideoService {
     return metadata;
   }
 
-  private computeAssetsFingerprint(
+  computeAssetsFingerprint(
     assets: Array<{ id?: string; url?: string }>,
   ): string {
     const normalized = assets
@@ -534,14 +540,63 @@ export class VideoService {
   }
 
   /**
-   * Trigger asset analysis in ai-content-service (non-blocking)
+   * Queue asset analysis in ai-content-service (non-blocking, deduped).
    */
-  private async triggerAssetAnalysis(
+  queueAssetAnalysis(
     projectId: string,
     userId: string,
-    assets: Array<{ id: string; url: string; type?: string; category?: string }>
+    assets: Array<{ id: string; url: string; type?: string; category?: string }>,
+  ): Promise<void> {
+    const fingerprint = this.computeAssetsFingerprint(assets);
+    const inflightKey = `${projectId}:${fingerprint}`;
+    const existing = this.assetAnalysisInFlight.get(inflightKey);
+    if (existing) {
+      return existing;
+    }
+
+    const run = this.runQueueAssetAnalysis(projectId, userId, assets, fingerprint).finally(() => {
+      this.assetAnalysisInFlight.delete(inflightKey);
+    });
+    this.assetAnalysisInFlight.set(inflightKey, run);
+    return run;
+  }
+
+  private async runQueueAssetAnalysis(
+    projectId: string,
+    userId: string,
+    assets: Array<{ id: string; url: string; type?: string; category?: string }>,
+    fingerprint: string,
   ): Promise<void> {
     try {
+      const project = await this.databaseService.videoProject.findFirst({
+        where: { id: projectId, userId },
+      });
+      if (!project) {
+        console.warn(`[VideoService] queueAssetAnalysis: project ${projectId} not found`);
+        return;
+      }
+
+      const meta =
+        project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+          ? (project.metadata as Record<string, unknown>)
+          : {};
+      const analysis = (meta.assetAnalysis || {}) as Record<string, unknown>;
+      const status = analysis.status as string | undefined;
+      const storedFp = analysis.assetsFingerprint as string | undefined;
+      const needsLogoReprocess =
+        metadataHasLogoAsset(assets) && !meta.logoBrand;
+
+      if (status === 'processing') {
+        console.log(`[VideoService] Skipping asset-analysis for ${projectId}: already processing`);
+        return;
+      }
+      if (status === 'completed' && storedFp === fingerprint && !needsLogoReprocess) {
+        console.log(
+          `[VideoService] Skipping asset-analysis for ${projectId}: already completed for fingerprint`,
+        );
+        return;
+      }
+
       // Generate service token
       const token = jwt.sign(
         { sub: userId, userId, id: userId, type: 'service' },
@@ -604,6 +659,7 @@ export class VideoService {
         {
           projectId,
           assets: assetsForAnalysis,
+          assetsFingerprint: fingerprint,
         },
         {
           headers: {
@@ -906,9 +962,16 @@ export class VideoService {
     };
   }
 
+  /** Basename of a final video URL (local path or GCS HTTPS). */
+  private extractFinalVideoBasename(videoUrl?: string | null): string | null {
+    if (!videoUrl) return null;
+    const basename = path.basename(videoUrl.replace(/\\/g, '/').split('?')[0]);
+    return basename.endsWith('.mp4') ? basename : null;
+  }
+
   /**
    * Resolve the on-disk final MP4 for download/streaming.
-   * Prefers branded output (`final_branded_*`) over stale unbranded `final_*` leftovers.
+   * Prefers the exact published file, then branded/captioned outputs over stale `final_*` leftovers.
    */
   private findLocalFinalVideoPath(
     userId: string,
@@ -934,12 +997,15 @@ export class VideoService {
       return candidates[0]?.full ?? null;
     };
 
-    // When DB stores a local uploads path, use that exact file (post-branding path).
-    if (videoUrl && !videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
-      const basename = path.basename(videoUrl.replace(/\\/g, '/'));
-      const exact = path.join(dir, basename);
+    const publishedBasename = this.extractFinalVideoBasename(videoUrl);
+    if (publishedBasename) {
+      const exact = path.join(dir, publishedBasename);
       if (fs.existsSync(exact)) {
         return exact;
+      }
+      // Published to remote storage — do not serve a different local intermediate.
+      if (videoUrl?.startsWith('http://') || videoUrl?.startsWith('https://')) {
+        return null;
       }
     }
 
@@ -951,6 +1017,16 @@ export class VideoService {
     // Branded render published to GCS — do not fall back to older unbranded local files.
     if (brandPackagingApplied) {
       return null;
+    }
+
+    const captioned = newestWithPrefix(`final_captioned_${projectId}_`);
+    if (captioned) {
+      return captioned;
+    }
+
+    const withBgm = newestWithPrefix(`final_with_bgm_${projectId}_`);
+    if (withBgm) {
+      return withBgm;
     }
 
     return newestWithPrefix(`final_${projectId}_`);
@@ -1021,7 +1097,7 @@ export class VideoService {
     let assetAnalysisQueued = false;
     if (parsedAssets.length > 0) {
       assetAnalysisQueued = true;
-      await this.triggerAssetAnalysis(projectId, userId, parsedAssets);
+      await this.queueAssetAnalysis(projectId, userId, parsedAssets);
     }
 
     return {
@@ -1108,7 +1184,11 @@ export class VideoService {
       videoUrl,
       brandPackagingApplied,
     );
-    if (localFinal && fs.existsSync(localFinal)) {
+    const publishedBasename = this.extractFinalVideoBasename(videoUrl);
+    const localMatchesPublished =
+      !publishedBasename ||
+      (localFinal != null && path.basename(localFinal) === publishedBasename);
+    if (localFinal && fs.existsSync(localFinal) && localMatchesPublished) {
       const stat = fs.statSync(localFinal);
       res.setHeader('Content-Length', stat.size);
       fs.createReadStream(localFinal).pipe(res);

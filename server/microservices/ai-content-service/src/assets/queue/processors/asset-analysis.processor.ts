@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { AssetAnalysisService, AnalyzedAsset } from '../../asset-analysis.service';
 import { LogoPreprocessingService } from '../../logo-preprocessing.service';
 import { LogoBrandMetadata, BrandPackagingMetadata } from '@shared/brand/logo-brand.types';
+import { buildProductPresentationPlan } from '../../product-presentation.util';
 import { LoggerService } from '../../../common/logger/logger.service';
 import axios from 'axios';
 import * as jwt from 'jsonwebtoken';
@@ -112,9 +113,25 @@ export class AssetAnalysisProcessor extends WorkerHost {
 
       await job.updateProgress(95);
 
+      const productAssets = analyzedAssets.filter((a) => a.category === 'product');
+      const primaryProduct = productAssets[0];
+      const productPresentationPlan = primaryProduct
+        ? buildProductPresentationPlan({
+            productType: primaryProduct.productInfo?.type,
+            jewelryForm: primaryProduct.jewelryForm,
+            visualScriptContext: primaryProduct.visualScriptContext,
+            presentationProfile: primaryProduct.presentationProfile,
+            humanInteraction: primaryProduct.humanInteraction,
+            recommendedShotMix: primaryProduct.recommendedShotMix,
+            presenterDescription: primaryProduct.presenterDescription,
+            rationale: primaryProduct.presentationRationale,
+          })
+        : undefined;
+
       // Update project metadata with analyzed assets
       await this.updateProjectMetadata(projectId, userId, {
         analyzedAssets,
+        ...(productPresentationPlan ? { productPresentationPlan } : {}),
         logoBrand: logoBrand || undefined,
         brandPackaging: logoBrand
           ? {

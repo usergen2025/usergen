@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { computeCaptionBoxPixels } from './html-caption-layer.provider';
@@ -895,7 +895,7 @@ export class VideoCompositorProvider {
     brollVideoPath: string,
     avatarVideoPath: string,
     outputPath: string,
-    position: { x: number; y: number; scale: number } = { x: 0.5, y: 0.85, scale: 0.4 },
+    position: { x: number; y: number; scale: number; aspectRatio?: number } = { x: 0.5, y: 0.85, scale: 0.4 },
     useAIBackgroundRemoval: boolean = false
   ): Promise<string> {
     this.checkFFmpeg();
@@ -971,7 +971,11 @@ export class VideoCompositorProvider {
     }
     
     let avatarWidthPx: number;
-    if (avatarRes) {
+    if (position.aspectRatio && position.aspectRatio > 0) {
+      const rawWidth = Math.floor(avatarHeightPx * position.aspectRatio);
+      avatarWidthPx = Math.floor(rawWidth / 2) * 2;
+      console.log(`[VideoCompositor] Using client preview aspect ratio: ${position.aspectRatio.toFixed(4)}`);
+    } else if (avatarRes) {
       const avatarAspectRatio = avatarRes.width / avatarRes.height;
       const rawWidth = Math.floor(avatarHeightPx * avatarAspectRatio);
       avatarWidthPx = Math.floor(rawWidth / 2) * 2; // Ensure even width
@@ -989,22 +993,13 @@ export class VideoCompositorProvider {
     const avatarX = Math.floor(minX + position.x * (maxX - minX));
     const avatarY = Math.floor(minY + position.y * (maxY - minY));
 
-    // Calculate what frontend would have used (9:16 hardcoded aspect ratio for comparison)
-    const frontendAspectRatio = 9 / 16;
-    const frontendWidth = Math.floor(avatarHeightPx * frontendAspectRatio / 2) * 2;
-    const frontendX = Math.floor((brollWidth - frontendWidth) * position.x);
-    
     console.log(`[VideoCompositor] ========== OVERLAY POSITION DEBUG ==========`);
     console.log(`[VideoCompositor] B-roll resolution: ${brollWidth}x${brollHeight}`);
     console.log(`[VideoCompositor] Avatar source resolution: ${avatarRes ? `${avatarRes.width}x${avatarRes.height}` : 'unknown (using 9:16 fallback)'}`);
     console.log(`[VideoCompositor] Avatar actual aspect ratio: ${avatarRes ? (avatarRes.width / avatarRes.height).toFixed(4) : '0.5625 (9:16 default)'}`);
-    console.log(`[VideoCompositor] Overlay position params: scale=${(position.scale * 100).toFixed(0)}%, x=${position.x.toFixed(4)}, y=${position.y.toFixed(4)}`);
-    console.log(`[VideoCompositor] Backend calculated avatar size: ${avatarWidthPx}x${avatarHeightPx}`);
-    console.log(`[VideoCompositor] Backend calculated avatar position: x=${avatarX}, y=${avatarY}`);
-    console.log(`[VideoCompositor] Frontend would calculate (9:16): size=${frontendWidth}x${avatarHeightPx}, x=${frontendX}`);
-    if (avatarX !== frontendX) {
-      console.log(`[VideoCompositor] ⚠️ POSITION MISMATCH: Backend X=${avatarX} vs Frontend X=${frontendX} (diff=${avatarX - frontendX}px)`);
-    }
+    console.log(`[VideoCompositor] Overlay position params: scale=${(position.scale * 100).toFixed(0)}%, x=${position.x.toFixed(4)}, y=${position.y.toFixed(4)}${position.aspectRatio ? `, aspectRatio=${position.aspectRatio.toFixed(4)}` : ''}`);
+    console.log(`[VideoCompositor] Calculated avatar size: ${avatarWidthPx}x${avatarHeightPx}`);
+    console.log(`[VideoCompositor] Calculated avatar position: x=${avatarX}, y=${avatarY}`);
     console.log(`[VideoCompositor] ==========================================`);
 
     // Track if we're using PNG sequence (directory) or video file
@@ -1111,8 +1106,8 @@ export class VideoCompositorProvider {
     // Overlay based on background removal method
     let ffmpegCommand: string;
 
-    if (hasGreenScreen && !useAIBackgroundRemoval && !isAlreadyProcessed) {
-      // Use chroma key for green screen (100% opacity - blend=0)
+    if (hasGreenScreen && !isAlreadyProcessed) {
+      // Chroma key — used for HeyGen green-screen avatars and as fallback when AI removal fails
       // First scale the avatar
       const scaledAvatarPath = path.join(outputDir, `avatar_scaled_${Date.now()}.mp4`);
       const scaleCommand = `
@@ -1178,17 +1173,43 @@ export class VideoCompositorProvider {
         -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
-    } else {
+    } else if (processedAvatarPath.toLowerCase().endsWith('.webm')) {
       // Use WebM with alpha channel for overlay
       console.log(`[VideoCompositor] Using WebM with alpha for overlay...`);
-      
-      // WebM/VP9 already has alpha, we can overlay directly
+
       ffmpegCommand = `
-        ffmpeg -i "${brollVideoPath}" -c:v libvpx-vp9 -i "${processedAvatarPath}" \
+        ffmpeg -i "${brollVideoPath}" -i "${processedAvatarPath}" \
         -filter_complex "[1:v]scale=${avatarWidthPx}:${avatarHeightPx}[scaled_avatar]; \
         [0:v][scaled_avatar]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
         -map "[v]" -c:v libx264 -preset medium -crf 23 \
         -pix_fmt yuv420p \
+        -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
+        -shortest -y "${outputPath}"
+      `.replace(/\s+/g, ' ').trim();
+    } else {
+      // Non-WebM input (e.g. HeyGen VP9-in-MP4) — scale and overlay without alpha decoder hacks
+      console.log(`[VideoCompositor] Non-WebM avatar (${processedAvatarPath}), using scaled overlay fallback...`);
+
+      const scaledAvatarPath = path.join(outputDir, `avatar_scaled_${Date.now()}.mp4`);
+      const scaleCommand = `
+        ffmpeg -i "${processedAvatarPath}" \
+        -vf "scale=${avatarWidthPx}:${avatarHeightPx}:force_original_aspect_ratio=decrease,pad=${avatarWidthPx}:${avatarHeightPx}:(ow-iw)/2:(oh-ih)/2" \
+        -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+        -y "${scaledAvatarPath}"
+      `.replace(/\s+/g, ' ').trim();
+
+      try {
+        execSync(scaleCommand, { stdio: 'pipe' });
+      } catch (error: any) {
+        console.error(`[VideoCompositor] Failed to scale avatar for overlay fallback: ${error.message}`);
+        throw new Error(`Failed to scale avatar for overlay: ${error.message}`);
+      }
+
+      ffmpegCommand = `
+        ffmpeg -i "${brollVideoPath}" -i "${scaledAvatarPath}" \
+        -filter_complex "[1:v]chromakey=color=0x00FF00:similarity=0.25:blend=0:yuv=1[avatar_no_bg]; \
+        [0:v][avatar_no_bg]overlay=${avatarX}:${avatarY}:shortest=1[v]" \
+        -map "[v]" -c:v libx264 -preset medium -crf 23 \
         -map 0:a -c:a aac -b:a 192k -ar 48000 -af "aresample=async=1:first_pts=0" \
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
@@ -1279,7 +1300,26 @@ export class VideoCompositorProvider {
     }
 
     if (audioPaths.length === 1) {
-      fs.copyFileSync(audioPaths[0], outputPath);
+      const outputDir = path.dirname(outputPath);
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+
+      const singlePath = audioPaths[0];
+      const outputExt = path.extname(outputPath).toLowerCase();
+      const inputExt = path.extname(singlePath).toLowerCase();
+
+      // Ensure stitched output is real MP3 — copying WebM/other formats breaks HeyGen lip sync
+      if (outputExt === '.mp3' && inputExt !== '.mp3' && inputExt !== '.mpeg') {
+        execFileSync(
+          'ffmpeg',
+          ['-i', singlePath, '-vn', '-acodec', 'libmp3lame', '-b:a', '192k', '-y', outputPath],
+          { stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 },
+        );
+        console.log(`[VideoCompositor] Converted single audio ${inputExt} → MP3: ${outputPath}`);
+      } else {
+        fs.copyFileSync(singlePath, outputPath);
+      }
       return outputPath;
     }
 

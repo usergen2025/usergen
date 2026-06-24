@@ -16,6 +16,7 @@ interface DraggableResizableAvatarProps {
   avatarImageUrl: string;
   position: Position;
   onPositionChange: (position: Position) => void;
+  onAspectRatioChange?: (aspectRatio: number) => void;
   containerWidth: number;
   containerHeight: number;
   containerRef?: React.RefObject<HTMLElement | null>;
@@ -28,6 +29,7 @@ export function DraggableResizableAvatar({
   avatarImageUrl,
   position,
   onPositionChange,
+  onAspectRatioChange,
   containerWidth,
   containerHeight,
   containerRef,
@@ -51,13 +53,16 @@ export function DraggableResizableAvatar({
 
     const img = new Image();
     img.onload = () => {
-      setAvatarAspectRatio(img.width / img.height);
+      const ratio = img.width / img.height;
+      setAvatarAspectRatio(ratio);
+      onAspectRatioChange?.(ratio);
     };
     img.onerror = () => {
       setAvatarAspectRatio(9 / 16);
+      onAspectRatioChange?.(9 / 16);
     };
     img.src = avatarImageUrl;
-  }, [avatarImageUrl]);
+  }, [avatarImageUrl, onAspectRatioChange]);
 
   const SNAP_THRESHOLD_PX = 10;
   const SNAP_RELEASE_PX = 16;

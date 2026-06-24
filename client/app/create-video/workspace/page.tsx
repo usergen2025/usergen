@@ -362,6 +362,7 @@ function WorkspacePageContent() {
   const [avatarApplyToAll, setAvatarApplyToAll] = useState(true);
   const [avatarGlobalPosition, setAvatarGlobalPosition] = useState({ x: 0.5, y: 0.85, scale: 0.4 });
   const [avatarPerScenePositions, setAvatarPerScenePositions] = useState<Record<number, { x: number; y: number; scale: number }>>({});
+  const [avatarPreviewAspectRatio, setAvatarPreviewAspectRatio] = useState(9 / 16);
   const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null);
   const avatarSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
@@ -770,6 +771,9 @@ function WorkspacePageContent() {
             setAvatarApplyToAll(overlay.applyToAll ?? true);
             setAvatarGlobalPosition(overlay.globalPosition ?? { x: 0.5, y: 0.85, scale: 0.4 });
             setAvatarPerScenePositions(overlay.perScenePositions ?? {});
+            if (typeof overlay.aspectRatio === 'number' && overlay.aspectRatio > 0) {
+              setAvatarPreviewAspectRatio(overlay.aspectRatio);
+            }
           }
           
           // Load avatar image URL for AVATAR_CUTOUT style
@@ -1415,6 +1419,7 @@ function WorkspacePageContent() {
     applyToAll: boolean;
     globalPosition: { x: number; y: number; scale: number };
     perScenePositions?: Record<number, { x: number; y: number; scale: number }>;
+    aspectRatio?: number;
   }) => {
     if (!projectId || !project) return;
     
@@ -1429,7 +1434,10 @@ function WorkspacePageContent() {
         await apiClient.updateVideoProject(projectId, {
           metadata: {
             ...project.metadata,
-            avatarOverlay: settings
+            avatarOverlay: {
+              ...settings,
+              aspectRatio: settings.aspectRatio ?? avatarPreviewAspectRatio,
+            },
           }
         });
         console.log('[Workspace] Avatar overlay settings saved');
@@ -1437,7 +1445,7 @@ function WorkspacePageContent() {
         console.error('[Workspace] Failed to save avatar overlay settings:', error);
       }
     }, 300);
-  }, [projectId, project]);
+  }, [projectId, project, avatarPreviewAspectRatio]);
 
   const buildCaptionSettingsPayload = useCallback(() => ({
     enabled: captionsEnabled,
@@ -1549,6 +1557,26 @@ function WorkspacePageContent() {
 
   const LAYOUT_SCENE1_TOAST =
     'Layout is configured on Scene 1 and applies to your whole video. Switch to Scene 1 to change position or size.';
+
+  const handleAvatarAspectRatioChange = useCallback((aspectRatio: number) => {
+    setAvatarPreviewAspectRatio(aspectRatio);
+    if (!projectId || !project) return;
+    saveAvatarOverlaySettings({
+      enabled: avatarOverlayEnabled,
+      applyToAll: avatarApplyToAll,
+      globalPosition: avatarGlobalPosition,
+      perScenePositions: avatarPerScenePositions,
+      aspectRatio,
+    });
+  }, [
+    projectId,
+    project,
+    avatarOverlayEnabled,
+    avatarApplyToAll,
+    avatarGlobalPosition,
+    avatarPerScenePositions,
+    saveAvatarOverlaySettings,
+  ]);
 
   // Handle avatar position change (from drag or resize)
   const handleAvatarPositionChange = useCallback((newPosition: { x: number; y: number; scale: number }) => {
@@ -3195,9 +3223,11 @@ function WorkspacePageContent() {
                         {workspaceMode === 'videos' && hasVideo && !isRegeneratingVideo ? (
                           <video
                             src={videoUrl}
+                            poster={imageUrl ?? undefined}
                             className="w-full h-full object-cover"
                             muted
                             playsInline
+                            preload="metadata"
                             onError={(e) => {
                               console.error('Video failed to load:', videoUrl);
                               const target = e.target as HTMLVideoElement;
@@ -3240,7 +3270,7 @@ function WorkspacePageContent() {
                           </div>
                         )}
                         {workspaceMode === 'videos' && hasVideo && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-20 hover:bg-opacity-30 transition-opacity">
+                          <div className="absolute inset-0 flex items-center justify-center bg-opacity-20 hover:bg-opacity-30 transition-opacity">
                             <Play className="w-[clamp(20px,2.5vh,24px)] h-[clamp(20px,2.5vh,24px)] text-white" />
                           </div>
                         )}
@@ -3466,6 +3496,7 @@ function WorkspacePageContent() {
                   avatarImageUrl={avatarImageUrl}
                   position={getCurrentAvatarPosition()}
                   onPositionChange={handleAvatarPositionChange}
+                  onAspectRatioChange={handleAvatarAspectRatioChange}
                   containerWidth={previewDimensions.width}
                   containerHeight={previewDimensions.height}
                   containerRef={previewContainerRef}

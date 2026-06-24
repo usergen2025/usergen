@@ -19,6 +19,18 @@ import { execSync } from 'child_process';
 import axios from 'axios';
 import sharp from 'sharp';
 import FormData from 'form-data';
+import {
+  getScenePresentationFromScript,
+} from '../../../video/product-presentation.types';
+import {
+  buildProductOnlyPromptSuffix,
+  buildProductOnlyReferenceImages,
+  extractPrimaryProductType,
+  extractVisualScriptContext,
+  getEphemeralPresenterUrl,
+  getProductPresentationPlanFromMetadata,
+  sanitizeProductOnlyScenePrompt,
+} from '../../../video/product-only-prompt.util';
 
 export interface ImageGenerationJobData {
   projectId: string;
@@ -324,6 +336,22 @@ export class ImageGenerationProcessor extends WorkerHost {
   ): Promise<any> {
     console.log(`[ImageGenerationProcessor] Processing PRODUCT_ONLY style for scene ${sceneNumber}`);
 
+    const script =
+      typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+    const scenePresentation = getScenePresentationFromScript(script, sceneNumber);
+    const presentationMode = scenePresentation.presentation_mode || 'hero_flat_lay';
+    const requiresHuman = Boolean(scenePresentation.requires_human);
+    const cameraShot = scenePresentation.camera_shot;
+    const metadata = project.metadata as Record<string, unknown> | undefined;
+    const presentationPlan = getProductPresentationPlanFromMetadata(metadata);
+    const ephemeralPresenterUrl = getEphemeralPresenterUrl(metadata);
+    const productType = extractPrimaryProductType(analyzedAssets, presentationPlan, metadata);
+    const visualScriptContext = extractVisualScriptContext(analyzedAssets, metadata);
+
+    console.log(
+      `[ImageGenerationProcessor] PRODUCT_ONLY scene ${sceneNumber}: mode=${presentationMode}, profile=${presentationPlan?.profile || 'unknown'}, productType=${productType || 'unknown'}, productForm=${presentationPlan?.productForm || 'unknown'}, refs=presenter:${Boolean(ephemeralPresenterUrl)}`,
+    );
+
     // Ensure product image is publicly accessible (for 3rd party API calls like FAL)
     let publicProductImageUrl = productImageUrl;
     if (productImageUrl) {
@@ -345,17 +373,36 @@ export class ImageGenerationProcessor extends WorkerHost {
       throw new Error('Product image URL is required for PRODUCT_ONLY style');
     }
 
-    // Enhance prompt with product image context and asset context for reference image generation
-    // Add anti-grid instruction to prevent collage/grid layouts and STRONG product consistency requirements
-    const baseEnhancedPrompt = `${prompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product. Only change camera angle, lighting, or background. The product must look like the EXACT SAME physical item photographed from a different angle.] [Using product reference image to create variations: different angles, lighting, contexts. CRITICAL: NO human, NO avatar, NO person in image. Focus entirely on the product, showcase product features. Generate ONE single image, not a collection or grid of images]${this.fullProductFramingPromptSuffix()}`;
+    // Mode-aware prompt suffix and reference images
+    const sanitizedPrompt = sanitizeProductOnlyScenePrompt(
+      prompt,
+      presentationPlan,
+      productType || presentationPlan?.productType,
+      visualScriptContext,
+    );
+
+    const modeSuffix = buildProductOnlyPromptSuffix(
+      presentationMode,
+      presentationPlan,
+      cameraShot,
+      productType || presentationPlan?.productType,
+      visualScriptContext,
+    );
+    const baseEnhancedPrompt = `${sanitizedPrompt} [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images, NO split-screen, NO tiled layout] ${modeSuffix}${this.fullProductFramingPromptSuffix()}`;
     
     // Get scene-specific assets and enhance prompt
     const sceneAssets = analyzedAssets ? this.assetProcessor.getAssetsForScene(analyzedAssets, sceneNumber, 'PRODUCT_ONLY') : [];
     const assetEnhancedPrompt = analyzedAssets ? this.assetProcessor.enhancePromptWithAssets(baseEnhancedPrompt, sceneAssets) : baseEnhancedPrompt;
     
-    // Prepare reference images (product + assets)
+    // Prepare reference images (product + optional presenter + assets)
     const assetReferenceImages = analyzedAssets ? this.assetProcessor.prepareReferenceImages(sceneAssets, sceneNumber) : [];
-    const allReferenceImages = [publicProductImageUrl, ...assetReferenceImages].filter(Boolean);
+    const allReferenceImages = buildProductOnlyReferenceImages(
+      presentationMode,
+      publicProductImageUrl,
+      assetReferenceImages,
+      ephemeralPresenterUrl,
+      requiresHuman,
+    );
     
     const enhancedPrompt = assetEnhancedPrompt;
 
@@ -491,6 +538,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       modelId: selectedModelId,
       model: model.displayName,
       productImageUrl: publicProductImageUrl, // Store product image URL used
+      presentation_mode: presentationMode,
       generationMethod: 'image-to-image', // Mark as image-to-image generation
       source: 'ai-image', // Content source type for tracking
       contentType: 'image',

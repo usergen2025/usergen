@@ -44,6 +44,7 @@ import type { Multer } from 'multer';
 import axios from 'axios';
 import { BrandPackagingService } from '../brand/brand-packaging.service';
 import { VideoTranslationService } from '../rendering/video-translation.service';
+import { ProductAdPresenterService } from '../rendering/product-ad-presenter.service';
 
 @ApiTags('video-projects')
 @Controller('video-projects')
@@ -59,6 +60,7 @@ export class VideoController {
     private readonly brandPackagingService: BrandPackagingService,
     private readonly videoTranslationService: VideoTranslationService,
     private readonly heygenVideoProvider: HeyGenVideoProvider,
+    private readonly productAdPresenterService: ProductAdPresenterService,
   ) {}
 
   /**
@@ -1567,6 +1569,31 @@ export class VideoController {
     };
   }
 
+  @Post(':projectId/product-ad/ensure-presenter')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Ensure ephemeral product ad presenter',
+    description:
+      'Generate a project-scoped presenter reference image for PRODUCT_ONLY on_model scenes (idempotent)',
+  })
+  @ApiResponse({ status: 200, description: 'Presenter ensured or skipped' })
+  async ensureProductAdPresenter(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const result = await this.productAdPresenterService.ensureEphemeralPresenter(projectId, userId);
+    return {
+      success: true,
+      data: result,
+      message: result.skipped
+        ? `Presenter generation skipped: ${result.reason}`
+        : 'Ephemeral presenter generated',
+    };
+  }
+
   @Post(':projectId/regenerate-image/:sceneNumber')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
@@ -2401,7 +2428,7 @@ export class VideoController {
 
     const audioType: HeyGenAudioType = type === 'sound_effects' ? 'sound_effects' : 'music';
     const parsedLimit = limit ? Math.min(Math.max(parseInt(String(limit), 10), 1), 50) : 10;
-    const parsedMinScore = minScore ? Math.min(Math.max(parseFloat(String(minScore)), 0), 1) : 0.7;
+    const parsedMinScore = minScore ? Math.min(Math.max(parseFloat(String(minScore)), 0), 1) : 0.6;
 
     console.log(
       `[VideoController] Searching HeyGen music: query="${query}", type=${audioType}, limit=${parsedLimit}`,

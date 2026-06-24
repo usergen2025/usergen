@@ -12,6 +12,18 @@ import {
   ScriptWebSearchService,
 } from './script-web-search.service';
 import { normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
+import {
+  buildProductPresentationPlan,
+  PresentationMode,
+  ProductPresentationPlan,
+} from '../assets/product-presentation.util';
+import {
+  conflictingFormKeywordsInPrompt,
+  hasDedicatedDisplayHolder,
+  inferProductForm,
+  inferRetailDisplayHolderHint,
+  sanitizePromptForProductForm,
+} from '../assets/product-form-core.util';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -861,13 +873,32 @@ CRITICAL DURATION REQUIREMENTS:
       }
 
       if (request.projectId && !analyzedAssets) {
-        analyzedAssets = await this.waitForAssetAnalysisAndExtract(request.projectId, userId, this.assetAnalysisTimeoutMs);
-        // Fallback: if analysis timed out or never completed, use raw metadata.assets so images are still referenced
-        if (!analyzedAssets && userId) {
-          analyzedAssets = await this.getRawAssetsFallback(request.projectId, userId);
-          if (analyzedAssets?.length) {
-            this.logger.log(`Using ${analyzedAssets.length} raw project assets as fallback (analysis unavailable) for project ${request.projectId}`, 'ScriptsService');
+        const projectForAssetWait = await this.getProject(request.projectId, userId);
+        const hasProjectAssets =
+          projectForAssetWait &&
+          this.extractMetadataAssets(projectForAssetWait.metadata).length > 0;
+
+        if (hasProjectAssets) {
+          analyzedAssets = await this.waitForAssetAnalysisAndExtract(
+            request.projectId,
+            userId,
+            this.assetAnalysisTimeoutMs,
+          );
+          // Fallback: if analysis timed out or never completed, use raw metadata.assets so images are still referenced
+          if (!analyzedAssets && userId) {
+            analyzedAssets = await this.getRawAssetsFallback(request.projectId, userId);
+            if (analyzedAssets?.length) {
+              this.logger.log(
+                `Using ${analyzedAssets.length} raw project assets as fallback (analysis unavailable) for project ${request.projectId}`,
+                'ScriptsService',
+              );
+            }
           }
+        } else {
+          this.logger.log(
+            `Skipping asset analysis wait for project ${request.projectId}: no assets in metadata`,
+            'ScriptsService',
+          );
         }
       }
 
@@ -921,6 +952,30 @@ CRITICAL DURATION REQUIREMENTS:
         brandIntegrationLevel = relevance.integrationLevel;
       }
 
+      // Get product presentation plan from project metadata or infer from assets
+      let productPresentationPlan: ProductPresentationPlan | undefined;
+      if (request.projectId && userId) {
+        const projectForPlan = await this.getProject(request.projectId, userId);
+        const planMeta = (projectForPlan?.metadata as Record<string, unknown> | undefined)
+          ?.productPresentationPlan as ProductPresentationPlan | undefined;
+        if (planMeta?.profile) productPresentationPlan = planMeta;
+      }
+      if (!productPresentationPlan && analyzedAssets?.length) {
+        const productAsset = analyzedAssets.find((a) => a.category === 'product');
+        if (productAsset) {
+          productPresentationPlan = buildProductPresentationPlan({
+            productType: productAsset.productInfo?.type,
+            jewelryForm: (productAsset as any).jewelryForm,
+            visualScriptContext: (productAsset as any).visualScriptContext,
+            presentationProfile: (productAsset as any).presentationProfile,
+            humanInteraction: (productAsset as any).humanInteraction,
+            recommendedShotMix: (productAsset as any).recommendedShotMix,
+            presenterDescription: (productAsset as any).presenterDescription,
+            rationale: (productAsset as any).presentationRationale,
+          });
+        }
+      }
+
       // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle, 
@@ -932,6 +987,7 @@ CRITICAL DURATION REQUIREMENTS:
         urlContentContext,
         logoBrandName,
         brandIntegrationLevel,
+        productPresentationPlan,
       );
       
       // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
@@ -1093,6 +1149,25 @@ CRITICAL DURATION REQUIREMENTS:
       scriptData = this.normalizePrompts(scriptData, language, {
         injectReferenceIdentityHint: this.analyzedAssetsSupplyHeroReferenceForI2I(analyzedAssets),
       });
+
+      if (request.videoStyle === 'PRODUCT_ONLY') {
+        scriptData = this.validateAndNormalizeProductOnlyScript(
+          scriptData,
+          productPresentationPlan,
+        );
+        if (request.projectId && userId && productPresentationPlan) {
+          const scriptPresenter =
+            typeof scriptData.presenter_description === 'string'
+              ? scriptData.presenter_description.trim()
+              : undefined;
+          await this.patchProjectMetadata(request.projectId, userId, {
+            productPresentationPlan: {
+              ...productPresentationPlan,
+              ...(scriptPresenter ? { presenterDescription: scriptPresenter } : {}),
+            },
+          });
+        }
+      }
 
       // Validate prompt consistency
       const validation = this.validatePromptConsistency(scriptData);
@@ -1621,6 +1696,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     urlContentContext?: string, // Content extracted from URL assets
     logoBrandNameOverride?: string,
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
+    productPresentationPlan?: ProductPresentationPlan,
   ): string {
     // Language-specific descriptions
     const voiceoverExamples = this.getVoiceoverLanguageExamples(language);
@@ -1699,6 +1775,9 @@ The visual_style_guide you create should be a synthesis of these tag preferences
             const productName = asset.productInfo.name || asset.extractedText || 'Product';
             assetContext += `- Product ${index + 1}: ${productName}\n`;
             if (asset.productInfo.type) assetContext += `  Type: ${asset.productInfo.type}\n`;
+            if ((asset as any).jewelryForm) {
+              assetContext += `  Product form (LOCK — must stay identical in every scene): ${(asset as any).jewelryForm}\n`;
+            }
             if (asset.productInfo.category) assetContext += `  Category: ${asset.productInfo.category}\n`;
             if (asset.productInfo.features && asset.productInfo.features.length > 0) {
               assetContext += `  Features: ${asset.productInfo.features.join(', ')}\n`;
@@ -1726,6 +1805,10 @@ The visual_style_guide you create should be a synthesis of these tag preferences
         assetContext += `- Reference specific product features, colors, and characteristics from the analysis\n`;
         assetContext += `- Create scenes that showcase the product accurately based on the analyzed information\n`;
         assetContext += `- Ensure all voiceover and descriptions match the actual product details\n`;
+      }
+
+      if (style === 'PRODUCT_ONLY' && productPresentationPlan) {
+        assetContext += this.buildProductPresentationPlanBlock(productPresentationPlan);
       }
       
       if (backgroundAssets && backgroundAssets.length > 0) {
@@ -2281,92 +2364,102 @@ Guidelines:
 - Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
 - VISUAL CONSISTENCY IS CRITICAL: All scenes must maintain consistent 3D animated avatar style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
-    'PRODUCT_ONLY': `You are a professional product video director who creates product showcase video scripts. The video will feature ONLY the product (no avatar, no human presenter, no person).
+    'PRODUCT_ONLY': `You are a professional commercial product ad director creating e-commerce / TVC-style product video scripts. The video uses voiceover + b-roll only — NO lip-sync, NO HeyGen avatar, NO presenter speaking to camera.
 
 CRITICAL REQUIREMENTS:
-- NO avatar, NO human, NO person in any scene
-- Focus entirely on the product
-- Product information has been pre-analyzed and will be provided in the asset context section
-- Use the ACTUAL product details from the pre-analyzed information in your script
-- All b-roll should showcase the product from different angles, contexts, and uses
-- Visual style must be consistent across all scenes
-- IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
+- Mixed commercial shot types like real product ads: flat-lay hero, on-model, retail display holders (jewelry bust, watch stand, earring T-stand), hands-only, lifestyle, detail macro, environment scale — as appropriate for the product category.
+- Humans MAY appear in on_model / hands_interaction scenes when the plan allows — they are SILENT b-roll only (no microphone, no talking head, no lip-sync).
+- display_mannequin means RETAIL DISPLAY HOLDER / PROP ONLY (necklace bust, watch cushion, ring cone, earring stand) — NOT a living person and NOT a fashion runway mannequin unless apparel.
+- Product information has been pre-analyzed and a PRODUCT PRESENTATION PLAN is in asset context — follow its shot mix.
+- Use ACTUAL product details from pre-analyzed information. Do NOT use placeholders like "[Product Name]".
+- NO avatar overlay, NO separate presenter layer, NO lip-sync in any scene.
 ${GLOBAL_BROLL_RULES}
 ${VIDEO_TOPIC_RULE}
 
-FULL PRODUCT FRAMING (CRITICAL — avoids video distortion):
-- Every broll_image_prompt must show the COMPLETE physical product in frame (full pack or full object; primary label readable). Do NOT default to tight crops that show only part of the product.
-- If a scene uses a close-up macro, the broll_video_prompt must describe ONLY in-frame motion (e.g. slow push-in on a detail already fully visible). NEVER zoom-out, pull-back, or pan to reveal new product areas that were not visible in the still.
+PRESENTATION MODES (assign exactly one per scene via "presentation_mode"):
+- hero_flat_lay: product on clean surface, full product in frame, primary label readable
+- on_model: fashion model wearing/holding exact product; medium close-up; silent ad still; NO microphone or desk setup
+- display_mannequin: RETAIL DISPLAY HOLDER ONLY — jewelry bust, necklace bust, watch T-bar/cushion, earring T-stand, ring cone; NO living person, NO hands in frame
+- hands_interaction: crop to hands + product; face optional; natural ad pose
+- lifestyle_context: product in authentic use setting; humans optional when plan allows
+- detail_macro: tight craftsmanship/detail shot — only if detail is fully visible in still
+- environment_scale: room-scale or exterior (cars, furniture, large products)
+
+FULL PRODUCT FRAMING:
+- hero_flat_lay, environment_scale: COMPLETE product in frame unless environment_scale naturally shows product in context.
+- on_model / detail_macro: waist-up with visible product is OK; do NOT crop to unreadable packaging edges.
+- detail_macro broll_video_prompt: ONLY in-frame motion (slow push-in); NEVER zoom-out to reveal new product areas.
 
 CRITICAL IMAGE COMPOSITION RULES:
-- Generate ONE SINGLE IMAGE per scene - NEVER a grid, collage, or multiple images combined
-- Each broll_image_prompt MUST produce ONE focused shot, ONE perspective, ONE composition
-- NEVER include: grids, collages, split-screen layouts, multiple product angles in one image, tiled views, or mosaic layouts
-- Each scene should have its own unique single-image composition showing the product from ONE angle or in ONE context
+- ONE SINGLE IMAGE per scene — NEVER grid, collage, or split-screen
 - Add [COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] to every broll_image_prompt
+- Tag every broll_image_prompt with [PRESENTATION: <mode>] matching presentation_mode
 
 Output Requirements:
 
 Video Duration and Scene Planning (CRITICAL):
-- Each scene should be 4-6 seconds long for natural pacing
-- If user does not specify a duration, DEFAULT to 30 seconds minimum with 5-7 scenes
-- Calculate the number of scenes based on total duration:
-  * For 30 seconds: Generate 5-7 scenes (approximately 5 seconds per scene)
-  * For 1 minute (60 seconds): Generate 10-12 scenes (approximately 5 seconds per scene)
-  * For 2 minutes (120 seconds): Generate 20-24 scenes (approximately 5 seconds per scene)
-  * For custom durations: Calculate scenes by dividing total seconds by 5
-- Ensure all scenes have proper time_range that covers the ENTIRE video duration without gaps
-- Scene time ranges should not overlap and should sequentially cover the full duration
+- Each scene 4-6 seconds; DEFAULT 30 seconds / 5-7 scenes if unspecified
+- For 30s: 5-7 scenes; 60s: 10-12; 120s: 20-24; custom: total seconds ÷ 5
+- Scene time ranges must cover ENTIRE duration without gaps or overlap
+- At least 40% of scenes must use DIFFERENT presentation_mode / composition — avoid all flat-lays
 
-IMPORTANT: You must return your response as a valid JSON object.
+IMPORTANT: Return valid JSON.
 
 Structure Your Output in This JSON Format:
 {
   "video_type": "Product Only",
   "duration": "30 seconds",
-  "video_topic": "One short phrase for the overall video theme (e.g. product launch, key features)",
+  "video_topic": "One short phrase for the overall video theme",
   "product_focus": true,
+  "presenter_description": "Only when any scene uses on_model — adult commercial model casting brief, Indian context, no product in frame, no microphone",
   "visual_style_guide": {
-    "color_palette": "Describe natural, realistic colors (e.g., 'Natural product photography, realistic background')",
-    "lighting": "Natural product lighting (e.g., 'Natural daylight or soft studio, documentary product shot')",
-    "mood": "Documentary product mood (e.g., 'Authentic, factual product showcase')",
-    "camera_style": "Documentary product framing (e.g., 'Documentary style, natural perspective, real product')",
-    "time_of_day": "Specify consistent time",
-    "visual_tone": "Documentary product presentation, photorealistic"
+    "color_palette": "Natural commercial product photography colors",
+    "lighting": "Soft studio or natural daylight",
+    "mood": "Premium commercial product ad",
+    "camera_style": "Mixed TVC / e-commerce cinematography",
+    "time_of_day": "Consistent across scenes",
+    "visual_tone": "Photorealistic commercial product ad"
   },
   "scenes": [
     {
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.exampleHook}",
-      "broll_visual_description": "Product-focused description - NO human, NO avatar, NO person. Reference I2I: describe the same physical product as in the reference image(s), new angle or setting only; FULL product visible in frame.",
-      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference image(s); ENTIRE product in frame, primary label readable; documentary product shot, one angle] [CRITICAL: NO human, NO avatar, NO person in image] [CRITICAL: no tight crop of packaging edges]",
-      "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas] [CRITICAL: NO human, NO avatar, NO person in video]"
+      "presentation_mode": "hero_flat_lay",
+      "requires_human": false,
+      "camera_shot": "Overhead flat-lay, full product centered, label readable",
+      "broll_visual_description": "Commercial product shot description tied to presentation_mode",
+      "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [PRESENTATION: hero_flat_lay] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference; full product in frame] Photorealistic commercial product photograph",
+      "broll_video_prompt": "[PRESENTATION: hero_flat_lay] [Color palette: X] ... subtle in-frame push-in only; NO zoom-out revealing new product areas"
     }
   ],
-  "notes": "Product showcase video - no avatar or human elements"
+  "notes": "Commercial product ad — voiceover only, silent b-roll, no lip-sync"
 }
 
+SHOT MIX RULES (follow PRODUCT PRESENTATION PLAN in asset context):
+- wearable_jewelry: mix flat-lay, retail display holder (necklace bust, earring stand), on_model, hands_interaction, detail, lifestyle
+- wearable_apparel: flat-lay, on_model (multiple), lifestyle, detail; optional dress-form display_mannequin for apparel
+- wearable_accessory + watch: flat-lay, watch holder/display_mannequin, hands_interaction, detail, lifestyle — prioritize showroom holder over on_model
+- vehicle: environment_scale + detail + flat-lay — NO humans (requires_human always false)
+- handheld_gadget: flat-lay, hands_interaction, lifestyle, detail
+- When humanInteraction is discouraged: NEVER set requires_human true or use on_model / hands_interaction
+- requires_human: true ONLY for on_model, hands_interaction, or lifestyle_context with visible person
+- display_mannequin: living person FORBIDDEN — retail display prop/holder only; specify holder type in camera_shot (e.g. "black velvet necklace bust", "watch T-bar stand")
+
 CRITICAL PROMPT GENERATION RULES:
-1. EVERY broll_image_prompt and broll_video_prompt MUST explicitly state "NO human, NO avatar, NO person"
-2. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]" followed by visual style parameters
-3. Full format for broll_image_prompt: "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: product showcase description] [CRITICAL: NO human, NO avatar, NO person in image]"
-4. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description when writing prompts. Avoid artistic or symbolic interpretations.
-5. Focus on product angles, features, uses, and contexts - ONE product shot per scene
-6. Create engaging product-focused visuals - NEVER grids, collages, or multiple product views in one image
-7. Maintain visual consistency across all scenes
-8. FIRST, determine the visual_style_guide based on the user's topic/idea
-9. The visual_style_guide MUST be consistent across ALL scenes
-10. EVERY broll_video_prompt MUST follow the same format but include motion/action words
-11. NEVER generate grids, collages, split-screen, or multiple images in one - each scene must be ONE single focused product image
-12. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
-13. FULL PRODUCT: Default shots show the entire product in frame; broll_video_prompt must not describe motion that invents occluded packaging or pulls back to show missing product parts
+1. EVERY scene MUST include presentation_mode, requires_human, camera_shot
+2. EVERY broll_image_prompt MUST start with [COMPOSITION: ...] and include [PRESENTATION: <mode>]
+3. Mode-specific: on_model → silent fashion ad still, model wearing exact product, no microphone; display_mannequin → specific retail holder (necklace bust, watch stand, earring T-stand), no living person, no hands; hands_interaction → hands + product only (e.g. hand holding earring near bust)
+4. PHOTOREALISTIC output — prepend "Photorealistic, commercial product photograph, real-world, " in scene-specific descriptions
+5. Do NOT forbid humans globally — forbid only where mode/plan says no humans
+6. Maintain visual_style_guide consistency across ALL scenes
+7. Include top-level video_topic; tie every scene to the topic
+8. ONE focused product/composition per scene — no grids or collages
 
 Guidelines:
-- All visuals should focus on the product - ONE focused shot per scene
 - ${lang.instruction}
-- Keep pacing aligned with the requested duration (minimum 30 seconds if not specified).
-- VISUAL CONSISTENCY IS CRITICAL: All scenes must look like they belong to the same video with the same visual style.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
+- Keep pacing aligned with requested duration (minimum 30 seconds if not specified)
+- VISUAL CONSISTENCY IS CRITICAL across mixed shot types.${tags.length > 0 ? this.buildTagEnhancementSection(tags, this.processTagsForVisualStyle(tags)) : ''}`,
 
     'B_ROLL_ONLY': `You are a professional video director who creates b-roll only video scripts. The video will feature full-screen 9:16 b-roll for EVERY scene - no avatar overlay or separate presenter layer. B-roll may include people when they naturally support the story or demonstrate the topic.
 
@@ -2550,6 +2643,24 @@ REGION CONTEXT (CRITICAL - Indian Default):
   }
 
   /**
+   * Parse metadata.assets whether stored as array or legacy JSON string.
+   */
+  private extractMetadataAssets(metadata: unknown): unknown[] {
+    if (!metadata || typeof metadata !== 'object') {
+      return [];
+    }
+    let assets = (metadata as Record<string, unknown>).assets;
+    if (typeof assets === 'string') {
+      try {
+        assets = JSON.parse(assets);
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(assets) ? assets : [];
+  }
+
+  /**
    * Wait for asset analysis completion and extract analyzed assets from project metadata
    */
   private async waitForAssetAnalysisAndExtract(
@@ -2563,6 +2674,19 @@ REGION CONTEXT (CRITICAL - Indian Default):
     const logIntervalMs = 5000; // Log status every 5 seconds to avoid spam
     let lastLogTime = 0;
 
+    const initialProject = await this.getProject(projectId, userId);
+    if (!initialProject) {
+      this.logger.warn(`Project ${projectId} not found`, 'ScriptsService');
+      return undefined;
+    }
+    if (this.extractMetadataAssets(initialProject.metadata).length === 0) {
+      this.logger.log(
+        `Skipping asset analysis wait for project ${projectId}: no assets in metadata`,
+        'ScriptsService',
+      );
+      return undefined;
+    }
+
     this.logger.log(`Waiting for asset analysis for project ${projectId} (max wait: ${Math.round(effectiveTimeout / 1000)}s, will proceed when completed/failed or at cap)`, 'ScriptsService');
 
     while (Date.now() - startTime < effectiveTimeout) {
@@ -2574,12 +2698,27 @@ REGION CONTEXT (CRITICAL - Indian Default):
         }
 
         const metadata = project.metadata as any;
+        if (this.extractMetadataAssets(metadata).length === 0) {
+          this.logger.log(
+            `Stopping asset analysis wait for project ${projectId}: assets removed from metadata`,
+            'ScriptsService',
+          );
+          return undefined;
+        }
+
         const analysisStatus = metadata?.assetAnalysis;
-        const status = analysisStatus?.status ?? 'pending';
+        const status =
+          analysisStatus?.status === 'skipped'
+            ? 'skipped'
+            : analysisStatus?.status || 'pending';
 
         if (Date.now() - lastLogTime >= logIntervalMs) {
           this.logger.log(`Asset analysis status for project ${projectId}: ${status} (elapsed: ${Math.round((Date.now() - startTime) / 1000)}s)`, 'ScriptsService');
           lastLogTime = Date.now();
+        }
+
+        if (analysisStatus?.status === 'skipped') {
+          return undefined;
         }
 
         if (analysisStatus?.status === 'completed') {
@@ -2839,6 +2978,169 @@ REGION CONTEXT (CRITICAL - Indian Default):
     } catch (err: any) {
       this.logger.warn(`Failed to patch project metadata: ${err?.message}`, 'ScriptsService');
     }
+  }
+
+  private buildProductPresentationPlanBlock(plan: ProductPresentationPlan): string {
+    const mixLines = plan.shotMix
+      .map(
+        (s) =>
+          `- ${s.mode} (target ~${Math.round(s.share * 100)}%)${s.framingHint ? `: ${s.framingHint}` : ''}`,
+      )
+      .join('\n');
+    return `
+PRODUCT PRESENTATION PLAN (authoritative — allocate scenes to these modes):
+- Profile: ${plan.profile}
+- Product form (LOCK — same in every scene): ${plan.productForm || plan.jewelryForm || 'infer from productType'}
+- Human interaction: ${plan.humanInteraction}
+- Recommended shot mix:
+${mixLines}
+${plan.presenterDescription ? `- Presenter reference (on_model scenes only): ${plan.presenterDescription}` : ''}
+${plan.rationale ? `- Rationale: ${plan.rationale}` : ''}
+
+DISPLAY HOLDER NOTE: presentation_mode "display_mannequin" = retail display prop matching product form ONLY (bracelet→bracelet bar, necklace→neck bust). Never use a holder for a different product type. If no holder fits, use hero_flat_lay instead.
+
+PRODUCT FORM LOCK: Every scene must depict the SAME product form as analyzed (e.g. bracelet stays bracelet in ALL scenes — never become a necklace in one scene).
+
+Assign presentation_mode per scene following this mix (±1 scene tolerance). When humanInteraction is discouraged, never use on_model, hands_interaction, or requires_human: true.
+`;
+  }
+
+  private validateAndNormalizeProductOnlyScript(
+    scriptData: any,
+    plan?: ProductPresentationPlan,
+  ): any {
+    const scenes = scriptData?.scenes;
+    if (!Array.isArray(scenes) || scenes.length === 0) return scriptData;
+
+    const validModes = new Set<PresentationMode>([
+      'hero_flat_lay',
+      'on_model',
+      'display_mannequin',
+      'hands_interaction',
+      'lifestyle_context',
+      'detail_macro',
+      'environment_scale',
+    ]);
+    const humanDiscouraged = plan?.humanInteraction === 'discouraged';
+    const humanRequiredModes = new Set<PresentationMode>(['on_model', 'hands_interaction']);
+    const formCtx = {
+      productType: plan?.productType,
+      jewelryForm: plan?.jewelryForm || plan?.productForm,
+      profile: plan?.profile,
+    };
+    const lockedForm = inferProductForm(formCtx);
+
+    for (const scene of scenes) {
+      let mode = typeof scene.presentation_mode === 'string' ? scene.presentation_mode.trim() : '';
+      if (!validModes.has(mode as PresentationMode)) {
+        mode = 'hero_flat_lay';
+      }
+      if (humanDiscouraged && (mode === 'on_model' || mode === 'hands_interaction')) {
+        mode = 'hero_flat_lay';
+      }
+      if (
+        mode === 'display_mannequin' &&
+        !hasDedicatedDisplayHolder(lockedForm)
+      ) {
+        mode = 'hero_flat_lay';
+      }
+      scene.presentation_mode = mode;
+
+      if (
+        humanDiscouraged ||
+        mode === 'display_mannequin' ||
+        mode === 'hero_flat_lay' ||
+        mode === 'detail_macro' ||
+        mode === 'environment_scale'
+      ) {
+        scene.requires_human = false;
+      } else if (humanRequiredModes.has(mode as PresentationMode)) {
+        scene.requires_human = true;
+      } else if (mode === 'lifestyle_context') {
+        scene.requires_human =
+          plan?.humanInteraction === 'required' || plan?.humanInteraction === 'recommended';
+      } else if (scene.requires_human !== true && scene.requires_human !== false) {
+        scene.requires_human = false;
+      }
+
+      if (!scene.camera_shot || typeof scene.camera_shot !== 'string') {
+        if (mode === 'display_mannequin') {
+          scene.camera_shot = inferRetailDisplayHolderHint(formCtx);
+        } else {
+          scene.camera_shot = `Commercial product framing for ${mode}`;
+        }
+      } else if (mode === 'display_mannequin') {
+        const conflicts = conflictingFormKeywordsInPrompt(scene.camera_shot, lockedForm);
+        if (conflicts.length) {
+          scene.camera_shot = inferRetailDisplayHolderHint(formCtx);
+        }
+      }
+
+      for (const field of ['broll_image_prompt', 'broll_video_prompt', 'broll_visual_description'] as const) {
+        if (typeof scene[field] === 'string') {
+          scene[field] = sanitizePromptForProductForm(scene[field], formCtx);
+          const conflicts = conflictingFormKeywordsInPrompt(scene[field], lockedForm);
+          if (conflicts.length) {
+            this.logger.warn(
+              `PRODUCT_ONLY scene ${scene.scene_number || '?'} form conflict after sanitize: ${conflicts.join('; ')}`,
+              'ScriptsService',
+            );
+          }
+        }
+      }
+
+      const presentationTag = `[PRESENTATION: ${mode}]`;
+      if (
+        typeof scene.broll_image_prompt === 'string' &&
+        !scene.broll_image_prompt.includes('[PRESENTATION:')
+      ) {
+        scene.broll_image_prompt = `${presentationTag} ${scene.broll_image_prompt}`;
+      }
+      if (
+        typeof scene.broll_video_prompt === 'string' &&
+        !scene.broll_video_prompt.includes('[PRESENTATION:')
+      ) {
+        scene.broll_video_prompt = `${presentationTag} ${scene.broll_video_prompt}`;
+      }
+    }
+
+    const hasOnModel = scenes.some((s: any) => s.presentation_mode === 'on_model');
+    if (hasOnModel && !humanDiscouraged) {
+      const existing =
+        typeof scriptData.presenter_description === 'string'
+          ? scriptData.presenter_description.trim()
+          : '';
+      if (!existing && plan?.presenterDescription) {
+        scriptData.presenter_description = plan.presenterDescription;
+      }
+    }
+
+    if (plan?.shotMix?.length) {
+      const expectedCounts: Record<string, number> = {};
+      for (const entry of plan.shotMix) {
+        expectedCounts[entry.mode] = (expectedCounts[entry.mode] || 0) + 1;
+      }
+      const actualCounts: Record<string, number> = {};
+      for (const scene of scenes) {
+        const m = scene.presentation_mode as string;
+        actualCounts[m] = (actualCounts[m] || 0) + 1;
+      }
+      const issues: string[] = [];
+      for (const [mode, expected] of Object.entries(expectedCounts)) {
+        const actual = actualCounts[mode] || 0;
+        if (Math.abs(actual - expected) > 1) {
+          issues.push(`${mode}: expected ~${expected}, got ${actual}`);
+        }
+      }
+      if (issues.length) {
+        this.logger.warn(
+          `PRODUCT_ONLY shot mix deviation: ${issues.join('; ')}`,
+          'ScriptsService',
+        );
+      }
+    }
+
+    return scriptData;
   }
 
   private buildReferenceAlignedBrollRuleBlock(assets?: VideoScriptAnalyzedAsset[]): string {

@@ -29,6 +29,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import axios from 'axios';
+import { StagedAssetCleanupService } from '../staged-assets/staged-asset-cleanup.service';
 
 @Injectable()
 export class RenderingService {
@@ -49,6 +50,7 @@ export class RenderingService {
     private readonly brandVideoPostProcessor: BrandVideoPostProcessorService,
     private readonly brandLogoResolver: BrandLogoResolverService,
     private readonly brandPackagingService: BrandPackagingService,
+    private readonly stagedAssetCleanupService: StagedAssetCleanupService,
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
@@ -270,6 +272,11 @@ export class RenderingService {
     await this.enqueuePreviewDerivatives(projectId, userId, result.publicUrl || result.localVideoUrl);
     await this.chargeFinalRenderCredits(projectId, userId);
     await this.userNotificationService.notifyVideoReadyForProject(userId, projectId).catch(() => {});
+    this.stagedAssetCleanupService.purgeNonCommittedForProject(projectId).catch((err) => {
+      console.warn(
+        `[RenderingService] Staged asset cleanup failed for ${projectId}: ${err?.message}`,
+      );
+    });
 
     console.log(`[RenderingService] ${styleLabel} video completed: ${result.publicUrl || result.localVideoUrl}`);
     return result;
@@ -547,6 +554,12 @@ export class RenderingService {
     return this.getAudioFilePath(audioFile);
   }
 
+  private extractFinalVideoBasename(videoUrl?: string | null): string | null {
+    if (!videoUrl) return null;
+    const basename = path.basename(videoUrl.replace(/\\/g, '/').split('?')[0]);
+    return basename.endsWith('.mp4') ? basename : null;
+  }
+
   private findExistingSourceVideoPath(
     userId: string,
     projectId: string,
@@ -568,16 +581,25 @@ export class RenderingService {
       return candidates[0]?.full ?? null;
     };
 
-    if (videoUrl && !videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
-      const basename = path.basename(videoUrl.replace(/\\/g, '/'));
-      const exact = path.join(dir, basename);
+    const publishedBasename = this.extractFinalVideoBasename(videoUrl);
+    if (publishedBasename) {
+      const exact = path.join(dir, publishedBasename);
       if (fs.existsSync(exact)) return exact;
+      if (videoUrl?.startsWith('http://') || videoUrl?.startsWith('https://')) {
+        return null;
+      }
     }
 
     const branded = newestWithPrefix(`final_branded_${projectId}_`);
     if (branded) return branded;
 
     if (brandPackagingApplied) return null;
+
+    const captioned = newestWithPrefix(`final_captioned_${projectId}_`);
+    if (captioned) return captioned;
+
+    const withBgm = newestWithPrefix(`final_with_bgm_${projectId}_`);
+    if (withBgm) return withBgm;
 
     const avatarOnly = newestWithPrefix(`avatar_only_${projectId}_`);
     if (avatarOnly) return avatarOnly;
@@ -1587,8 +1609,10 @@ export class RenderingService {
     if (!fs.existsSync(stitchedAudioPath)) {
       throw new Error(`Stitched audio file not found: ${stitchedAudioPath}`);
     }
-    const audioBuffer = fs.readFileSync(stitchedAudioPath);
-    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudioFromPath(
+      stitchedAudioPath,
+      `full_audio_${projectId}.mp3`,
+    );
 
     // Avatar IV only: use project-scoped generated avatar image key (set when user was on b-roll images step)
     const projectMeta = (project.metadata as Record<string, unknown>) || {};
@@ -2018,8 +2042,10 @@ export class RenderingService {
       // Generate new avatar video
       console.log(`[RenderingService] CUTOUT: Generating new avatar video...`);
       
-    const audioBuffer = fs.readFileSync(stitchedAudioPath);
-    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudioFromPath(
+      stitchedAudioPath,
+      `full_audio_${projectId}.mp3`,
+    );
 
     // Avatar IV only: use project-scoped generated avatar image key
     const projectMetaCutout = (project.metadata as Record<string, unknown>) || {};
@@ -2390,6 +2416,12 @@ export class RenderingService {
     const globalPosition = avatarOverlay.globalPosition || { x: 0.5, y: 0.85, scale: 0.4 };
     const perScenePositions = avatarOverlay.perScenePositions || {};
     const applyToAll = avatarOverlay.applyToAll !== false; // Default to true
+    const overlayAspectRatio =
+      typeof avatarOverlay.aspectRatio === 'number' && avatarOverlay.aspectRatio > 0
+        ? avatarOverlay.aspectRatio
+        : undefined;
+    const withOverlayAspect = (pos: { x: number; y: number; scale: number }) =>
+      overlayAspectRatio ? { ...pos, aspectRatio: overlayAspectRatio } : pos;
     
     console.log(`[RenderingService] CUTOUT: Avatar overlay settings - enabled: ${avatarOverlay.enabled}, applyToAll: ${applyToAll}`);
     console.log(`[RenderingService] CUTOUT: Global position - x: ${globalPosition.x}, y: ${globalPosition.y}, scale: ${globalPosition.scale}`);
@@ -2406,7 +2438,7 @@ export class RenderingService {
         stitchedBrollWithAudioPath,
         finalAvatarVideoPath,
         finalVideoPath,
-        globalPosition,
+        withOverlayAspect(globalPosition),
         true // useAIBackgroundRemoval: Always use AI removal for CUTOUT mode
       );
     } else {
@@ -2517,7 +2549,7 @@ export class RenderingService {
           brollWithAudioPath,
           avatarSegmentPath,
           sceneCompositePath,
-          scenePosition,
+          withOverlayAspect(scenePosition),
           true // useAIBackgroundRemoval
         );
         
@@ -2991,8 +3023,10 @@ export class RenderingService {
     await this.updateRenderingStatus(projectId, 'avatar_generating', 40);
 
     // Generate avatar video from stitched audio
-    const audioBuffer = fs.readFileSync(stitchedAudioPath);
-    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `full_audio_${projectId}.mp3`);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudioFromPath(
+      stitchedAudioPath,
+      `full_audio_${projectId}.mp3`,
+    );
 
     const projectMetaAvatarOnly = (project.metadata as Record<string, unknown>) || {};
     const imageKeyAvatarOnly = projectMetaAvatarOnly.generatedAvatarImageKey as string | undefined;
@@ -3917,9 +3951,12 @@ export class RenderingService {
   ): Promise<{ publicUrl: string; trackId: string; trackName: string; duration: number }> {
     console.log(`[RenderingService] BGM: fetching HeyGen music for "${searchSeed}" (project=${projectId})`);
     
-    // Re-search to get a fresh pre-signed URL
-    const track = await this.heygenVideoProvider.refreshAudioTrackUrl(searchSeed, heygenTrackId);
-    
+    // Re-search to get a fresh pre-signed URL (minScore 0.6 matches workspace library search)
+    let track = await this.heygenVideoProvider.refreshAudioTrackUrl(searchSeed, heygenTrackId, 0.6);
+    if (!track) {
+      track = await this.heygenVideoProvider.refreshAudioTrackUrl(searchSeed, heygenTrackId, 0);
+    }
+
     if (!track) {
       throw new Error(`HeyGen music search returned no results for: "${searchSeed}"`);
     }
@@ -3979,6 +4016,10 @@ export class RenderingService {
       : (rawSearchSeed as { query?: string } | null | undefined)?.query;
     const heygenTrackId = bgm.heygenTrackId as string | undefined;
 
+    const storedPreviewUrl = [bgm.previewUrl, bgm.audioUrl].find(
+      (u): u is string => typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://')),
+    );
+
     // HeyGen source: use semantic search to get fresh pre-signed URL
     if (source === 'heygen' && searchSeedQuery) {
       console.log(`[RenderingService] BGM: fetching HeyGen music at export time (searchSeed="${searchSeedQuery}")`);
@@ -3998,8 +4039,16 @@ export class RenderingService {
         });
       } catch (dlError: any) {
         console.warn(`[RenderingService] BGM: HeyGen download failed: ${dlError?.message || dlError}`);
-        return videoWithVoicePath;
+        if (storedPreviewUrl) {
+          console.log(`[RenderingService] BGM: falling back to stored previewUrl`);
+          url = storedPreviewUrl;
+        } else {
+          return videoWithVoicePath;
+        }
       }
+    } else if (source === 'heygen' && !url && storedPreviewUrl) {
+      console.log(`[RenderingService] BGM: using stored HeyGen previewUrl (no searchSeed)`);
+      url = storedPreviewUrl;
     }
     // Magnific source (legacy): use external ID to download
     else if (!url && Number.isFinite(externalId) && externalId >= 1 && source === 'magnific') {

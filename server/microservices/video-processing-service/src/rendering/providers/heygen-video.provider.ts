@@ -1434,9 +1434,14 @@ export class HeyGenVideoProvider {
   async refreshAudioTrackUrl(
     searchQuery: string,
     trackId?: string,
+    minScore = 0.6,
   ): Promise<HeyGenAudioTrack | null> {
     try {
-      const result = await this.searchAudioSounds(searchQuery, { type: 'music', limit: 10 });
+      const result = await this.searchAudioSounds(searchQuery, {
+        type: 'music',
+        limit: 10,
+        minScore,
+      });
       
       if (trackId) {
         const matchingTrack = result.tracks.find(t => t.id === trackId);

@@ -158,7 +158,7 @@ function StylePageContent() {
     { id: 'alternate', name: 'Alternate', description: 'Alternating layout' },
     { id: 'avatar-cutout', name: 'Avatar Cut-out', description: 'Avatar overlay style' },
     { id: 'avatar-only', name: 'Avatar Only', description: 'Full-screen avatar' },
-    { id: 'product-only', name: 'Product Only', description: 'Product showcase only' },
+    { id: 'product-only', name: 'Product Only', description: 'Commercial product ad — mixed shots with retail display holders, models, or hands when appropriate (voiceover only, no lip-sync).' },
     { id: 'avatar-product', name: 'Avatar with Product', description: 'Avatar with product' },
     { id: 'animated-avatar', name: 'Animated Avatar', description: '3D animated avatar style' },
     { id: 'broll-only', name: 'B-roll Only', description: 'Full-screen b-roll, no avatar' },

@@ -20,8 +20,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { ProjectLogModule } from '../common/logging/project-log.module';
 import { BrandModule } from '../brand/brand.module';
 import { VideoTranslationService } from './video-translation.service';
+import { ProductAdPresenterService } from './product-ad-presenter.service';
 import { WebSocketModule } from '../common/websocket/websocket.module';
 import { PreviewModule } from '../preview/preview.module';
+import { StagedAssetsModule } from '../staged-assets/staged-assets.module';
 
 @Module({
   imports: [
@@ -35,6 +37,7 @@ import { PreviewModule } from '../preview/preview.module';
     BrandModule,
     WebSocketModule,
     PreviewModule,
+    StagedAssetsModule,
     forwardRef(() => QueueModule),
   ],
   providers: [
@@ -50,6 +53,7 @@ import { PreviewModule } from '../preview/preview.module';
     HtmlCaptionLayerProvider,
     CaptionPlaywrightHealthService,
     VideoTranslationService,
+    ProductAdPresenterService,
   ],
   exports: [
     RenderingService,
@@ -65,6 +69,7 @@ import { PreviewModule } from '../preview/preview.module';
     HtmlCaptionLayerProvider,
     CaptionPlaywrightHealthService,
     VideoTranslationService,
+    ProductAdPresenterService,
   ],
 })
 export class RenderingModule {}

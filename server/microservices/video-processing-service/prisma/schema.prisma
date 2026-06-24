@@ -159,3 +159,31 @@ enum VideoCreationStep {
   COMPLETED          // All steps completed
 }
 
+enum StagedAssetStatus {
+  STAGING
+  COMMITTED
+  ORPHANED
+  PURGED
+}
+
+model StagedAsset {
+  id            String            @id @default(cuid())
+  userId        String
+  projectId     String
+  clientAssetId String
+  category      String
+  publicUrl     String
+  localPath     String?
+  gcsPath       String?
+  mimeType      String?
+  assetType     String            @default("image")
+  status        StagedAssetStatus @default(STAGING)
+  committedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([userId, projectId, status])
+  @@index([projectId, clientAssetId])
+  @@map("staged_assets")
+}
+

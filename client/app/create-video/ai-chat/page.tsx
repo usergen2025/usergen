@@ -27,14 +27,20 @@ import BRollSelectionModal, { BRollSelection } from '@/components/create-video/B
 import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
 
 // Define asset types
+type UploadStatus = 'local' | 'uploading' | 'ready' | 'error';
+
 interface Asset {
   id: string;
   name: string;
   type: 'image' | 'url';
   file?: File;
   preview?: string; // Object URL for image preview
-  url?: string; // For URL assets
+  url?: string; // For URL assets / public URL after upload
   category?: string; // User-provided category (logo, product, etc.)
+  uploadStatus?: UploadStatus;
+  stagedAssetId?: string;
+  publicUrl?: string;
+  active?: boolean;
 }
 
 interface ManualSceneAudioState {
@@ -73,6 +79,21 @@ const VIDEO_DURATION_OPTIONS: { value: VideoDurationChoice; label: string }[] = 
 
 /** Set false to restore ad / promo / tutorial / ai-clip picker before style selection. */
 const SKIP_VIDEO_TYPE_STEP = true;
+
+const USE_STAGED_ASSETS =
+  typeof process !== 'undefined' &&
+  process.env.NEXT_PUBLIC_USE_STAGED_ASSETS !== 'false';
+
+const STYLE_MAP: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' | 'B_ROLL_ONLY'> = {
+  'half-n-half': 'HALF_N_HALF',
+  'alternate': 'ALTERNATE',
+  'avatar-cutout': 'AVATAR_CUTOUT',
+  'avatar-only': 'AVATAR_ONLY',
+  'product-only': 'PRODUCT_ONLY',
+  'avatar-product': 'AVATAR_PRODUCT',
+  'animated-avatar': 'ANIMATED_AVATAR',
+  'broll-only': 'B_ROLL_ONLY',
+};
 
 function AIChatPageContent() {
   const router = useRouter();
@@ -418,7 +439,16 @@ function AIChatPageContent() {
               const assets = typeof project.metadata.assets === 'string'
                 ? JSON.parse(project.metadata.assets)
                 : project.metadata.assets;
-              setAttachedAssets(assets || []);
+              setAttachedAssets(
+                (assets || []).map((a: Asset) => ({
+                  ...a,
+                  uploadStatus: 'ready' as UploadStatus,
+                  publicUrl: a.publicUrl || a.url,
+                  preview:
+                    a.preview ||
+                    (typeof a.url === 'string' && a.url.startsWith('http') ? a.url : undefined),
+                })),
+              );
             }
             
             // Restore selected option
@@ -957,6 +987,149 @@ function AIChatPageContent() {
     return style === 'product-only' || style === 'avatar-product';
   };
 
+  const getScriptGenerationStatusMessage = (): string => {
+    const style =
+      selectedVideoStyle ||
+      (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
+    const hasAssets = attachedAssets.length > 0;
+    const isProductStyle = style === 'product-only' || style === 'avatar-product';
+    const hasProductImage = attachedAssets.some(
+      (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
+    );
+
+    if (hasAssets && isProductStyle && hasProductImage) {
+      return 'Preparing your product details and writing your script…';
+    }
+    if (hasAssets) {
+      return 'Analyzing your assets and writing your script…';
+    }
+    return 'Writing your script…';
+  };
+
+  const inferAssetCategory = (assetId: string): string => {
+    if (assetId.startsWith('logo-')) return 'logo';
+    if (assetId.startsWith('product-')) return 'product';
+    return 'reference';
+  };
+
+  const resolveProductImageUrl = (asset: Asset | undefined): string | null => {
+    if (!asset) return null;
+    const url = asset.publicUrl || asset.url;
+    if (
+      url &&
+      (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/uploads'))
+    ) {
+      return url;
+    }
+    return null;
+  };
+
+  const uploadAndRegisterAsset = async (asset: Asset): Promise<Asset> => {
+    if (!asset.file) {
+      return { ...asset, uploadStatus: asset.url ? 'ready' : 'local' };
+    }
+
+    if (!USE_STAGED_ASSETS) {
+      const uploadResponse = await apiClient.uploadProductImage(asset.file);
+      if (uploadResponse.success && uploadResponse.data) {
+        return {
+          ...asset,
+          url: uploadResponse.data.publicUrl,
+          publicUrl: uploadResponse.data.publicUrl,
+          uploadStatus: 'ready',
+        };
+      }
+      throw new Error(uploadResponse.message || 'Upload failed');
+    }
+
+    if (!projectId) {
+      throw new Error('Project not ready for asset upload');
+    }
+
+    const uploadResponse = await apiClient.uploadProductImage(asset.file);
+    if (!uploadResponse.success || !uploadResponse.data?.publicUrl) {
+      throw new Error(uploadResponse.message || 'Upload failed');
+    }
+
+    const category = asset.category || inferAssetCategory(asset.id);
+    const registerResponse = await apiClient.registerStagedAsset(projectId, {
+      clientAssetId: asset.id,
+      category,
+      publicUrl: uploadResponse.data.publicUrl,
+      localPath: uploadResponse.data.localPath,
+      mimeType: asset.file.type,
+      assetType: 'image',
+    });
+
+    if (!registerResponse.success) {
+      throw new Error(registerResponse.message || 'Failed to register staged asset');
+    }
+
+    const stagedId = registerResponse.data?.id;
+
+    return {
+      ...asset,
+      url: uploadResponse.data.publicUrl,
+      publicUrl: uploadResponse.data.publicUrl,
+      uploadStatus: 'ready',
+      stagedAssetId: stagedId,
+      category,
+      active: true,
+    };
+  };
+
+  /** Keep modal + pending lists in sync when a background upload completes. */
+  const applyAssetUploadResult = (assetId: string, patch: Partial<Asset>) => {
+    setModalLogoAsset((prev) => (prev?.id === assetId ? { ...prev, ...patch } : prev));
+    setModalProductImages((prev) =>
+      prev.map((a) => (a.id === assetId ? { ...a, ...patch } : a)),
+    );
+    setPendingAssets((prev) => prev.map((a) => (a.id === assetId ? { ...a, ...patch } : a)));
+    setAttachedAssets((prev) => prev.map((a) => (a.id === assetId ? { ...a, ...patch } : a)));
+  };
+
+  /** Fire-and-forget upload with silent retries — no UI indicators or toasts. */
+  const runSilentBackgroundUpload = (asset: Asset) => {
+    if (!asset.file) return;
+    if (USE_STAGED_ASSETS && !projectId) {
+      console.warn('[AIChat] Background upload deferred: projectId not set yet');
+      return;
+    }
+
+    const attempt = (retryCount: number) => {
+      void uploadAndRegisterAsset({ ...asset, uploadStatus: 'uploading' })
+        .then((ready) => {
+          applyAssetUploadResult(asset.id, ready);
+        })
+        .catch((error) => {
+          console.warn('[AIChat] Silent background upload failed:', error);
+          if (retryCount < 2) {
+            window.setTimeout(() => attempt(retryCount + 1), 1500 * (retryCount + 1));
+          }
+        });
+    };
+
+    attempt(0);
+  };
+
+  const ensureAssetsUploaded = async (assets: Asset[]): Promise<Asset[]> => {
+    return Promise.all(
+      assets.map(async (asset) => {
+        if (asset.type !== 'image' || !asset.file) return asset;
+        const url = asset.publicUrl || asset.url;
+        if (asset.uploadStatus === 'ready' && url) return asset;
+        return uploadAndRegisterAsset({ ...asset, uploadStatus: 'uploading' });
+      }),
+    );
+  };
+
+  const orphanStagedAssetIfNeeded = (clientAssetId: string) => {
+    if (!USE_STAGED_ASSETS || !projectId) return;
+    void apiClient.orphanStagedAssets(projectId, [clientAssetId]).catch((err) => {
+      console.warn('[AIChat] orphanStagedAssets failed:', err);
+    });
+  };
+
   // Helper function to check if product image exists
   const hasProductImage = () => {
     return attachedAssets.some(asset => 
@@ -1030,20 +1203,33 @@ function AIChatPageContent() {
         alert('Please select a valid image file (PNG, JPG, or SVG only)');
         return;
       }
+
+      if (USE_STAGED_ASSETS && !projectId) {
+        console.warn('[AIChat] Logo upload skipped: projectId not set yet');
+        return;
+      }
       
       // Cleanup previous preview if exists
       if (modalLogoAsset?.preview) {
         URL.revokeObjectURL(modalLogoAsset.preview);
       }
+      if (modalLogoAsset?.id) {
+        orphanStagedAssetIfNeeded(modalLogoAsset.id);
+      }
       
       const previewUrl = URL.createObjectURL(file);
-      setModalLogoAsset({
+      const nextAsset: Asset = {
         id: `logo-${Date.now()}`,
         name: file.name,
         type: 'image',
         file,
-        preview: previewUrl
-      });
+        preview: previewUrl,
+        category: 'logo',
+        active: true,
+      };
+      setModalLogoAsset(nextAsset);
+
+      runSilentBackgroundUpload(nextAsset);
     } else {
       alert('Please select a valid image file (PNG, JPG, or SVG)');
     }
@@ -1075,10 +1261,16 @@ function AIChatPageContent() {
       name: file.name,
       type: 'image',
       file,
-      preview: URL.createObjectURL(file)
+      preview: URL.createObjectURL(file),
+      category: 'product',
+      active: true,
     }));
     
     setModalProductImages(prev => [...prev, ...newAssets]);
+
+    if (!(USE_STAGED_ASSETS && !projectId)) {
+      newAssets.forEach((asset) => runSilentBackgroundUpload(asset));
+    }
     // Reset input so same files can be selected again
     if (productImagesInputRef.current) {
       productImagesInputRef.current.value = '';
@@ -1095,6 +1287,9 @@ function AIChatPageContent() {
     if (modalLogoAsset?.preview) {
       URL.revokeObjectURL(modalLogoAsset.preview);
     }
+    if (modalLogoAsset?.id) {
+      orphanStagedAssetIfNeeded(modalLogoAsset.id);
+    }
     setModalLogoAsset(null);
   };
 
@@ -1103,6 +1298,9 @@ function AIChatPageContent() {
       const asset = prev.find(a => a.id === id);
       if (asset?.preview) {
         URL.revokeObjectURL(asset.preview);
+      }
+      if (asset?.id) {
+        orphanStagedAssetIfNeeded(asset.id);
       }
       return prev.filter(a => a.id !== id);
     });
@@ -1214,150 +1412,99 @@ function AIChatPageContent() {
         return;
       }
     }
-    
-    // Create a copy of pending assets for chat display
-    const assetsToDisplay = [...pendingAssets];
-    
-    // Move assets from typing area to chat display
-    setAttachedAssets(assetsToDisplay);
-    
-    // Clear typing area immediately
+
+    const assetsSnapshot = pendingAssets.map((a) => ({ ...a, active: true }));
+
+    // Semi-optimistic: advance UI immediately (upload/commit continue silently)
+    setAttachedAssets(assetsSnapshot);
     setPendingAssets([]);
-    
-    // Create or update project with assets in metadata (triggers background analysis)
-    try {
-      // Prepare assets for backend (ensure all have public URLs)
-      const assetsForBackend = await Promise.all(
-        assetsToDisplay.map(async (asset) => {
-          let assetUrl = asset.url;
-          let localUrl: string | undefined;
-          let localPath: string | undefined;
-          
-          // If asset has a file, upload it to get a public URL
-          if (asset.file) {
-            try {
-              if (asset.type === 'image') {
-                showToast(`Uploading ${asset.name || 'asset'}...`, 'info');
-                const uploadResponse = await apiClient.uploadProductImage(asset.file);
-                if (uploadResponse.success && uploadResponse.data) {
-                  assetUrl = uploadResponse.data.publicUrl;
-                  localUrl = uploadResponse.data.localUrl;
-                  localPath = uploadResponse.data.localPath;
-                  asset.url = assetUrl;
-                }
-              }
-            } catch (error) {
-              console.error('Failed to upload asset:', error);
-              // Continue - will try preview URL or skip if invalid
+    setCurrentStep('assets-attached');
+
+    if (!projectId) {
+      showToast('Project not ready. Please confirm your video style first.', 'error');
+      return;
+    }
+
+    void (async () => {
+      try {
+        const readyAssets = await ensureAssetsUploaded(assetsSnapshot);
+        setAttachedAssets(readyAssets.map((a) => ({ ...a, active: true })));
+
+        if (USE_STAGED_ASSETS) {
+          const commitPayload = readyAssets.map((asset) => {
+            const category =
+              asset.category ||
+              (asset.id.startsWith('logo-')
+                ? 'logo'
+                : asset.id.startsWith('product-')
+                  ? 'product'
+                  : 'reference');
+
+            if (asset.type === 'url') {
+              return {
+                clientAssetId: asset.id,
+                category,
+                label: asset.name || category,
+                type: 'url' as const,
+                url: normalizeWebsiteUrl(asset.url || asset.name || '') || asset.url || '',
+              };
             }
-          }
-          
-          // If asset has a preview URL (blob URL) but no public URL, upload it
-          if (!assetUrl && asset.preview && asset.preview.startsWith('blob:')) {
-            try {
-              // Fetch the blob and upload it
-              const response = await fetch(asset.preview);
-              if (response.ok) {
-                const blob = await response.blob();
-                const file = new File([blob], asset.name || 'asset.jpg', { type: blob.type || 'image/jpeg' });
-                showToast(`Uploading ${asset.name || 'asset'}...`, 'info');
-                const uploadResponse = await apiClient.uploadProductImage(file);
-                if (uploadResponse.success && uploadResponse.data) {
-                  assetUrl = uploadResponse.data.publicUrl;
-                  localUrl = uploadResponse.data.localUrl;
-                  localPath = uploadResponse.data.localPath;
-                  asset.url = assetUrl;
-                }
-              }
-            } catch (error) {
-              console.error('Failed to upload asset from preview:', error);
-              // Continue - will skip if invalid
-            }
-          }
-          
-          // Determine category from asset ID or user-provided category
-          let category = asset.category;
-          if (!category) {
-            if (asset.id.startsWith('logo-')) {
-              category = 'logo';
-            } else if (asset.id.startsWith('product-')) {
-              category = 'product';
-            } else {
-              category = 'reference';
-            }
-          }
-          
-          return {
-            id: asset.id,
-            url: asset.type === 'url' ? (normalizeWebsiteUrl(assetUrl || '') || assetUrl || '') : (assetUrl || ''),
-            localUrl,
-            localPath,
-            type: asset.type || 'image',
-            category: category,
-            label: asset.name || category,
-            userLabel: category, // Pass category as userLabel for backend analysis
-          };
-        })
-      );
-      
-      // Filter out assets without valid URLs (preview URLs won't work for analysis)
-      const validAssets = assetsForBackend.filter(asset => {
-        // Accept HTTP(S) URLs or local paths that will be converted
-        return asset.url && (
-          asset.url.startsWith('http://') || 
-          asset.url.startsWith('https://') ||
-          asset.url.startsWith('/uploads')
-        );
-      });
-      
-      if (validAssets.length > 0) {
-        if (projectId) {
-          // Update existing project with assets
-          await apiClient.updateVideoProject(projectId, {
-            metadata: {
-              assets: validAssets,
-              generationFlow: 'AI_CHAT',
-              aiChatStep: 'assets-attached', // Save current step in metadata
-            },
+
+            return {
+              clientAssetId: asset.id,
+              category,
+              label: asset.name || category,
+              type: 'image' as const,
+            };
           });
-          console.log(`[AIChat] Updated project ${projectId} with ${validAssets.length} assets`);
+
+          await apiClient.commitStagedAssets(projectId, commitPayload);
+          console.log(`[AIChat] Committed ${commitPayload.length} staged assets for project ${projectId}`);
         } else {
-          // Create new project with assets
-          const createResponse = await apiClient.createVideoProject({
-            videoType: 'WITHOUT_AVATAR', // Will be updated later
-            currentStep: 'SCRIPT',
-            metadata: {
-              assets: validAssets,
-              generationFlow: 'AI_CHAT',
-              aiChatStep: 'assets-attached', // Save current step in metadata
-            },
+          const assetsForBackend = readyAssets.map((asset) => {
+            const category =
+              asset.category ||
+              (asset.id.startsWith('logo-')
+                ? 'logo'
+                : asset.id.startsWith('product-')
+                  ? 'product'
+                  : 'reference');
+
+            return {
+              id: asset.id,
+              url:
+                asset.type === 'url'
+                  ? normalizeWebsiteUrl(asset.url || asset.name || '') || asset.url || ''
+                  : asset.url || asset.publicUrl || '',
+              type: asset.type || 'image',
+              category,
+              label: asset.name || category,
+              userLabel: category,
+            };
           });
-          
-          if (createResponse.success && createResponse.data) {
-            const newProjectId = createResponse.data.id;
-            setProjectId(newProjectId);
-            console.log(`[AIChat] Created project ${newProjectId} with ${validAssets.length} assets`);
-            
-            // Update URL with projectId if needed
-            if (typeof window !== 'undefined' && !window.location.search.includes('projectId')) {
-              router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, { scroll: false });
-            }
+
+          const validAssets = assetsForBackend.filter(
+            (asset) =>
+              asset.url &&
+              (asset.url.startsWith('http://') ||
+                asset.url.startsWith('https://') ||
+                asset.url.startsWith('/uploads')),
+          );
+
+          if (validAssets.length > 0) {
+            await apiClient.updateVideoProject(projectId, {
+              metadata: {
+                assets: validAssets,
+                generationFlow: 'AI_CHAT',
+                aiChatStep: 'assets-attached',
+              },
+            });
           }
         }
-      } else {
-        console.warn('[AIChat] No valid asset URLs found, skipping project creation');
+      } catch (error: any) {
+        console.error('[AIChat] Failed to save assets in background:', error);
       }
-    } catch (error: any) {
-      console.error('Failed to save assets to project:', error);
-      // Don't block user flow - assets will be saved later or analysis will happen on next step
-      showToast('Assets attached. Analysis will happen in the background.', 'info');
-    }
-    
-    // Note: We keep the preview URLs in attachedAssets, they will be cleaned up on unmount
-    // Don't cleanup previews here as they're still needed for display in chat
-    
-    // Advance to next step: assets-attached
-    setCurrentStep('assets-attached');
+    })();
   };
 
   // Format script JSON for display
@@ -1606,62 +1753,60 @@ function AIChatPageContent() {
         'broll-only': 'B_ROLL_ONLY',
       };
       
-      // Extract product image URL from attached assets (if any)
-      // Upload File to backend to get public URL (FAL storage in local, backend URL in prod)
+      // Extract product image URL from attached assets (already uploaded on modal pick)
       let productImageUrl: string | null = null;
       const productImageAsset = attachedAssets.find(
         (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
       );
-      if (productImageAsset) {
-        if (productImageAsset.url && (productImageAsset.url.startsWith('http://') || productImageAsset.url.startsWith('https://'))) {
-          // Already has a public HTTP(S) URL - use it directly
-          productImageUrl = productImageAsset.url;
-        } else if (productImageAsset.file) {
-          // Upload File to backend to get public URL
+      productImageUrl = resolveProductImageUrl(productImageAsset);
+
+      // Legacy fallback: upload on script submit only when staged flow is off
+      if (!productImageUrl && productImageAsset && !USE_STAGED_ASSETS) {
+        if (productImageAsset.file) {
           try {
-            showToast('Uploading product image...', 'info');
             const uploadResponse = await apiClient.uploadProductImage(productImageAsset.file);
-            
             if (uploadResponse.success && uploadResponse.data) {
               productImageUrl = uploadResponse.data.publicUrl;
-              // Update the asset with the public URL for future reference
               productImageAsset.url = productImageUrl;
             } else {
               throw new Error(uploadResponse.message || 'Failed to upload product image');
             }
           } catch (error: any) {
             console.error('Failed to upload product image:', error);
-            const errorMessage = error.response?.data?.message || error.message || 'Failed to upload product image. Please try again.';
-            showToast(errorMessage, 'error');
+            showToast(
+              error.response?.data?.message ||
+                error.message ||
+                'Failed to upload product image. Please try again.',
+              'error',
+            );
             setIsGeneratingScript(false);
             return;
           }
-        } else if (productImageAsset.preview) {
-          // Fallback: try to fetch blob URL and upload it
+        } else if (productImageAsset.preview?.startsWith('blob:')) {
           try {
             const response = await fetch(productImageAsset.preview);
             if (!response.ok) {
               throw new Error(`Failed to fetch image: ${response.statusText}`);
             }
             const blob = await response.blob();
-            
-            // Convert blob to File for upload
-            const file = new File([blob], 'product-image.jpg', { type: blob.type || 'image/jpeg' });
-            
-            showToast('Uploading product image...', 'info');
+            const file = new File([blob], 'product-image.jpg', {
+              type: blob.type || 'image/jpeg',
+            });
             const uploadResponse = await apiClient.uploadProductImage(file);
-            
             if (uploadResponse.success && uploadResponse.data) {
               productImageUrl = uploadResponse.data.publicUrl;
-              // Update the asset with the public URL
               productImageAsset.url = productImageUrl;
             } else {
               throw new Error(uploadResponse.message || 'Failed to upload product image');
             }
           } catch (error: any) {
             console.error('Failed to upload product image from preview:', error);
-            const errorMessage = error.response?.data?.message || error.message || 'Failed to upload product image. Please try uploading the image again.';
-            showToast(errorMessage, 'error');
+            showToast(
+              error.response?.data?.message ||
+                error.message ||
+                'Failed to upload product image. Please try uploading the image again.',
+              'error',
+            );
             setIsGeneratingScript(false);
             return;
           }
@@ -1686,47 +1831,15 @@ function AIChatPageContent() {
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
 
-      // Two creation points: (1) When user has assets, project is created at assets-attached.
-      // If we have assets but no projectId (e.g. edge case), create project with assets first so script API can wait for analysis.
-      let scriptProjectId = projectId ?? null;
+      // Draft project is created at style confirm; assets committed on Send
+      const scriptProjectId = projectId ?? null;
       if (attachedAssets.length > 0 && !scriptProjectId) {
-        try {
-          const validAssetsForCreate = attachedAssets
-            .filter(a => a.url && (a.url.startsWith('http://') || a.url.startsWith('https://') || a.url.startsWith('/uploads')))
-            .map(asset => ({
-              id: asset.id,
-              url: asset.url || asset.preview || '',
-              type: asset.type || 'image',
-              category: asset.category || (asset.id.startsWith('logo-') ? 'logo' : asset.id.startsWith('product-') ? 'product' : 'reference'),
-              label: asset.name || asset.category,
-            }));
-          const createResponse = await apiClient.createVideoProject({
-            videoType: 'WITHOUT_AVATAR',
-            currentStep: 'SCRIPT',
-            metadata: {
-              assets: validAssetsForCreate,
-              generationFlow: 'AI_CHAT',
-              aiChatStep: 'assets-attached',
-            },
-          });
-          if (createResponse.success && createResponse.data) {
-            const newProjectId = createResponse.data.id;
-            setProjectId(newProjectId);
-            scriptProjectId = newProjectId;
-            if (typeof window !== 'undefined' && !window.location.search.includes('projectId')) {
-              router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, { scroll: false });
-            }
-            console.log(`[AIChat] Created project with assets before script so analysis can run; projectId=${newProjectId}`);
-          }
-        } catch (err: any) {
-          console.error('Failed to create project with assets before script:', err);
-          showToast('Could not create project with assets. Please try again.', 'error');
-          setIsGeneratingScript(false);
-          return;
-        }
+        showToast('Project not ready. Please confirm your video style first.', 'error');
+        setIsGeneratingScript(false);
+        return;
       }
 
-      // Generate script WITH the selected style (backend waits for analysis when projectId is set)
+      // Generate script WITH the selected style (backend waits for asset analysis only when project has assets)
       const response = await apiClient.generateVideoScript({
         userPrompt: cleanedMessage, // Use cleaned message (without @ symbols)
         videoStyle: styleToUse ? (styleMap[styleToUse] as any) : 'AVATAR_CUTOUT', // Use selected style, fallback only
@@ -1736,7 +1849,7 @@ function AIChatPageContent() {
         productImageUrl: productImageUrl || undefined,
         hasAvatar: hasAvatar,
         avatarId: avatarId || undefined,
-        projectId: scriptProjectId || undefined, // Pass projectId so backend waits for analysis and uses it for script
+        projectId: scriptProjectId || undefined, // Pass projectId for metadata/context; analysis wait is asset-gated on backend
       });
 
       if (response.success && response.data) {
@@ -1747,7 +1860,7 @@ function AIChatPageContent() {
         const displayScript = formatted || formatScriptForDisplay(scriptData);
         setFormattedScript(displayScript);
         
-        // Persist project after script: create when no assets (no project yet); update when assets created project earlier.
+        // Persist project after script: create when no project yet; update when draft exists
         if (!scriptProjectId) {
           if (attachedAssets.length === 0) {
             try {
@@ -1778,11 +1891,11 @@ function AIChatPageContent() {
               showToast('Script generated but could not save project. Please try again.', 'error');
             }
           } else {
-            console.error('[AIChat] Expected projectId when user had assets; create-with-assets before script may have failed.');
+            console.error('[AIChat] Expected projectId when user had assets.');
             showToast('Script generated but project could not be saved. Please try again.', 'error');
           }
         } else {
-          // Update existing project with script (user had assets; project was created at assets-attached or just above)
+          // Update existing draft project with script
           try {
             await apiClient.updateVideoProject(scriptProjectId, {
               script: JSON.stringify(scriptData),
@@ -1861,62 +1974,59 @@ function AIChatPageContent() {
         'broll-only': 'B_ROLL_ONLY',
       };
       
-      // Extract product image URL from attached assets (if any)
-      // Upload File to backend to get public URL (FAL storage in local, backend URL in prod)
+      // Extract product image URL from attached assets (already uploaded on modal pick)
       let productImageUrl: string | null = null;
       const productImageAsset = attachedAssets.find(
         (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
       );
-      if (productImageAsset) {
-        if (productImageAsset.url && (productImageAsset.url.startsWith('http://') || productImageAsset.url.startsWith('https://'))) {
-          // Already has a public HTTP(S) URL - use it directly
-          productImageUrl = productImageAsset.url;
-        } else if (productImageAsset.file) {
-          // Upload File to backend to get public URL
+      productImageUrl = resolveProductImageUrl(productImageAsset);
+
+      if (!productImageUrl && productImageAsset && !USE_STAGED_ASSETS) {
+        if (productImageAsset.file) {
           try {
-            showToast('Uploading product image...', 'info');
             const uploadResponse = await apiClient.uploadProductImage(productImageAsset.file);
-            
             if (uploadResponse.success && uploadResponse.data) {
               productImageUrl = uploadResponse.data.publicUrl;
-              // Update the asset with the public URL for future reference
               productImageAsset.url = productImageUrl;
             } else {
               throw new Error(uploadResponse.message || 'Failed to upload product image');
             }
           } catch (error: any) {
             console.error('Failed to upload product image:', error);
-            const errorMessage = error.response?.data?.message || error.message || 'Failed to upload product image. Please try again.';
-            showToast(errorMessage, 'error');
+            showToast(
+              error.response?.data?.message ||
+                error.message ||
+                'Failed to upload product image. Please try again.',
+              'error',
+            );
             setIsGeneratingScript(false);
             return;
           }
-        } else if (productImageAsset.preview) {
-          // Fallback: try to fetch blob URL and upload it
+        } else if (productImageAsset.preview?.startsWith('blob:')) {
           try {
             const response = await fetch(productImageAsset.preview);
             if (!response.ok) {
               throw new Error(`Failed to fetch image: ${response.statusText}`);
             }
             const blob = await response.blob();
-            
-            // Convert blob to File for upload
-            const file = new File([blob], 'product-image.jpg', { type: blob.type || 'image/jpeg' });
-            
-            showToast('Uploading product image...', 'info');
+            const file = new File([blob], 'product-image.jpg', {
+              type: blob.type || 'image/jpeg',
+            });
             const uploadResponse = await apiClient.uploadProductImage(file);
-            
             if (uploadResponse.success && uploadResponse.data) {
               productImageUrl = uploadResponse.data.publicUrl;
-              // Update the asset with the public URL
               productImageAsset.url = productImageUrl;
             } else {
               throw new Error(uploadResponse.message || 'Failed to upload product image');
             }
           } catch (error: any) {
             console.error('Failed to upload product image from preview:', error);
-            const errorMessage = error.response?.data?.message || error.message || 'Failed to upload product image. Please try uploading the image again.';
-            showToast(errorMessage, 'error');
+            showToast(
+              error.response?.data?.message ||
+                error.message ||
+                'Failed to upload product image. Please try uploading the image again.',
+              'error',
+            );
             setIsGeneratingScript(false);
             return;
           }
@@ -1952,7 +2062,7 @@ function AIChatPageContent() {
         productImageUrl: productImageUrl || undefined,
         hasAvatar: hasAvatar,
         avatarId: avatarId || undefined,
-        projectId: projectId || undefined, // Pass projectId if it exists (created when assets were attached)
+        projectId: projectId || undefined, // Pass projectId for metadata/context; analysis wait is asset-gated on backend
       });
 
       if (response.success && response.data) {
@@ -4326,6 +4436,24 @@ function AIChatPageContent() {
 
     void triggerBrandPackaging(projectId);
 
+    // PRODUCT_ONLY: ensure ephemeral presenter before parallel on_model image jobs
+    const isProductOnlyStyle =
+      styleToUse === 'product-only' || styleToUse === 'PRODUCT_ONLY';
+    if (isProductOnlyStyle && generatedScript) {
+      const scriptScenes = generatedScript.scenes || generatedScript.scene_plan || [];
+      const hasOnModelScenes = scriptScenes.some(
+        (scene: any) =>
+          String(scene.presentation_mode || '').toLowerCase() === 'on_model',
+      );
+      if (hasOnModelScenes) {
+        try {
+          await apiClient.ensureProductAdPresenter(projectId);
+        } catch (error: any) {
+          console.warn('[AIChat] ensureProductAdPresenter failed:', error?.message || error);
+        }
+      }
+    }
+
     // Start broll image generation for all scenes (non-avatar-only styles)
     if (generatedScript && (generatedScript.scenes || generatedScript.scene_plan)) {
       try {
@@ -4894,6 +5022,50 @@ function AIChatPageContent() {
     
     // Set substep to confirmed first (shows confirmation message)
     setStyleSubstep('confirmed');
+
+    try {
+      if (!projectId) {
+        const createResponse = await apiClient.createVideoProject({
+          videoType: 'WITHOUT_AVATAR',
+          style: STYLE_MAP[selectedVideoStyle],
+          currentStep: 'STYLE_SELECTION',
+          metadata: {
+            generationFlow: 'AI_CHAT',
+            aiChatStep: 'asset-upload',
+            selectedVideoStyle,
+            aiChatStyleSubstep: 'confirmed',
+          },
+        });
+
+        if (createResponse.success && createResponse.data) {
+          const newProjectId = createResponse.data.id;
+          setProjectId(newProjectId);
+          if (
+            typeof window !== 'undefined' &&
+            !window.location.search.includes('projectId')
+          ) {
+            router.replace(`/create-video/ai-chat?projectId=${newProjectId}`, {
+              scroll: false,
+            });
+          }
+          console.log(`[AIChat] Created draft project at style confirm: ${newProjectId}`);
+        }
+      } else {
+        await apiClient.updateVideoProject(projectId, {
+          style: STYLE_MAP[selectedVideoStyle],
+          metadata: {
+            generationFlow: 'AI_CHAT',
+            aiChatStep: 'asset-upload',
+            selectedVideoStyle,
+            aiChatStyleSubstep: 'confirmed',
+          },
+        });
+      }
+    } catch (error: any) {
+      console.error('Failed to create/update draft project at style confirm:', error);
+      showToast('Could not save style selection. Please try again.', 'error');
+      return;
+    }
     
     // After 1.5 seconds, advance to asset upload step
     setTimeout(() => {
@@ -6553,7 +6725,7 @@ function AIChatPageContent() {
                     {isGeneratingScript && (
                       <div className="flex flex-col items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px] mt-[clamp(0.5rem,0.98vh,10px)]">
                         <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                          Generating your script...
+                          {getScriptGenerationStatusMessage()}
                         </p>
                       </div>
                     )}
@@ -9883,7 +10055,7 @@ Read everything on screen smoothly.`}
                 </span>
               )}
               
-              {/* Send button - only enabled when pending assets exist */}
+              {/* Send button */}
               <button
                 onClick={handleSendAssets}
                 disabled={pendingAssets.length === 0}

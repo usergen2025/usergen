@@ -18,6 +18,8 @@ import { aggregateVoiceoversFromScript } from '../../utils/script-aggregate';
 import * as path from 'path';
 import * as fs from 'fs';
 import axios from 'axios';
+import { getScenePresentationFromScript } from '../../../video/product-presentation.types';
+import { buildProductOnlyVideoMotionSuffix } from '../../../video/product-only-prompt.util';
 
 export interface VideoGenerationJobData {
   projectId: string;
@@ -586,7 +588,15 @@ export class VideoGenerationProcessor extends WorkerHost {
     }
 
     if (project.style === 'PRODUCT_ONLY' || project.style === 'AVATAR_PRODUCT') {
-      videoPrompt += ` [CRITICAL MOTION: Use only subtle in-frame motion — slow push-in, gentle drift, or slight parallax within existing pixels. Do NOT zoom out, pull back, dolly out, or pan to reveal new areas of the product or packaging that are not already fully visible in the source image. Do NOT invent or complete cropped-off labels or product geometry.]`;
+      if (project.style === 'PRODUCT_ONLY') {
+        const script =
+          typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+        const mode =
+          getScenePresentationFromScript(script, sceneNumber).presentation_mode || 'hero_flat_lay';
+        videoPrompt += buildProductOnlyVideoMotionSuffix(mode);
+      } else {
+        videoPrompt += ` [CRITICAL MOTION: Use only subtle in-frame motion — slow push-in, gentle drift, or slight parallax within existing pixels. Do NOT zoom out, pull back, dolly out, or pan to reveal new areas of the product or packaging that are not already fully visible in the source image. Do NOT invent or complete cropped-off labels or product geometry.]`;
+      }
     }
 
     await job.updateProgress(10);

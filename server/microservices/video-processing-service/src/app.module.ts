@@ -13,6 +13,7 @@ import { StorageModule } from './common/storage/storage.module';
 import { ProjectLogModule } from './common/logging/project-log.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { BrandModule } from './brand/brand.module';
+import { StagedAssetsModule } from './staged-assets/staged-assets.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { BrandModule } from './brand/brand.module';
     NotificationsModule,
     AdminModule,
     BrandModule,
+    StagedAssetsModule,
   ],
   controllers: [VideoController],
 })

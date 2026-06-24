@@ -149,6 +149,9 @@ export class AssetProcessorService {
         if (asset.productInfo?.name) {
           enhancements.push(`Product: ${asset.productInfo.name}`);
         }
+        if (asset.productInfo?.type) {
+          enhancements.push(`Product type (LOCK — same form in every scene): ${asset.productInfo.type}`);
+        }
         if (asset.productInfo?.features && asset.productInfo.features.length > 0) {
           enhancements.push(`Features: ${asset.productInfo.features.join(', ')}`);
         }

@@ -59,7 +59,7 @@ export class AssetAnalysisController {
       },
     },
   })
-  async analyzeAssets(@Request() req: any, @Body() body: { projectId: string; assets: AssetAnalysisJobData['assets'] }) {
+  async analyzeAssets(@Request() req: any, @Body() body: { projectId: string; assets: AssetAnalysisJobData['assets']; assetsFingerprint?: string }) {
     // Try to get userId from req.user first (normal user tokens)
     let userId = (req as any).user?.userId || (req as any).user?.sub || (req as any).user?.id;
     
@@ -92,6 +92,7 @@ export class AssetAnalysisController {
         projectId: body.projectId,
         userId,
         assets: body.assets,
+        assetsFingerprint: body.assetsFingerprint,
       });
 
       return {

@@ -924,6 +924,83 @@ class ApiClient {
     return response.data;
   }
 
+  async registerStagedAsset(
+    projectId: string,
+    payload: {
+      clientAssetId: string;
+      category: string;
+      publicUrl: string;
+      localPath?: string;
+      gcsPath?: string;
+      mimeType?: string;
+      assetType?: 'image' | 'url';
+    },
+  ): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${projectId}/staged-assets/register`,
+      payload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
+  async orphanStagedAssets(
+    projectId: string,
+    clientAssetIds: string[],
+  ): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${projectId}/staged-assets/orphan`,
+      { clientAssetIds },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
+  async commitStagedAssets(
+    projectId: string,
+    assets: Array<{
+      clientAssetId: string;
+      category: string;
+      label?: string;
+      type?: 'image' | 'url';
+      url?: string;
+    }>,
+  ): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${projectId}/staged-assets/commit`,
+      { assets },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    return response.data;
+  }
+
   async generateVideoScript(data: {
     userPrompt: string;
     videoStyle: 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR';
@@ -1258,6 +1335,28 @@ class ApiClient {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
+    );
+
+    return response.data;
+  }
+
+  async ensureProductAdPresenter(
+    projectId: string,
+  ): Promise<ApiResponse<{ skipped: boolean; reason?: string; ephemeralPresenter?: unknown }>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<
+      ApiResponse<{ skipped: boolean; reason?: string; ephemeralPresenter?: unknown }>
+    >(
+      `${videoServiceUrl}/video-projects/${projectId}/product-ad/ensure-presenter`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
     );
 
     return response.data;

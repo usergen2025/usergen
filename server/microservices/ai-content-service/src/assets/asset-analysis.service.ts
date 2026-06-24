@@ -51,6 +51,14 @@ export interface AnalyzedAsset {
   suitableAsBackground?: boolean;
   /** Neutral factual visual inventory for script/B-roll; from vision JSON; no real-person identification */
   visualScriptContext?: string;
+  /** Product ad shot planning (product assets only) */
+  presentationProfile?: string;
+  humanInteraction?: string;
+  recommendedShotMix?: Array<{ mode?: string; share?: number; framingHint?: string }>;
+  presenterDescription?: string;
+  presentationRationale?: string;
+  /** Canonical jewelry/product physical form — must stay consistent across all scenes */
+  jewelryForm?: string;
   /** Logo preprocessing hints from vision analysis */
   logoProcessingHints?: {
     markBoundingBox?: { x: number; y: number; width: number; height: number };
@@ -135,6 +143,20 @@ export class AssetAnalysisService {
       const visualScriptContext = this.extractVisualScriptContext(analysis);
       const logoProcessingHints = category === 'logo' ? this.extractLogoProcessingHints(analysis) : undefined;
 
+      const presentationFields =
+        category === 'product'
+          ? {
+              presentationProfile: analysis.presentationProfile,
+              humanInteraction: analysis.humanInteraction,
+              recommendedShotMix: Array.isArray(analysis.recommendedShotMix)
+                ? analysis.recommendedShotMix
+                : undefined,
+              presenterDescription: analysis.presenterDescription,
+              presentationRationale: analysis.presentationRationale,
+              jewelryForm: analysis.jewelryForm || analysis.productForm,
+            }
+          : {};
+
       return {
         id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         originalAsset: {
@@ -155,6 +177,7 @@ export class AssetAnalysisService {
         suitableAsBackground,
         visualScriptContext,
         logoProcessingHints,
+        ...presentationFields,
         analysisMetadata: {
           model: 'gpt-4o',
           analyzedAt: new Date().toISOString(),
@@ -270,18 +293,25 @@ Return your analysis as a JSON object with the following structure:
 6. Target audience based on product appearance
 7. Can this image be used directly as B-roll footage as-is (e.g. full frame with no change)? Consider: is the background busy, stylized, or distracting? If background is busy or the scene is too specific, set canUseAsDirectBroll false and recommendedUsage "reference_only". If the image is clean and generic enough to use as a clip, set canUseAsDirectBroll true and recommendedUsage "direct_broll".
 8. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual visual inventory—setting, lighting, composition, product/apparel/object types, colors, materials, notable accessories, mood—for marketing copy and B-roll briefs. Staged commercial/catalog style. Do NOT identify or name real individuals.
+9. PRODUCT AD PRESENTATION (for commercial video shot planning): Classify presentationProfile and humanInteraction. CRITICAL: set jewelryForm to the exact physical form of THIS product only — one of: bracelet, necklace, ring, earring, anklet, brooch, maang_tikka, watch (or omit for non-jewelry). If the product is a chain bracelet with clasp, jewelryForm MUST be "bracelet" NOT necklace. Do NOT confuse similar chain designs. For display_mannequin use the holder matching jewelryForm ONLY (bracelet→bracelet bar, necklace→neck bust, ring→cone, earring→T-stand, watch→cushion/T-bar). If no standard holder fits, omit display_mannequin from recommendedShotMix and use hero_flat_lay instead. Provide recommendedShotMix array (modes + share weights summing ~1.0) for a 30s product advertisement. If humans are recommended/required, include presenterDescription for a consistent on-model reference (adult, professional, Indian commercial model, studio portrait, NO product in presenter description).
 
 Return your analysis as a JSON object with the following structure:
 {
   "productName": "name of the product",
-  "productType": "category/type",
+  "productType": "category/type — must match jewelryForm (e.g. gold chain bracelet)",
+  "jewelryForm": "bracelet|necklace|ring|earring|anklet|brooch|maang_tikka|watch or omit if not jewelry",
   "features": ["feature1", "feature2"],
   "colors": ["color1", "color2"],
   "useCases": ["use case 1", "use case 2"],
   "targetAudience": "target audience description",
   "canUseAsDirectBroll": true/false,
   "recommendedUsage": "reference_only" or "direct_broll",
-  "visualScriptContext": "multi-sentence neutral visual description as specified above"
+  "visualScriptContext": "multi-sentence neutral visual description as specified above",
+  "presentationProfile": "one of: wearable_jewelry, wearable_apparel, wearable_accessory, handheld_gadget, vehicle, home_furniture, food_beverage, beauty_cosmetic, generic",
+  "humanInteraction": "one of: required, recommended, optional, discouraged",
+  "recommendedShotMix": [{"mode": "hero_flat_lay|on_model|display_mannequin|hands_interaction|lifestyle_context|detail_macro|environment_scale", "share": 0.0-1.0, "framingHint": "optional"}],
+  "presenterDescription": "if on_model shots are recommended: describe a professional commercial model reference (adult, Indian context, studio portrait, no product in frame)",
+  "presentationRationale": "brief why this profile fits the product"
 }`;
     } else {
       // General categorization
