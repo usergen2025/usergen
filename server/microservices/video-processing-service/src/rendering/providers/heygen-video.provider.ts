@@ -4,6 +4,7 @@ import axios, { AxiosInstance } from 'axios';
 import FormData from 'form-data';
 import { preWarmUrl, withRetry } from '@shared/storage';
 import { ProjectLogService } from '../../common/logging/project-log.service';
+import { prepareMp3ForHeyGen } from '../../common/utils/audio-for-heygen.util';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -483,6 +484,25 @@ export class HeyGenVideoProvider {
     } catch (error: any) {
       console.error('[HeyGen] Audio upload error:', error.response?.data || error.message);
       throw new Error(`Failed to upload audio: ${error.response?.data?.msg || error.response?.data?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Read audio from disk, convert WebM/other formats to MP3 when needed, then upload to HeyGen.
+   */
+  async uploadAudioFromPath(filePath: string, filename?: string): Promise<string> {
+    const { mp3Path, cleanup } = prepareMp3ForHeyGen(filePath);
+    try {
+      const audioBuffer = fs.readFileSync(mp3Path);
+      const uploadName =
+        filename ??
+        `audio_${path.basename(mp3Path, path.extname(mp3Path))}.mp3`;
+      return await this.uploadAudio(
+        audioBuffer,
+        uploadName.endsWith('.mp3') ? uploadName : `${uploadName}.mp3`,
+      );
+    } finally {
+      cleanup?.();
     }
   }
 

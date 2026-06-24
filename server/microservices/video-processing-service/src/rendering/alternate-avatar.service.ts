@@ -6,6 +6,7 @@ import { DatabaseService } from '../common/database/database.service';
 import { RenderingService } from './rendering.service';
 import { HeyGenVideoProvider } from './providers/heygen-video.provider';
 import { VideoCompositorProvider } from './providers/video-compositor.provider';
+import { prepareMp3ForHeyGen } from '../common/utils/audio-for-heygen.util';
 
 @Injectable()
 export class AlternateAvatarService {
@@ -61,44 +62,51 @@ export class AlternateAvatarService {
       fs.mkdirSync(avatarDir, { recursive: true });
     }
 
-    const audioBuffer = fs.readFileSync(audioFilePath);
-    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
+    const { mp3Path, cleanup } = prepareMp3ForHeyGen(audioFilePath);
+    try {
+      const audioAssetId = await this.heygenVideoProvider.uploadAudioFromPath(
+        mp3Path,
+        `scene_${sceneNumber}_audio.mp3`,
+      );
 
-    const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
-    const maxPoll = this.renderingService.calculateMaxPollingAttempts(sceneAudioDuration);
+      const sceneAudioDuration = await this.videoCompositor.getVideoDuration(mp3Path);
+      const maxPoll = this.renderingService.calculateMaxPollingAttempts(sceneAudioDuration);
 
-    const completedVideo = await this.renderingService.generateAndPollAvatarVideoUnified(
-      project,
-      {
-        image_key: imageKeyToUse,
-        video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
-        audio_asset_id: audioAssetId,
-        video_orientation: 'portrait',
-        fit: 'cover',
-      },
-      maxPoll,
-      5000,
-    );
-    if (!completedVideo.data.video_url) {
-      throw new Error(`Avatar video generation completed but no video URL for scene ${sceneNumber}`);
-    }
-
-    const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
-    await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
-
-    // Ensure full 9:16 (1080x1920) output — no half-n-half cropping
-    const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
-    if (!videoRes) throw new Error('Failed to get video resolution for avatar video');
-
-    if (videoRes.width !== 1080 || videoRes.height !== 1920) {
-      const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
-      await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
-      if (fs.existsSync(scaledPath)) {
-        if (fs.existsSync(avatarVideoPath)) fs.unlinkSync(avatarVideoPath);
-        fs.renameSync(scaledPath, avatarVideoPath);
+      const completedVideo = await this.renderingService.generateAndPollAvatarVideoUnified(
+        project,
+        {
+          image_key: imageKeyToUse,
+          video_title: `Avatar Video Scene ${sceneNumber} - ${projectId}`,
+          audio_asset_id: audioAssetId,
+          video_orientation: 'portrait',
+          fit: 'cover',
+        },
+        maxPoll,
+        5000,
+      );
+      if (!completedVideo.data.video_url) {
+        throw new Error(`Avatar video generation completed but no video URL for scene ${sceneNumber}`);
       }
-    }
 
-    return avatarVideoPath;
+      const avatarVideoPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_${projectId}.mp4`);
+      await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
+
+      // Ensure full 9:16 (1080x1920) output — no half-n-half cropping
+      const videoRes = await this.videoCompositor.getVideoResolution(avatarVideoPath);
+      if (!videoRes) throw new Error('Failed to get video resolution for avatar video');
+
+      if (videoRes.width !== 1080 || videoRes.height !== 1920) {
+        const scaledPath = path.join(avatarDir, `avatar_scene_${sceneNumber}_scaled_${projectId}.mp4`);
+        await this.videoCompositor.scaleVideoToDimensions(avatarVideoPath, scaledPath, 1080, 1920);
+        if (fs.existsSync(scaledPath)) {
+          if (fs.existsSync(avatarVideoPath)) fs.unlinkSync(avatarVideoPath);
+          fs.renameSync(scaledPath, avatarVideoPath);
+        }
+      }
+
+      return avatarVideoPath;
+    } finally {
+      cleanup?.();
+    }
   }
 }

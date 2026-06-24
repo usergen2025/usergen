@@ -7,9 +7,11 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../../database/database.service';
 import { AlternateAvatarService } from '../../../rendering/alternate-avatar.service';
+import { RenderingService } from '../../../rendering/rendering.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { VideoService } from '../../../video/video.service';
 import { UserNotificationService } from '../../../notifications/user-notification.service';
+import { resolveAudioPathOnDisk, prepareMp3ForHeyGen } from '../../utils/audio-for-heygen.util';
 
 export interface AvatarVideoGenerationJobData {
   projectId: string;
@@ -30,6 +32,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly alternateAvatarService: AlternateAvatarService,
+    private readonly renderingService: RenderingService,
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly videoService: VideoService,
     private readonly userNotificationService: UserNotificationService,
@@ -38,25 +41,24 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
 
-  private resolveAudioPath(audioFile: any, userId: string): string | null {
-    const originalPath = audioFile.filePath;
-    if (!originalPath) return null;
-
-    const serverRoot = path.join(process.cwd(), '..', '..');
-    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
-
-    if (path.isAbsolute(originalPath) && fs.existsSync(originalPath)) {
-      return originalPath;
+  private resolveAudioPath(audioFile: any): string | null {
+    const logicalPath = this.renderingService.getAudioFilePathPublic(audioFile);
+    if (logicalPath) {
+      const resolved = resolveAudioPathOnDisk(logicalPath, {
+        uploadsDir: this.uploadsDir,
+        cwd: process.cwd(),
+      });
+      if (resolved) return resolved;
     }
-    const relPath = originalPath.startsWith('/') ? originalPath.slice(1) : originalPath;
-    const candidates = [
-      path.join(voiceServiceDir, relPath),
-      path.join(serverRoot, relPath),
-      path.join(process.cwd(), relPath),
-    ];
-    for (const p of candidates) {
-      if (fs.existsSync(p)) return p;
+
+    // Legacy fallback when only top-level filePath is set
+    if (audioFile.filePath) {
+      return resolveAudioPathOnDisk(audioFile.filePath, {
+        uploadsDir: this.uploadsDir,
+        cwd: process.cwd(),
+      });
     }
+
     return null;
   }
 
@@ -78,7 +80,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         throw new Error(`Missing audio file for scene ${sceneNumber}`);
       }
 
-      const audioPath = this.resolveAudioPath(audioFile, userId);
+      const audioPath = this.resolveAudioPath(audioFile);
       if (!audioPath || !fs.existsSync(audioPath)) {
         throw new Error(`Audio file not found for scene ${sceneNumber}`);
       }
@@ -97,8 +99,14 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         }
       }
 
-      const audioBuffer = fs.readFileSync(audioPath);
-      const audioHash = crypto.createHash('sha256').update(audioBuffer).digest('hex');
+      const { mp3Path: hashAudioPath, cleanup: hashCleanup } = prepareMp3ForHeyGen(audioPath);
+      let audioHash: string;
+      try {
+        audioHash = crypto.createHash('sha256').update(fs.readFileSync(hashAudioPath)).digest('hex');
+      } finally {
+        hashCleanup?.();
+      }
+
       const cacheEntry = metadata.avatarVideoCache?.[sceneNumber];
       let avatarVideoPath: string;
       let avatarEntry: any;

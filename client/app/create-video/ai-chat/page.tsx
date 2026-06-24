@@ -112,6 +112,7 @@ function AIChatPageContent() {
     isDownloading: isDownloadingFinal,
   } = useDownloadFinalVideo(projectId, projectId ? `video-${projectId}.mp4` : undefined);
   const [proceedConfirmed, setProceedConfirmed] = useState<boolean>(false);
+  const [isProceedingToAvatar, setIsProceedingToAvatar] = useState(false);
   const [avatarPreference, setAvatarPreference] = useState<'library' | 'generate' | 'skip' | null>(null);
   const [avatarYesMessage, setAvatarYesMessage] = useState<boolean>(false); // Track if user selected "yes"
   // Avatar selection state
@@ -1746,7 +1747,7 @@ function AIChatPageContent() {
         const displayScript = formatted || formatScriptForDisplay(scriptData);
         setFormattedScript(displayScript);
         
-        // Create project only when user had no assets (second creation point). When user had assets we already have scriptProjectId and only update.
+        // Persist project after script: create when no assets (no project yet); update when assets created project earlier.
         if (!scriptProjectId) {
           if (attachedAssets.length === 0) {
             try {
@@ -1758,9 +1759,11 @@ function AIChatPageContent() {
                 style: styleToUse ? (styleMap[styleToUse] as any) : undefined,
                 metadata: {
                   generationFlow: 'AI_CHAT',
+                  aiChatStep: 'script-generated',
                   formattedScript: displayScript,
                   userScriptMessage: userMessage,
                   selectedOption: selectedOption,
+                  ...(styleToUse ? { selectedVideoStyle: styleToUse } : {}),
                 },
               });
               
@@ -1784,12 +1787,14 @@ function AIChatPageContent() {
             await apiClient.updateVideoProject(scriptProjectId, {
               script: JSON.stringify(scriptData),
               scriptGenerated: true,
+              style: styleToUse ? (styleMap[styleToUse] as any) : undefined,
               metadata: {
                 generationFlow: 'AI_CHAT',
                 aiChatStep: 'script-generated',
                 formattedScript: displayScript,
                 userScriptMessage: userMessage,
                 selectedOption: selectedOption,
+                ...(styleToUse ? { selectedVideoStyle: styleToUse } : {}),
               },
             });
             console.log(`[AIChat] Updated project ${scriptProjectId} with script`);
@@ -1799,7 +1804,7 @@ function AIChatPageContent() {
           }
         }
         
-        // Store script temporarily in sessionStorage - will be saved to project after style selection
+        // Legacy sessionStorage backup for classic style-page handoff (project is already persisted above)
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('pendingScriptData', JSON.stringify(scriptData));
           sessionStorage.setItem('pendingScriptFormatted', displayScript);
@@ -4718,22 +4723,28 @@ function AIChatPageContent() {
     }
   };
 
-  // Handle proceed to avatar selection (create project after script generation)
+  // Advance to avatar/voice after script review — update existing project (single source of truth)
   const handleProceedToAvatarSelection = async () => {
     if (!generatedScript) {
       showToast('Please generate a script first', 'warning');
       return;
     }
+    if (isProceedingToAvatar) {
+      return;
+    }
+
+    setIsProceedingToAvatar(true);
 
     try {
-      // Map selectedOption to videoType (infer from avatar preference)
-      const videoType = (avatarPreference === 'library' || avatarPreference === 'generate') ? 'WITH_AVATAR' : 'WITHOUT_AVATAR';
-      
-      // Get selected style from state or sessionStorage
-      const styleToUse = selectedVideoStyle || 
+      const resolvedVideoType: 'WITH_AVATAR' | 'WITHOUT_AVATAR' =
+        avatarPreference === 'library' || avatarPreference === 'generate'
+          ? 'WITH_AVATAR'
+          : 'WITHOUT_AVATAR';
+
+      const styleToUse =
+        selectedVideoStyle ||
         (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
-      
-      // Map style to backend format
+
       const styleMap: Record<string, string> = {
         'half-n-half': 'HALF_N_HALF',
         'alternate': 'ALTERNATE',
@@ -4744,82 +4755,128 @@ function AIChatPageContent() {
         'animated-avatar': 'ANIMATED_AVATAR',
         'broll-only': 'B_ROLL_ONLY',
       };
-      
-      // Determine next step based on style
-      const shouldSkipAvatarSelection = styleToUse === 'product-only' || styleToUse === 'broll-only';
+
+      const shouldSkipAvatarSelection =
+        styleToUse === 'product-only' || styleToUse === 'broll-only';
       const nextStep = shouldSkipAvatarSelection ? 'voice-selection' : 'avatar-selection';
-      
+
       const validAssetsForScriptCreate = attachedAssets
-        .filter(a => a.url && (a.url.startsWith('http://') || a.url.startsWith('https://') || a.url.startsWith('/uploads')))
-        .map(asset => ({
+        .filter(
+          (a) =>
+            a.url &&
+            (a.url.startsWith('http://') ||
+              a.url.startsWith('https://') ||
+              a.url.startsWith('/uploads')),
+        )
+        .map((asset) => ({
           id: asset.id,
           url: asset.url || asset.preview || '',
           type: asset.type || 'image',
-          category: asset.category || (asset.id.startsWith('logo-') ? 'logo' : asset.id.startsWith('product-') ? 'product' : 'reference'),
+          category:
+            asset.category ||
+            (asset.id.startsWith('logo-')
+              ? 'logo'
+              : asset.id.startsWith('product-')
+                ? 'product'
+                : 'reference'),
           label: asset.name || asset.category,
-          userLabel: asset.category || (asset.id.startsWith('logo-') ? 'logo' : undefined),
+          userLabel:
+            asset.category || (asset.id.startsWith('logo-') ? 'logo' : undefined),
         }));
 
-      const createResponse = await apiClient.createVideoProject({
-        videoType: videoType || 'WITHOUT_AVATAR',
+      const projectPayload = {
+        videoType: resolvedVideoType,
         script: JSON.stringify(generatedScript),
         scriptGenerated: true,
-        currentStep: 'SCRIPT', // Backend step for compatibility
-        style: styleToUse ? (styleMap[styleToUse] as any) : 'AVATAR_CUTOUT', // Use selected style
-        avatarMode: 'PREMIUM', // Set Premium as default for new AI chat flow
+        currentStep: 'SCRIPT',
+        style: styleToUse ? (styleMap[styleToUse] as any) : 'AVATAR_CUTOUT',
+        avatarMode: 'PREMIUM' as const,
         metadata: {
           generationFlow: 'AI_CHAT',
-          aiChatStep: nextStep, // Set correct step based on style
-          aiChatAvatarSubstep: shouldSkipAvatarSelection ? undefined : 'question', // Skip avatar substep for product-only
+          aiChatStep: nextStep,
+          ...(shouldSkipAvatarSelection ? {} : { aiChatAvatarSubstep: 'question' }),
           aiChatVoiceSubstep: 'question',
-          ...(validAssetsForScriptCreate.length > 0 ? { assets: validAssetsForScriptCreate } : {}),
+          ...(validAssetsForScriptCreate.length > 0
+            ? { assets: validAssetsForScriptCreate }
+            : {}),
           formattedScript: formattedScript,
           selectedOption: selectedOption,
           userScriptMessage: userScriptMessage,
-          selectedVideoStyle: styleToUse, // Store frontend style
+          selectedVideoStyle: styleToUse,
         },
-        status: 'DRAFT',
-      });
-      
-      if (createResponse.success && createResponse.data) {
-        const newProjectId = createResponse.data.id;
-        setProjectId(newProjectId);
-        
-        // Update URL with projectId
-        router.replace(`/create-video/ai-chat?projectId=${newProjectId}`);
-        
-        // Clear sessionStorage now that we have a project
-        if (typeof window !== 'undefined') {
-          sessionStorage.removeItem('pendingScriptData');
-          sessionStorage.removeItem('pendingScriptFormatted');
-          sessionStorage.removeItem('pendingUserPrompt');
-          sessionStorage.removeItem('selectedVideoStyle'); // Clear style from sessionStorage
+        status: 'DRAFT' as const,
+      };
+
+      const existingProjectId =
+        projectId || searchParams?.get('projectId') || null;
+
+      let savedProjectId = existingProjectId;
+
+      if (existingProjectId) {
+        const updateResponse = await apiClient.updateVideoProject(
+          existingProjectId,
+          projectPayload,
+        );
+        if (!updateResponse.success) {
+          showToast('Failed to save project. Please try again.', 'error');
+          return;
         }
-        
-        // Check if we should skip avatar selection for product-only style
-        if (shouldSkipAvatarSelection) {
-          // Skip avatar selection and go directly to voice selection
-          setProceedConfirmed(true);
-          setCurrentStep('voice-selection');
-          // Set avatar preference to 'skip' since product-only doesn't use avatars
-          setAvatarPreference('skip');
-          if (typeof window !== 'undefined') {
-            sessionStorage.setItem('avatarPreference', 'skip');
-          }
-        } else {
-          // Normal flow: advance to avatar selection
-          setProceedConfirmed(true);
-          setCurrentStep('avatar-selection');
-        }
-        
-        showToast('Project saved successfully', 'success');
+        console.log(
+          `[AIChat] Updated project ${existingProjectId} on proceed to ${nextStep}`,
+        );
       } else {
-        showToast('Failed to create project. Please try again.', 'error');
+        const createResponse = await apiClient.createVideoProject(projectPayload);
+        if (!createResponse.success || !createResponse.data) {
+          showToast('Failed to create project. Please try again.', 'error');
+          return;
+        }
+        savedProjectId = createResponse.data.id;
+        setProjectId(savedProjectId);
+        router.replace(`/create-video/ai-chat?projectId=${savedProjectId}`);
+        console.log(
+          `[AIChat] Created project ${savedProjectId} on proceed (no prior projectId)`,
+        );
       }
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('pendingScriptData');
+        sessionStorage.removeItem('pendingScriptFormatted');
+        sessionStorage.removeItem('pendingUserPrompt');
+        sessionStorage.removeItem('selectedVideoStyle');
+      }
+
+      if (
+        savedProjectId &&
+        typeof window !== 'undefined' &&
+        !window.location.search.includes('projectId')
+      ) {
+        router.replace(`/create-video/ai-chat?projectId=${savedProjectId}`, {
+          scroll: false,
+        });
+      }
+
+      if (shouldSkipAvatarSelection) {
+        setProceedConfirmed(true);
+        setCurrentStep('voice-selection');
+        setAvatarPreference('skip');
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('avatarPreference', 'skip');
+        }
+      } else {
+        setProceedConfirmed(true);
+        setCurrentStep('avatar-selection');
+      }
+
+      showToast('Project saved successfully', 'success');
     } catch (error: any) {
-      console.error('Failed to create project:', error);
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to create project. Please try again.';
+      console.error('Failed to save project on proceed:', error);
+      const errorMessage =
+        error.response?.data?.message ||
+        error.message ||
+        'Failed to save project. Please try again.';
       showToast(errorMessage, 'error');
+    } finally {
+      setIsProceedingToAvatar(false);
     }
   };
 
@@ -9682,7 +9739,11 @@ Read everything on screen smoothly.`}
                 {/* Proceed Button */}
                 <button
                   onClick={handleProceedToAvatarSelection}
-                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.625rem,1.17vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity"
+                  disabled={isProceedingToAvatar}
+                  className={cn(
+                    "flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(0.625rem,1.17vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,5.27vh,54px)] flex-shrink-0 hover:opacity-90 transition-opacity",
+                    isProceedingToAvatar && "opacity-50 cursor-not-allowed",
+                  )}
                 >
                   <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                     <Image

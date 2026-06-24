@@ -2611,8 +2611,10 @@ export class RenderingService {
       );
     }
 
-    const audioBuffer = fs.readFileSync(audioFilePath);
-    const audioAssetId = await this.heygenVideoProvider.uploadAudio(audioBuffer, `scene_${sceneNumber}_audio.mp3`);
+    const audioAssetId = await this.heygenVideoProvider.uploadAudioFromPath(
+      audioFilePath,
+      `scene_${sceneNumber}_audio.mp3`,
+    );
 
     const sceneAudioDuration = await this.videoCompositor.getVideoDuration(audioFilePath);
     const maxPollingAttemptsAlternate = this.calculateMaxPollingAttempts(sceneAudioDuration);
