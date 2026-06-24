@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Loader2, Languages, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
@@ -17,6 +18,7 @@ export interface VideoTranslationVariant {
   localVideoUrl?: string;
   previewVideoUrl?: string;
   error?: string;
+  createdAt?: string;
   completedAt?: string;
 }
 
@@ -47,6 +49,21 @@ function variantPlaybackUrl(v: VideoTranslationVariant, base?: string): string |
   return resolveMediaUrl(v.previewVideoUrl, base) ?? resolveMediaUrl(v.videoUrl, base);
 }
 
+function mergeTranslationLists(
+  current: VideoTranslationVariant[],
+  incoming: VideoTranslationVariant[],
+): VideoTranslationVariant[] {
+  if (!incoming.length) return current;
+  const byId = new Map(current.map((v) => [v.id, v]));
+  for (const v of incoming) {
+    const existing = byId.get(v.id);
+    byId.set(v.id, existing ? { ...existing, ...v } : v);
+  }
+  return Array.from(byId.values()).sort((a, b) =>
+    (a.createdAt || '').localeCompare(b.createdAt || ''),
+  );
+}
+
 interface VideoTranslationsPanelProps {
   projectId: string;
   originalLanguageLabel?: string;
@@ -74,7 +91,7 @@ export function VideoTranslationsPanel({
 }: VideoTranslationsPanelProps) {
   const { showToast } = useToast();
   const { subscribeToJob } = useWebSocketContext();
-  const [translations, setTranslations] = useState<VideoTranslationVariant[]>(initialTranslations);
+  const [translations, setTranslations] = useState<VideoTranslationVariant[]>([]);
   const [languages, setLanguages] = useState<string[]>([]);
   const [selected, setSelected] = useState<'original' | string>('original');
   const [internalOpen, setInternalOpen] = useState(false);
@@ -85,6 +102,7 @@ export function VideoTranslationsPanel({
   const [loading, setLoading] = useState(false);
   const [loadingLangs, setLoadingLangs] = useState(false);
   const [creditCostPerLanguage, setCreditCostPerLanguage] = useState<number | null>(null);
+  const loadedProjectRef = useRef<string | null>(null);
 
   const closeModal = useCallback(() => {
     setShowModal(false);
@@ -96,20 +114,21 @@ export function VideoTranslationsPanel({
     setShowModal(true);
   }, [setShowModal]);
 
-  useEffect(() => {
-    setTranslations(initialTranslations);
-  }, [initialTranslations]);
-
   const refresh = useCallback(async () => {
     const res = await apiClient.getVideoTranslations(projectId);
     if (res.success && res.data?.translations) {
-      setTranslations(res.data.translations);
+      setTranslations((prev) => mergeTranslationLists(prev, res.data!.translations));
     }
   }, [projectId]);
 
   useEffect(() => {
+    if (loadedProjectRef.current === projectId) return;
+    loadedProjectRef.current = projectId;
+    setSelected('original');
+    setTranslations(initialTranslations.length ? initialTranslations : []);
     void refresh();
-  }, [refresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when projectId changes
+  }, [projectId]);
 
   useEffect(() => {
     if (!showModal) return;
@@ -154,8 +173,13 @@ export function VideoTranslationsPanel({
     const variantId = update.metadata?.variantId || update.result?.variantId;
     if (!variantId) return;
 
-    setTranslations((prev) =>
-      prev.map((v) => {
+    setTranslations((prev) => {
+      const idx = prev.findIndex((v) => v.id === variantId);
+      if (idx < 0) {
+        void refresh();
+        return prev;
+      }
+      return prev.map((v) => {
         if (v.id !== variantId) return v;
         if (update.state === 'completed' && update.result?.video) {
           return {
@@ -176,9 +200,9 @@ export function VideoTranslationsPanel({
               ? 'translating_scenes'
               : v.status,
         };
-      }),
-    );
-  }, []);
+      });
+    });
+  }, [refresh]);
 
   const subscribeJobs = useCallback(
     (jobs: { variantId: string; jobId: string }[]) => {
@@ -206,11 +230,12 @@ export function VideoTranslationsPanel({
     try {
       const res = await apiClient.createVideoTranslations(projectId, picked);
       if (!res.success) throw new Error(res.message || 'Failed to start translation');
-      if (res.data?.variants) setTranslations(res.data.variants);
+      if (res.data?.variants) {
+        setTranslations((prev) => mergeTranslationLists(prev, res.data!.variants));
+      }
       if (res.data?.jobs?.length) subscribeJobs(res.data.jobs);
       closeModal();
       showToast('Translation started', 'success');
-      void refresh();
     } catch (e: any) {
       showToast(e?.message || 'Translation failed', 'error');
     } finally {
@@ -240,9 +265,10 @@ export function VideoTranslationsPanel({
     try {
       const res = await apiClient.createVideoTranslations(projectId, [language]);
       if (res.data?.jobs?.length) subscribeJobs(res.data.jobs);
-      if (res.data?.variants) setTranslations(res.data.variants);
+      if (res.data?.variants) {
+        setTranslations((prev) => mergeTranslationLists(prev, res.data!.variants));
+      }
       showToast('Retry started', 'success');
-      void refresh();
     } catch (err: any) {
       showToast(err?.message || 'Retry failed', 'error');
     }
@@ -443,6 +469,133 @@ export function VideoTranslationsPanel({
     </div>
   );
 
+  const modalContent = showModal ? (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+      onClick={closeModal}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="translate-video-modal-title"
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-lg w-full flex flex-col max-h-[min(85vh,640px)] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3 border-b border-gray-100 shrink-0">
+          <div>
+            <h4
+              id="translate-video-modal-title"
+              className="font-heading font-semibold text-lg text-[#212121] flex items-center gap-2"
+            >
+              <Languages className="w-5 h-5 text-[#E86412]" />
+              Translate video
+            </h4>
+            <p className="text-xs text-gray-500 mt-1 max-w-sm">
+              Lip-sync on avatar scenes; narration-only on b-roll. Branding and captions are re-applied.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={closeModal}
+            className="p-2 rounded-full hover:bg-gray-100 text-gray-500 shrink-0"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-100 shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search languages…"
+              className="w-full pl-9 pr-3 py-2.5 rounded-full border border-gray-200 text-sm text-[#212121] placeholder:text-gray-400 focus:outline-none focus:border-[#E86412] focus:ring-1 focus:ring-[#E86412]/30"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
+          {loadingLangs ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-7 h-7 animate-spin text-[#E86412]" />
+            </div>
+          ) : filteredLanguages.length === 0 ? (
+            <p className="text-sm text-gray-500 text-center py-8">
+              {availableLanguages.length === 0
+                ? 'No additional languages available for this project.'
+                : `No languages match "${query.trim()}".`}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {filteredLanguages.map((lang) => {
+                const active = picked.includes(lang);
+                return (
+                  <button
+                    key={lang}
+                    type="button"
+                    onClick={() => togglePicked(lang)}
+                    className={cn(
+                      'px-3 py-2.5 rounded-xl text-sm text-left border transition-colors font-medium',
+                      active
+                        ? 'border-[#E86412] bg-[#E86412]/5 text-[#212121]'
+                        : 'border-gray-200 text-gray-700 hover:border-[#E86412]/50 hover:bg-gray-50',
+                    )}
+                  >
+                    <span className="line-clamp-2">{lang}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-100 bg-gray-50/80 shrink-0 space-y-3">
+          {picked.length > 0 ? (
+            <p className="text-sm text-gray-700">
+              Estimated cost:{' '}
+              <span className="font-semibold text-[#212121]">{estimatedCost} credits</span>
+              {picked.length > 1 ? (
+                <span className="text-gray-500">
+                  {' '}
+                  ({creditCostPerLanguage ?? 50} × {picked.length} languages)
+                </span>
+              ) : null}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-500">Select one or more languages to translate.</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="px-4 py-2.5 text-sm font-medium rounded-full border border-gray-200 text-gray-700 hover:bg-white"
+              onClick={closeModal}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={loading || !picked.length}
+              onClick={() => void handleCreate()}
+              className="px-5 py-2.5 text-sm font-semibold rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] text-white disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity min-w-[120px]"
+            >
+              {loading ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Starting…
+                </span>
+              ) : (
+                `Translate${picked.length ? ` (${picked.length})` : ''}`
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <>
       {layout === 'sidebar' ? (
@@ -467,126 +620,9 @@ export function VideoTranslationsPanel({
         <div className="w-full max-w-lg mt-2 space-y-2">{renderChipsList()}</div>
       )}
 
-      {showModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          onClick={closeModal}
-        >
-          <div
-            className="bg-white rounded-2xl shadow-xl max-w-lg w-full flex flex-col max-h-[min(85vh,640px)] overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3 border-b border-gray-100 shrink-0">
-              <div>
-                <h4 className="font-heading font-semibold text-lg text-[#212121] flex items-center gap-2">
-                  <Languages className="w-5 h-5 text-[#E86412]" />
-                  Translate video
-                </h4>
-                <p className="text-xs text-gray-500 mt-1 max-w-sm">
-                  Lip-sync on avatar scenes; narration-only on b-roll. Branding and captions are re-applied.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={closeModal}
-                className="p-2 rounded-full hover:bg-gray-100 text-gray-500 shrink-0"
-                aria-label="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="px-5 py-3 border-b border-gray-100 shrink-0">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search languages…"
-                  className="w-full pl-9 pr-3 py-2.5 rounded-full border border-gray-200 text-sm text-[#212121] placeholder:text-gray-400 focus:outline-none focus:border-[#E86412] focus:ring-1 focus:ring-[#E86412]/30"
-                />
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
-              {loadingLangs ? (
-                <div className="flex justify-center py-12">
-                  <Loader2 className="w-7 h-7 animate-spin text-[#E86412]" />
-                </div>
-              ) : filteredLanguages.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-8">
-                  {availableLanguages.length === 0
-                    ? 'No additional languages available for this project.'
-                    : `No languages match "${query.trim()}".`}
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {filteredLanguages.map((lang) => {
-                    const active = picked.includes(lang);
-                    return (
-                      <button
-                        key={lang}
-                        type="button"
-                        onClick={() => togglePicked(lang)}
-                        className={cn(
-                          'px-3 py-2.5 rounded-xl text-sm text-left border transition-colors font-medium',
-                          active
-                            ? 'border-[#E86412] bg-[#E86412]/5 text-[#212121]'
-                            : 'border-gray-200 text-gray-700 hover:border-[#E86412]/50 hover:bg-gray-50',
-                        )}
-                      >
-                        <span className="line-clamp-2">{lang}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="px-5 py-4 border-t border-gray-100 bg-gray-50/80 shrink-0 space-y-3">
-              {picked.length > 0 ? (
-                <p className="text-sm text-gray-700">
-                  Estimated cost:{' '}
-                  <span className="font-semibold text-[#212121]">{estimatedCost} credits</span>
-                  {picked.length > 1 ? (
-                    <span className="text-gray-500">
-                      {' '}
-                      ({creditCostPerLanguage ?? 50} × {picked.length} languages)
-                    </span>
-                  ) : null}
-                </p>
-              ) : (
-                <p className="text-sm text-gray-500">Select one or more languages to translate.</p>
-              )}
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="px-4 py-2.5 text-sm font-medium rounded-full border border-gray-200 text-gray-700 hover:bg-white"
-                  onClick={closeModal}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={loading || !picked.length}
-                  onClick={() => void handleCreate()}
-                  className="px-5 py-2.5 text-sm font-semibold rounded-full bg-gradient-to-r from-[#E86412] to-[#F12A4C] text-white disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity min-w-[120px]"
-                >
-                  {loading ? (
-                    <span className="inline-flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Starting…
-                    </span>
-                  ) : (
-                    `Translate${picked.length ? ` (${picked.length})` : ''}`
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {typeof window !== 'undefined' && document.body && modalContent
+        ? createPortal(modalContent, document.body)
+        : null}
     </>
   );
 }

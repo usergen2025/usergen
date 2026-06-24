@@ -35,6 +35,10 @@ export interface VideoTranslationJobData {
 
 @Injectable()
 export class VideoTranslationService {
+  private static readonly SCENE_TRANSLATION_CONCURRENCY = 4;
+  private static readonly PARALLEL_POLL_INTERVAL_MS = 8000;
+  private static readonly DEFAULT_POLL_INTERVAL_MS = 5000;
+
   private readonly aiContentServiceUrl: string;
   private readonly jwtSecret: string;
 
@@ -271,6 +275,8 @@ export class VideoTranslationService {
         sceneTranslations = await this.translateAlternateScenes(
           project,
           userId,
+          projectId,
+          variantId,
           scenes,
           audioFiles,
           language,
@@ -283,6 +289,8 @@ export class VideoTranslationService {
         sceneTranslations = await this.translateBrollOnlyScenes(
           project,
           userId,
+          projectId,
+          variantId,
           scenes,
           audioFiles,
           language,
@@ -295,6 +303,8 @@ export class VideoTranslationService {
         sceneTranslations = await this.translateHalfNHalf(
           project,
           userId,
+          projectId,
+          variant,
           language,
           workDir,
           notify,
@@ -418,7 +428,13 @@ export class VideoTranslationService {
     notify: (state: string, progress: number, extra?: Record<string, unknown>) => Promise<void>,
   ): Promise<SceneTranslationEntry[]> {
     const sourcePath = await this.resolveProjectSourceVideo(project, userId);
-    const publicUrl = await this.ensurePublicVideoUrl(sourcePath, userId, `translate_src_${variant.id}.mp4`);
+    const publicUrl = await this.ensurePublicVideoUrl(
+      sourcePath,
+      userId,
+      project.id,
+      variant.id,
+      'translate_src.mp4',
+    );
 
     await notify('active', 20, { phase: 'heygen_translate' });
     const translationId = await this.heygenVideoProvider.createVideoTranslation({
@@ -450,6 +466,8 @@ export class VideoTranslationService {
   private async translateAlternateScenes(
     project: any,
     userId: string,
+    projectId: string,
+    variantId: string,
     scenes: any[],
     audioFiles: any[],
     language: string,
@@ -465,96 +483,191 @@ export class VideoTranslationService {
     );
     const results: SceneTranslationEntry[] = [...existing];
     const total = sortedScenes.length;
-    let done = 0;
+    let completedCount = 0;
 
+    const scenesToProcess: Array<{ scene: any; sceneNumber: number }> = [];
     for (const scene of sortedScenes) {
       const sceneNumber = scene.scene_number || scene.sceneNumber || 1;
-      const role = this.renderingService.getAlternateSceneRolePublic(scene, sceneNumber);
       const prev = results.find((r) => r.sceneNumber === sceneNumber);
       if (retryFailedOnly && prev?.status === 'completed') {
-        done++;
+        completedCount++;
         continue;
       }
+      scenesToProcess.push({ scene, sceneNumber });
+    }
 
+    const pollIntervalMs =
+      scenesToProcess.length > 2
+        ? VideoTranslationService.PARALLEL_POLL_INTERVAL_MS
+        : VideoTranslationService.DEFAULT_POLL_INTERVAL_MS;
+
+    const processScene = async ({ scene, sceneNumber }: { scene: any; sceneNumber: number }) => {
+      const role = this.renderingService.getAlternateSceneRolePublic(scene, sceneNumber);
       try {
-        let sourcePath: string | null = null;
-        if (role === 'avatar') {
-          const entry = avatarVideos.find((v: any) => v.sceneNumber === sceneNumber);
-          sourcePath = this.renderingService.resolveLocalVideoPath(entry?.localPath, entry?.localUrl);
-          if (!sourcePath) throw new Error(`Missing avatar video for scene ${sceneNumber}`);
-        } else {
-          sourcePath = await this.buildBrollSceneClip(project, userId, sceneNumber, bRollVideos, audioFiles, workDir);
-        }
-
-        const publicUrl = await this.ensurePublicVideoUrl(
-          sourcePath,
+        const entry = await this.translateOneAlternateScene({
+          project,
           userId,
-          `scene_${sceneNumber}_${language.replace(/\W+/g, '_')}.mp4`,
-        );
-
-        const translationId = await this.heygenVideoProvider.createVideoTranslation({
-          videoUrl: publicUrl,
-          outputLanguage: language,
-          mode: role === 'avatar' ? 'precision' : 'speed',
-          translateAudioOnly: role === 'b-roll',
-          disableMusicTrack: true,
-          title: `Scene ${sceneNumber} ${language}`,
-          speakerNum: 1,
+          projectId,
+          variantId,
+          sceneNumber,
+          role,
+          language,
+          workDir,
+          avatarVideos,
+          bRollVideos,
+          audioFiles,
+          pollIntervalMs,
         });
 
-        const polled = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(translationId);
-        const localPath = path.join(workDir, `scene_${sceneNumber}_translated.mp4`);
-        await this.heygenVideoProvider.downloadVideo(polled.videoUrl!, localPath);
-
-        let finalPath = localPath;
-        if (role === 'b-roll') {
-          const translatedDur = await this.renderingService.getVideoCompositor().getVideoDuration(localPath).catch(() => 0);
-          finalPath = await this.refitVideoToTargetDuration(localPath, workDir, sceneNumber, translatedDur);
-        }
-
-        const duration = await this.renderingService.getVideoCompositor().getVideoDuration(finalPath).catch(() => 0);
-        const entry: SceneTranslationEntry = {
-          sceneNumber,
-          role: role === 'avatar' ? 'avatar' : 'broll',
-          heygenTranslationId: translationId,
-          translatedClipUrl: polled.videoUrl,
-          translatedClipLocalPath: finalPath,
-          duration,
-          status: 'completed',
-        };
         const idx = results.findIndex((r) => r.sceneNumber === sceneNumber);
         if (idx >= 0) results[idx] = entry;
         else results.push(entry);
+
+        completedCount++;
+        if (notify) {
+          await notify('active', 10 + Math.round((completedCount / total) * 55), {
+            phase: 'translating_scenes',
+            sceneNumber,
+            completedScenes: completedCount,
+            totalScenes: total,
+          });
+        }
+        return entry;
       } catch (err: any) {
-        const entry: SceneTranslationEntry = {
+        const failedEntry: SceneTranslationEntry = {
           sceneNumber,
           role: role === 'avatar' ? 'avatar' : 'broll',
           status: 'failed',
           error: err?.message || String(err),
         };
         const idx = results.findIndex((r) => r.sceneNumber === sceneNumber);
-        if (idx >= 0) results[idx] = entry;
-        else results.push(entry);
+        if (idx >= 0) results[idx] = failedEntry;
+        else results.push(failedEntry);
         throw err;
       }
+    };
 
-      done++;
-      if (notify) {
-        await notify('active', 10 + Math.round((done / total) * 55), {
-          phase: 'translating_scenes',
-          sceneNumber,
-          completedScenes: done,
-          totalScenes: total,
-        });
-      }
+    await this.runWithConcurrency(
+      scenesToProcess,
+      VideoTranslationService.SCENE_TRANSLATION_CONCURRENCY,
+      processScene,
+    );
+
+    return results;
+  }
+
+  private async translateOneAlternateScene(params: {
+    project: any;
+    userId: string;
+    projectId: string;
+    variantId: string;
+    sceneNumber: number;
+    role: string;
+    language: string;
+    workDir: string;
+    avatarVideos: any[];
+    bRollVideos: any[];
+    audioFiles: any[];
+    pollIntervalMs: number;
+  }): Promise<SceneTranslationEntry> {
+    const {
+      project,
+      userId,
+      projectId,
+      variantId,
+      sceneNumber,
+      role,
+      language,
+      workDir,
+      avatarVideos,
+      bRollVideos,
+      audioFiles,
+      pollIntervalMs,
+    } = params;
+
+    let sourcePath: string | null = null;
+    if (role === 'avatar') {
+      const entry = avatarVideos.find((v: any) => v.sceneNumber === sceneNumber);
+      sourcePath = this.renderingService.resolveLocalVideoPath(entry?.localPath, entry?.localUrl);
+      if (!sourcePath) throw new Error(`Missing avatar video for scene ${sceneNumber}`);
+    } else {
+      sourcePath = await this.buildBrollSceneClip(project, userId, sceneNumber, bRollVideos, audioFiles, workDir);
     }
 
+    const langSlug = language.replace(/\W+/g, '_');
+    const publicUrl = await this.ensurePublicVideoUrl(
+      sourcePath,
+      userId,
+      projectId,
+      variantId,
+      `scene_${sceneNumber}_${langSlug}.mp4`,
+    );
+
+    console.log(
+      `[VideoTranslationService] HeyGen translate scene ${sceneNumber} project=${projectId} variant=${variantId} role=${role} source=${sourcePath}`,
+    );
+
+    const translationId = await this.heygenVideoProvider.createVideoTranslation({
+      videoUrl: publicUrl,
+      outputLanguage: language,
+      mode: role === 'avatar' ? 'precision' : 'speed',
+      translateAudioOnly: role === 'b-roll',
+      disableMusicTrack: true,
+      title: `Scene ${sceneNumber} ${language} - ${projectId}`,
+      speakerNum: 1,
+    });
+
+    const polled = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(
+      translationId,
+      120,
+      pollIntervalMs,
+    );
+    const localPath = path.join(workDir, `scene_${sceneNumber}_translated.mp4`);
+    await this.heygenVideoProvider.downloadVideo(polled.videoUrl!, localPath);
+
+    let finalPath = localPath;
+    if (role === 'b-roll') {
+      const translatedDur = await this.renderingService.getVideoCompositor().getVideoDuration(localPath).catch(() => 0);
+      finalPath = await this.refitVideoToTargetDuration(localPath, workDir, sceneNumber, translatedDur);
+    }
+
+    const duration = await this.renderingService.getVideoCompositor().getVideoDuration(finalPath).catch(() => 0);
+    return {
+      sceneNumber,
+      role: role === 'avatar' ? 'avatar' : 'broll',
+      heygenTranslationId: translationId,
+      translatedClipUrl: polled.videoUrl,
+      translatedClipLocalPath: finalPath,
+      duration,
+      status: 'completed',
+    };
+  }
+
+  private async runWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    if (!items.length) return [];
+    const results: R[] = new Array(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(Math.max(1, limit), items.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) break;
+        results[index] = await fn(items[index]);
+      }
+    });
+    await Promise.all(workers);
     return results;
   }
 
   private async translateBrollOnlyScenes(
     project: any,
     userId: string,
+    projectId: string,
+    variantId: string,
     scenes: any[],
     audioFiles: any[],
     language: string,
@@ -563,10 +676,11 @@ export class VideoTranslationService {
     retryFailedOnly?: boolean,
     notify?: (state: string, progress: number, extra?: Record<string, unknown>) => Promise<void>,
   ): Promise<SceneTranslationEntry[]> {
-    const bRollVideos = (project.bRollVideoTasks as any[]) || [];
     return this.translateAlternateScenes(
       project,
       userId,
+      projectId,
+      variantId,
       scenes.length ? scenes : audioFiles.map((af, i) => ({ scene_number: af.sceneNumber || i + 1 })),
       audioFiles,
       language,
@@ -582,10 +696,13 @@ export class VideoTranslationService {
   private async translateHalfNHalf(
     project: any,
     userId: string,
+    projectId: string,
+    variant: VideoTranslationVariant,
     language: string,
     workDir: string,
     notify?: (state: string, progress: number, extra?: Record<string, unknown>) => Promise<void>,
   ): Promise<SceneTranslationEntry[]> {
+    const variantId = variant.id;
     const meta = (project.metadata as Record<string, unknown>) || {};
     const avatarCache = meta.avatarVideoCache as Record<string, { localPath?: string }> | undefined;
     const avatarPath =
@@ -597,44 +714,79 @@ export class VideoTranslationService {
       throw new Error('HALF_N_HALF avatar source video not found for translation');
     }
 
-    await notify?.('active', 25, { phase: 'translate_avatar' });
-    const avatarPublic = await this.ensurePublicVideoUrl(avatarPath, userId, `half_avatar_${language}.mp4`);
-    const avatarTranslationId = await this.heygenVideoProvider.createVideoTranslation({
-      videoUrl: avatarPublic,
-      outputLanguage: language,
-      mode: 'precision',
-      translateAudioOnly: false,
-      disableMusicTrack: true,
-      title: `HALF_N_HALF avatar ${language}`,
-    });
-    const avatarResult = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(avatarTranslationId);
-    const translatedAvatarPath = path.join(workDir, `half_avatar_translated.mp4`);
-    await this.heygenVideoProvider.downloadVideo(avatarResult.videoUrl!, translatedAvatarPath);
+    const pollIntervalMs = VideoTranslationService.PARALLEL_POLL_INTERVAL_MS;
 
-    await notify?.('active', 45, { phase: 'translate_broll' });
-    const brollStitched = path.join(workDir, 'half_broll_stitched.mp4');
-    const bRollVideos = (project.bRollVideoTasks as any[]) || [];
-    const brollPaths = bRollVideos
-      .sort((a, b) => a.sceneNumber - b.sceneNumber)
-      .map((v) => this.renderingService.resolveLocalVideoPath(v.localPath, v.localUrl))
-      .filter(Boolean) as string[];
-    if (!brollPaths.length) throw new Error('Missing b-roll videos for HALF_N_HALF translation');
-    await this.renderingService.concatenateSceneClips(brollPaths, brollStitched);
+    await notify?.('active', 20, { phase: 'translate_parallel' });
 
-    const brollPublic = await this.ensurePublicVideoUrl(brollStitched, userId, `half_broll_${language}.mp4`);
-    const brollTranslationId = await this.heygenVideoProvider.createVideoTranslation({
-      videoUrl: brollPublic,
-      outputLanguage: language,
-      mode: 'speed',
-      translateAudioOnly: true,
-      disableMusicTrack: true,
-      title: `HALF_N_HALF broll ${language}`,
-    });
-    const brollResult = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(brollTranslationId);
-    const translatedBrollPath = path.join(workDir, `half_broll_translated.mp4`);
-    await this.heygenVideoProvider.downloadVideo(brollResult.videoUrl!, translatedBrollPath);
+    const translateAvatar = async (): Promise<string> => {
+      const avatarPublic = await this.ensurePublicVideoUrl(
+        avatarPath,
+        userId,
+        projectId,
+        variantId,
+        'half_avatar.mp4',
+      );
+      const avatarTranslationId = await this.heygenVideoProvider.createVideoTranslation({
+        videoUrl: avatarPublic,
+        outputLanguage: language,
+        mode: 'precision',
+        translateAudioOnly: false,
+        disableMusicTrack: true,
+        title: `HALF_N_HALF avatar ${language} - ${projectId}`,
+      });
+      const avatarResult = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(
+        avatarTranslationId,
+        120,
+        pollIntervalMs,
+      );
+      const translatedAvatarPath = path.join(workDir, 'half_avatar_translated.mp4');
+      await this.heygenVideoProvider.downloadVideo(avatarResult.videoUrl!, translatedAvatarPath);
+      return translatedAvatarPath;
+    };
 
-    const compositedPath = path.join(workDir, `half_composited_${language}.mp4`);
+    const translateBroll = async (): Promise<string> => {
+      const brollStitched = path.join(workDir, 'half_broll_stitched.mp4');
+      const bRollVideos = (project.bRollVideoTasks as any[]) || [];
+      const brollPaths = bRollVideos
+        .sort((a, b) => a.sceneNumber - b.sceneNumber)
+        .map((v) => this.renderingService.resolveLocalVideoPath(v.localPath, v.localUrl))
+        .filter(Boolean) as string[];
+      if (!brollPaths.length) throw new Error('Missing b-roll videos for HALF_N_HALF translation');
+      await this.renderingService.concatenateSceneClips(brollPaths, brollStitched);
+
+      const brollPublic = await this.ensurePublicVideoUrl(
+        brollStitched,
+        userId,
+        projectId,
+        variantId,
+        'half_broll.mp4',
+      );
+      const brollTranslationId = await this.heygenVideoProvider.createVideoTranslation({
+        videoUrl: brollPublic,
+        outputLanguage: language,
+        mode: 'speed',
+        translateAudioOnly: true,
+        disableMusicTrack: true,
+        title: `HALF_N_HALF broll ${language} - ${projectId}`,
+      });
+      const brollResult = await this.heygenVideoProvider.pollVideoTranslationUntilComplete(
+        brollTranslationId,
+        120,
+        pollIntervalMs,
+      );
+      const translatedBrollPath = path.join(workDir, 'half_broll_translated.mp4');
+      await this.heygenVideoProvider.downloadVideo(brollResult.videoUrl!, translatedBrollPath);
+      return translatedBrollPath;
+    };
+
+    const [translatedAvatarPath, translatedBrollPath] = await Promise.all([
+      translateAvatar(),
+      translateBroll(),
+    ]);
+
+    await notify?.('active', 55, { phase: 'composite_half' });
+
+    const compositedPath = path.join(workDir, `half_composited_${variantId}.mp4`);
     await this.renderingService.getVideoCompositor().compositeHalfAndHalf(
       translatedBrollPath,
       translatedAvatarPath,
@@ -647,7 +799,6 @@ export class VideoTranslationService {
       {
         sceneNumber: 1,
         role: 'avatar',
-        heygenTranslationId: avatarTranslationId,
         translatedClipLocalPath: compositedPath,
         status: 'completed',
       },
@@ -785,10 +936,17 @@ export class VideoTranslationService {
     throw new Error('Cannot resolve source video for translation');
   }
 
-  private async ensurePublicVideoUrl(localPath: string, userId: string, filename: string): Promise<string> {
+  private async ensurePublicVideoUrl(
+    localPath: string,
+    userId: string,
+    projectId: string,
+    variantId: string,
+    filename: string,
+  ): Promise<string> {
+    const gcsFolder = `videos/${userId}/translation-sources/${projectId}/${variantId}`;
     const result = await this.renderingService.getPublicUrlService().uploadFromPath(
       localPath,
-      `videos/${userId}/translation-sources`,
+      gcsFolder,
       filename,
       'video/mp4',
     );
@@ -796,6 +954,9 @@ export class VideoTranslationService {
     if (!url || url.includes('localhost')) {
       throw new Error('Could not publish video for HeyGen translation — configure GCS public URLs');
     }
+    console.log(
+      `[VideoTranslationService] Published translation source project=${projectId} variant=${variantId} file=${filename}`,
+    );
     return url;
   }
 
@@ -885,15 +1046,36 @@ export class VideoTranslationService {
   }
 
   private async persistVariant(projectId: string, variant: VideoTranslationVariant): Promise<void> {
+    const maxRetries = 8;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const project = await this.databaseService.videoProject.findFirst({ where: { id: projectId } });
+      if (!project) return;
+
+      const expectedUpdatedAt = project.updatedAt;
+      const merged = upsertVideoTranslationVariant(
+        parseVideoTranslations((project as any).videoTranslations),
+        variant,
+      );
+
+      const result = await this.databaseService.videoProject.updateMany({
+        where: { id: projectId, updatedAt: expectedUpdatedAt },
+        data: { videoTranslations: merged as any },
+      });
+
+      if (result.count === 1) return;
+
+      await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
+    }
+
     const project = await this.databaseService.videoProject.findFirst({ where: { id: projectId } });
     if (!project) return;
-    const variants = upsertVideoTranslationVariant(
+    const merged = upsertVideoTranslationVariant(
       parseVideoTranslations((project as any).videoTranslations),
       variant,
     );
     await this.databaseService.videoProject.update({
       where: { id: projectId },
-      data: { videoTranslations: variants as any },
+      data: { videoTranslations: merged as any },
     });
   }
 
