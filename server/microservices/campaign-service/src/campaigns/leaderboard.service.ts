@@ -9,9 +9,10 @@ import {
   groupAllocationByTier,
   normalizeStoredPool,
 } from './prize-pool';
+import { formatDisqualifiedReason } from './utils/disqualified-reason.util';
 
 export interface LeaderboardEntry {
-  rank: number;
+  rank: number | null;
   creatorId: string;
   postSubmissionId?: string;
   postUrl?: string;
@@ -19,6 +20,8 @@ export interface LeaderboardEntry {
   views: number;
   hasVerifiedPost: boolean;
   qualifies: boolean;
+  disqualified?: boolean;
+  disqualifiedReason?: string;
   projectedPayoutPaise: bigint;
   projectedPayoutRupees: number;
   percentageBps: number;
@@ -36,6 +39,7 @@ export interface LiveLeaderboard {
   qualifiersCount: number;
   approvedCount: number;
   approvedWithVerifiedPostCount: number;
+  disqualifiedCount?: number;
   entries: LeaderboardEntry[];
   caveat: string;
   finalizationStatus: FinalizationStatus | null;
@@ -86,7 +90,8 @@ export class LeaderboardService {
    *   bottom (sorted after creators with verified posts) and shown as "no post yet".
    * - Includes posts that are PENDING_REVIEW or VERIFIED, but only VERIFIED posts qualify
    *   for projected earnings while live.
-   * - Sorting: VERIFIED posts by views desc, then earlier reviewedAt; then PENDING; then no-post.
+   * - Sorting: VERIFIED posts by views desc, then earlier reviewedAt; then PENDING; then no-post;
+   *   disqualified creators last (no rank, visible with DQ reason).
    *
    * The pool used for live projections is the campaign's totalBudget (paise).
    */
@@ -114,8 +119,20 @@ export class LeaderboardService {
     ]);
 
     const verifiedPostByCreator = new Map<string, CampaignPostSubmission>();
+    const disqualifiedPostByCreator = new Map<string, CampaignPostSubmission>();
     for (const post of postSubmissions) {
-      if (post.disqualifiedAt) continue;
+      if (post.disqualifiedAt) {
+        const existing = disqualifiedPostByCreator.get(post.creatorId);
+        if (
+          !existing ||
+          post.disqualifiedAt.getTime() > existing.disqualifiedAt!.getTime() ||
+          (post.disqualifiedAt.getTime() === existing.disqualifiedAt!.getTime() &&
+            post.currentViews > existing.currentViews)
+        ) {
+          disqualifiedPostByCreator.set(post.creatorId, post);
+        }
+        continue;
+      }
       if (post.status === 'VERIFIED') {
         // Keep latest verified post per creator (highest view count).
         const existing = verifiedPostByCreator.get(post.creatorId);
@@ -143,6 +160,7 @@ export class LeaderboardService {
       creatorId: string;
       verified?: CampaignPostSubmission;
       pending?: CampaignPostSubmission;
+      disqualified?: CampaignPostSubmission;
       reviewedAt?: Date | null;
     };
     const rowsMap = new Map<string, Row>();
@@ -159,13 +177,28 @@ export class LeaderboardService {
       r.pending = post;
       rowsMap.set(creatorId, r);
     }
+    for (const [creatorId, post] of disqualifiedPostByCreator) {
+      const r = rowsMap.get(creatorId);
+      if (!r) continue;
+      if (!r.verified && !r.pending) {
+        r.disqualified = post;
+        rowsMap.set(creatorId, r);
+      }
+    }
 
     const rows = Array.from(rowsMap.values());
 
-    // Sort: verified posts by views desc, earlier verifiedAt next; pending after; no-post last.
+    const rowSortTier = (row: Row): number => {
+      if (row.disqualified) return 4;
+      if (row.verified) return 0;
+      if (row.pending) return 2;
+      return 3;
+    };
+
+    // Sort: verified by views; pending; no-post; disqualified last.
     rows.sort((a, b) => {
-      const aTier = a.verified ? 0 : a.pending ? 1 : 2;
-      const bTier = b.verified ? 0 : b.pending ? 1 : 2;
+      const aTier = rowSortTier(a);
+      const bTier = rowSortTier(b);
       if (aTier !== bTier) return aTier - bTier;
       if (aTier === 0 && a.verified && b.verified) {
         if (a.verified.currentViews !== b.verified.currentViews) {
@@ -175,15 +208,23 @@ export class LeaderboardService {
         const bReviewed = b.verified.reviewedAt?.getTime() ?? b.verified.createdAt.getTime();
         if (aReviewed !== bReviewed) return aReviewed - bReviewed;
       }
-      if (aTier === 1 && a.pending && b.pending) {
+      if (aTier === 2 && a.pending && b.pending) {
         const aT = a.pending.createdAt.getTime();
         const bT = b.pending.createdAt.getTime();
         if (aT !== bT) return aT - bT;
       }
-      if (aTier === 2) {
+      if (aTier === 3) {
         const aT = a.reviewedAt?.getTime() ?? 0;
         const bT = b.reviewedAt?.getTime() ?? 0;
         if (aT !== bT) return aT - bT;
+      }
+      if (aTier === 4 && a.disqualified && b.disqualified) {
+        const aT = a.disqualified.disqualifiedAt?.getTime() ?? 0;
+        const bT = b.disqualified.disqualifiedAt?.getTime() ?? 0;
+        if (aT !== bT) return bT - aT;
+        if (a.disqualified.currentViews !== b.disqualified.currentViews) {
+          return b.disqualified.currentViews - a.disqualified.currentViews;
+        }
       }
       return a.creatorId.localeCompare(b.creatorId);
     });
@@ -195,8 +236,33 @@ export class LeaderboardService {
 
     const entries: LeaderboardEntry[] = [];
     let qualifyingRank = 0;
+    let disqualifiedCount = 0;
     for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i];
+
+      if (row.disqualified) {
+        const post = row.disqualified;
+        disqualifiedCount += 1;
+        const reason = formatDisqualifiedReason(post.disqualifiedReason);
+        entries.push({
+          rank: null,
+          creatorId: row.creatorId,
+          postSubmissionId: post.id,
+          postUrl: post.postUrl,
+          platform: post.platform,
+          views: post.currentViews,
+          hasVerifiedPost: post.status === 'VERIFIED',
+          qualifies: false,
+          disqualified: true,
+          disqualifiedReason: reason,
+          projectedPayoutPaise: 0n,
+          projectedPayoutRupees: 0,
+          percentageBps: 0,
+          caveat: reason,
+        });
+        continue;
+      }
+
       const post = row.verified || row.pending;
       const isQualifying = !!(row.verified && row.verified.currentViews >= campaign.minViewsToQualify);
       const rank = isQualifying ? ++qualifyingRank : i + 1;
@@ -242,6 +308,7 @@ export class LeaderboardService {
       approvedCount: approvedSet.size,
       approvedWithVerifiedPostCount: verifiedPostByCreator.size,
       entries,
+      disqualifiedCount,
       caveat:
         'Live leaderboard. Final ranks and payouts are computed after the campaign ends ' +
         `(plus ${campaign.gracePeriodHours}h grace period). Creators without a verified post ` +

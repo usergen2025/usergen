@@ -30,6 +30,7 @@ import { CampaignNotificationService } from './campaign-notification.service';
 import { CampaignFinalizationService } from './campaign-finalization.service';
 import { endOfIstDay, isAfterCampaignEndDay, isOnOrBeforeDeadlineDay, isOnOrAfterCampaignStartDay, isStartAtLeastOneDayAfterDeadline, startOfIstDay } from './utils/date-compare.util';
 import { resolvePrizePoolConfig } from './prize-pool';
+import { formatDisqualifiedReason } from './utils/disqualified-reason.util';
 import { Prisma } from '@prisma/client';
 
 export type CampaignStatus = 'LIVE' | 'IN_PROGRESS' | 'COMPLETED' | 'PAUSED' | 'DRAFT';
@@ -116,6 +117,9 @@ export interface CampaignPostSubmissionView {
   postUrl: string;
   platform: 'INSTAGRAM' | 'YOUTUBE';
   status: 'PENDING_REVIEW' | 'VERIFIED' | 'REJECTED';
+  currentViews?: number;
+  disqualifiedAt?: string;
+  disqualifiedReason?: string;
   reviewedBy?: string;
   reviewedAt?: string;
   reviewComment?: string;
@@ -2191,6 +2195,11 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
       postUrl: row.postUrl,
       platform: row.platform,
       status: row.status,
+      currentViews: row.currentViews ?? 0,
+      disqualifiedAt: row.disqualifiedAt ? row.disqualifiedAt.toISOString() : undefined,
+      disqualifiedReason: row.disqualifiedReason
+        ? formatDisqualifiedReason(row.disqualifiedReason)
+        : undefined,
       reviewedBy: row.reviewedBy || undefined,
       reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : undefined,
       reviewComment: row.reviewComment || undefined,

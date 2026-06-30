@@ -85,10 +85,11 @@ describe('PostScraperService', () => {
         return defaultValue;
       }),
     };
+    const postValidation = new PostValidationService(configService as any);
     const service = new PostScraperService(
       databaseService as any,
       apifyClient as any,
-      new PostValidationService(),
+      postValidation,
       campaignsService as any,
       notificationService as any,
       configService as any,

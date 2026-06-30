@@ -15,12 +15,14 @@ import {
 } from '@/lib/campaigns/prize-pool';
 
 export interface TierLeaderboardEntry {
-  rank: number;
+  rank: number | null;
   creatorId: string;
   views?: number;
   projectedPayoutPaise?: string | bigint;
   projectedPayoutRupees?: number;
   qualifies?: boolean;
+  disqualified?: boolean;
+  disqualifiedReason?: string;
   caveat?: string;
 }
 
@@ -70,8 +72,12 @@ export function TierLeaderboard({
 
   const isPreviewMode = !entries?.length && tierGroups.length > 0;
 
-  const qualifyingEntries = useMemo(() => {
-    return (entries || []).filter((e) => e.qualifies !== false);
+  const { rankedEntries, disqualifiedEntries } = useMemo(() => {
+    const list = entries || [];
+    return {
+      rankedEntries: list.filter((e) => e.qualifies && !e.disqualified),
+      disqualifiedEntries: list.filter((e) => e.disqualified),
+    };
   }, [entries]);
 
   if (isPreviewMode) {
@@ -135,7 +141,7 @@ export function TierLeaderboard({
     );
   }
 
-  if (!qualifyingEntries.length) {
+  if (!rankedEntries.length && !disqualifiedEntries.length) {
     return (
       <p className="rounded-lg bg-[#FFFCF7] p-3 text-xs text-text-secondary">
         No qualifying creators yet. Leaderboard will appear once creators have verified posts.
@@ -145,7 +151,7 @@ export function TierLeaderboard({
 
   return (
     <div className={cn('space-y-1.5', className)}>
-      {qualifyingEntries.map((entry) => {
+      {rankedEntries.map((entry) => {
         const isTop1 = entry.rank === 1;
         const isHighlighted = entry.creatorId === highlightCreatorId;
         const payout = entry.projectedPayoutRupees ?? paiseToRupees(entry.projectedPayoutPaise ?? 0);
@@ -172,28 +178,33 @@ export function TierLeaderboard({
                   #{entry.rank}
                 </span>
               )}
-              
+
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className={cn(
-                  'truncate text-[#212121]',
-                  isTop1 ? 'font-semibold' : 'font-medium',
-                )}>
-                  {isTop1 && '#1 · '}{entry.creatorId.slice(-8)}
+                <span
+                  className={cn(
+                    'truncate text-[#212121]',
+                    isTop1 ? 'font-semibold' : 'font-medium',
+                  )}
+                >
+                  {isTop1 && '#1 · '}
+                  {entry.creatorId.slice(-8)}
                 </span>
                 <span className="text-xs text-text-secondary">
                   {entry.views !== undefined ? `${entry.views.toLocaleString('en-IN')} views` : ''}
                 </span>
               </div>
-              
-              <span className={cn(
-                'shrink-0 font-medium text-[#212121]',
-                isTop1 && 'text-base',
-              )}>
+
+              <span
+                className={cn(
+                  'shrink-0 font-medium text-[#212121]',
+                  isTop1 && 'text-base',
+                )}
+              >
                 ₹{rupeesIN(payout)}
               </span>
             </div>
-            
-            {isHighlighted && (
+
+            {isHighlighted && entry.rank != null && (
               <div className="border-t border-[#F5D4BC] bg-[#FFF8F3] px-3 py-1.5 text-xs text-[#B85C1B]">
                 You&apos;re rank {entry.rank} · projected ₹{rupeesIN(payout)}
               </div>
@@ -201,6 +212,45 @@ export function TierLeaderboard({
           </div>
         );
       })}
+
+      {disqualifiedEntries.length > 0 ? (
+        <div className="mt-3 space-y-1.5 border-t border-[#E8E2DB] pt-3">
+          <p className="px-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+            Disqualified ({disqualifiedEntries.length})
+          </p>
+          {disqualifiedEntries.map((entry) => (
+            <div
+              key={`dq-${entry.creatorId}`}
+              className="overflow-hidden rounded-xl border border-red-200/80 bg-red-50/40"
+            >
+              <div className="flex items-center gap-3 px-3 py-2.5">
+                <span
+                  className="flex h-5 min-w-[1.75rem] shrink-0 items-center justify-center rounded-md bg-red-100 px-1 text-[10px] font-bold uppercase tracking-wide text-red-700"
+                  title="Disqualified"
+                >
+                  DQ
+                </span>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-medium text-[#212121]">
+                      {entry.creatorId.slice(-8)}
+                    </span>
+                    <span className="text-xs text-text-secondary">
+                      {entry.views !== undefined ? `${entry.views.toLocaleString('en-IN')} views` : ''}
+                    </span>
+                  </div>
+                  {entry.disqualifiedReason || entry.caveat ? (
+                    <p className="text-[11px] leading-snug text-red-800/90">
+                      {entry.disqualifiedReason || entry.caveat}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="shrink-0 text-sm font-medium text-text-secondary">—</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

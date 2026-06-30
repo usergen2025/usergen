@@ -96,6 +96,9 @@ interface PostSubmission {
   postUrl: string;
   platform: 'INSTAGRAM' | 'YOUTUBE';
   status: 'PENDING_REVIEW' | 'VERIFIED' | 'REJECTED';
+  currentViews?: number;
+  disqualifiedAt?: string;
+  disqualifiedReason?: string;
   reviewComment?: string;
   createdAt: string;
 }
@@ -813,10 +816,21 @@ export default function CampaignDetailsPage() {
                     </a>
                     <p className="mt-1 text-xs text-text-secondary">
                       {submission.platform} · {new Date(submission.createdAt).toLocaleString()}
+                      {submission.currentViews != null && submission.currentViews > 0
+                        ? ` · ${submission.currentViews.toLocaleString('en-IN')} views`
+                        : ''}
                     </p>
                     <p className="mt-1 text-xs">
-                      Status: <span className="font-medium">{submission.status}</span>
+                      Status:{' '}
+                      {submission.disqualifiedAt ? (
+                        <span className="font-medium text-red-700">Disqualified (DQ)</span>
+                      ) : (
+                        <span className="font-medium">{submission.status}</span>
+                      )}
                     </p>
+                    {submission.disqualifiedAt && submission.disqualifiedReason ? (
+                      <p className="mt-1 text-[11px] text-red-800/90">{submission.disqualifiedReason}</p>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {submission.status === 'PENDING_REVIEW' ? (
@@ -855,7 +869,7 @@ export default function CampaignDetailsPage() {
                     ) : null}
                   </div>
                 </div>
-                {submission.status === 'VERIFIED' ? (
+                {submission.status === 'VERIFIED' && !submission.disqualifiedAt ? (
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     {/* Manual views update UI - commented out since Apify scraper handles this automatically
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -904,6 +918,7 @@ export default function CampaignDetailsPage() {
                           try {
                             await apiClient.disqualifyPostSubmission(submission.id, { reason: reason.trim() });
                             await loadPostSubmissions();
+                            setLeaderboardRefreshKey((k) => k + 1);
                             showToast('Post disqualified from prize pool', 'success');
                           } catch (error: unknown) {
                             showToast(getErrorMessage(error, 'Failed to disqualify post'), 'error');

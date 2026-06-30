@@ -18,8 +18,9 @@ interface LeaderboardData {
   qualifiersCount: number;
   approvedCount: number;
   approvedWithVerifiedPostCount: number;
+  disqualifiedCount?: number;
   entries: Array<{
-    rank: number;
+    rank: number | null;
     creatorId: string;
     postSubmissionId?: string;
     postUrl?: string;
@@ -27,6 +28,8 @@ interface LeaderboardData {
     views: number;
     hasVerifiedPost: boolean;
     qualifies: boolean;
+    disqualified?: boolean;
+    disqualifiedReason?: string;
     projectedPayoutPaise: string;
     projectedPayoutRupees: number;
     percentageBps: number;
@@ -277,6 +280,8 @@ export function LeaderboardCard({
     projectedPayoutPaise: e.projectedPayoutPaise,
     projectedPayoutRupees: e.projectedPayoutRupees,
     qualifies: e.qualifies,
+    disqualified: e.disqualified,
+    disqualifiedReason: e.disqualifiedReason,
     caveat: e.caveat,
   }));
 
@@ -372,6 +377,9 @@ export function LeaderboardCard({
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-text-secondary">
           <span>
             Pool ₹{rupeesIN(data.totalPoolRupees)} · {data.qualifiersCount} qualifying / {data.approvedCount} approved
+            {(data.disqualifiedCount ?? 0) > 0
+              ? ` · ${data.disqualifiedCount} disqualified`
+              : ''}
             {data.gracePeriodHours ? ` · ends ${new Date(data.endDate).toLocaleDateString('en-IN')} (+${data.gracePeriodHours}h grace)` : ''}
           </span>
           {showRefreshButton && (
