@@ -35,6 +35,7 @@ function VoicePageContent() {
   const [selectedOption, setSelectedOption] = useState<'clone' | 'library' | null>(null);
   const [selectedVoice, setSelectedVoice] = useState<ElevenLabsVoice | null>(null);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
+  const [voiceSearchQuery, setVoiceSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
@@ -977,18 +978,43 @@ function VoicePageContent() {
 
               {selectedOption === 'library' && (
                 <div className="mt-6">
+                  <div className="mb-4">
+                    <input
+                      type="search"
+                      value={voiceSearchQuery}
+                      onChange={(e) => setVoiceSearchQuery(e.target.value)}
+                      placeholder="Search voices..."
+                      aria-label="Search voices"
+                      className="brand-field-capsule w-full"
+                    />
+                  </div>
                   {loading ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="w-6 h-6 animate-spin text-primary" />
                       <span className="ml-3 text-text-secondary">Loading voices...</span>
                     </div>
-                  ) : voices.length === 0 ? (
+                  ) : (() => {
+                    const q = voiceSearchQuery.trim().toLowerCase();
+                    const filtered = q
+                      ? voices.filter((voice) => {
+                          const name = String(voice.name || '').toLowerCase();
+                          const labels =
+                            voice.labels && typeof voice.labels === 'object'
+                              ? Object.values(voice.labels).join(' ').toLowerCase()
+                              : '';
+                          return name.includes(q) || labels.includes(q);
+                        })
+                      : voices;
+                    if (filtered.length === 0) {
+                      return (
                     <div className="text-center py-8 text-text-secondary">
-                      <p>No voices found</p>
+                      <p>{q ? 'No voices match your search' : 'No voices found'}</p>
                     </div>
-                  ) : (
+                      );
+                    }
+                    return (
                     <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                      {voices.map((voice) => {
+                      {filtered.map((voice) => {
                         const isSelected = selectedVoice?.voice_id === voice.voice_id;
                         return (
                           <div
@@ -1049,7 +1075,8 @@ function VoicePageContent() {
                         );
                       })}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
             </Card>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, Suspense, type ChangeEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check, Pencil, Loader2 } from 'lucide-react';
+import { ArrowLeft, X, Image as ImageIcon, Sparkles, Mic, Upload, Play, Pause, Check, Pencil, Loader2, Search } from 'lucide-react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { useDownloadFinalVideo } from '@/hooks/useDownloadFinalVideo';
@@ -185,6 +185,9 @@ function AIChatPageContent() {
   const [voiceMode, setVoiceMode] = useState<VoiceMode>(null);
   const [activeVoiceTab, setActiveVoiceTab] = useState<'library' | 'upload' | 'record'>('library');
   const [voices, setVoices] = useState<any[]>([]);
+  const [voiceSearchQuery, setVoiceSearchQuery] = useState('');
+  const [voiceSearchExpanded, setVoiceSearchExpanded] = useState(false);
+  const voiceSearchInputRef = useRef<HTMLInputElement>(null);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [loadingVoices, setLoadingVoices] = useState(false);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
@@ -566,9 +569,14 @@ function AIChatPageContent() {
               
               // If restoring from workspace, navigate directly to workspace page
               if (restoredStep === 'workspace') {
+                const pMeta = (project.metadata || {}) as Record<string, unknown>;
+                const exported = Boolean(pMeta.finalExportedAt);
+                const singleClip = project.style === 'AVATAR_ONLY' || project.style === 'ANIMATED_AVATAR';
+                const rawReady = Boolean(pMeta.rawAvatarClipReady) && !exported;
+                const startMode = rawReady || singleClip ? '&startMode=videos' : '';
                 console.log('[AIChat] Restoring to workspace, navigating to workspace page');
-                router.replace(`/create-video/workspace?projectId=${project.id}`);
-                return; // Don't restore to workspace step in chat
+                router.replace(`/create-video/workspace?projectId=${project.id}${startMode}`);
+                return;
               }
               
               // Check if we're restoring from audio-image-generation step
@@ -2357,6 +2365,27 @@ function AIChatPageContent() {
       setLoadingVoices(false);
     }
   };
+
+  const filteredVoices = (() => {
+    const q = voiceSearchQuery.trim().toLowerCase();
+    if (!q || activeVoiceTab !== 'library') return voices;
+    return voices.filter((voice: any) => {
+      const name = String(voice.name || voice.voice_name || '').toLowerCase();
+      const labels = Array.isArray(voice.labels)
+        ? voice.labels.join(' ').toLowerCase()
+        : typeof voice.labels === 'object' && voice.labels
+          ? Object.values(voice.labels).join(' ').toLowerCase()
+          : '';
+      const category = String(voice.category || '').toLowerCase();
+      const description = String(voice.description || '').toLowerCase();
+      return (
+        name.includes(q) ||
+        labels.includes(q) ||
+        category.includes(q) ||
+        description.includes(q)
+      );
+    });
+  })();
 
   // Handle voice file upload (only sets pending file, doesn't process)
   const handleVoiceFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -4567,7 +4596,7 @@ function AIChatPageContent() {
       setGenerationProgress(30); // Start rendering progress at 30%
       
       // Start rendering
-      const renderResponse = await apiClient.startVideoRendering(pid);
+      const renderResponse = await apiClient.startRawAvatarRendering(pid);
       if (!renderResponse.success) {
         throw new Error(renderResponse.message || 'Failed to start video rendering');
       }
@@ -4611,23 +4640,7 @@ function AIChatPageContent() {
               styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
 
             if (isAvatarOnlyStyle && pid) {
-              if (videoUrl) {
-                try {
-                  await apiClient.updateVideoProject(pid, {
-                    videoUrl,
-                    status: 'COMPLETED',
-                    currentStep: 'COMPLETED',
-                    metadata: {
-                      generationFlow: 'AI_CHAT',
-                      aiChatStep: 'workspace',
-                      workspaceLayout: 'single-avatar',
-                    },
-                  });
-                } catch (err) {
-                  console.error('[AIChat] Failed to update project with video URL:', err);
-                }
-              }
-              router.replace(`/create-video/workspace?projectId=${pid}`);
+              router.replace(`/create-video/workspace?projectId=${pid}&startMode=videos`);
               return;
             }
 
@@ -8056,6 +8069,59 @@ Use a recent photo of yourself.`}
                         </div>
                       </div>
 
+                      {/* Voice library search (capsule style, matches music search in workspace) */}
+                      {activeVoiceTab === 'library' && (
+                        <div className="flex items-center gap-1.5 mb-[clamp(0.5rem,0.78vh,8px)]">
+                          <div
+                            className={`overflow-hidden transition-all duration-200 ease-in-out rounded-full border border-[#E8E2DB] bg-white flex-1 ${
+                              voiceSearchExpanded || voiceSearchQuery.trim()
+                                ? 'opacity-100 px-3 py-1.5'
+                                : 'w-0 opacity-0 px-0 py-0 border-0 flex-none'
+                            }`}
+                          >
+                            <input
+                              ref={voiceSearchInputRef}
+                              value={voiceSearchQuery}
+                              onChange={(e) => setVoiceSearchQuery(e.target.value)}
+                              placeholder="Search voices..."
+                              aria-label="Search voices"
+                              className="w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[clamp(0.75rem,1.37vh,14px)] text-[#212121] placeholder:text-[#9E9E9E]"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setVoiceSearchQuery('');
+                                  setVoiceSearchExpanded(false);
+                                }
+                              }}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setVoiceSearchExpanded((prev) => !prev);
+                              if (!voiceSearchExpanded) {
+                                requestAnimationFrame(() => voiceSearchInputRef.current?.focus());
+                              }
+                            }}
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60 transition-colors"
+                            aria-label={voiceSearchExpanded ? 'Collapse voice search' : 'Search voices'}
+                          >
+                            <Search className="h-4 w-4 text-[#E86512]" />
+                          </button>
+                          {voiceSearchQuery.trim() && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setVoiceSearchQuery('');
+                                setVoiceSearchExpanded(false);
+                              }}
+                              className="text-xs text-[#E86512] hover:underline shrink-0 font-heading"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       {/* Voice List - Constrained height with internal scrolling (fixed height across tabs) */}
                       <div className="max-h-[clamp(12.25rem,25.39vh,392px)] min-h-[clamp(12.25rem,25.39vh,392px)] overflow-y-auto">
                         {loadingVoices ? (
@@ -8190,7 +8256,7 @@ Read everything on screen smoothly.`}
                                 </div>
                               </div>
                           </div>
-                        ) : voices.length === 0 ? (
+                        ) : filteredVoices.length === 0 ? (
                           <div 
                             key={`empty-${activeVoiceTab}`}
                             className="flex flex-col items-center justify-center py-[clamp(6.125rem,12.7vh,196px)]"
@@ -8199,7 +8265,9 @@ Read everything on screen smoothly.`}
                             }}
                           >
                             <p className="font-heading text-[clamp(0.875rem,1.56vh,16px)] font-normal text-[#616161]">
-                              No voices available in library
+                              {voiceSearchQuery.trim()
+                                ? 'No voices match your search'
+                                : 'No voices available in library'}
                             </p>
                           </div>
                         ) : (
@@ -8210,7 +8278,7 @@ Read everything on screen smoothly.`}
                               animation: 'fadeIn 0.3s ease-in-out'
                             }}
                           >
-                            {voices.map((voice: any) => {
+                            {filteredVoices.map((voice: any) => {
                               const isSelected = selectedVoiceId === voice.voice_id;
                               const gender = voice.labels?.gender || '';
                               const accent = voice.labels?.accent || '';

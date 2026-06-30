@@ -768,6 +768,24 @@ class ApiClient {
     return response.data;
   }
 
+  async startRawAvatarRendering(projectId: string): Promise<ApiResponse<any>> {
+    const videoServiceUrl = VIDEO_SERVICE_URL;
+    const token = this.getToken();
+
+    const response = await axios.post<ApiResponse<any>>(
+      `${videoServiceUrl}/video-projects/${projectId}/start-raw-avatar-rendering`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return response.data;
+  }
+
   async postProcessVideoExport(projectId: string): Promise<ApiResponse<any>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();

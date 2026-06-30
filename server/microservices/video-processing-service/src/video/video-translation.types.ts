@@ -36,6 +36,9 @@ export interface VideoTranslationVariant {
   error?: string;
   createdAt: string;
   completedAt?: string;
+  /** Set when wallet credits were deducted for this variant. */
+  creditsCharged?: boolean;
+  creditSnapshotId?: string;
 }
 
 export function parseVideoTranslations(raw: unknown): VideoTranslationVariant[] {

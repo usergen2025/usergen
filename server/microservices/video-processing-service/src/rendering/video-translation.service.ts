@@ -111,8 +111,10 @@ export class VideoTranslationService {
     }
 
     const project = await this.getProjectOrThrow(projectId, userId);
-    if (project.status !== 'COMPLETED' || !project.videoUrl) {
-      throw new BadRequestException('Original video must be completed before translating');
+    if (!this.isOriginalVideoEligibleForTranslation(project)) {
+      throw new BadRequestException(
+        'Export your final video before translating. Avatar-only projects must complete the export step first.',
+      );
     }
 
     await this.assertNonHumanAvatarAllowed(project, authToken);
@@ -160,6 +162,13 @@ export class VideoTranslationService {
 
     for (const language of toCreate) {
       const variantId = crypto.randomUUID();
+      const { snapshotId } = await this.chargeTranslationCreditsForVariant(
+        projectId,
+        userId,
+        variantId,
+        language,
+      );
+
       const variant: VideoTranslationVariant = {
         id: variantId,
         language,
@@ -167,6 +176,8 @@ export class VideoTranslationService {
         progress: 0,
         createdAt: new Date().toISOString(),
         sceneTranslations: [],
+        creditsCharged: true,
+        creditSnapshotId: snapshotId,
       };
       variants = upsertVideoTranslationVariant(variants, variant);
 
@@ -186,6 +197,13 @@ export class VideoTranslationService {
 
     for (const failed of toRetry) {
       const variantId = failed.id;
+      const { snapshotId } = await this.chargeTranslationCreditsForVariant(
+        projectId,
+        userId,
+        variantId,
+        failed.language,
+      );
+
       const jobId = await this.queueManager.addVideoTranslationJob({
         projectId,
         userId,
@@ -201,6 +219,8 @@ export class VideoTranslationService {
         status: 'translating_scenes',
         progress: 0,
         error: undefined,
+        creditsCharged: true,
+        creditSnapshotId: snapshotId,
       };
       variants = upsertVideoTranslationVariant(variants, variant);
       jobs.push({ variantId, jobId, language: failed.language });
@@ -210,8 +230,6 @@ export class VideoTranslationService {
       where: { id: projectId },
       data: { videoTranslations: variants as any },
     });
-
-    await this.chargeTranslationCredits(projectId, userId, chargeCount);
 
     return { variants, jobs };
   }
@@ -413,7 +431,17 @@ export class VideoTranslationService {
       };
       await this.persistVariant(projectId, variant);
       await notify('failed', variant.progress || 0, { error: variant.error });
-      await this.refundTranslationCredits(projectId, userId, 1, variantId);
+      if (variant.creditsCharged && variant.creditSnapshotId) {
+        await this.refundTranslationCreditsForVariant(
+          projectId,
+          userId,
+          variantId,
+          variant.creditSnapshotId,
+          variant.language,
+        );
+        variant = { ...variant, creditsCharged: false, creditSnapshotId: undefined };
+        await this.persistVariant(projectId, variant);
+      }
       throw error;
     }
   }
@@ -1087,6 +1115,20 @@ export class VideoTranslationService {
     return project;
   }
 
+  private isOriginalVideoEligibleForTranslation(project: any): boolean {
+    if (!project.videoUrl) return false;
+    const style = String(project.style || '');
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    const isSingleClip = style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR';
+    if (isSingleClip) {
+      return project.status === 'COMPLETED' && Boolean(meta.finalExportedAt);
+    }
+    return project.status === 'COMPLETED';
+  }
+
   private async assertNonHumanAvatarAllowed(project: any, authToken?: string): Promise<void> {
     if (!project.avatarId) return;
     const stylesWithAvatar = ['ALTERNATE', 'AVATAR_ONLY', 'HALF_N_HALF', 'AVATAR_CUTOUT', 'AVATAR_PRODUCT', 'ANIMATED_AVATAR'];
@@ -1142,52 +1184,69 @@ export class VideoTranslationService {
     }
   }
 
-  private async chargeTranslationCredits(projectId: string, userId: string, languageCount: number): Promise<void> {
-    try {
-      for (let i = 0; i < languageCount; i++) {
-        await axios.post(
-          `${this.paymentServiceBase()}/api/credits/record-and-deduct`,
-          {
-            projectId,
-            userId,
-            operationType: 'VIDEO_TRANSLATION',
-            operationName: 'Video translation',
-            metadata: { languageIndex: i + 1, languageCount },
-          },
-          { timeout: 15000 },
-        );
-      }
-    } catch (err: any) {
-      console.warn('[VideoTranslationService] chargeTranslationCredits:', err?.message);
-    }
-  }
-
-  private async refundTranslationCredits(
+  private async chargeTranslationCreditsForVariant(
     projectId: string,
     userId: string,
-    languageCount: number,
     variantId: string,
+    language: string,
+  ): Promise<{ snapshotId: string }> {
+    const res = await axios.post(
+      `${this.paymentServiceBase()}/api/credits/record-and-deduct`,
+      {
+        projectId,
+        userId,
+        operationType: 'VIDEO_TRANSLATION',
+        operationName: `Video translation (${language})`,
+        metadata: { variantId, language, projectId },
+      },
+      { timeout: 15000 },
+    );
+    const snapshot = res.data?.data;
+    if (!res.data?.success || !snapshot?.id) {
+      const msg =
+        res.data?.message ||
+        res.data?.error ||
+        'Failed to deduct credits for video translation';
+      throw new HttpException(
+        { code: 'CREDIT_DEDUCTION_FAILED', message: msg },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+    return { snapshotId: snapshot.id as string };
+  }
+
+  private async refundTranslationCreditsForVariant(
+    projectId: string,
+    userId: string,
+    variantId: string,
+    creditSnapshotId: string,
+    language: string,
   ): Promise<void> {
     try {
       const costRes = await axios.get(
         `${this.paymentServiceBase()}/api/pricing/VIDEO_TRANSLATION/cost`,
         { timeout: 10000 },
       );
-      const perLang = costRes.data?.data?.creditCost ?? 50;
-      const amount = perLang * languageCount;
+      const amount = costRes.data?.data?.creditCost ?? 50;
       await axios.post(
         `${this.paymentServiceBase()}/api/transactions/add`,
         {
           userId,
           amount,
           type: 'REFUNDED',
-          description: 'Video translation failed — credit refund',
-          metadata: { projectId, variantId, operationType: 'VIDEO_TRANSLATION' },
+          description: `Video translation (${language}) failed — credit refund`,
+          resourceId: projectId,
+          metadata: {
+            projectId,
+            variantId,
+            creditSnapshotId,
+            operationType: 'VIDEO_TRANSLATION',
+          },
         },
         { timeout: 15000 },
       );
     } catch (err: any) {
-      console.warn('[VideoTranslationService] refundTranslationCredits:', err?.message);
+      console.warn('[VideoTranslationService] refundTranslationCreditsForVariant:', err?.message);
     }
   }
 }

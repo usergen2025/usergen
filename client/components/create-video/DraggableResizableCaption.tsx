@@ -542,16 +542,12 @@ export function DraggableResizableCaption({
     textDecoration: style.textDecoration,
     color: style.textColor,
     backgroundColor:
-      style.backgroundColor === 'transparent'
-        ? disabled
-          ? 'rgba(0, 0, 0, 0.85)'
-          : 'transparent'
-        : style.backgroundColor,
+      style.backgroundColor === 'transparent' ? 'transparent' : style.backgroundColor,
     border:
       style.borderWidth > 0 && style.borderColor !== 'transparent'
         ? `${style.borderWidth}px solid ${style.borderColor}`
         : 'none',
-    ...(style.backgroundColor === 'transparent' && !disabled
+    ...(style.backgroundColor === 'transparent'
       ? { textShadow: '0 1px 2px rgba(0,0,0,0.9), 0 0 1px rgba(0,0,0,0.6)' }
       : {}),
   };

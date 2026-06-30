@@ -283,6 +283,85 @@ export class RenderingService {
   }
 
   /**
+   * Store raw HeyGen avatar clip for single-clip styles (workspace editing before export).
+   */
+  private async publishRawAvatarClip(
+    projectId: string,
+    userId: string,
+    project: any,
+    sourcePath: string,
+    userDir: string,
+    audioFiles: any[],
+    styleLabel: string,
+  ): Promise<void> {
+    const sortedAudioFiles = [...audioFiles].sort(
+      (a, b) => (a.sceneNumber ?? 0) - (b.sceneNumber ?? 0),
+    );
+    const totalDuration = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+    const probed = await this.videoCompositor.getVideoDuration(sourcePath).catch(() => 0);
+    const finalDuration = probed > 0 ? probed : totalDuration;
+
+    const localVideoUrl = `/uploads/videos/${userId}/${path.basename(sourcePath)}`;
+    let publicUrl: string = localVideoUrl;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        sourcePath,
+        `videos/${userId}`,
+        path.basename(sourcePath),
+        'video/mp4',
+      );
+      if (storageResult.publicUrl) {
+        publicUrl = storageResult.publicUrl;
+      }
+    } catch (error: any) {
+      console.warn(
+        `[RenderingService] ${styleLabel}: raw clip GCS upload failed: ${error.message}`,
+      );
+    }
+
+    const freshProject = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId },
+    });
+    const metadata =
+      freshProject?.metadata &&
+      typeof freshProject.metadata === 'object' &&
+      !Array.isArray(freshProject.metadata)
+        ? ({ ...(freshProject.metadata as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+
+    metadata.singleClipStyle = true;
+    metadata.rawAvatarClipReady = true;
+    metadata.rawAvatarClipUrl = publicUrl;
+    delete metadata.finalExportedAt;
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'IN_PROGRESS',
+        renderingStatus: 'completed' as any,
+        renderingProgress: 100 as any,
+        currentStep: 'BROLL_VIDEOS' as any,
+        videoUrl: publicUrl,
+        duration: finalDuration,
+        metadata: metadata as any,
+      } as any,
+    });
+
+    await this.projectLog
+      .logProject(
+        projectId,
+        'INFO',
+        `${styleLabel}: Raw avatar clip ready — add music and captions in workspace, then export.`,
+        { op: 'raw_avatar_clip_ready' },
+      )
+      .catch(() => {});
+
+    console.log(
+      `[RenderingService] ${styleLabel}: Raw avatar clip published for workspace editing: ${publicUrl}`,
+    );
+  }
+
+  /**
    * Brand packaging + GCS upload without mutating project.videoUrl (used for translation variants).
    */
   async finalizeVariant(
@@ -1161,12 +1240,22 @@ export class RenderingService {
       throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
     }
 
-    await this.assertExportAffordable(projectId, userId);
-
     const meta =
       project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
         ? (project.metadata as Record<string, unknown>)
         : {};
+    const style = String(project.style || '');
+    if (
+      (style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR') &&
+      meta.rawAvatarClipReady &&
+      !meta.finalExportedAt &&
+      project.videoUrl
+    ) {
+      return this.postProcessExport(projectId, userId, authToken);
+    }
+
+    await this.assertExportAffordable(projectId, userId);
+
     if (this.brandPackagingService.hasLogoAsset(meta)) {
       const bp = meta.brandPackaging as { status?: string } | undefined;
       if (!bp?.status || bp.status === 'pending') {
@@ -1299,6 +1388,73 @@ export class RenderingService {
       success: true,
       message: 'Video rendering started',
     };
+  }
+
+  /**
+   * Generate raw HeyGen avatar clip only (single-clip styles) — workspace editing before export.
+   */
+  async startRawAvatarRendering(
+    projectId: string,
+    userId: string,
+    authToken?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const project = await this.databaseService.videoProject.findFirst({
+      where: { id: projectId, userId },
+    });
+
+    if (!project) {
+      throw new HttpException('Project not found', HttpStatus.NOT_FOUND);
+    }
+
+    const style = String(project.style || '');
+    if (style !== 'AVATAR_ONLY' && style !== 'ANIMATED_AVATAR') {
+      throw new HttpException(
+        'Raw avatar rendering is only available for avatar-only video styles',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    if (meta.rawAvatarClipReady && project.videoUrl && !meta.finalExportedAt) {
+      return { success: true, message: 'Raw avatar clip already ready' };
+    }
+
+    await this.projectLog
+      .logProject(
+        projectId,
+        'INFO',
+        'Generating raw avatar video for workspace (music and captions can be added before export).',
+        { op: 'raw_avatar_render_start' },
+      )
+      .catch(() => {});
+
+    await this.databaseService.videoProject.update({
+      where: { id: projectId },
+      data: {
+        status: 'IN_PROGRESS',
+        renderingStatus: 'avatar_generating' as any,
+        renderingProgress: 0 as any,
+        startedAt: new Date(),
+      },
+    });
+
+    this.processVideoRendering(projectId, userId, authToken).catch(async (error) => {
+      console.error(`[RenderingService] Raw avatar rendering failed for ${projectId}:`, error);
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: {
+          status: 'FAILED',
+          renderingStatus: 'failed' as any,
+          errorMessage: error.message || 'Avatar video generation failed',
+          errorCode: 'RAW_AVATAR_FAILED',
+        },
+      });
+    });
+
+    return { success: true, message: 'Raw avatar video generation started' };
   }
 
   /**
@@ -3067,7 +3223,7 @@ export class RenderingService {
     const avatarVideoPath = path.join(userDir, `avatar_only_${projectId}_${Date.now()}.mp4`);
     await this.heygenVideoProvider.downloadVideo(completedVideo.data.video_url, avatarVideoPath);
 
-    await this.enhanceAndPublishFinalPath(
+    await this.publishRawAvatarClip(
       projectId,
       userId,
       project,

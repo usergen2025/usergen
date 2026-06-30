@@ -23,7 +23,7 @@ import { DraggableResizableAvatar } from '@/components/create-video/DraggableRes
 import { DraggableResizableCaption } from '@/components/create-video/DraggableResizableCaption';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
 import { GradientTabBar } from '@/components/ui/GradientTabBar';
-import { isSingleClipVideoStyle } from '@/lib/workspace/singleClipStyle';
+import { isSingleClipVideoStyle, isRawAvatarClipEditingPhase, isProjectActivelyRendering, isVideoTranslationEligible } from '@/lib/workspace/singleClipStyle';
 import { longestWord } from '@/lib/workspace/captionBounds';
 import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
 import { VideoTranslationsPanel } from '@/components/create-video/VideoTranslationsPanel';
@@ -696,6 +696,24 @@ function WorkspacePageContent() {
 
           setProject(projectData);
 
+          const projectMeta = (projectData.metadata || {}) as Record<string, unknown>;
+          const isFinalExportDone = Boolean(projectMeta.finalExportedAt);
+          const singleClipStyle = isSingleClipVideoStyle(projectData.style);
+          const rawClipEditing = isRawAvatarClipEditingPhase(projectData);
+
+          if (rawClipEditing) {
+            const rawUrl =
+              (typeof projectMeta.rawAvatarClipUrl === 'string'
+                ? projectMeta.rawAvatarClipUrl
+                : projectData.videoUrl) || projectData.videoUrl;
+            setFinalVideoUrl(
+              rawUrl.startsWith('http')
+                ? rawUrl
+                : `${VIDEO_SERVICE_BASE_URL}${rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`}`,
+            );
+            setWorkspaceMode('videos');
+          }
+
           const brandPackagingStatus = (projectData.metadata as Record<string, unknown> | undefined)
             ?.brandPackaging as { status?: string } | undefined;
           if (brandPackagingStatus?.status === 'failed') {
@@ -840,16 +858,20 @@ function WorkspacePageContent() {
             // Check startMode query param (from ai-chat navigation)
             const startModeParam = searchParams?.get('startMode');
             
-            if (startModeParam === 'videos' && videos.length > 0) {
-              // Explicitly requested videos mode and we have videos
+            if (!isFinalExportDone && startModeParam === 'videos' && (videos.length > 0 || singleClipStyle)) {
               setWorkspaceMode('videos');
-            } else if (startModeParam === 'images') {
+            } else if (!isFinalExportDone && startModeParam === 'images') {
               // Explicitly requested images mode (mixed content case)
               setWorkspaceMode('images');
-            } else if (videos.length > 0) {
+            } else if (!isFinalExportDone && videos.length > 0) {
               // Default: if videos exist, set to videos mode
               setWorkspaceMode('videos');
             }
+          }
+
+          // Single-clip: ensure videos editing mode when raw clip exists (no b-roll rows)
+          if (rawClipEditing) {
+            setWorkspaceMode('videos');
           }
 
           // Load avatar videos (for ALTERNATE style avatar scenes)
@@ -869,8 +891,8 @@ function WorkspacePageContent() {
             // (marked by metadata.finalExportedAt); otherwise stay on the
             // videos editing page.
             const singleClipNotExported =
-              isSingleClipVideoStyle(projectData.style) &&
-              !(projectData.metadata as any)?.finalExportedAt;
+              isRawAvatarClipEditingPhase(projectData) ||
+              (isSingleClipVideoStyle(projectData.style) && !isFinalExportDone);
             if (singleClipNotExported) {
               setWorkspaceMode('videos');
             } else {
@@ -878,13 +900,16 @@ function WorkspacePageContent() {
             }
             setRenderingProgress(100);
             setRenderingStage('completed');
-          } else if (projectData.status === 'IN_PROGRESS' && projectData.renderingStatus) {
-            // Project is currently rendering - resume polling
+          } else if (isProjectActivelyRendering(projectData)) {
+            // Active final render in progress — resume polling UI
             setWorkspaceMode('rendering');
             setRenderingProgress(projectData.renderingProgress || 0);
-            setRenderingStage(projectData.renderingStatus);
-            // Start polling from here - but we need to use the function after it's defined
-            // So we'll set a flag and handle it in a useEffect
+            setRenderingStage(projectData.renderingStatus || 'pending');
+          } else if (rawClipEditing) {
+            // Raw avatar clip finished; stay on videos editing page (not rendering/completed)
+            setWorkspaceMode('videos');
+            setRenderingProgress(100);
+            setRenderingStage('completed');
           }
 
           // Load audio files
@@ -1168,6 +1193,18 @@ function WorkspacePageContent() {
 
   // Handle back navigation
   const handleBack = () => {
+    const meta = (project?.metadata || {}) as Record<string, unknown>;
+    const exportFinalized = Boolean(meta.finalExportedAt);
+    const nonSingleClipFinal =
+      project?.status === 'COMPLETED' &&
+      hasFinalVideo(project || {}) &&
+      !isSingleClipVideoStyle(project?.style);
+
+    if (exportFinalized || nonSingleClipFinal || workspaceMode === 'completed') {
+      router.push('/projects');
+      return;
+    }
+
     if (projectId) {
       router.push(`/create-video/ai-chat?projectId=${projectId}`);
     } else {
@@ -2014,11 +2051,29 @@ function WorkspacePageContent() {
             setRenderingProgress(100);
             setRenderingStage('completed');
 
+            let landedOnVideosEditing = false;
+
             try {
               const projectRes = await apiClient.getVideoProject(projectId);
               if (projectRes.success && projectRes.data) {
                 setProject(projectRes.data);
                 applyProjectVideoUrls(projectRes.data);
+
+                if (isRawAvatarClipEditingPhase(projectRes.data)) {
+                  landedOnVideosEditing = true;
+                  const meta = (projectRes.data.metadata || {}) as Record<string, unknown>;
+                  const rawUrl =
+                    (typeof meta.rawAvatarClipUrl === 'string'
+                      ? meta.rawAvatarClipUrl
+                      : projectRes.data.videoUrl) || projectRes.data.videoUrl;
+                  if (rawUrl) {
+                    setFinalVideoUrl(
+                      rawUrl.startsWith('http')
+                        ? rawUrl
+                        : `${VIDEO_SERVICE_ORIGIN}${rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`}`,
+                    );
+                  }
+                }
               } else if (videoUrl) {
                 applyProjectVideoUrls({
                   videoUrl,
@@ -2035,8 +2090,13 @@ function WorkspacePageContent() {
             previewPollFingerprintRef.current = null;
 
             setTimeout(() => {
-              setWorkspaceMode('completed');
-              showToast('Video rendering completed!', 'success');
+              if (landedOnVideosEditing) {
+                setWorkspaceMode('videos');
+                showToast('Avatar video ready — add music and captions, then export.', 'success');
+              } else {
+                setWorkspaceMode('completed');
+                showToast('Video rendering completed!', 'success');
+              }
               if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('credits-refresh'));
               }
@@ -2075,9 +2135,7 @@ function WorkspacePageContent() {
       });
       console.log('[Workspace] Caption settings saved before rendering');
 
-      const usePostProcess =
-        isSingleClipVideoStyle(project?.style) &&
-        (Boolean(finalVideoUrl) || isFinalReady(project || {}, VIDEO_SERVICE_ORIGIN));
+      const usePostProcess = isRawAvatarClipEditingPhase(project || {});
 
       const response = usePostProcess
         ? await apiClient.postProcessVideoExport(projectId)
@@ -2707,9 +2765,9 @@ function WorkspacePageContent() {
     }
   }, [generatingVideos.size, brollVideos.length, avatarVideos.length, scenes.length, failedGenerations.size, workspaceMode, project?.style, showToast, handleSwitchToVideos, handleBackToImages]);
 
-  // Resume rendering polling if project was loading during rendering
+  // Resume rendering polling only during an active final render (not raw-clip staging)
   useEffect(() => {
-    if (project && project.status === 'IN_PROGRESS' && project.renderingStatus && workspaceMode === 'rendering') {
+    if (project && isProjectActivelyRendering(project) && workspaceMode === 'rendering') {
       startRenderingPolling();
     }
   }, [project, workspaceMode, startRenderingPolling]);
@@ -2800,8 +2858,19 @@ function WorkspacePageContent() {
 
   const finalReady =
     Boolean(finalVideoUrl) || isFinalReady(project || {}, VIDEO_SERVICE_ORIGIN);
+  const canTranslate = isVideoTranslationEligible(project || {});
   const previewPlayerReady =
     Boolean(previewPlaybackUrl) && isPreviewReady(project || {});
+  const completedPlaybackUrl =
+    translationPlaybackOverride ??
+    previewPlaybackUrl ??
+    getFinalVideoUrl(project || {}, VIDEO_SERVICE_ORIGIN);
+  const showCompletedVideo = Boolean(completedPlaybackUrl);
+
+  const showCompletedScreen =
+    workspaceMode === 'completed' &&
+    finalReady &&
+    !isRawAvatarClipEditingPhase(project || {});
 
   // In `completed` mode the dedicated completed view owns the whole area, so
   // the main workspace must be hidden for ALL styles (previously single-clip
@@ -2810,7 +2879,7 @@ function WorkspacePageContent() {
   // `videos` mode, not `completed`.
   const showMainWorkspace =
     workspaceMode !== 'rendering' &&
-    !(workspaceMode === 'completed' && finalReady);
+    !showCompletedScreen;
 
   return (
     <div className="relative h-full min-h-0 flex flex-col overflow-hidden">
@@ -2869,7 +2938,7 @@ function WorkspacePageContent() {
       )}
 
       {/* Completed — dedicated full-area final video (not overlay) */}
-      {workspaceMode === 'completed' && (finalVideoUrl || hasFinalVideo(project || {})) && (
+      {showCompletedScreen && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
           <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
             {/* Header Row */}
@@ -2877,7 +2946,7 @@ function WorkspacePageContent() {
               {/* Left: Back + Workspace */}
               <div className="flex flex-row items-center gap-[clamp(0.75rem,2vh,20px)] min-w-[90px] sm:min-w-[110px] md:min-w-[125px]">
                 <button
-                  onClick={() => setWorkspaceMode('videos')}
+                  onClick={handleBack}
                   className="flex items-center justify-center w-[clamp(16px,2.34vh,24px)] h-[clamp(16px,2.34vh,24px)] cursor-pointer hover:opacity-80 transition-opacity"
                 >
                   <ArrowLeft className="w-full h-full text-[#212121]" strokeWidth={1.5} />
@@ -2889,7 +2958,8 @@ function WorkspacePageContent() {
               <button
                 type="button"
                 onClick={() => setShowTranslateModal(true)}
-                disabled={!finalReady}
+                disabled={!canTranslate}
+                title={!canTranslate ? 'Export your final video before translating' : undefined}
                 className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Languages className="w-4 h-4 text-white shrink-0" />
@@ -2970,10 +3040,10 @@ function WorkspacePageContent() {
                 {/* Video player container - 9:16 aspect ratio */}
                 <div className="relative w-full flex-1 flex items-center justify-center min-h-[min(60vh,560px)] lg:min-h-0">
                   <div className="relative h-full max-h-[min(70vh,640px)] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black w-auto">
-                    {previewPlayerReady ? (
+                    {showCompletedVideo ? (
                       <>
                         <video
-                          src={(translationPlaybackOverride ?? previewPlaybackUrl) ?? undefined}
+                          src={completedPlaybackUrl ?? undefined}
                           className="w-full h-full object-contain"
                           controls
                           controlsList="nodownload noremoteplayback"
@@ -2984,6 +3054,11 @@ function WorkspacePageContent() {
                         >
                           Your browser does not support the video tag.
                         </video>
+                        {!previewPlayerReady && !translationPlaybackOverride ? (
+                          <p className="absolute bottom-3 left-0 right-0 text-center text-xs text-white/70 px-4 pointer-events-none">
+                            Watermarked preview is still preparing. Playback uses your final video.
+                          </p>
+                        ) : null}
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
                           <div className="w-16 h-16 bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-full flex items-center justify-center">
                             <Play className="w-8 h-8 text-white ml-1" fill="white" />

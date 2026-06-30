@@ -613,6 +613,24 @@ export class VideoController {
     return await this.renderingService.startRendering(projectId, userId, authToken);
   }
 
+  @Post(':projectId/start-raw-avatar-rendering')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({ name: 'projectId', description: 'Video project ID' })
+  @ApiOperation({
+    summary: 'Generate raw avatar clip (single-clip styles)',
+    description:
+      'Runs HeyGen avatar generation only; user edits music/captions in workspace before post-process export',
+  })
+  async startRawAvatarRendering(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const authToken = req.headers?.authorization || null;
+    return await this.renderingService.startRawAvatarRendering(projectId, userId, authToken);
+  }
+
   @Post(':projectId/post-process-export')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
