@@ -10,6 +10,7 @@ import { LoggerService } from '../common/logger/logger.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
 import { AnalyzedAsset } from './asset-analysis.service';
 import { LogoBrandMetadata } from '@shared/brand/logo-brand.types';
+import { resolveCanonicalBrandName } from '@shared/brand/logo-brand-voiceover.util';
 import { storageResultToRef, normalizeStorageRef } from '@shared/storage';
 
 export type { LogoBrandMetadata };
@@ -134,11 +135,24 @@ export class LogoPreprocessingService {
       const dominantColors =
         hints?.dominantColors?.length ? hints.dominantColors : ['#1a1a1a', '#ffffff'];
 
+      const resolvedBrandName =
+        logoAsset.brandName?.trim() ||
+        resolveCanonicalBrandName(
+          {
+            rawLogoText: logoAsset.rawLogoText || logoAsset.extractedText,
+            brandName: logoAsset.brandName,
+            brandNameVariants: logoAsset.brandNameVariants,
+            tagline: logoAsset.tagline,
+          },
+          'english',
+        ) ||
+        (logoAsset.productInfo as { name?: string } | undefined)?.name;
+
       return {
         sourceAssetId: logoAsset.originalAsset.id,
-        brandName:
-          logoAsset.extractedText ||
-          (logoAsset.productInfo as { name?: string } | undefined)?.name,
+        brandName: resolvedBrandName,
+        brandNameVariants: logoAsset.brandNameVariants,
+        rawLogoText: logoAsset.rawLogoText || logoAsset.extractedText,
         dominantColors,
         backgroundType: bgType,
         cropBox: hints?.markBoundingBox

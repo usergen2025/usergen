@@ -24,6 +24,23 @@ import {
   inferRetailDisplayHolderHint,
   sanitizePromptForProductForm,
 } from '../assets/product-form-core.util';
+import {
+  CAMERA_MOTION_SCRIPT_GUIDE,
+  inferDefaultCameraMotion,
+  MODE_CAMERA_MOTIONS,
+  normalizeCameraMotion,
+  type CameraMotion,
+} from '@shared/product/product-camera-motion';
+import {
+  countVariantMentionsInVoiceover,
+  dedupeMultilingualBrandInVoiceover,
+  detectMultilingualBrandDuplication,
+  isMultilingualLogoText,
+  isProductNameDuplicateOfBrand,
+  resolveCanonicalBrandName,
+  type LogoBrandVoiceoverContext,
+  type ScriptLanguage,
+} from '@shared/brand/logo-brand-voiceover.util';
 
 export interface ScriptGenerationRequest {
   prompt: string;
@@ -44,6 +61,10 @@ export type VideoScriptAnalyzedAsset = {
   id: string;
   category: string;
   extractedText?: string;
+  brandName?: string;
+  brandNameVariants?: string[];
+  tagline?: string;
+  rawLogoText?: string;
   productInfo?: any;
   url: string;
   visualScriptContext?: string;
@@ -448,7 +469,7 @@ ${styleNote}`;
     switch (videoStyle) {
       case 'PRODUCT_ONLY':
         return `
-- PRODUCT_ONLY: Every voiceover line must reference specific product name, feature, benefit, or use case from the analyzed product context — not generic "great product" praise.`;
+- PRODUCT_ONLY: Each voiceover must cite a specific feature, benefit, or use case from product context — not generic praise. Use the product name at most once in the hook and once in the close; elsewhere use "it/this/the product".`;
       case 'AVATAR_PRODUCT':
         return `
 - AVATAR_PRODUCT: Voiceover should narrate what the presenter is demonstrating; tie each scene to a concrete product benefit or feature.`;
@@ -488,6 +509,331 @@ Regenerate the FULL script JSON with these fixes:
 - Scene 1 must hook the listener; the last scene must close with a clear takeaway (not mid-sentence).
 - Remove any placeholder, generic, or filler lines. Do not shorten voiceovers — improve their substance and flow.
 - Keep the same scene count, time ranges, and visual/b-roll fields unless they were missing.`;
+  }
+
+  private buildCombinedQualityRetryNote(issues: string[]): string {
+    return `
+
+SCRIPT QUALITY FIX (REQUIRED — previous JSON failed checks):
+Issues: ${issues.join('; ')}
+
+Regenerate the FULL script JSON addressing ALL issues above.
+- Voiceover: complete sentences, hook + close, no fragments.
+- Brand: max one brand/product name mention per scene; use ONLY the canonical speakable brand name — never Hindi and English forms of the same brand in one scene.
+- Depth: concrete specifics (steps, examples, numbers, scenarios) in body scenes — no generic marketing filler.
+- Keep scene count, time ranges, and visual/b-roll fields unless missing.`;
+  }
+
+  private buildLogoBrandVoiceoverContext(
+    logoAsset?: VideoScriptAnalyzedAsset,
+    logoBrandNameOverride?: string,
+    metaLogoBrand?: { brandName?: string; rawLogoText?: string; brandNameVariants?: string[] },
+  ): LogoBrandVoiceoverContext {
+    return {
+      rawLogoText:
+        logoAsset?.rawLogoText ||
+        logoAsset?.extractedText ||
+        metaLogoBrand?.rawLogoText ||
+        metaLogoBrand?.brandName,
+      brandName:
+        logoAsset?.brandName ||
+        logoBrandNameOverride ||
+        metaLogoBrand?.brandName,
+      brandNameVariants:
+        logoAsset?.brandNameVariants?.length
+          ? logoAsset.brandNameVariants
+          : metaLogoBrand?.brandNameVariants,
+      tagline: logoAsset?.tagline,
+    };
+  }
+
+  private resolveCanonicalBrandFromAssets(
+    analyzedAssets: VideoScriptAnalyzedAsset[] | undefined,
+    logoBrandNameOverride: string | undefined,
+    language: ScriptLanguage,
+    metaLogoBrand?: { brandName?: string; rawLogoText?: string; brandNameVariants?: string[] },
+  ): { canonical?: string; variants: string[]; rawLogoText?: string } {
+    const logoAsset = analyzedAssets?.find((a) => a.category === 'logo');
+    const ctx = this.buildLogoBrandVoiceoverContext(
+      logoAsset,
+      logoBrandNameOverride,
+      metaLogoBrand,
+    );
+    const canonical = resolveCanonicalBrandName(ctx, language);
+    const variants = ctx.brandNameVariants || [];
+    return {
+      canonical,
+      variants,
+      rawLogoText: ctx.rawLogoText,
+    };
+  }
+
+  private collectTrackedBrandNames(
+    analyzedAssets: VideoScriptAnalyzedAsset[] | undefined,
+    logoBrandNameOverride: string | undefined,
+    language: ScriptLanguage,
+    metaLogoBrand?: { brandName?: string; rawLogoText?: string; brandNameVariants?: string[] },
+  ): string[] {
+    const { canonical } = this.resolveCanonicalBrandFromAssets(
+      analyzedAssets,
+      logoBrandNameOverride,
+      language,
+      metaLogoBrand,
+    );
+    const names: string[] = [];
+    if (canonical) names.push(canonical);
+
+    for (const a of analyzedAssets || []) {
+      if (a.category !== 'product') continue;
+      const productName =
+        a.productInfo?.name?.trim() || a.extractedText?.trim();
+      if (
+        productName &&
+        productName.length >= 2 &&
+        !isProductNameDuplicateOfBrand(productName, canonical)
+      ) {
+        names.push(productName);
+      }
+    }
+    return names;
+  }
+
+  /** Replace multilingual logo OCR recitation in every scene voiceover with canonical brand. */
+  private sanitizeScriptVoiceoversForCanonicalBrand(
+    scriptData: any,
+    canonicalBrand: string | undefined,
+    brandNameVariants: string[],
+    rawLogoText: string | undefined,
+    brandIntegrationLevel: BrandIntegrationLevel,
+  ): any {
+    if (
+      !scriptData ||
+      !canonicalBrand?.trim() ||
+      brandIntegrationLevel === 'none'
+    ) {
+      return scriptData;
+    }
+
+    const scenes = scriptData.scenes || scriptData.scene_plan;
+    if (!Array.isArray(scenes)) return scriptData;
+
+    for (const scene of scenes) {
+      if (!scene?.voiceover || typeof scene.voiceover !== 'string') continue;
+      scene.voiceover = dedupeMultilingualBrandInVoiceover(
+        scene.voiceover,
+        canonicalBrand,
+        brandNameVariants,
+        rawLogoText,
+      );
+    }
+    return scriptData;
+  }
+
+  private qualityIssuesIncludeMultilingualBrand(issues: string[]): boolean {
+    return issues.some((i) =>
+      /multiple languages|language variants|Hindi \+ English/i.test(i),
+    );
+  }
+
+  private countNameMentions(text: string, names: string[]): number {
+    if (!text || names.length === 0) return 0;
+    let count = 0;
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`\\b${escaped}\\b`, 'gi');
+      const matches = text.match(re);
+      if (matches) count += matches.length;
+    }
+    return count;
+  }
+
+  private buildBrandMentionBudgetBlock(
+    brandIntegrationLevel: BrandIntegrationLevel,
+    brandNames: string[],
+    sceneCount: number,
+  ): string {
+    if (brandNames.length === 0 || brandIntegrationLevel === 'none') return '';
+    const primary = brandNames[0];
+    const maxTotal =
+      brandIntegrationLevel === 'full'
+        ? Math.min(5, Math.max(2, Math.ceil(sceneCount * 0.45)))
+        : 1;
+    return `
+
+BRAND / PRODUCT NAME VOICEOVER BUDGET (${brandIntegrationLevel}):
+- Primary name: "${primary}"
+- Maximum ${maxTotal} total spoken mentions across ALL scenes${brandIntegrationLevel === 'full' ? ' (typically hook + proof moment + close)' : ''}.
+- Maximum ONE mention of any brand/product name per scene — never repeat the same proper noun twice in one voiceover.
+- After the first mention in a scene, use pronouns ("it", "this") or descriptors — not the brand name again.
+- Write like a real ad: benefits lead; name anchors key moments only. Logos/end cards handle visual brand in post-production.`;
+  }
+
+  private validateBrandMentionDensity(
+    scriptData: any,
+    brandNames: string[],
+    brandIntegrationLevel: BrandIntegrationLevel,
+  ): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    if (brandNames.length === 0 || brandIntegrationLevel === 'none') {
+      return { valid: true, issues };
+    }
+    const scenes = scriptData?.scenes || scriptData?.scene_plan || [];
+    let totalMentions = 0;
+    const maxTotal =
+      brandIntegrationLevel === 'full'
+        ? Math.min(5, Math.max(2, Math.ceil(scenes.length * 0.45)))
+        : 1;
+
+    scenes.forEach((scene: any, index: number) => {
+      const sceneNum = scene.scene_number || scene.sceneNumber || index + 1;
+      const voiceover = (scene.voiceover || '').trim();
+      const mentions = this.countNameMentions(voiceover, brandNames);
+      totalMentions += mentions;
+      if (mentions > 1) {
+        issues.push(
+          `Scene ${sceneNum} mentions brand/product name ${mentions} times (max 1 per scene)`,
+        );
+      }
+      if (
+        brandIntegrationLevel === 'subtle' &&
+        mentions > 0 &&
+        index > 0 &&
+        index < scenes.length - 1
+      ) {
+        issues.push(
+          `Scene ${sceneNum} mentions brand in middle of script (subtle: hook or close only)`,
+        );
+      }
+    });
+
+    if (brandIntegrationLevel === 'full' && totalMentions > maxTotal) {
+      issues.push(
+        `Total brand/product mentions: ${totalMentions} (max ${maxTotal} for ${scenes.length} scenes)`,
+      );
+    }
+    if (brandIntegrationLevel === 'subtle' && totalMentions > 1) {
+      issues.push(`Total brand mentions: ${totalMentions} (max 1 in subtle mode)`);
+    }
+
+    return { valid: issues.length === 0, issues };
+  }
+
+  private static readonly SUPERFICIAL_PHRASES =
+    /\b(game.?changer|revolutionary|in today'?s world|many benefits|amazing product|great solution|transform your life|best ever|ultimate solution|cutting.?edge innovation|don'?t miss out)\b/i;
+
+  private static readonly CONCRETE_DETAIL_MARKERS =
+    /\b(\d+|percent|%|₹|\$|step\s+\d|within\s+\d+\s*(min|minute|hour|day|week|month)|because\s+\w+\s+\w+|such\s+as|for\s+example|including\s+\w+|specifically|exactly|firstly|secondly)\b/i;
+
+  private buildTopicDepthUserBlock(
+    hasAnalyzedAssets: boolean,
+    groundedFactsContext: string | undefined,
+    userPrompt: string,
+  ): string {
+    if (hasAnalyzedAssets || groundedFactsContext?.trim()) return '';
+    return `
+
+TOPIC DEPTH (NO ASSETS — MANDATORY):
+- User topic: "${userPrompt.trim()}"
+- Every body scene must add a specific point: a tip, step, example, or actionable detail tied to this topic.
+- Avoid vague praise without explaining WHAT and HOW.
+- Include at least 2 concrete details across the script (numbers, steps, named examples, or scenarios).
+- Do not invent statistics; use practical general terms when facts are unverified.`;
+  }
+
+  private validateContentDepth(
+    scriptData: any,
+    hasAnalyzedAssets: boolean,
+    groundedFactsContext?: string,
+  ): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    if (hasAnalyzedAssets || groundedFactsContext?.trim()) {
+      return { valid: true, issues };
+    }
+    const scenes = scriptData?.scenes || scriptData?.scene_plan || [];
+    if (scenes.length === 0) return { valid: false, issues: ['No scenes'] };
+
+    let superficialCount = 0;
+    let concreteCount = 0;
+    scenes.forEach((scene: any, index: number) => {
+      const vo = (scene.voiceover || '').trim();
+      if (ScriptsService.SUPERFICIAL_PHRASES.test(vo)) superficialCount++;
+      if (ScriptsService.CONCRETE_DETAIL_MARKERS.test(vo)) concreteCount++;
+      if (index > 0 && index < scenes.length - 1 && vo.split(/\s+/).filter(Boolean).length < 12) {
+        issues.push(
+          `Scene ${scene.scene_number || scene.sceneNumber || index + 1} body voiceover lacks depth`,
+        );
+      }
+    });
+
+    if (superficialCount > Math.max(1, Math.floor(scenes.length * 0.3))) {
+      issues.push(`${superficialCount} scenes use generic marketing filler phrases`);
+    }
+    const minConcrete = Math.max(2, Math.ceil(scenes.length * 0.35));
+    if (concreteCount < minConcrete) {
+      issues.push(
+        `Only ${concreteCount} scenes have concrete specifics (need at least ${minConcrete})`,
+      );
+    }
+
+    return { valid: issues.length === 0, issues };
+  }
+
+  private validateMultilingualBrandDuplication(
+    scriptData: any,
+    brandNameVariants: string[] = [],
+  ): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    const scenes = scriptData?.scenes || scriptData?.scene_plan || [];
+    scenes.forEach((scene: any, index: number) => {
+      const sceneNum = scene.scene_number || scene.sceneNumber || index + 1;
+      const voiceover = (scene.voiceover || '').trim();
+      if (!voiceover) return;
+      if (detectMultilingualBrandDuplication(voiceover)) {
+        issues.push(
+          `Scene ${sceneNum} speaks the brand in multiple languages/scripts (e.g. Hindi + English) — use one canonical form only`,
+        );
+      }
+      if (brandNameVariants.length > 1) {
+        const variantHits = countVariantMentionsInVoiceover(voiceover, brandNameVariants);
+        if (variantHits >= 2) {
+          issues.push(
+            `Scene ${sceneNum} mentions ${variantHits} language variants of the same brand — use one form only`,
+          );
+        }
+      }
+    });
+    return { valid: issues.length === 0, issues };
+  }
+
+  private runScriptQualityValidations(
+    scriptData: any,
+    opts: {
+      brandNames: string[];
+      brandNameVariants?: string[];
+      brandIntegrationLevel: BrandIntegrationLevel;
+      hasAnalyzedAssets: boolean;
+      groundedFactsContext?: string;
+    },
+  ): { valid: boolean; issues: string[] } {
+    const voice = this.validateVoiceoverQuality(scriptData);
+    const brand = this.validateBrandMentionDensity(
+      scriptData,
+      opts.brandNames,
+      opts.brandIntegrationLevel,
+    );
+    const multilingual = this.validateMultilingualBrandDuplication(
+      scriptData,
+      opts.brandNameVariants || [],
+    );
+    const depth = this.validateContentDepth(
+      scriptData,
+      opts.hasAnalyzedAssets,
+      opts.groundedFactsContext,
+    );
+    return {
+      valid: voice.valid && brand.valid && multilingual.valid && depth.valid,
+      issues: [...voice.issues, ...brand.issues, ...multilingual.issues, ...depth.issues],
+    };
   }
 
   private buildGroundedFactsUserBlock(
@@ -614,6 +960,7 @@ Assess relevance and recommend integration level.`,
     searchAttemptedButEmpty?: boolean,
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
     qualityRetryNote?: string,
+    brandNames: string[] = [],
   ): string {
     let textPrompt = `Create a video script for the following topic/idea: "${request.userPrompt}". 
 
@@ -629,30 +976,13 @@ CRITICAL DURATION REQUIREMENTS:
       const productAssets = analyzedAssets.filter((a) => a.category === 'product');
 
       if (logoAssets.length > 0 && brandIntegrationLevel !== 'none') {
-        const logoAsset = logoAssets[0];
-        const brandName = logoAsset.extractedText || (logoAsset as any).brandName;
+        textPrompt += `\n\nLOGO VOICEOVER RULE:
+- The logo image is NOT attached (to avoid reading all scripts on the mark). Brand identity is in the system prompt only.
+- Speak ONLY the canonical brand name from the system prompt — never recite Hindi and English forms of the same brand.
+- Never say the brand in two languages in the same scene (e.g. Hindi name then English name).`;
+      }
 
-        if (brandName && brandIntegrationLevel === 'full') {
-          textPrompt += `\n\nCRITICAL BRAND INFORMATION:
-- Brand name: "${brandName}"
-- You MUST mention "${brandName}" naturally in the voiceover multiple times throughout the script
-- Use "${brandName}" when referring to the product, service, or company
-- Do NOT use generic terms like "our product" or "the company" - use "${brandName}" instead
-- Emphasize "${brandName}" in key moments and call-to-action scenes
-- Use the logo image(s) provided as visual reference for brand identity and style`;
-        } else if (brandName && brandIntegrationLevel === 'subtle') {
-          textPrompt += `\n\nBRAND NOTE (subtle integration only):
-- A logo for "${brandName}" is attached but the video topic is only loosely related to this brand
-- Do NOT force "${brandName}" into the main narrative or product messaging
-- At most one brief, natural sponsor/watermark acknowledgment is acceptable (e.g. "presented by ${brandName}")
-- Focus the script on the user's requested topic; brand visual overlays are handled separately in post-production`;
-        } else if (!brandName) {
-          textPrompt += `\n\nBRAND CONTEXT:
-- Use the logo image(s) provided as visual reference for brand identity
-- Extract brand name from the logo and incorporate it naturally into the script only if it fits the topic
-- Use brand colors and style elements when describing visuals`;
-        }
-      } else if (logoAssets.length > 0 && brandIntegrationLevel === 'none') {
+      if (logoAssets.length > 0 && brandIntegrationLevel === 'none') {
         textPrompt += `\n\nBRAND NOTE (no voiceover integration):
 - A logo/brand asset is attached but it is unrelated to the video topic
 - Do NOT mention the brand name in the voiceover or weave brand/product messaging into the script
@@ -668,6 +998,17 @@ CRITICAL DURATION REQUIREMENTS:
 - Ensure visual descriptions match the actual product appearance in the images`;
       }
     }
+
+    textPrompt += this.buildBrandMentionBudgetBlock(
+      brandIntegrationLevel,
+      brandNames,
+      expectedScenes.target,
+    );
+    textPrompt += this.buildTopicDepthUserBlock(
+      hasAnalyzedAssets,
+      groundedFactsContext,
+      request.userPrompt,
+    );
 
     textPrompt += this.buildGroundedFactsUserBlock(
       groundedFactsContext,
@@ -688,11 +1029,18 @@ CRITICAL DURATION REQUIREMENTS:
     duration: string,
     durationSeconds: number,
     expectedScenes: { min: number; max: number; target: number },
-    opts: { attachVisionImages: boolean; textOnlyRetryNote?: boolean; qualityRetryNote?: string },
+    opts: {
+      attachVisionImages: boolean;
+      textOnlyRetryNote?: boolean;
+      qualityRetryNote?: string;
+      /** When true (default), logo images are omitted from vision to prevent OCR recitation. */
+      excludeLogoFromVision?: boolean;
+    },
     language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
     groundedFactsContext?: string,
     searchAttemptedButEmpty?: boolean,
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
+    brandNames: string[] = [],
   ): Promise<OpenAI.Chat.Completions.ChatCompletionUserMessageParam> {
     const list = analyzedAssets ?? [];
     const hasAnalyzedAssets = list.length > 0;
@@ -719,10 +1067,16 @@ CRITICAL DURATION REQUIREMENTS:
         searchAttemptedButEmpty,
         brandIntegrationLevel,
         opts.qualityRetryNote,
+        brandNames,
       );
       content.push({ type: 'text', text: textPrompt });
 
-      for (const asset of list) {
+      const visionAssets =
+        opts.excludeLogoFromVision !== false
+          ? list.filter((a) => a.category !== 'logo')
+          : list;
+
+      for (const asset of visionAssets) {
         if (!asset.url) continue;
 
         let assetUrl = asset.url;
@@ -767,6 +1121,7 @@ CRITICAL DURATION REQUIREMENTS:
         searchAttemptedButEmpty,
         brandIntegrationLevel,
         opts.qualityRetryNote,
+        brandNames,
       );
       if (opts.textOnlyRetryNote) {
         text += `\n\nNOTE: You did not receive images in this request. Rely only on VISUAL CONTEXT and other analyzed fields in the system prompt.`;
@@ -788,6 +1143,7 @@ CRITICAL DURATION REQUIREMENTS:
         searchAttemptedButEmpty,
         brandIntegrationLevel,
         opts.qualityRetryNote,
+        brandNames,
       ),
     };
   }
@@ -854,13 +1210,21 @@ CRITICAL DURATION REQUIREMENTS:
       let analyzedAssets = request.analyzedAssets;
       let urlContentContext = request.urlContentContext;
       let logoBrandName: string | undefined;
+      let metaLogoBrand:
+        | { brandName?: string; rawLogoText?: string; brandNameVariants?: string[] }
+        | undefined;
 
       if (request.projectId && userId) {
         const projectForMeta = await this.getProject(request.projectId, userId);
         if (projectForMeta?.metadata) {
           const meta = projectForMeta.metadata as Record<string, unknown>;
           if (meta.logoBrand && typeof meta.logoBrand === 'object') {
-            const lb = meta.logoBrand as { brandName?: string };
+            const lb = meta.logoBrand as {
+              brandName?: string;
+              rawLogoText?: string;
+              brandNameVariants?: string[];
+            };
+            metaLogoBrand = lb;
             logoBrandName = lb.brandName;
           }
           const existingUrlCtx = meta.urlBrandContext as
@@ -933,13 +1297,38 @@ CRITICAL DURATION REQUIREMENTS:
       // Request avatar_image_prompt for avatar styles even when client does not send hasAvatar
       const effectiveHasAvatar = request.hasAvatar === true || AVATAR_VIDEO_STYLES.includes(request.videoStyle);
 
+      const {
+        canonical: canonicalBrandName,
+        variants: brandNameVariants,
+        rawLogoText: logoRawOcr,
+      } = this.resolveCanonicalBrandFromAssets(
+        analyzedAssets,
+        logoBrandName,
+        language,
+        metaLogoBrand,
+      );
+      const logoBrandNameForPrompts =
+        canonicalBrandName ||
+        (logoBrandName
+          ? resolveCanonicalBrandName(
+              {
+                rawLogoText:
+                  metaLogoBrand?.rawLogoText ||
+                  logoBrandName,
+                brandName: metaLogoBrand?.brandName || logoBrandName,
+                brandNameVariants: metaLogoBrand?.brandNameVariants,
+              },
+              language,
+            )
+          : undefined);
+
       // Assess brand/topic relevance before injecting brand into prompts
       let brandIntegrationLevel: BrandIntegrationLevel = 'full';
       const logoAssetForRelevance = analyzedAssets?.find((a) => a.category === 'logo');
       const brandNameForRelevance =
-        logoBrandName ||
-        logoAssetForRelevance?.extractedText ||
-        (logoAssetForRelevance as any)?.brandName;
+        logoBrandNameForPrompts ||
+        logoAssetForRelevance?.brandName ||
+        logoAssetForRelevance?.extractedText;
       if (brandNameForRelevance && request.userPrompt) {
         const brandContext =
           logoAssetForRelevance?.visualScriptContext ||
@@ -951,6 +1340,13 @@ CRITICAL DURATION REQUIREMENTS:
         );
         brandIntegrationLevel = relevance.integrationLevel;
       }
+
+      const brandNames = this.collectTrackedBrandNames(
+        analyzedAssets,
+        logoBrandNameForPrompts,
+        language,
+        metaLogoBrand,
+      );
 
       // Get product presentation plan from project metadata or infer from assets
       let productPresentationPlan: ProductPresentationPlan | undefined;
@@ -985,9 +1381,11 @@ CRITICAL DURATION REQUIREMENTS:
         effectiveHasAvatar,
         analyzedAssets,
         urlContentContext,
-        logoBrandName,
+        logoBrandNameForPrompts,
         brandIntegrationLevel,
         productPresentationPlan,
+        logoRawOcr,
+        brandNameVariants,
       );
       
       // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
@@ -1032,15 +1430,17 @@ CRITICAL DURATION REQUIREMENTS:
         }
       }
 
-      const scriptTemperature = groundedFactsContext
-        ? Number(this.configService.get<string>('SCRIPT_TEMPERATURE_FACTUAL') || 0.3)
-        : Number(this.configService.get<string>('SCRIPT_TEMPERATURE') || 0.45);
+      const scriptTemperature =
+        groundedFactsContext || hasAnalyzedAssets
+          ? Number(this.configService.get<string>('SCRIPT_TEMPERATURE_FACTUAL') || 0.3)
+          : Number(this.configService.get<string>('SCRIPT_TEMPERATURE') || 0.38);
 
       const textModel = this.configService.get<string>('OPENAI_MODEL_GPT4', 'gpt-4-turbo');
       const buildMessages = async (
         attachVision: boolean,
         textOnlyRetryNote?: boolean,
         qualityRetryNote?: string,
+        excludeLogoFromVision = true,
       ) => {
         const userMsg = await this.buildVideoScriptUserMessage(
           request,
@@ -1048,11 +1448,17 @@ CRITICAL DURATION REQUIREMENTS:
           duration,
           durationSeconds,
           expectedScenes,
-          { attachVisionImages: attachVision, textOnlyRetryNote, qualityRetryNote },
+          {
+            attachVisionImages: attachVision,
+            textOnlyRetryNote,
+            qualityRetryNote,
+            excludeLogoFromVision,
+          },
           language,
           groundedFactsContext,
           searchAttemptedButEmpty,
           brandIntegrationLevel,
+          brandNames,
         );
         return [
           { role: 'system' as const, content: systemPrompt },
@@ -1106,37 +1512,90 @@ CRITICAL DURATION REQUIREMENTS:
         );
       }
 
-      // Retry once if voiceover quality checks fail (abrupt endings, fragments, placeholders)
-      let voiceoverValidation = this.validateVoiceoverQuality(scriptData);
-      if (!voiceoverValidation.valid) {
+      const sanitizeBrandVoiceovers = (data: any) =>
+        this.sanitizeScriptVoiceoversForCanonicalBrand(
+          data,
+          canonicalBrandName,
+          brandNameVariants,
+          logoRawOcr,
+          brandIntegrationLevel,
+        );
+
+      scriptData = sanitizeBrandVoiceovers(scriptData);
+
+      // Retry once if voiceover / brand / depth quality checks fail
+      let qualityValidation = this.runScriptQualityValidations(scriptData, {
+        brandNames,
+        brandNameVariants,
+        brandIntegrationLevel,
+        hasAnalyzedAssets: Boolean(hasAnalyzedAssets),
+        groundedFactsContext,
+      });
+      if (!qualityValidation.valid) {
         this.logger.warn(
-          `Voiceover quality validation failed: ${voiceoverValidation.issues.join('; ')}. Retrying once...`,
+          `Script quality validation failed: ${qualityValidation.issues.join('; ')}. Retrying once...`,
           'ScriptsService',
         );
         try {
-          messages = await buildMessages(visionFlag, false, this.buildVoiceoverQualityRetryNote(voiceoverValidation.issues));
-          const qualityRetry = await this.completeChatWithJsonContent(
-            messages,
-            model,
-            visionFlag,
-            'generateVideoScript-voiceoverRetry',
-            scriptTemperature,
+          const multilingualIssue = this.qualityIssuesIncludeMultilingualBrand(
+            qualityValidation.issues,
           );
-          scriptData = JSON.parse(qualityRetry.text);
-          voiceoverValidation = this.validateVoiceoverQuality(scriptData);
-          if (!voiceoverValidation.valid) {
+          const retryTextOnly = visionFlag && multilingualIssue;
+          if (retryTextOnly) {
             this.logger.warn(
-              `Voiceover quality still below target after retry: ${voiceoverValidation.issues.join('; ')}`,
+              'Multilingual brand duplication detected — retrying script generation text-only (no vision images)',
               'ScriptsService',
             );
           }
+          messages = await buildMessages(
+            retryTextOnly ? false : visionFlag,
+            retryTextOnly,
+            this.buildCombinedQualityRetryNote(qualityValidation.issues),
+            true,
+          );
+          const retryModel = retryTextOnly ? textModel : model;
+          const qualityRetry = await this.completeChatWithJsonContent(
+            messages,
+            retryModel,
+            retryTextOnly ? false : visionFlag,
+            'generateVideoScript-qualityRetry',
+            scriptTemperature,
+          );
+          scriptData = JSON.parse(qualityRetry.text);
+          scriptData = sanitizeBrandVoiceovers(scriptData);
+          qualityValidation = this.runScriptQualityValidations(scriptData, {
+            brandNames,
+            brandNameVariants,
+            brandIntegrationLevel,
+            hasAnalyzedAssets: Boolean(hasAnalyzedAssets),
+            groundedFactsContext,
+          });
+          if (!qualityValidation.valid) {
+            scriptData = sanitizeBrandVoiceovers(scriptData);
+            qualityValidation = this.runScriptQualityValidations(scriptData, {
+              brandNames,
+              brandNameVariants,
+              brandIntegrationLevel,
+              hasAnalyzedAssets: Boolean(hasAnalyzedAssets),
+              groundedFactsContext,
+            });
+            if (!qualityValidation.valid) {
+              this.logger.warn(
+                `Script quality still below target after retry; applying deterministic brand voiceover cleanup: ${qualityValidation.issues.join('; ')}`,
+                'ScriptsService',
+              );
+            }
+          }
         } catch (retryErr: any) {
+          scriptData = sanitizeBrandVoiceovers(scriptData);
           this.logger.warn(
-            `Voiceover quality retry failed, using original script: ${retryErr?.message || retryErr}`,
+            `Script quality retry failed, using sanitized original script: ${retryErr?.message || retryErr}`,
             'ScriptsService',
           );
         }
       }
+
+      scriptData = sanitizeBrandVoiceovers(scriptData);
 
       // Validate scene count matches duration
       const sceneCountValidation = this.validateSceneCountForDuration(scriptData, duration);
@@ -1145,16 +1604,21 @@ CRITICAL DURATION REQUIREMENTS:
         // Log warning but don't fail - AI should fix this, but we log for monitoring
       }
 
-      // Normalize prompts to ensure visual consistency (region-aware fallback)
-      scriptData = this.normalizePrompts(scriptData, language, {
-        injectReferenceIdentityHint: this.analyzedAssetsSupplyHeroReferenceForI2I(analyzedAssets),
-      });
-
+      // PRODUCT_ONLY: normalize presentation modes and camera_motion before prompt normalization
       if (request.videoStyle === 'PRODUCT_ONLY') {
         scriptData = this.validateAndNormalizeProductOnlyScript(
           scriptData,
           productPresentationPlan,
         );
+      }
+
+      // Normalize prompts to ensure visual consistency (region-aware fallback)
+      scriptData = this.normalizePrompts(scriptData, language, {
+        injectReferenceIdentityHint: this.analyzedAssetsSupplyHeroReferenceForI2I(analyzedAssets),
+        skipGenericVideoMotion: request.videoStyle === 'PRODUCT_ONLY',
+      });
+
+      if (request.videoStyle === 'PRODUCT_ONLY') {
         if (request.projectId && userId && productPresentationPlan) {
           const scriptPresenter =
             typeof scriptData.presenter_description === 'string'
@@ -1176,20 +1640,32 @@ CRITICAL DURATION REQUIREMENTS:
         // Log but don't fail - normalization should have fixed most issues
       }
 
+      scriptData.generation_metadata = {
+        ...(scriptData.generation_metadata && typeof scriptData.generation_metadata === 'object'
+          ? scriptData.generation_metadata
+          : {}),
+        brand_integration_level: brandIntegrationLevel,
+        ...(brandNames.length ? { tracked_brand_names: brandNames } : {}),
+        ...(canonicalBrandName ? { canonical_brand_name: canonicalBrandName } : {}),
+        ...(brandNameVariants.length ? { brand_name_variants: brandNameVariants } : {}),
+      };
+
+      if (request.projectId && userId) {
+        await this.patchProjectMetadata(request.projectId, userId, {
+          brandIntegrationLevel,
+        }).catch(() => {});
+      }
+
       if (webSearchMeta?.summary) {
         scriptData.generation_metadata = {
-          ...(scriptData.generation_metadata && typeof scriptData.generation_metadata === 'object'
-            ? scriptData.generation_metadata
-            : {}),
+          ...scriptData.generation_metadata,
           web_search_used: true,
           web_search_at: webSearchMeta.searchedAt,
           fact_sources: webSearchMeta.sources,
         };
       } else if (searchAttemptedButEmpty && this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
         scriptData.generation_metadata = {
-          ...(scriptData.generation_metadata && typeof scriptData.generation_metadata === 'object'
-            ? scriptData.generation_metadata
-            : {}),
+          ...scriptData.generation_metadata,
           web_search_used: false,
           web_search_attempted: true,
         };
@@ -1233,6 +1709,20 @@ CRITICAL DURATION REQUIREMENTS:
 
       // Request avatar_image_prompt for avatar styles so regenerated script retains it
       const effectiveHasAvatar = AVATAR_VIDEO_STYLES.includes(request.videoStyle);
+      const regenBrandLevel: BrandIntegrationLevel =
+        request.existingScript?.generation_metadata?.brand_integration_level ||
+        'full';
+      const regenMeta = request.existingScript?.generation_metadata as
+        | {
+            canonical_brand_name?: string;
+            brand_name_variants?: string[];
+            tracked_brand_names?: string[];
+          }
+        | undefined;
+      const regenCanonicalBrand =
+        regenMeta?.canonical_brand_name ||
+        regenMeta?.tracked_brand_names?.[0];
+      const regenBrandVariants = regenMeta?.brand_name_variants || [];
       // Get system prompt (same as script generation to maintain consistency)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle,
@@ -1242,8 +1732,11 @@ CRITICAL DURATION REQUIREMENTS:
         effectiveHasAvatar,
         undefined,
         undefined,
+        regenCanonicalBrand,
+        regenBrandLevel,
         undefined,
-        'full',
+        undefined,
+        regenBrandVariants,
       );
       
       // Build conversation history for context
@@ -1263,6 +1756,9 @@ CRITICAL DURATION REQUIREMENTS:
 
       const voiceoverSceneGuidance =
         'Voiceover must be 1–2 complete, natural spoken sentences tied to the topic — no fragments or placeholders. If this is the final scene, end with a clear closing takeaway.';
+      const regenBrandVoiceoverRule = regenCanonicalBrand
+        ? ` Use ONLY the canonical brand name "${regenCanonicalBrand}" if mentioning the brand — never speak Hindi and English forms of the same brand in one scene.`
+        : '';
 
       // Build the user's request based on operation type
       let userRequest: string;
@@ -1273,7 +1769,7 @@ CRITICAL DURATION REQUIREMENTS:
           ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
-        userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
+        userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} ${brollIdentitySpatial}${regenBrandVoiceoverRule} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
       } else {
         // Regenerate operation
         // Extract visual style guide from existing script to maintain consistency
@@ -1282,7 +1778,7 @@ CRITICAL DURATION REQUIREMENTS:
           ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
-        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${voiceoverSceneGuidance} ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
+        userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${voiceoverSceneGuidance}${regenBrandVoiceoverRule} ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
       }
       
       let groundedFactsContext: string | undefined;
@@ -1346,6 +1842,18 @@ CRITICAL DURATION REQUIREMENTS:
         sceneData.scene_number = request.sceneNumber;
       } else if (sceneData.sceneNumber && !sceneData.scene_number) {
         sceneData.scene_number = sceneData.sceneNumber;
+      }
+
+      if (
+        regenCanonicalBrand &&
+        regenBrandLevel !== 'none' &&
+        typeof sceneData.voiceover === 'string'
+      ) {
+        sceneData.voiceover = dedupeMultilingualBrandInVoiceover(
+          sceneData.voiceover,
+          regenCanonicalBrand,
+          regenBrandVariants,
+        );
       }
 
       // Normalize prompts to ensure consistency with existing script's visual style
@@ -1697,6 +2205,8 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     logoBrandNameOverride?: string,
     brandIntegrationLevel: BrandIntegrationLevel = 'full',
     productPresentationPlan?: ProductPresentationPlan,
+    logoRawOcr?: string,
+    brandNameVariants?: string[],
   ): string {
     // Language-specific descriptions
     const voiceoverExamples = this.getVoiceoverLanguageExamples(language);
@@ -1751,16 +2261,47 @@ The visual_style_guide you create should be a synthesis of these tag preferences
       const backgroundAssets = analyzedAssets.filter(a => a.category === 'background' || a.category === 'environment');
       
       if (logoAsset && brandIntegrationLevel !== 'none') {
-        const brandName = logoBrandNameOverride ||
-                         logoAsset.extractedText ||
-                         (logoAsset as any).brandName ||
-                         (logoAsset.productInfo as any)?.name ||
-                         undefined;
+        const brandCtx: LogoBrandVoiceoverContext = {
+          rawLogoText:
+            logoRawOcr || logoAsset.rawLogoText || logoAsset.extractedText,
+          brandName: logoAsset.brandName || logoBrandNameOverride,
+          brandNameVariants:
+            brandNameVariants?.length
+              ? brandNameVariants
+              : logoAsset.brandNameVariants,
+          tagline: logoAsset.tagline,
+        };
+        const canonicalBrand = resolveCanonicalBrandName(brandCtx, language);
+        const rawOcrRef = brandCtx.rawLogoText;
+        const omitRawOcrFromPrompt = isMultilingualLogoText(
+          rawOcrRef,
+          brandCtx.brandNameVariants || [],
+        );
 
-        if (brandName && brandIntegrationLevel === 'full') {
-          assetContext += `\n\nBRAND INFORMATION:\n- Brand name: ${brandName}\n- You MUST mention "${brandName}" naturally in the voiceover when appropriate\n- Emphasize the brand name in key moments\n- Use the brand name authentically throughout the script\n- When referring to the product or service, use "${brandName}" instead of generic terms\n`;
-        } else if (brandName && brandIntegrationLevel === 'subtle') {
-          assetContext += `\n\nBRAND NOTE (subtle):\n- Logo for "${brandName}" is attached but only loosely related to the video topic\n- Do NOT center the script on this brand; at most one brief sponsor mention is acceptable\n- Focus voiceover on the user's requested topic\n`;
+        if (canonicalBrand && brandIntegrationLevel === 'full') {
+          assetContext += `\n\nBRAND INFORMATION:
+- Canonical speakable brand name (voiceover only): "${canonicalBrand}"
+- The logo may show this brand in multiple languages/scripts — use ONLY the canonical name above.
+- Never read Hindi and English versions of the same brand in one sentence or scene.
+- Mention "${canonicalBrand}" sparingly in voiceover (hook and close; max once per scene)
+- Lead with benefits and specifics; use pronouns after first mention in each scene
+- Visual brand identity comes from logo assets and post-production overlays`;
+          if (
+            rawOcrRef &&
+            rawOcrRef.trim() !== canonicalBrand.trim() &&
+            !omitRawOcrFromPrompt
+          ) {
+            assetContext += `\n- Full logo OCR (reference only, do NOT speak verbatim): "${rawOcrRef.trim()}"`;
+          }
+          assetContext += '\n';
+        } else if (canonicalBrand && brandIntegrationLevel === 'subtle') {
+          assetContext += `\n\nBRAND NOTE (subtle):
+- Logo for "${canonicalBrand}" is attached but only loosely related to the video topic
+- At most one brief sponsor mention in the entire script (e.g. "presented by ${canonicalBrand}")
+- Use ONLY the canonical name above — never speak Hindi and English forms of the same brand
+- Focus voiceover on the user's requested topic\n`;
+        } else if (!canonicalBrand) {
+          assetContext += `\n\nBRAND CONTEXT:\n- Use logo image(s) as visual reference only; extract brand name for visuals if needed\n- Do not force brand name into voiceover unless central to the topic\n`;
         }
         // DISABLED: Scene-basis logo integration
         // assetContext += `- When generating broll_image_prompt and broll_video_prompt, assume the logo will be provided as a reference image (last in order). Describe placement (e.g. on product, lower-third) if needed; do not ask the image model to draw the brand name.\n`;
@@ -1800,9 +2341,9 @@ The visual_style_guide you create should be a synthesis of these tag preferences
           }
         });
         assetContext += `\nSCRIPT GENERATION REQUIREMENTS FOR PRODUCT:\n`;
-        assetContext += `- Use the ACTUAL product name(s) from the analyzed information throughout the script\n`;
-        assetContext += `- Do NOT use placeholders like "[Product Name]" or "[Product]" - use the real product name(s)\n`;
-        assetContext += `- Reference specific product features, colors, and characteristics from the analysis\n`;
+        assetContext += `- Use the actual product name in the hook and close; use pronouns ("it", "this") in middle scenes\n`;
+        assetContext += `- Do NOT use placeholders like "[Product Name]" — use the real name from analysis when needed\n`;
+        assetContext += `- Reference specific product features, colors, and characteristics from the analysis in voiceover\n`;
         assetContext += `- Create scenes that showcase the product accurately based on the analyzed information\n`;
         assetContext += `- Ensure all voiceover and descriptions match the actual product details\n`;
       }
@@ -2388,7 +2929,8 @@ PRESENTATION MODES (assign exactly one per scene via "presentation_mode"):
 FULL PRODUCT FRAMING:
 - hero_flat_lay, environment_scale: COMPLETE product in frame unless environment_scale naturally shows product in context.
 - on_model / detail_macro: waist-up with visible product is OK; do NOT crop to unreadable packaging edges.
-- detail_macro broll_video_prompt: ONLY in-frame motion (slow push-in); NEVER zoom-out to reveal new product areas.
+- detail_macro broll_video_prompt: in-frame motion only (rack_focus or slow_push_in); NEVER zoom-out to reveal new product areas.
+${CAMERA_MOTION_SCRIPT_GUIDE}
 
 CRITICAL IMAGE COMPOSITION RULES:
 - ONE SINGLE IMAGE per scene — NEVER grid, collage, or split-screen
@@ -2428,9 +2970,10 @@ Structure Your Output in This JSON Format:
       "presentation_mode": "hero_flat_lay",
       "requires_human": false,
       "camera_shot": "Overhead flat-lay, full product centered, label readable",
+      "camera_motion": "slow_push_in",
       "broll_visual_description": "Commercial product shot description tied to presentation_mode",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [PRESENTATION: hero_flat_lay] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: same product as reference; full product in frame] Photorealistic commercial product photograph",
-      "broll_video_prompt": "[PRESENTATION: hero_flat_lay] [Color palette: X] ... subtle in-frame push-in only; NO zoom-out revealing new product areas"
+      "broll_video_prompt": "[PRESENTATION: hero_flat_lay] [camera_motion: slow_push_in] [Color palette: X] ... describe the assigned camera_motion in natural language; in-frame only; NO zoom-out revealing new product areas"
     }
   ],
   "notes": "Commercial product ad — voiceover only, silent b-roll, no lip-sync"
@@ -2447,7 +2990,7 @@ SHOT MIX RULES (follow PRODUCT PRESENTATION PLAN in asset context):
 - display_mannequin: living person FORBIDDEN — retail display prop/holder only; specify holder type in camera_shot (e.g. "black velvet necklace bust", "watch T-bar stand")
 
 CRITICAL PROMPT GENERATION RULES:
-1. EVERY scene MUST include presentation_mode, requires_human, camera_shot
+1. EVERY scene MUST include presentation_mode, requires_human, camera_shot, camera_motion
 2. EVERY broll_image_prompt MUST start with [COMPOSITION: ...] and include [PRESENTATION: <mode>]
 3. Mode-specific: on_model → silent fashion ad still, model wearing exact product, no microphone; display_mannequin → specific retail holder (necklace bust, watch stand, earring T-stand), no living person, no hands; hands_interaction → hands + product only (e.g. hand holding earring near bust)
 4. PHOTOREALISTIC output — prepend "Photorealistic, commercial product photograph, real-world, " in scene-specific descriptions
@@ -2729,6 +3272,10 @@ REGION CONTEXT (CRITICAL - Indian Default):
               id: asset.originalAsset?.id || asset.id,
               category: asset.category,
               extractedText: asset.extractedText,
+              brandName: asset.brandName,
+              brandNameVariants: asset.brandNameVariants,
+              tagline: asset.tagline,
+              rawLogoText: asset.rawLogoText || asset.extractedText,
               productInfo: asset.productInfo,
               url: asset.originalAsset?.url || asset.url,
               visualScriptContext:
@@ -3029,8 +3576,9 @@ Assign presentation_mode per scene following this mix (±1 scene tolerance). Whe
       profile: plan?.profile,
     };
     const lockedForm = inferProductForm(formCtx);
+    let prevMotion: CameraMotion | undefined;
 
-    for (const scene of scenes) {
+    scenes.forEach((scene: any, sceneIdx: number) => {
       let mode = typeof scene.presentation_mode === 'string' ? scene.presentation_mode.trim() : '';
       if (!validModes.has(mode as PresentationMode)) {
         mode = 'hero_flat_lay';
@@ -3076,6 +3624,16 @@ Assign presentation_mode per scene following this mix (±1 scene tolerance). Whe
         }
       }
 
+      let motion = normalizeCameraMotion(scene.camera_motion, mode as PresentationMode);
+      const motionPool = MODE_CAMERA_MOTIONS[mode as PresentationMode] || MODE_CAMERA_MOTIONS.hero_flat_lay;
+      if (prevMotion && motion === prevMotion && scenes.length > 2) {
+        motion = motionPool.find((m) => m !== prevMotion) || inferDefaultCameraMotion(mode as PresentationMode, sceneIdx);
+      } else if (!scene.camera_motion) {
+        motion = inferDefaultCameraMotion(mode as PresentationMode, sceneIdx);
+      }
+      scene.camera_motion = motion;
+      prevMotion = motion;
+
       for (const field of ['broll_image_prompt', 'broll_video_prompt', 'broll_visual_description'] as const) {
         if (typeof scene[field] === 'string') {
           scene[field] = sanitizePromptForProductForm(scene[field], formCtx);
@@ -3090,19 +3648,22 @@ Assign presentation_mode per scene following this mix (±1 scene tolerance). Whe
       }
 
       const presentationTag = `[PRESENTATION: ${mode}]`;
+      const motionTag = `[camera_motion: ${motion}]`;
       if (
         typeof scene.broll_image_prompt === 'string' &&
         !scene.broll_image_prompt.includes('[PRESENTATION:')
       ) {
         scene.broll_image_prompt = `${presentationTag} ${scene.broll_image_prompt}`;
       }
-      if (
-        typeof scene.broll_video_prompt === 'string' &&
-        !scene.broll_video_prompt.includes('[PRESENTATION:')
-      ) {
-        scene.broll_video_prompt = `${presentationTag} ${scene.broll_video_prompt}`;
+      if (typeof scene.broll_video_prompt === 'string') {
+        if (!scene.broll_video_prompt.includes('[PRESENTATION:')) {
+          scene.broll_video_prompt = `${presentationTag} ${scene.broll_video_prompt}`;
+        }
+        if (!scene.broll_video_prompt.includes('[camera_motion:')) {
+          scene.broll_video_prompt = `${motionTag} ${scene.broll_video_prompt}`;
+        }
       }
-    }
+    });
 
     const hasOnModel = scenes.some((s: any) => s.presentation_mode === 'on_model');
     if (hasOnModel && !humanDiscouraged) {
@@ -3134,9 +3695,32 @@ Assign presentation_mode per scene following this mix (±1 scene tolerance). Whe
       }
       if (issues.length) {
         this.logger.warn(
-          `PRODUCT_ONLY shot mix deviation: ${issues.join('; ')}`,
+          `PRODUCT_ONLY shot mix deviation: ${issues.join('; ')} — reassigning presentation modes`,
           'ScriptsService',
         );
+        const targetModes: PresentationMode[] = [];
+        for (const entry of plan.shotMix) {
+          const n = Math.max(1, Math.round(entry.share * scenes.length));
+          for (let i = 0; i < n; i++) targetModes.push(entry.mode);
+        }
+        while (targetModes.length < scenes.length) {
+          const fill =
+            plan.shotMix[targetModes.length % plan.shotMix.length]?.mode || 'hero_flat_lay';
+          targetModes.push(fill);
+        }
+        let motionCursor = 0;
+        scenes.forEach((scene: any, idx: number) => {
+          const assigned = targetModes[idx % targetModes.length];
+          if (humanDiscouraged && (assigned === 'on_model' || assigned === 'hands_interaction')) {
+            scene.presentation_mode = 'hero_flat_lay';
+          } else if (assigned === 'display_mannequin' && !hasDedicatedDisplayHolder(lockedForm)) {
+            scene.presentation_mode = 'hero_flat_lay';
+          } else {
+            scene.presentation_mode = assigned;
+          }
+          const mode = scene.presentation_mode as PresentationMode;
+          scene.camera_motion = inferDefaultCameraMotion(mode, motionCursor++);
+        });
       }
     }
 
@@ -3192,7 +3776,7 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
   private normalizePrompts(
     scriptData: any,
     _language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
-    opts?: { injectReferenceIdentityHint?: boolean },
+    opts?: { injectReferenceIdentityHint?: boolean; skipGenericVideoMotion?: boolean },
   ): any {
     if (!scriptData) return scriptData;
 
@@ -3252,6 +3836,9 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
       }
 
       if (scene.broll_video_prompt) {
+        const motionSuffix = opts?.skipGenericVideoMotion
+          ? ''
+          : ' with dynamic movement and cinematic motion';
         if (!this.hasStyleParameters(scene.broll_video_prompt)) {
           let sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
           if (
@@ -3260,8 +3847,8 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
           ) {
             sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
           }
-          scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
-        } else {
+          scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}${motionSuffix}]`;
+        } else if (!opts?.skipGenericVideoMotion) {
           let sceneSpecific = this.extractSceneSpecific(scene.broll_video_prompt) || scene.broll_visual_description || sceneFallbackMotion;
           if (
             opts?.injectReferenceIdentityHint &&
@@ -3269,7 +3856,7 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
           ) {
             sceneSpecific = this.appendReferenceIdentityHintToSceneText(sceneSpecific);
           }
-          scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific} with dynamic movement and cinematic motion]`;
+          scene.broll_video_prompt = `${stylePrefix} [Scene-specific: ${sceneSpecific}${motionSuffix}]`;
         }
         if (videoTopic && videoTopic.trim() && !scene.broll_video_prompt.includes('[Video topic:')) {
           scene.broll_video_prompt = `[Video topic: ${videoTopic.trim()}. ] ${scene.broll_video_prompt}`;

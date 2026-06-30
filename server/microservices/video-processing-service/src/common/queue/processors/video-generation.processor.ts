@@ -591,9 +591,20 @@ export class VideoGenerationProcessor extends WorkerHost {
       if (project.style === 'PRODUCT_ONLY') {
         const script =
           typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
-        const mode =
-          getScenePresentationFromScript(script, sceneNumber).presentation_mode || 'hero_flat_lay';
-        videoPrompt += buildProductOnlyVideoMotionSuffix(mode);
+        const scenePresentation = getScenePresentationFromScript(script, sceneNumber);
+        const mode = scenePresentation.presentation_mode || 'hero_flat_lay';
+        const sceneIdx = Math.max(0, sceneNumber - 1);
+        if (
+          scenePresentation.camera_shot?.trim() &&
+          !/\b(pan|push|slide|orbit|drift|handheld|dolly|track|rack focus|motion)\b/i.test(videoPrompt)
+        ) {
+          videoPrompt += ` [Camera framing: ${scenePresentation.camera_shot.trim()}]`;
+        }
+        videoPrompt += buildProductOnlyVideoMotionSuffix(
+          mode,
+          scenePresentation.camera_motion,
+          sceneIdx,
+        );
       } else {
         videoPrompt += ` [CRITICAL MOTION: Use only subtle in-frame motion — slow push-in, gentle drift, or slight parallax within existing pixels. Do NOT zoom out, pull back, dolly out, or pan to reveal new areas of the product or packaging that are not already fully visible in the source image. Do NOT invent or complete cropped-off labels or product geometry.]`;
       }

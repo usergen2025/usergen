@@ -1,6 +1,10 @@
 import {
+  buildProductOnlyVideoMotionSuffix as buildSharedProductOnlyVideoMotionSuffix,
+  CameraMotion,
+  PresentationMode as SharedPresentationMode,
+} from '@shared/product/product-camera-motion';
+import {
   PresentationMode,
-  PresentationProfile,
   ProductPresentationPlan,
 } from './product-presentation.types';
 import {
@@ -156,23 +160,16 @@ export function sanitizeProductOnlyScenePrompt(
   );
 }
 
-export function buildProductOnlyVideoMotionSuffix(mode: PresentationMode): string {
-  switch (mode) {
-    case 'on_model':
-      return ' [MOTION: gentle breathing, slight head turn or fabric/light shift; no mouth movement or speaking emphasis; subtle in-frame motion only]';
-    case 'display_mannequin':
-      return ' [MOTION: slow pan across retail display holder and product; subtle showroom lighting shift; in-frame motion only; NO living person]';
-    case 'hands_interaction':
-      return ' [MOTION: subtle hand movement presenting or adjusting product; in-frame motion only]';
-    case 'environment_scale':
-      return ' [MOTION: slow tracking or ambient environmental motion; in-frame only]';
-    case 'lifestyle_context':
-      return ' [MOTION: gentle ambient lifestyle motion; in-frame only]';
-    case 'detail_macro':
-    case 'hero_flat_lay':
-    default:
-      return ' [CRITICAL MOTION: Use only subtle in-frame motion — slow push-in, gentle drift, or slight parallax within existing pixels. Do NOT zoom out, pull back, dolly out, or pan to reveal new areas of the product or packaging that are not already fully visible in the source image.]';
-  }
+export function buildProductOnlyVideoMotionSuffix(
+  mode: PresentationMode,
+  cameraMotion?: CameraMotion,
+  sceneIndex = 0,
+): string {
+  return buildSharedProductOnlyVideoMotionSuffix(
+    mode as SharedPresentationMode,
+    cameraMotion,
+    sceneIndex,
+  );
 }
 
 export { inferProductForm, buildProductFormLockSuffix } from './product-form.util';

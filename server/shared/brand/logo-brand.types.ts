@@ -26,6 +26,12 @@ export interface LogoBrandOverlayPolicy {
 export interface LogoBrandMetadata {
   sourceAssetId: string;
   brandName?: string;
+  /** All language/script forms of the brand from logo OCR. */
+  brandNameVariants?: string[];
+  /** Tagline/slogan if separable from brand name. */
+  tagline?: string;
+  /** Full logo OCR; same as extractedText for logos. */
+  rawLogoText?: string;
   dominantColors: string[];
   backgroundType?: 'transparent' | 'solid' | 'busy' | 'unknown';
   cropBox?: { x: number; y: number; w: number; h: number };

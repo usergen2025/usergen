@@ -7,6 +7,8 @@ import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
 import { httpImageToOpenAIDataUrl } from '../common/openai/openai-vision-image.util';
 import { extractAssistantText, formatCompletionDiagnostics } from '../common/openai/openai-completion.util';
 
+import { inferBrandNameVariantsFromRaw } from '@shared/brand/logo-brand-voiceover.util';
+
 export type RecommendedUsage = 'reference_only' | 'direct_broll' | 'background';
 export type UrlContentType = 'image' | 'html' | 'unknown';
 
@@ -29,7 +31,14 @@ export interface AnalyzedAsset {
     userLabel?: string;
   };
   category: 'logo' | 'product' | 'background' | 'branding' | 'reference' | 'environment';
-  extractedText?: string; // For logos
+  extractedText?: string; // For logos: full OCR (backward compat = rawLogoText)
+  /** Primary speakable brand name (single form); from vision brandName field. */
+  brandName?: string;
+  /** All language/script variants of the same brand on the logo. */
+  brandNameVariants?: string[];
+  tagline?: string;
+  /** Full logo OCR text; same as extractedText for logos. */
+  rawLogoText?: string;
   productInfo?: {
     name?: string;
     type?: string;
@@ -125,8 +134,9 @@ export class AssetAnalysisService {
       // Extract category
       const category = this.extractCategoryFromAnalysis(analysis, userLabel);
 
-      // Extract text if it's a logo
-      const extractedText = category === 'logo' ? this.extractTextFromLogo(analysis) : undefined;
+      // Extract logo / product fields
+      const logoFields =
+        category === 'logo' ? this.extractLogoBrandFields(analysis) : {};
 
       // Extract product info if it's a product
       const productInfo = category === 'product' ? this.extractProductInfo(analysis) : undefined;
@@ -167,7 +177,7 @@ export class AssetAnalysisService {
           userLabel,
         },
         category,
-        extractedText,
+        ...(category === 'logo' ? logoFields : {}),
         productInfo,
         confidence,
         suitableForReferenceOverlay,
@@ -254,7 +264,9 @@ export class AssetAnalysisService {
       return `Analyze this image and determine:
 1. Is this a logo? (yes/no with confidence score 0-1)
 2. What text is visible in the logo? (extract ALL text exactly as it appears, including brand names, company names, taglines)
-3. What is the primary brand name? (extract the main brand/company name)
+3. What is the primary brand name? (ONE canonical form only — pick English/Latin OR Hindi/Devanagari, NOT both concatenated)
+3b. If the same brand appears in multiple languages/scripts (e.g. Hindi + English), list EVERY variant in brandNameVariants array. Do NOT put all scripts into brandName.
+3c. Separate tagline/slogan from brandName when possible (put tagline in tagline field).
 4. What colors are used in the logo?
 5. What is the design style? (modern, classic, minimalist, etc.)
 6. Is the logo on a clean or solid/transparent background suitable for use as a reference overlay in image generation (e.g. logo on white/black/transparent)? Set suitableForReferenceOverlay true only if the logo can be cleanly used as a reference image.
@@ -270,8 +282,11 @@ Return your analysis as a JSON object with the following structure:
 {
   "isLogo": true/false,
   "confidence": 0.0-1.0,
-  "extractedText": "all text visible in the logo",
-  "brandName": "primary brand name",
+  "extractedText": "all text visible in the logo (full OCR for reference only — not for voiceover)",
+  "rawLogoText": "same as extractedText — complete OCR",
+  "brandName": "primary brand name in ONE language/script only",
+  "brandNameVariants": ["optional array of each language/script form of the same brand"],
+  "tagline": "slogan or tagline if separable from brand name, else null",
   "colors": ["color1", "color2"],
   "designStyle": "style description",
   "suitableForReferenceOverlay": true/false,
@@ -326,7 +341,7 @@ Return your analysis as a JSON object with the following structure:
 Analyze the image and determine:
 1. The most appropriate category
 2. Confidence score (0.0-1.0)
-3. If it's a logo, extract all visible text, set suitableForReferenceOverlay (true if clean/solid background), and suitableForTopRightBug (true only if compact mark readable at small corner size, false for wide banners)
+3. If it's a logo, extract all visible text into extractedText/rawLogoText, set brandName to ONE canonical form, list all script variants in brandNameVariants, and set suitableForReferenceOverlay (true if clean/solid background), suitableForTopRightBug (true only if compact mark readable at small corner size, false for wide banners)
 4. If it's a product, extract product name, type, key features, and set canUseAsDirectBroll (false if background busy/stylized) and recommendedUsage ("reference_only" or "direct_broll")
 5. If it's a background/environment, describe the setting and set suitableAsBackground (true if usable as background layer)
 6. visualScriptContext: REQUIRED. Write 2–6 sentences: neutral, factual visual inventory—setting, lighting, composition, apparel/objects, colors, materials, mood—for marketing copy and B-roll briefs. Staged commercial/catalog style. Do NOT identify or name real individuals.
@@ -492,15 +507,58 @@ Return your analysis as a JSON object with the following structure:
   }
 
   /**
-   * Extract text from logo analysis
+   * Extract structured logo brand fields from vision analysis.
+   */
+  private extractLogoBrandFields(analysis: any): {
+    rawLogoText?: string;
+    extractedText?: string;
+    brandName?: string;
+    brandNameVariants?: string[];
+    tagline?: string;
+  } {
+    const rawLogoText =
+      (typeof analysis?.rawLogoText === 'string' && analysis.rawLogoText.trim()) ||
+      (typeof analysis?.extractedText === 'string' && analysis.extractedText.trim()) ||
+      (typeof analysis?.text === 'string' && analysis.text.trim()) ||
+      (typeof analysis?.logoText === 'string' && analysis.logoText.trim()) ||
+      undefined;
+
+    let brandName =
+      typeof analysis?.brandName === 'string' ? analysis.brandName.trim() : undefined;
+
+    let brandNameVariants: string[] = [];
+    if (Array.isArray(analysis?.brandNameVariants)) {
+      brandNameVariants = analysis.brandNameVariants
+        .map((v: unknown) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v: string) => v.length >= 2);
+    }
+    if (brandNameVariants.length === 0 && rawLogoText) {
+      brandNameVariants = inferBrandNameVariantsFromRaw(rawLogoText);
+    }
+
+    const tagline =
+      typeof analysis?.tagline === 'string' && analysis.tagline.trim()
+        ? analysis.tagline.trim()
+        : undefined;
+
+    if (!brandName && brandNameVariants.length === 1) {
+      brandName = brandNameVariants[0];
+    }
+
+    return {
+      rawLogoText,
+      extractedText: rawLogoText,
+      brandName,
+      brandNameVariants: brandNameVariants.length ? brandNameVariants : undefined,
+      tagline,
+    };
+  }
+
+  /**
+   * @deprecated Use extractLogoBrandFields — kept for callers expecting raw OCR string.
    */
   private extractTextFromLogo(analysis: any): string | undefined {
-    // Try multiple possible fields
-    return analysis.extractedText || 
-           analysis.brandName || 
-           analysis.text || 
-           analysis.logoText ||
-           undefined;
+    return this.extractLogoBrandFields(analysis).rawLogoText;
   }
 
   /**

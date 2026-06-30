@@ -12,6 +12,9 @@
 
 | Field | Purpose |
 |-------|---------|
+| `brandName` | **Canonical speakable brand name** for voiceover (one language/script). Resolved at preprocessing from vision `brandName` or `resolveCanonicalBrandName()` — not raw OCR. |
+| `brandNameVariants` | All language/script forms of the same brand (e.g. Hindi + English on one logo). Script generation picks one per project `language`. |
+| `rawLogoText` | Full logo OCR (all visible text). Reference only — do not use for voiceover. |
 | `sourceLogo` | Original uploaded logo (`StorageRef`) |
 | `cornerOverlay` | Trimmed alpha PNG for top-right bug |
 | `endCardLogo` | Larger mark for outro center |
@@ -67,9 +70,37 @@ ls server/microservices/video-processing-service/uploads/logos/PROJECT_ID/
 - `sharp` (image ops)
 - `scripts/remove_image_background.py` + Python `rembg` (optional)
 
+## Analyzed logo assets (`metadata.analyzedAssets[]`)
+
+When a logo is analyzed, each entry includes:
+
+| Field | Purpose |
+|-------|---------|
+| `extractedText` | Full OCR (backward compatible alias of `rawLogoText`) |
+| `rawLogoText` | Same as `extractedText` — complete visible text on logo |
+| `brandName` | Primary brand in **one** script/language (vision) |
+| `brandNameVariants` | Every script variant of the same brand |
+| `tagline` | Slogan/tagline when separable from brand name |
+
+## Script language → canonical brand
+
+| Project `language` | Voiceover uses |
+|--------------------|----------------|
+| `hindi` | Devanagari form (e.g. `बैंग बैंग नूडल`) |
+| `english` | Latin/English form (e.g. `Bang Bang Noodle`) |
+| `hinglish` | Latin/English form (same as English) |
+
+`ScriptsService` calls `resolveCanonicalBrandName()` at script time. Legacy projects whose `logoBrand.brandName` still holds bilingual OCR are canonicalized at runtime without re-upload.
+
+**Script hardening (voiceover):**
+- Logo images are **not** sent to the script LLM vision API (product/reference images still are).
+- Multilingual raw OCR is omitted from prompts when the logo spans multiple scripts.
+- After generation, `dedupeMultilingualBrandInVoiceover()` deterministically replaces bilingual brand recitation with the canonical name in every scene.
+- If validation still flags duplication, a text-only retry runs before final cleanup.
+
 ## Downstream
 
-- **Script:** `metadata.logoBrand.brandName` preferred in `ScriptsService`.
+- **Script:** `resolveCanonicalBrandName()` + `metadata.logoBrand.brandName` / `analyzedAssets[].brandName`. Prompts include one speakable name; validation blocks Hindi+English duplication in the same scene.
 - **Phase B:** `POST /api/video-projects/:id/brand-packaging/start` (triggered from AI Chat audio start + asset analysis).
 - **Repair:** `POST /api/video-projects/:id/repair-brand-metadata` — parse legacy stringified `metadata.assets`, re-queue analysis + brand-packaging.
 - **Render:** `BrandVideoPostProcessorService` uses local paths only at finalize (BytePlus only in Phase B for plates/corner variant).

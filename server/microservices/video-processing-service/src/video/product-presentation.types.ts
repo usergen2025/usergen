@@ -45,10 +45,15 @@ export interface EphemeralPresenterMeta {
   prompt: string;
 }
 
+import { normalizeCameraMotion, type CameraMotion } from '@shared/product/product-camera-motion';
+
+export type { CameraMotion };
+
 export interface ProductScenePresentation {
   presentation_mode?: PresentationMode;
   requires_human?: boolean;
   camera_shot?: string;
+  camera_motion?: CameraMotion;
 }
 
 const VALID_MODES: PresentationMode[] = [
@@ -78,10 +83,13 @@ export function getScenePresentationFromScript(
     (s) => (s.scene_number || s.sceneNumber) === sceneNumber,
   );
   if (!scene) return {};
+  const mode = normalizePresentationMode(scene.presentation_mode);
+  const sceneIdx = Math.max(0, (scenes as any[]).indexOf(scene));
   return {
-    presentation_mode: normalizePresentationMode(scene.presentation_mode),
+    presentation_mode: mode,
     requires_human: Boolean(scene.requires_human),
     camera_shot: typeof scene.camera_shot === 'string' ? scene.camera_shot : undefined,
+    camera_motion: normalizeCameraMotion(scene.camera_motion, mode),
   };
 }
 

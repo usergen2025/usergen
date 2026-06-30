@@ -12,6 +12,7 @@ import {
   logoBrandHasPackagingAssets,
 } from '@shared/brand/logo-brand.types';
 import { parseMetadataAssets } from '@shared/brand';
+import { resolveCanonicalBrandName } from '@shared/brand/logo-brand-voiceover.util';
 import { storageResultToRef } from '@shared/storage';
 
 export interface ResolveLogoBrandInput {
@@ -152,10 +153,21 @@ export class BrandLogoResolverService {
           logoAnalyzed.originalAsset?.originalUrl ||
           logoAnalyzed.url;
         if (url) {
+          const brandName =
+            logoAnalyzed.brandName?.trim() ||
+            resolveCanonicalBrandName(
+              {
+                rawLogoText: logoAnalyzed.rawLogoText || logoAnalyzed.extractedText,
+                brandName: logoAnalyzed.brandName,
+                brandNameVariants: logoAnalyzed.brandNameVariants,
+              },
+              'english',
+            ) ||
+            logoAnalyzed.extractedText;
           return {
             assetId: logoAnalyzed.originalAsset?.id || logoAnalyzed.id || 'logo',
             url,
-            brandName: logoAnalyzed.extractedText,
+            brandName,
             suitableForTopRightBug: logoAnalyzed.suitableForTopRightBug,
             logoProcessingHints: logoAnalyzed.logoProcessingHints,
           };
