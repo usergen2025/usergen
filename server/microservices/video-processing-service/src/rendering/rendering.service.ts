@@ -1035,6 +1035,74 @@ export class RenderingService {
     return audioFile.filePath || null;
   }
 
+  /** Resolve a project audio file record to an on-disk path. */
+  private resolveAudioPathOnDisk(audioFile: any): string | null {
+    const audioFilePath = this.getAudioFilePath(audioFile);
+    if (!audioFilePath) return null;
+
+    if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
+      return audioFilePath;
+    }
+
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+    const rel = audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath;
+
+    for (const candidate of [
+      path.join(voiceServiceDir, rel),
+      path.join(serverRoot, rel),
+      path.join(process.cwd(), rel),
+    ]) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+
+    return null;
+  }
+
+  /** Resolve a b-roll video task to a local file path (AI or stock). */
+  private resolveBrollVideoPathOnDisk(
+    v: any,
+    userDir: string,
+    serverRoot: string,
+    sceneLabel: string,
+  ): string | null {
+    let videoPath: string | null = null;
+
+    if (v.localPath) {
+      videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
+    } else if (v.localUrl) {
+      const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
+
+      if (urlPath.includes('/uploads/stock/')) {
+        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+        videoPath = path.join(mediaServiceDir, urlPath);
+      } else {
+        const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
+        videoPath = path.join(userDir, relativePath);
+      }
+    }
+
+    if (videoPath && fs.existsSync(videoPath)) {
+      return videoPath;
+    }
+
+    if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
+      const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
+      const stockPath = path.join(mediaServiceDir, v.localUrl);
+      if (fs.existsSync(stockPath)) {
+        console.log(
+          `[RenderingService] ${sceneLabel}: Found stock video at fallback path: ${stockPath}`,
+        );
+        return stockPath;
+      }
+    }
+
+    console.warn(
+      `[RenderingService] ${sceneLabel}: B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`,
+    );
+    return null;
+  }
+
   /**
    * Public method for AlternateAvatarService and other consumers to fetch avatar details for ALTERNATE style
    */
@@ -3008,6 +3076,15 @@ export class RenderingService {
         await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
         if (fs.existsSync(scaledPath)) videoPath = scaledPath;
       }
+      const targetDur = audioFile.duration || 0;
+      if (targetDur > 0) {
+        const refitPath = path.join(userDir, `refit_broll_${sceneNumber}_${projectId}.mp4`);
+        videoPath = await this.videoCompositor.refitVideoToTargetDuration(
+          videoPath,
+          refitPath,
+          targetDur,
+        );
+      }
       const completePath = path.join(userDir, `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`);
       await this.videoCompositor.addAudioToVideo(videoPath, audioPath, completePath);
       sceneVideoPaths.push(path.resolve(completePath));
@@ -3235,10 +3312,8 @@ export class RenderingService {
   }
 
   /**
-   * Process PRODUCT_ONLY style:
-   * - Stitch all b-roll videos together
-   * - Stitch all audio files together
-   * - Combine into final video (no avatar)
+   * Process B_ROLL_ONLY / PRODUCT_ONLY styles:
+   * - Per scene: refit video to audio duration, mux voice, then stitch (no global -shortest drift)
    */
   private async processProductOnly(
     projectId: string,
@@ -3247,133 +3322,106 @@ export class RenderingService {
     bRollVideos: any[],
     project: any
   ): Promise<void> {
-    console.log(`[RenderingService] Processing PRODUCT_ONLY style for project ${projectId}`);
+    const styleLabel = String(project.style || 'PRODUCT_ONLY');
+    console.log(`[RenderingService] Processing ${styleLabel} style for project ${projectId}`);
 
-    // Sort by scene number
     const sortedBrollVideos = [...bRollVideos].sort((a, b) => a.sceneNumber - b.sceneNumber);
     const sortedAudioFiles = [...audioFiles].sort((a, b) => a.sceneNumber - b.sceneNumber);
 
-    await this.updateRenderingStatus(projectId, 'stitching_audio', 20);
+    await this.updateRenderingStatus(projectId, 'stitching_broll', 30);
 
-    // Setup paths
     const userDir = path.join(this.uploadsDir, 'videos', userId);
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
     }
 
     const serverRoot = path.join(process.cwd(), '..', '..');
-    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+    const sceneVideoPaths: string[] = [];
 
-    // Resolve audio paths
-    const audioPaths = sortedAudioFiles.map(af => {
-      const audioFilePath = this.getAudioFilePath(af);
-      if (!audioFilePath) return null;
-      
-      let resolvedPath: string | null = null;
-      
-      if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
-        resolvedPath = audioFilePath;
-      } else {
-        const voiceServicePath = path.join(voiceServiceDir, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
-        if (fs.existsSync(voiceServicePath)) {
-          resolvedPath = voiceServicePath;
-        } else {
-          const serverRootPath = path.join(serverRoot, audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
-          if (fs.existsSync(serverRootPath)) {
-            resolvedPath = serverRootPath;
-          } else {
-            const cwdPath = path.join(process.cwd(), audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath);
-            if (fs.existsSync(cwdPath)) {
-              resolvedPath = cwdPath;
-            }
-          }
+    for (const brollVideo of sortedBrollVideos) {
+      const sceneNumber = brollVideo.sceneNumber;
+      const audioFile = sortedAudioFiles.find((af) => af.sceneNumber === sceneNumber);
+      if (!audioFile) {
+        throw new Error(`Missing audio file for scene ${sceneNumber}`);
+      }
+      if (!audioFile.duration || audioFile.duration <= 0) {
+        throw new Error(`Invalid audio duration for scene ${sceneNumber}`);
+      }
+
+      let videoPath = this.resolveBrollVideoPathOnDisk(
+        brollVideo,
+        userDir,
+        serverRoot,
+        styleLabel,
+      );
+      if (!videoPath) {
+        throw new Error(`B-roll video not found for scene ${sceneNumber}`);
+      }
+
+      const audioPath = this.resolveAudioPathOnDisk(audioFile);
+      if (!audioPath) {
+        throw new Error(`Audio file not found for scene ${sceneNumber}`);
+      }
+
+      const targetDur = audioFile.duration;
+      const videoDurBefore = await this.videoCompositor.getVideoDuration(videoPath).catch(() => 0);
+      if (videoDurBefore > 0 && Math.abs(videoDurBefore - targetDur) >= 0.3) {
+        console.log(
+          `[RenderingService] ${styleLabel}: Scene ${sceneNumber} refitting video ` +
+            `${videoDurBefore.toFixed(2)}s → ${targetDur.toFixed(2)}s to match voiceover`,
+        );
+        const refitPath = path.join(userDir, `refit_scene_${sceneNumber}_${projectId}.mp4`);
+        videoPath = await this.videoCompositor.refitVideoToTargetDuration(
+          videoPath,
+          refitPath,
+          targetDur,
+        );
+      }
+
+      const brollRes = await this.videoCompositor.getVideoResolution(videoPath);
+      if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
+        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+        await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
+        if (fs.existsSync(scaledPath)) {
+          videoPath = scaledPath;
         }
       }
-      
-      if (!resolvedPath) {
-        console.warn(`[RenderingService] Audio file not found: ${audioFilePath}`);
-      }
-      return resolvedPath;
-    }).filter(p => p !== null && fs.existsSync(p)) as string[];
 
-    if (audioPaths.length === 0) {
-      throw new Error('No valid audio file paths found for stitching');
+      const completePath = path.join(
+        userDir,
+        `complete_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`,
+      );
+      await this.videoCompositor.addAudioToVideo(videoPath, audioPath, completePath);
+
+      const muxedDur = await this.videoCompositor.getVideoDuration(completePath).catch(() => 0);
+      console.log(
+        `[RenderingService] ${styleLabel}: Scene ${sceneNumber} muxed ` +
+          `(audio=${targetDur.toFixed(2)}s, output=${muxedDur.toFixed(2)}s)`,
+      );
+
+      sceneVideoPaths.push(path.resolve(completePath));
     }
 
-    // Stitch audio
-    const stitchedAudioPath = path.join(userDir, `stitched_audio_${projectId}.mp3`);
-    console.log(`[RenderingService] PRODUCT_ONLY: Stitching ${audioPaths.length} audio files...`);
-    await this.videoCompositor.concatenateAudios(audioPaths, stitchedAudioPath);
-
-    await this.updateRenderingStatus(projectId, 'stitching_broll', 40);
-
-    // Helper to resolve video paths, supporting both regular and stock video paths
-    const resolveVideoPathProductOnly = (v: any): string | null => {
-      let videoPath: string | null = null;
-      
-      if (v.localPath) {
-        videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
-      } else if (v.localUrl) {
-        const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
-        
-        // Handle different localUrl formats:
-        // - /uploads/videos/{userId}/{filename} (AI-generated)
-        // - /uploads/stock/{projectId}/{filename} (stock videos)
-        if (urlPath.includes('/uploads/stock/')) {
-          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-          videoPath = path.join(mediaServiceDir, urlPath);
-        } else {
-          const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-          videoPath = path.join(userDir, relativePath);
-        }
-      }
-      
-      // Check primary path
-      if (videoPath && fs.existsSync(videoPath)) {
-        return videoPath;
-      }
-      
-      // Fallback: Try stock path
-      if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
-        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-        const stockPath = path.join(mediaServiceDir, v.localUrl);
-        if (fs.existsSync(stockPath)) {
-          console.log(`[RenderingService] PRODUCT_ONLY: Found stock video at fallback path: ${stockPath}`);
-          return stockPath;
-        }
-      }
-      
-      console.warn(`[RenderingService] PRODUCT_ONLY: B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`);
-      return null;
-    };
-    
-    // Resolve b-roll video paths
-    const videoPaths = sortedBrollVideos.map(v => resolveVideoPathProductOnly(v)).filter(p => p !== null) as string[];
-
-    if (videoPaths.length === 0) {
-      throw new Error('No valid b-roll video paths found for stitching');
+    if (sceneVideoPaths.length === 0) {
+      throw new Error('No valid scene videos found for stitching');
     }
-
-    // Stitch b-roll videos
-    const stitchedBrollPath = path.join(userDir, `stitched_broll_${projectId}_${Date.now()}.mp4`);
-    console.log(`[RenderingService] PRODUCT_ONLY: Stitching ${videoPaths.length} b-roll videos...`);
-    await this.videoCompositor.concatenateVideos(videoPaths, stitchedBrollPath);
 
     await this.updateRenderingStatus(projectId, 'stitching', 70);
 
-    // Add stitched audio to stitched video
     let finalVideoPath = path.join(userDir, `final_${projectId}_${Date.now()}.mp4`);
-    await this.videoCompositor.addAudioToVideo(stitchedBrollPath, stitchedAudioPath, finalVideoPath);
+    console.log(
+      `[RenderingService] ${styleLabel}: Stitching ${sceneVideoPaths.length} per-scene clips ` +
+        `(voice already muxed per scene)`,
+    );
+    await this.videoCompositor.concatenateVideos(sceneVideoPaths, finalVideoPath);
 
     finalVideoPath = await this.applyBackgroundMusicIfEnabled(project, finalVideoPath, userDir, projectId);
 
-    // Calculate total duration and scene start times for captions
-    const totalDuration = audioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
-    
-    // Add captions if enabled
+    const totalDuration = sortedAudioFiles.reduce((sum, af) => sum + (af.duration || 0), 0);
+
     if (project.captionsEnabled && project.captionSettings) {
       try {
-        console.log(`[RenderingService] PRODUCT_ONLY: Adding captions to final video...`);
+        console.log(`[RenderingService] ${styleLabel}: Adding captions to final video...`);
         const captionedVideoPath = await this.addCaptionsToFinalVideo(
           finalVideoPath,
           userDir,
@@ -3385,8 +3433,8 @@ export class RenderingService {
           finalVideoPath = captionedVideoPath;
         }
       } catch (captionError: any) {
-        console.error(`[RenderingService] PRODUCT_ONLY: Failed to add captions: ${captionError.message}`);
-        console.warn(`[RenderingService] PRODUCT_ONLY: Proceeding without captions`);
+        console.error(`[RenderingService] ${styleLabel}: Failed to add captions: ${captionError.message}`);
+        console.warn(`[RenderingService] ${styleLabel}: Proceeding without captions`);
       }
     }
 
@@ -3397,7 +3445,7 @@ export class RenderingService {
       finalVideoPath,
       userDir,
       totalDuration,
-      'PRODUCT_ONLY',
+      styleLabel,
     );
   }
 
@@ -3523,6 +3571,16 @@ export class RenderingService {
         if (!audioFilePath || !fs.existsSync(audioFilePath)) {
         console.warn(`[RenderingService] AVATAR_PRODUCT: Audio not found for scene ${sceneNumber}`);
         continue;
+      }
+
+      const targetDur = audioFile.duration;
+      if (targetDur && targetDur > 0) {
+        const refitPath = path.join(userDir, `refit_scene_${sceneNumber}_${projectId}.mp4`);
+        brollVideoPath = await this.videoCompositor.refitVideoToTargetDuration(
+          brollVideoPath,
+          refitPath,
+          targetDur,
+        );
       }
 
       // Add audio to b-roll video

@@ -1452,6 +1452,28 @@ export class VideoCompositorProvider {
   }
 
   /**
+   * Trim or loop a clip so its duration matches the scene audio (within tolerance).
+   */
+  async refitVideoToTargetDuration(
+    inputPath: string,
+    outputPath: string,
+    targetDurationSec: number,
+    toleranceSec = 0.3,
+  ): Promise<string> {
+    if (!targetDurationSec || targetDurationSec <= 0) {
+      return inputPath;
+    }
+    const videoDur = await this.getVideoDuration(inputPath).catch(() => 0);
+    if (!videoDur || Math.abs(videoDur - targetDurationSec) < toleranceSec) {
+      return inputPath;
+    }
+    if (videoDur > targetDurationSec) {
+      return this.trimVideo(inputPath, outputPath, 0, targetDurationSec);
+    }
+    return this.loopVideoToDuration(inputPath, outputPath, targetDurationSec);
+  }
+
+  /**
    * Mix existing voice track from a video file with a background music file.
    * Short BGM is looped via -stream_loop; long BGM is trimmed to video duration (atrim).
    */

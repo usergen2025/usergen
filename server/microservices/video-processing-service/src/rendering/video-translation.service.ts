@@ -923,16 +923,9 @@ export class VideoTranslationService {
     targetDur: number,
   ): Promise<string> {
     const compositor = this.renderingService.getVideoCompositor();
-    const videoDur = await compositor.getVideoDuration(videoPath).catch(() => 0);
-    if (!targetDur || !videoDur || Math.abs(videoDur - targetDur) < 0.3) return videoPath;
-
     const out = path.join(workDir, `refit_${sceneNumber}.mp4`);
-    if (videoDur > targetDur) {
-      await compositor.trimVideo(videoPath, out, 0, targetDur);
-    } else {
-      await compositor.loopVideoToDuration(videoPath, out, targetDur);
-    }
-    return fs.existsSync(out) ? out : videoPath;
+    const refitted = await compositor.refitVideoToTargetDuration(videoPath, out, targetDur);
+    return refitted === videoPath ? videoPath : refitted;
   }
 
   private resolveAudioPath(audioFile: any): string | null {
