@@ -15,12 +15,9 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 import { mkdir } from 'fs/promises';
-import { randomUUID } from 'crypto';
 import { applyUsergenTiledWatermark } from '@shared/ffmpeg/usergen-tiled-watermark';
 import type { Response } from 'express';
-
-const VIDEO_CT_PATTERN =
-  /^(video\/|application\/octet-stream)/i; /* octet-stream for misconfigured servers */
+import { downloadExternalVideo } from './external-url-resolver';
 
 const ALLOWED_EXT = new Set(['.mp4', '.webm', '.mov', '.m4v']);
 
@@ -156,42 +153,15 @@ export class CampaignMediaService {
     return { assetId: asset.id };
   }
 
-  private async validateUrlVideoResponse(url: string, head: { headers: Record<string, unknown> }): Promise<void> {
-    const ct = String(head.headers['content-type'] || head.headers['Content-Type'] || '');
-    const cl = head.headers['content-length'] || head.headers['Content-Length'];
-    if (cl && Number(cl) > MAX_DOWNLOAD_BYTES) {
-      throw new BadRequestException('Video is too large');
-    }
-    if (ct && !VIDEO_CT_PATTERN.test(ct) && !/video\//i.test(ct)) {
-      if (!ALLOWED_EXT.has(path.extname(new URL(url).pathname).toLowerCase())) {
-        throw new BadRequestException('URL does not point to a video (content-type check)');
-      }
-    }
-  }
-
   /**
    * Download external video URL, store, watermark, persist.
+   * Supports direct file links plus Google Drive, Dropbox, OneDrive, and Box share URLs.
    */
   async createFromExternalUrl(
     sourceUrl: string,
     ownerId: string,
     campaignId: string | undefined,
   ): Promise<{ assetId: string }> {
-    let parsed: URL;
-    try {
-      parsed = new URL(sourceUrl);
-    } catch {
-      throw new BadRequestException('Invalid URL');
-    }
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
-      throw new BadRequestException('Only http(s) URLs are allowed');
-    }
-
-    const head = await axios.head(sourceUrl, { maxRedirects: 5, timeout: 20000 }).catch(() => null);
-    if (head) {
-      await this.validateUrlVideoResponse(sourceUrl, head);
-    }
-
     const asset = await this.databaseService.campaignMediaAsset.create({
       data: {
         ownerId,
@@ -203,27 +173,10 @@ export class CampaignMediaService {
     });
 
     try {
-      const res = await axios.get(sourceUrl, {
-        responseType: 'arraybuffer',
-        maxRedirects: 5,
-        maxContentLength: MAX_DOWNLOAD_BYTES,
-        maxBodyLength: MAX_DOWNLOAD_BYTES,
-        timeout: 120000,
-        validateStatus: (s) => s >= 200 && s < 400,
-      });
-      const buf = Buffer.from(res.data);
-      if (buf.length > MAX_DOWNLOAD_BYTES) {
-        throw new BadRequestException('Video is too large');
-      }
-      const ct = String(res.headers['content-type'] || '');
-      if (ct && !VIDEO_CT_PATTERN.test(ct) && !/video\//i.test(ct)) {
-        if (!ALLOWED_EXT.has(path.extname(parsed.pathname).toLowerCase())) {
-          throw new BadRequestException('Response is not a video');
-        }
-      }
-
-      const ext = path.extname(parsed.pathname) || '.mp4';
-      const safeExt = ALLOWED_EXT.has(ext.toLowerCase()) ? ext : '.mp4';
+      const downloaded = await downloadExternalVideo(sourceUrl, MAX_DOWNLOAD_BYTES);
+      const buf = downloaded.buffer;
+      const ct = downloaded.mimeType;
+      const safeExt = ALLOWED_EXT.has(downloaded.ext.toLowerCase()) ? downloaded.ext : '.mp4';
       const subPath = `campaign-drafts/${ownerId}`;
       const origName = `${asset.id}-orig${safeExt}`;
       const localDir = path.join(this.uploadsBaseDir, 'campaign', subPath);
@@ -270,7 +223,8 @@ export class CampaignMediaService {
         data: { status: 'FAILED' as CampaignMediaStatus, error: e?.message || 'ingest failed' },
       });
       if (e instanceof BadRequestException) throw e;
-      throw new BadRequestException(e?.message || 'Failed to download or process video URL');
+      const message = typeof e?.message === 'string' ? e.message : 'Failed to download or process video URL';
+      throw new BadRequestException(message);
     }
 
     return { assetId: asset.id };

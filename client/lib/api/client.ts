@@ -2099,17 +2099,25 @@ class ApiClient {
   ): Promise<ApiResponse<{ assetId: string }>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
-    const response = await axios.post(
-      `${campaignServiceUrl}/campaigns/drafts/ingest-url`,
-      { url, campaignId: params?.campaignId },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    const ingestUrl = `${campaignServiceUrl}/campaigns/drafts/ingest-url`;
+    try {
+      const response = await axios.post(
+        ingestUrl,
+        { url, campaignId: params?.campaignId },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
         },
-      },
-    );
-    return normalizeCampaignAssetResponse(response.data);
+      );
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[apiClient] ingestCreatorDraftFromUrl raw response', response.data);
+      }
+      return normalizeCampaignAssetResponse(response.data);
+    } catch (e) {
+      throwCampaignDraftHttpError('ingestCreatorDraftFromUrl', e);
+    }
   }
 
   async ingestCreatorDraftFromProject(

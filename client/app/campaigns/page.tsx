@@ -906,7 +906,7 @@ export default function CreatorCampaignsPage() {
               <div className="md:col-span-2 space-y-2">
                 <Input
                   variant="brandCapsule"
-                  placeholder="Direct link to a video file (mp4, mov…)"
+                  placeholder="Google Drive, Dropbox, OneDrive, or direct video link (mp4, mov…)"
                   value={applyForm.draftMediaUrl}
                   onChange={(e) => setApplyForm((p) => ({ ...p, draftMediaUrl: e.target.value }))}
                 />
@@ -930,7 +930,7 @@ export default function CreatorCampaignsPage() {
                           projectId: '',
                           projectTitle: 'Video URL',
                         }));
-                        showToast('URL imported', 'success');
+                        showToast('URL imported — video ready', 'success');
                       } else {
                         showToast(res.error || 'Import did not return an asset id', 'error');
                       }
@@ -943,6 +943,13 @@ export default function CreatorCampaignsPage() {
                 >
                   {urlIngestBusy ? 'Validating…' : 'Validate & import URL'}
                 </BrandSecondaryButton>
+                {applyForm.draftAssetId && applyForm.sourceType === 'EXTERNAL_URL' ? (
+                  <p className="text-xs text-emerald-700">URL imported — video ready. You can submit the application.</p>
+                ) : applyForm.draftMediaUrl.trim() && !urlIngestBusy && !applyForm.draftAssetId ? (
+                  <p className="text-xs text-[#616161]">
+                    Click &quot;Validate &amp; import URL&quot; to download and process your video before applying.
+                  </p>
+                ) : null}
               </div>
             ) : null}
             <label className="md:col-span-2 flex items-start gap-2 text-sm text-text-secondary">

@@ -284,7 +284,7 @@ export function CampaignApplyModal({
               <div className="space-y-3">
                 <Input
                   variant="brandCapsule"
-                  placeholder="Direct link to a video file (mp4, mov…)"
+                  placeholder="Google Drive, Dropbox, OneDrive, or direct video link (mp4, mov…)"
                   value={draftMediaUrl}
                   onChange={(e) => setDraftMediaUrl(e.target.value)}
                   icon={<Link2 className="h-4 w-4 text-[#9E9E9E]" />}
@@ -297,12 +297,17 @@ export function CampaignApplyModal({
                     disabled={urlIngestBusy || !draftMediaUrl.trim()}
                     onClick={handleUrlIngest}
                   >
-                    {urlIngestBusy ? 'Processing…' : 'Import URL'}
+                    {urlIngestBusy ? 'Processing…' : 'Validate & import URL'}
                   </BrandSecondaryButton>
                   {draftAssetId && (
                     <span className="text-xs text-emerald-700">URL imported — video ready.</span>
                   )}
                 </div>
+                {draftMediaUrl.trim() && !urlIngestBusy && !draftAssetId && (
+                  <p className="text-xs text-[#616161]">
+                    Click &quot;Validate &amp; import URL&quot; to download and process your video before continuing.
+                  </p>
+                )}
               </div>
             )}
           </div>
