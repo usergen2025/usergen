@@ -8,7 +8,6 @@ import { ProjectLibraryPickerModal } from './ProjectLibraryPickerModal';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { FolderOpen, Upload, Link2, X } from 'lucide-react';
-import { cn } from '@/lib/utils/cn';
 
 export type ApplySourceType = 'PROJECT_LIBRARY' | 'UPLOAD' | 'EXTERNAL_URL';
 
@@ -99,8 +98,8 @@ export function CampaignApplyModal({
     }
   };
 
-  const handleUrlIngest = async () => {
-    if (!campaignId || !draftMediaUrl.trim()) return;
+  const handleUrlIngest = async (): Promise<boolean> => {
+    if (!campaignId || !draftMediaUrl.trim()) return false;
     setUrlIngestBusy(true);
     try {
       const res = await apiClient.ingestCreatorDraftFromUrl(draftMediaUrl.trim(), { campaignId });
@@ -108,12 +107,14 @@ export function CampaignApplyModal({
       if (aid) {
         setDraftAssetId(aid);
         setProjectTitle('Video URL');
-        showToast('URL imported', 'success');
-      } else {
-        showToast(res.error || 'Import did not return an asset id', 'error');
+        showToast('URL imported — you can now continue', 'success');
+        return true;
       }
+      showToast(res.error || 'Import did not return an asset id', 'error');
+      return false;
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : 'Import failed', 'error');
+      return false;
     } finally {
       setUrlIngestBusy(false);
     }
@@ -134,6 +135,15 @@ export function CampaignApplyModal({
   };
 
   const handleConfirm = async () => {
+    if (sourceType === 'EXTERNAL_URL' && !draftAssetId) {
+      if (!draftMediaUrl.trim()) {
+        showToast('Enter a video URL first', 'error');
+        return;
+      }
+      await handleUrlIngest();
+      return;
+    }
+
     if (sourceType === 'PROJECT_LIBRARY' && projectId && !draftAssetId) {
       setConfirmBusy(true);
       try {
@@ -162,8 +172,20 @@ export function CampaignApplyModal({
   };
 
   const isBusy = uploadBusy || urlIngestBusy || confirmBusy;
+  const urlNeedsValidation = sourceType === 'EXTERNAL_URL' && !draftAssetId;
   const hasSelection = Boolean(draftAssetId) || (sourceType === 'PROJECT_LIBRARY' && Boolean(projectId));
-  const canConfirm = hasSelection && !isBusy;
+  const canConfirm = !isBusy && (urlNeedsValidation ? Boolean(draftMediaUrl.trim()) : hasSelection);
+  const primaryLabel = confirmBusy
+    ? 'Processing…'
+    : urlIngestBusy
+      ? 'Validating…'
+      : uploadBusy
+        ? 'Processing…'
+        : urlNeedsValidation
+          ? 'Validate & import'
+          : mode === 'replace'
+            ? 'Use this video'
+            : 'Continue with this video';
 
   return (
     <>
@@ -286,27 +308,16 @@ export function CampaignApplyModal({
                   variant="brandCapsule"
                   placeholder="Google Drive, Dropbox, OneDrive, or direct video link (mp4, mov…)"
                   value={draftMediaUrl}
-                  onChange={(e) => setDraftMediaUrl(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setDraftMediaUrl(next);
+                    if (draftAssetId) setDraftAssetId('');
+                  }}
                   icon={<Link2 className="h-4 w-4 text-[#9E9E9E]" />}
                   iconPosition="left"
                 />
-                <div className="flex flex-wrap items-center gap-2">
-                  <BrandSecondaryButton
-                    type="button"
-                    size="sm"
-                    disabled={urlIngestBusy || !draftMediaUrl.trim()}
-                    onClick={handleUrlIngest}
-                  >
-                    {urlIngestBusy ? 'Processing…' : 'Validate & import URL'}
-                  </BrandSecondaryButton>
-                  {draftAssetId && (
-                    <span className="text-xs text-emerald-700">URL imported — video ready.</span>
-                  )}
-                </div>
-                {draftMediaUrl.trim() && !urlIngestBusy && !draftAssetId && (
-                  <p className="text-xs text-[#616161]">
-                    Click &quot;Validate &amp; import URL&quot; to download and process your video before continuing.
-                  </p>
+                {draftAssetId && (
+                  <p className="text-xs text-emerald-700">URL imported — video ready.</p>
                 )}
               </div>
             )}
@@ -323,11 +334,7 @@ export function CampaignApplyModal({
               disabled={!canConfirm}
               onClick={handleConfirm}
             >
-              {confirmBusy
-                ? 'Processing…'
-                : mode === 'replace'
-                  ? 'Use this video'
-                  : 'Continue with this video'}
+              {primaryLabel}
             </BrandPrimaryButton>
           </div>
         </div>

@@ -595,6 +595,24 @@ export default function CreatorCampaignsPage() {
       ? 'No open campaigns to apply to right now.'
       : `No ${activeTab.toLowerCase()} campaigns match your search.`;
 
+  const isExternalUrlTab = applyForm.sourceType === 'EXTERNAL_URL';
+  const urlNeedsValidation = isExternalUrlTab && !applyForm.draftAssetId;
+  const applyPrimaryLabel = urlIngestBusy
+    ? 'Validating…'
+    : isSubmittingApply
+      ? 'Processing…'
+      : uploadBusy
+        ? 'Uploading…'
+        : urlNeedsValidation
+          ? 'Validate & import'
+          : 'Apply';
+  const applyPrimaryDisabled =
+    isSubmittingApply ||
+    uploadBusy ||
+    urlIngestBusy ||
+    (urlNeedsValidation && !applyForm.draftMediaUrl.trim()) ||
+    (!urlNeedsValidation && !applyForm.draftAssetId && !applyForm.projectId);
+
   return (
     <div className="brand-page-shell brand-page-shell--campaigns">
       <BrandPageHeader
@@ -908,47 +926,17 @@ export default function CreatorCampaignsPage() {
                   variant="brandCapsule"
                   placeholder="Google Drive, Dropbox, OneDrive, or direct video link (mp4, mov…)"
                   value={applyForm.draftMediaUrl}
-                  onChange={(e) => setApplyForm((p) => ({ ...p, draftMediaUrl: e.target.value }))}
-                />
-                <BrandSecondaryButton
-                  type="button"
-                  size="sm"
-                  disabled={urlIngestBusy || !applyForm.draftMediaUrl.trim()}
-                  onClick={async () => {
-                    if (!applyModalCampaign?.id) return;
-                    setUrlIngestBusy(true);
-                    try {
-                      const res = await apiClient.ingestCreatorDraftFromUrl(applyForm.draftMediaUrl.trim(), {
-                        campaignId: applyModalCampaign.id,
-                      });
-                      const aid = res.data?.assetId;
-                      if (aid) {
-                        setUploadFileName(null);
-                        setApplyForm((p) => ({
-                          ...p,
-                          draftAssetId: aid,
-                          projectId: '',
-                          projectTitle: 'Video URL',
-                        }));
-                        showToast('URL imported — video ready', 'success');
-                      } else {
-                        showToast(res.error || 'Import did not return an asset id', 'error');
-                      }
-                    } catch (e: unknown) {
-                      showToast(e instanceof Error ? e.message : 'Import failed', 'error');
-                    } finally {
-                      setUrlIngestBusy(false);
-                    }
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setApplyForm((p) => ({
+                      ...p,
+                      draftMediaUrl: next,
+                      ...(p.draftAssetId ? { draftAssetId: '' } : {}),
+                    }));
                   }}
-                >
-                  {urlIngestBusy ? 'Validating…' : 'Validate & import URL'}
-                </BrandSecondaryButton>
-                {applyForm.draftAssetId && applyForm.sourceType === 'EXTERNAL_URL' ? (
-                  <p className="text-xs text-emerald-700">URL imported — video ready. You can submit the application.</p>
-                ) : applyForm.draftMediaUrl.trim() && !urlIngestBusy && !applyForm.draftAssetId ? (
-                  <p className="text-xs text-[#616161]">
-                    Click &quot;Validate &amp; import URL&quot; to download and process your video before applying.
-                  </p>
+                />
+                {applyForm.draftAssetId ? (
+                  <p className="text-xs text-emerald-700">URL imported — video ready.</p>
                 ) : null}
               </div>
             ) : null}
@@ -975,9 +963,41 @@ export default function CreatorCampaignsPage() {
             </BrandSecondaryButton>
             <BrandPrimaryButton
               size="sm"
-              disabled={isSubmittingApply || uploadBusy || urlIngestBusy}
+              disabled={applyPrimaryDisabled}
               onClick={async () => {
                 if (!applyModalCampaign) return;
+
+                if (urlNeedsValidation) {
+                  if (!applyForm.draftMediaUrl.trim()) {
+                    showToast('Enter a video URL first', 'error');
+                    return;
+                  }
+                  setUrlIngestBusy(true);
+                  try {
+                    const res = await apiClient.ingestCreatorDraftFromUrl(applyForm.draftMediaUrl.trim(), {
+                      campaignId: applyModalCampaign.id,
+                    });
+                    const aid = res.data?.assetId;
+                    if (aid) {
+                      setUploadFileName(null);
+                      setApplyForm((p) => ({
+                        ...p,
+                        draftAssetId: aid,
+                        projectId: '',
+                        projectTitle: 'Video URL',
+                      }));
+                      showToast('URL imported — you can now apply', 'success');
+                    } else {
+                      showToast(res.error || 'Import did not return an asset id', 'error');
+                    }
+                  } catch (e: unknown) {
+                    showToast(e instanceof Error ? e.message : 'Import failed', 'error');
+                  } finally {
+                    setUrlIngestBusy(false);
+                  }
+                  return;
+                }
+
                 if (uploadBusy || urlIngestBusy) {
                   showToast('Wait for the video to finish processing', 'error');
                   return;
@@ -1021,7 +1041,7 @@ export default function CreatorCampaignsPage() {
                 }
               }}
             >
-              {isSubmittingApply ? 'Processing…' : uploadBusy ? 'Uploading…' : urlIngestBusy ? 'Validating…' : 'Apply'}
+              {applyPrimaryLabel}
             </BrandPrimaryButton>
           </div>
         </div>
