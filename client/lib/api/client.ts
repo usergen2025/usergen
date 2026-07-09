@@ -2625,7 +2625,7 @@ class ApiClient {
 
   async addCampaignSourceVideo(
     campaignId: string,
-    data: { url: string; title?: string },
+    data: { url: string; title?: string; orderIndex?: number },
   ): Promise<ApiResponse<any>> {
     const campaignServiceUrl = getCampaignServiceApiRoot();
     const token = this.getToken();
