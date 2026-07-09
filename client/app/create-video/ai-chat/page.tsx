@@ -6106,7 +6106,7 @@ function AIChatPageContent() {
                     "flex flex-row flex-wrap items-center gap-[clamp(0.75rem,1.56vh,16px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full pl-[clamp(0.5rem,1vw,16px)]",
                     hasReachedSubstep('style-selection', 'confirmed') && "opacity-50 pointer-events-none"
                   )}>
-                    {/* Half-n-Half Card */}
+                    {/* TEMPORARILY DISABLED - Half-n-Half Card
                     <button
                       onClick={() => setSelectedVideoStyle('half-n-half')}
                       className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
@@ -6115,7 +6115,6 @@ function AIChatPageContent() {
                         : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        {/* Illustration */}
                         <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-half-n-half.svg"
@@ -6125,7 +6124,6 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        {/* Label */}
                         <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
@@ -6142,6 +6140,7 @@ function AIChatPageContent() {
                         </div>
                       </div>
                     </button>
+                    */}
 
                     {/* Avatar Only Card */}
                     <button
@@ -6180,7 +6179,7 @@ function AIChatPageContent() {
                       </div>
                     </button>
 
-                    {/* Avatar Cut-out Card */}
+                    {/* TEMPORARILY DISABLED - Avatar Cut-out Card
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-cutout')}
                       className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
@@ -6189,7 +6188,6 @@ function AIChatPageContent() {
                         : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        {/* Illustration */}
                         <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-cutout.svg"
@@ -6199,7 +6197,6 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        {/* Label */}
                         <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
@@ -6216,6 +6213,7 @@ function AIChatPageContent() {
                         </div>
                       </div>
                     </button>
+                    */}
 
                     {/* Alternate Card */}
                     <button
@@ -6363,7 +6361,7 @@ function AIChatPageContent() {
                       </div>
                     </button>
 
-                    {/* Animated Avatar Card */}
+                    {/* TEMPORARILY DISABLED - Animated Avatar Card
                     <button
                       onClick={() => setSelectedVideoStyle('animated-avatar')}
                       className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
@@ -6372,7 +6370,6 @@ function AIChatPageContent() {
                         : {}}
                     >
                       <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        {/* Illustration - reuse avatar-only for now; replace with style-animated-avatar.svg when available */}
                         <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-only.svg"
@@ -6382,7 +6379,6 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        {/* Label */}
                         <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
@@ -6399,6 +6395,7 @@ function AIChatPageContent() {
                         </div>
                       </div>
                     </button>
+                    */}
                   </div>
                 )}
 
