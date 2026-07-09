@@ -28,7 +28,10 @@ export type CampaignEventType =
   | 'campaign:rank:changed'
   | 'campaign:finalized'
   | 'campaign:refunded:exception'
-  | 'campaign:started';
+  | 'campaign:started'
+  | 'ssemble:request:progress'
+  | 'ssemble:request:complete'
+  | 'ssemble:request:failed';
 
 export interface CampaignEvent {
   type: CampaignEventType;
@@ -189,5 +192,62 @@ export class CampaignEventsGateway
 
     client.leave(`campaign:${payload.campaignId}`);
     this.logger.log(`Client ${client.id} (user ${userId}) unsubscribed from campaign ${payload.campaignId}`);
+  }
+
+  /**
+   * Emit Ssemble clip request progress update to the creator
+   */
+  emitSsembleRequestProgress(
+    creatorId: string,
+    data: { requestId: string; campaignId: string; progress: number; currentStep?: string },
+  ) {
+    this.notifyUser(creatorId, {
+      type: 'ssemble:request:progress',
+      campaignId: data.campaignId,
+      data: {
+        requestId: data.requestId,
+        progress: data.progress,
+        currentStep: data.currentStep,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Emit Ssemble clip request completion to the creator
+   */
+  emitSsembleRequestComplete(
+    creatorId: string,
+    data: { requestId: string; campaignId: string; clipsCount: number },
+  ) {
+    this.notifyUser(creatorId, {
+      type: 'ssemble:request:complete',
+      campaignId: data.campaignId,
+      message: `Your clips are ready! ${data.clipsCount} clip(s) generated.`,
+      data: {
+        requestId: data.requestId,
+        clipsCount: data.clipsCount,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Emit Ssemble clip request failure to the creator
+   */
+  emitSsembleRequestFailed(
+    creatorId: string,
+    data: { requestId: string; campaignId: string; error: string },
+  ) {
+    this.notifyUser(creatorId, {
+      type: 'ssemble:request:failed',
+      campaignId: data.campaignId,
+      message: `Clip generation failed: ${data.error}`,
+      data: {
+        requestId: data.requestId,
+        error: data.error,
+      },
+      timestamp: new Date().toISOString(),
+    });
   }
 }

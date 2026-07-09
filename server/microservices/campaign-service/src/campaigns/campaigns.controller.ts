@@ -47,6 +47,12 @@ import { CurrentUser } from '../common/auth/decorators/current-user.decorator';
 import { Response } from 'express';
 import { PostScraperService } from '../scraper/post-scraper.service';
 import { RefreshLeaderboardDto } from '../scraper/dto/refresh-leaderboard.dto';
+import { SsembleService } from '../ssemble/ssemble.service';
+import {
+  AddSourceVideoDto,
+  UpdateSourceVideoDto,
+  GenerateClipsDto,
+} from '../ssemble/dto/ssemble.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -57,6 +63,7 @@ export class CampaignsController {
     private readonly leaderboardService: LeaderboardService,
     private readonly campaignFinalizationService: CampaignFinalizationService,
     private readonly postScraperService: PostScraperService,
+    private readonly ssembleService: SsembleService,
   ) {}
 
   @Get('campaigns')
@@ -553,5 +560,107 @@ export class CampaignsController {
   @Roles('ADMIN', 'OWNER')
   reverseLockedEarning(@Param('id') id: string, @Body() body: { reason?: string }, @CurrentUser() user: any) {
     return this.campaignsService.reverseLockedEarning(id, { id: user.id, role: user.role }, body?.reason);
+  }
+
+  // ==================== SOURCE VIDEO CRUD (Brand) ====================
+
+  @Post('campaigns/:id/source-videos')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  addSourceVideo(
+    @Param('id') id: string,
+    @Body() dto: AddSourceVideoDto,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return this.campaignsService.addSourceVideo(id, dto, user);
+  }
+
+  @Get('campaigns/:id/source-videos')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getSourceVideos(@Param('id') id: string) {
+    return this.campaignsService.getSourceVideos(id);
+  }
+
+  @Patch('campaigns/:id/source-videos/:videoId')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  updateSourceVideo(
+    @Param('id') id: string,
+    @Param('videoId') videoId: string,
+    @Body() dto: UpdateSourceVideoDto,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return this.campaignsService.updateSourceVideo(id, videoId, dto, user);
+  }
+
+  @Post('campaigns/:id/source-videos/:videoId/delete')
+  @Roles('BRAND', 'ADMIN', 'OWNER')
+  deleteSourceVideo(
+    @Param('id') id: string,
+    @Param('videoId') videoId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    return this.campaignsService.deleteSourceVideo(id, videoId, user);
+  }
+
+  // ==================== SSEMBLE CLIP GENERATION (Creator) ====================
+
+  @Post('creator/campaigns/:id/clips/generate')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  generateClips(
+    @Param('id') id: string,
+    @Body() dto: GenerateClipsDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.campaignsService.generateClips(id, dto, user.id);
+  }
+
+  @Get('creator/campaigns/:id/clips/requests')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getMyClipRequests(@Param('id') id: string, @CurrentUser() user: { id: string }) {
+    return this.campaignsService.getMyClipRequests(id, user.id);
+  }
+
+  @Get('creator/campaigns/:id/clips/requests/:reqId')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getClipRequestDetail(
+    @Param('id') id: string,
+    @Param('reqId') reqId: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.campaignsService.getClipRequestDetail(id, reqId, user.id);
+  }
+
+  // ==================== SSEMBLE CATALOG (Proxy) ====================
+
+  @Get('ssemble/templates')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getSsembleTemplates() {
+    return this.ssembleService.listTemplates();
+  }
+
+  @Get('ssemble/music')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getSsembleMusic(@Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.ssembleService.listMusic(
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 100,
+    );
+  }
+
+  @Get('ssemble/meme-hooks')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getSsembleMemeHooks(@Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.ssembleService.listMemeHooks(
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 100,
+    );
+  }
+
+  @Get('ssemble/game-videos')
+  @Roles('USER', 'BRAND', 'ADMIN', 'OWNER')
+  getSsembleGameVideos(@Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.ssembleService.listGameVideos(
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 100,
+    );
   }
 }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Calendar, IndianRupee, Video, CalendarRange, RefreshCw, Link2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Calendar, IndianRupee, Video, CalendarRange, RefreshCw, Link2, ExternalLink, Scissors, FolderOpen } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { BrandPrimaryButton, BrandSecondaryButton, BrandIconChip, BrandStatusPill } from '@/components/brand';
@@ -15,6 +15,9 @@ import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
 import { parseDraftMediaAssetId } from '@/lib/campaign-media';
 import { cn } from '@/lib/utils/cn';
+import CreatorSourceVideoCard from '@/components/campaigns/CreatorSourceVideoCard';
+import SsembleClipGeneratorModal from '@/components/campaigns/SsembleClipGeneratorModal';
+import SsembleClipsViewerModal from '@/components/campaigns/SsembleClipsViewerModal';
 
 function formatDate(dateString: string) {
   const date = new Date(dateString);
@@ -69,6 +72,15 @@ export default function CreatorCampaignDetailPage() {
   const [submitLinkModalOpen, setSubmitLinkModalOpen] = useState(false);
   const [postUrl, setPostUrl] = useState('');
   const [submittingLink, setSubmittingLink] = useState(false);
+  
+  // Source videos and clip generation state
+  const [sourceVideos, setSourceVideos] = useState<any[]>([]);
+  const [clipRequests, setClipRequests] = useState<any[]>([]);
+  const [loadingSourceVideos, setLoadingSourceVideos] = useState(false);
+  const [selectedVideoForClips, setSelectedVideoForClips] = useState<any>(null);
+  const [clipGeneratorOpen, setClipGeneratorOpen] = useState(false);
+  const [selectedClipRequest, setSelectedClipRequest] = useState<any>(null);
+  const [clipViewerOpen, setClipViewerOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -84,9 +96,58 @@ export default function CreatorCampaignDetailPage() {
     }
   }, [id, showToast]);
 
+  const loadSourceVideos = useCallback(async () => {
+    if (!id) return;
+    setLoadingSourceVideos(true);
+    try {
+      const [videosRes, requestsRes] = await Promise.all([
+        apiClient.getCampaignSourceVideos(id),
+        apiClient.getMyClipRequests(id),
+      ]);
+      setSourceVideos(videosRes.data || []);
+      setClipRequests(requestsRes.data || []);
+    } catch (e) {
+      console.error('Failed to load source videos:', e);
+    } finally {
+      setLoadingSourceVideos(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (payload?.campaign) {
+      loadSourceVideos();
+    }
+  }, [payload?.campaign, loadSourceVideos]);
+
+  const handleGenerateClips = async (data: any) => {
+    if (!id) return;
+    try {
+      await apiClient.generateSsembleClips(id, data);
+      showToast('Clip generation started! This may take 5-30 minutes.', 'success');
+      await loadSourceVideos();
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Failed to generate clips', 'error');
+      throw e;
+    }
+  };
+
+  const handleViewClips = (video: any) => {
+    const videoRequests = clipRequests.filter((r) => r.sourceVideoId === video.id);
+    if (videoRequests.length > 0) {
+      setSelectedClipRequest(videoRequests[0]);
+      setClipViewerOpen(true);
+    }
+  };
+
+  const getActiveRequestsForVideo = (videoId: string) => {
+    return clipRequests.some(
+      (r) => r.sourceVideoId === videoId && ['QUEUED', 'PROCESSING'].includes(r.status)
+    );
+  };
 
   const campaign = payload?.campaign;
   const application = payload?.application;
@@ -281,6 +342,58 @@ export default function CreatorCampaignDetailPage() {
                 </a>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Source Videos for Clipping */}
+      {sourceVideos.length > 0 && (
+        <div className="brand-gradient-frame mb-5 rounded-[20px] p-2.5 sm:p-3 shadow-card sm:mb-6">
+          <div className="rounded-[18px] bg-white/95 p-4 sm:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Scissors className="h-5 w-5 text-[#E86512]" />
+                <h2 className="brand-page-section-title">Source Videos</h2>
+              </div>
+              {clipRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (clipRequests.length > 0) {
+                      setSelectedClipRequest(clipRequests[0]);
+                      setClipViewerOpen(true);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm text-[#E86512] hover:text-[#D15B10] font-medium"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  View all clips ({clipRequests.reduce((acc, r) => acc + (r.clips?.length || 0), 0)})
+                </button>
+              )}
+            </div>
+            <p className="text-sm text-[#616161] mb-4">
+              Use AI to generate engaging short clips from these source videos.
+            </p>
+            {loadingSourceVideos ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-spin rounded-full h-6 w-6 border-2 border-[#E86512] border-t-transparent" />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {sourceVideos.map((video) => (
+                  <CreatorSourceVideoCard
+                    key={video.id}
+                    video={video}
+                    onGenerateClips={(v) => {
+                      setSelectedVideoForClips(v);
+                      setClipGeneratorOpen(true);
+                    }}
+                    onViewClips={handleViewClips}
+                    hasActiveRequest={getActiveRequestsForVideo(video.id)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -492,6 +605,28 @@ export default function CreatorCampaignDetailPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Ssemble Clip Generator Modal */}
+      <SsembleClipGeneratorModal
+        isOpen={clipGeneratorOpen}
+        onClose={() => {
+          setClipGeneratorOpen(false);
+          setSelectedVideoForClips(null);
+        }}
+        sourceVideo={selectedVideoForClips}
+        campaignId={id}
+        onGenerate={handleGenerateClips}
+      />
+
+      {/* Ssemble Clips Viewer Modal */}
+      <SsembleClipsViewerModal
+        isOpen={clipViewerOpen}
+        onClose={() => {
+          setClipViewerOpen(false);
+          setSelectedClipRequest(null);
+        }}
+        request={selectedClipRequest}
+      />
     </div>
   );
 }

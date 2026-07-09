@@ -10,7 +10,7 @@ import Textarea from '@/components/ui/Textarea';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
-import { ArrowLeft, Info, Paperclip, Send, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Info, Paperclip, Send, ChevronDown, Video, Plus, Trash2, ExternalLink } from 'lucide-react';
 import { addDays, parse as parseDate, startOfDay } from 'date-fns';
 import { PrizePoolEditor } from '@/components/campaigns/PrizePoolEditor';
 import {
@@ -18,6 +18,41 @@ import {
   tiersForTemplate,
   isTiersValid,
 } from '@/lib/campaigns/prize-pool';
+import AddSourceVideoModal from '@/components/campaigns/AddSourceVideoModal';
+
+interface PendingSourceVideo {
+  id: string;
+  url: string;
+  title?: string;
+  urlType: 'YOUTUBE' | 'DIRECT';
+  thumbnailUrl?: string;
+}
+
+function detectUrlType(url: string): 'YOUTUBE' | 'DIRECT' | 'INVALID' {
+  if (!url || typeof url !== 'string') return 'INVALID';
+  const normalizedUrl = url.trim().toLowerCase();
+  if (normalizedUrl.includes('youtube.com') || normalizedUrl.includes('youtu.be')) {
+    return 'YOUTUBE';
+  }
+  if (normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://')) {
+    return 'DIRECT';
+  }
+  return 'INVALID';
+}
+
+function extractYouTubeVideoId(url: string): string | null {
+  const patterns = [
+    /youtu\.be\/([^?&]+)/,
+    /youtube\.com\/watch\?v=([^&]+)/,
+    /youtube\.com\/embed\/([^?&]+)/,
+    /youtube\.com\/shorts\/([^?&]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
 
 function cmpYmd(a: string, b: string): number {
   const da = parseDate(a, 'yyyy-MM-dd', new Date());
@@ -54,6 +89,10 @@ export default function CreateCampaignPage() {
   const assetFileInputRef = useRef<HTMLInputElement>(null);
   const platformDropdownRef = useRef<HTMLDivElement>(null);
   const [platformDropdownOpen, setPlatformDropdownOpen] = useState(false);
+  
+  // Source videos state (stored locally until campaign is created)
+  const [pendingSourceVideos, setPendingSourceVideos] = useState<PendingSourceVideo[]>([]);
+  const [showAddVideoModal, setShowAddVideoModal] = useState(false);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -70,6 +109,68 @@ export default function CreateCampaignPage() {
   const budgetValue = parseFloat(formData.totalBudget) || 0;
   const getErrorMessage = (error: unknown, fallback: string) =>
     error instanceof Error && error.message ? error.message : fallback;
+
+  // Add a pending source video (local state only)
+  const handleAddPendingVideo = (url: string, title?: string) => {
+    const urlType = detectUrlType(url);
+    if (urlType === 'INVALID') {
+      showToast('Invalid video URL', 'error');
+      return;
+    }
+    
+    // Check for duplicates
+    if (pendingSourceVideos.some((v) => v.url === url)) {
+      showToast('This video URL is already added', 'error');
+      return;
+    }
+    
+    // Extract YouTube thumbnail if applicable
+    let thumbnailUrl: string | undefined;
+    if (urlType === 'YOUTUBE') {
+      const videoId = extractYouTubeVideoId(url);
+      if (videoId) {
+        thumbnailUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+      }
+    }
+    
+    const newVideo: PendingSourceVideo = {
+      id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      url,
+      title: title || (urlType === 'YOUTUBE' ? 'YouTube Video' : 'Video'),
+      urlType,
+      thumbnailUrl,
+    };
+    
+    setPendingSourceVideos((prev) => [...prev, newVideo]);
+    setShowAddVideoModal(false);
+    showToast('Video added. It will be saved when you create the campaign.', 'success');
+  };
+
+  // Remove a pending source video
+  const handleRemovePendingVideo = (id: string) => {
+    setPendingSourceVideos((prev) => prev.filter((v) => v.id !== id));
+    showToast('Video removed', 'success');
+  };
+
+  // Save source videos to backend after campaign is created
+  const saveSourceVideos = async (campaignId: string) => {
+    if (pendingSourceVideos.length === 0) return;
+    
+    const results = await Promise.allSettled(
+      pendingSourceVideos.map((video, index) =>
+        apiClient.addCampaignSourceVideo(campaignId, {
+          url: video.url,
+          title: video.title,
+          orderIndex: index,
+        })
+      )
+    );
+    
+    const failedCount = results.filter((r) => r.status === 'rejected').length;
+    if (failedCount > 0) {
+      showToast(`${failedCount} video(s) failed to save. You can add them later from the edit page.`, 'error');
+    }
+  };
 
   // Validation helper
   const validateForm = () => {
@@ -157,6 +258,12 @@ export default function CreateCampaignPage() {
         showToast('Campaign was created but no id was returned.', 'error');
         return;
       }
+      
+      // Save source videos after campaign is created
+      if (pendingSourceVideos.length > 0) {
+        await saveSourceVideos(newId);
+      }
+      
       showToast('Campaign draft created. Publish it from My Campaigns when ready.', 'success');
       router.push('/brand/campaigns');
     } catch (error: unknown) {
@@ -166,7 +273,7 @@ export default function CreateCampaignPage() {
     }
   };
 
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
     if (!formData.name.trim()) {
       showToast('Campaign name is required to save draft', 'error');
       return;
@@ -174,8 +281,8 @@ export default function CreateCampaignPage() {
 
     setIsLoading(true);
     const baseDate = new Date().toISOString().slice(0, 10);
-    apiClient
-      .createCampaign({
+    try {
+      const res = await apiClient.createCampaign({
         name: formData.name,
         description: formData.description,
         brandAssetsUrl: formData.brandAssetsUrl || undefined,
@@ -196,16 +303,25 @@ export default function CreateCampaignPage() {
           gracePeriodHours: prizePool.gracePeriodHours,
         },
         previewN,
-      })
-      .then((res) => {
-        if (res.data?.id) {
-          showToast('Draft saved. You can find it under Drafts in My Campaigns.', 'success');
-        } else {
-          showToast('Draft saved successfully', 'success');
-        }
-      })
-      .catch((error: unknown) => showToast(getErrorMessage(error, 'Failed to save draft'), 'error'))
-      .finally(() => setIsLoading(false));
+      });
+      
+      const newId = res.data?.id as string | undefined;
+      
+      // Save source videos after draft is created
+      if (newId && pendingSourceVideos.length > 0) {
+        await saveSourceVideos(newId);
+      }
+      
+      if (newId) {
+        showToast('Draft saved. You can find it under Drafts in My Campaigns.', 'success');
+      } else {
+        showToast('Draft saved successfully', 'success');
+      }
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to save draft'), 'error');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const maxBudgetForSlider = Math.max(500_000, Math.ceil(budgetValue || 0));
@@ -407,6 +523,114 @@ export default function CreateCampaignPage() {
               />
             </div>
 
+            {/* Source Videos for Clipping Section */}
+            <div className="rounded-2xl border border-[#E8E2DB] bg-white p-3 sm:p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Video className="w-5 h-5 text-[#E86512]" />
+                  <h3 className="font-heading font-semibold text-[#212121]">Source Videos for Clipping</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddVideoModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[#E86512] bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Video
+                </button>
+              </div>
+              <p className="text-xs text-text-secondary mb-3">
+                Add YouTube or video URLs that creators can use to generate clips with AI.
+              </p>
+              
+              {pendingSourceVideos.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                  <Video className="w-10 h-10 text-gray-300 mb-2" />
+                  <p className="text-sm text-gray-500">No source videos added yet</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddVideoModal(true)}
+                    className="mt-2 text-sm text-[#E86512] hover:underline"
+                  >
+                    Add your first video
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {pendingSourceVideos.map((video, index) => (
+                    <div
+                      key={video.id}
+                      className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100"
+                    >
+                      {/* Thumbnail */}
+                      {video.thumbnailUrl ? (
+                        <img
+                          src={video.thumbnailUrl}
+                          alt={video.title || 'Video thumbnail'}
+                          className="w-16 h-12 object-cover rounded-lg flex-shrink-0"
+                        />
+                      ) : (
+                        <div className="w-16 h-12 bg-gray-200 rounded-lg flex items-center justify-center flex-shrink-0">
+                          <Video className="w-6 h-6 text-gray-400" />
+                        </div>
+                      )}
+                      
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-500">#{index + 1}</span>
+                          <span className={cn(
+                            'px-2 py-0.5 text-xs font-medium rounded-full',
+                            video.urlType === 'YOUTUBE' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+                          )}>
+                            {video.urlType === 'YOUTUBE' ? 'YouTube' : 'Direct URL'}
+                          </span>
+                        </div>
+                        <p className="text-sm font-medium text-[#212121] truncate mt-1">
+                          {video.title || 'Untitled Video'}
+                        </p>
+                        <a
+                          href={video.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-[#E86512] hover:underline truncate block"
+                        >
+                          {video.url}
+                        </a>
+                      </div>
+                      
+                      {/* Actions */}
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <a
+                          href={video.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 text-gray-400 hover:text-[#E86512] hover:bg-orange-50 rounded-lg transition-colors"
+                          title="Open video"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePendingVideo(video.id)}
+                          className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Remove video"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {pendingSourceVideos.length > 0 && (
+                <p className="text-xs text-text-secondary mt-3">
+                  {pendingSourceVideos.length} video{pendingSourceVideos.length !== 1 ? 's' : ''} will be saved when you create the campaign.
+                </p>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-4">
                 <div>
@@ -517,6 +741,13 @@ export default function CreateCampaignPage() {
           </form>
         </div>
       </div>
+      
+      {/* Add Source Video Modal */}
+      <AddSourceVideoModal
+        isOpen={showAddVideoModal}
+        onClose={() => setShowAddVideoModal(false)}
+        onAdd={handleAddPendingVideo}
+      />
     </div>
   );
 }

@@ -28,6 +28,12 @@ import { WalletSyncService } from './wallet-sync.service';
 import { CampaignMediaService } from './campaign-media.service';
 import { CampaignNotificationService } from './campaign-notification.service';
 import { CampaignFinalizationService } from './campaign-finalization.service';
+import { SsembleService } from '../ssemble/ssemble.service';
+import {
+  AddSourceVideoDto,
+  UpdateSourceVideoDto,
+  GenerateClipsDto,
+} from '../ssemble/dto/ssemble.dto';
 import { endOfIstDay, isAfterCampaignEndDay, isOnOrBeforeDeadlineDay, isOnOrAfterCampaignStartDay, isStartAtLeastOneDayAfterDeadline, startOfIstDay } from './utils/date-compare.util';
 import { resolvePrizePoolConfig } from './prize-pool';
 import { formatDisqualifiedReason } from './utils/disqualified-reason.util';
@@ -140,6 +146,7 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     private readonly campaignMediaService: CampaignMediaService,
     private readonly notificationService: CampaignNotificationService,
     private readonly campaignFinalizationService: CampaignFinalizationService,
+    private readonly ssembleService: SsembleService,
   ) {}
 
   private getIdempotencyKey(scope: string, ids: Array<string | number>) {
@@ -2282,5 +2289,307 @@ export class CampaignsService implements OnModuleInit, OnModuleDestroy {
     if (removed.count > 0) {
       this.logger.log(`Removed ${removed.count} legacy seed campaign(s)`);
     }
+  }
+
+  // ==================== SOURCE VIDEO CRUD ====================
+
+  async addSourceVideo(
+    campaignId: string,
+    dto: AddSourceVideoDto,
+    user: { id: string; role: string },
+  ) {
+    const campaign = await this.assertCampaignOwnershipOrAdmin(campaignId, user);
+    
+    const urlType = this.ssembleService.detectUrlType(dto.url);
+    if (urlType === 'INVALID') {
+      throw new BadRequestException('Invalid video URL. Please provide a valid YouTube URL or direct video link.');
+    }
+
+    let thumbnailUrl: string | undefined;
+    if (urlType === 'YOUTUBE') {
+      const videoId = this.ssembleService.extractYouTubeVideoId(dto.url);
+      if (videoId) {
+        thumbnailUrl = this.ssembleService.buildYouTubeThumbnailUrl(videoId);
+      }
+    }
+
+    const maxOrder = await this.databaseService.campaignSourceVideo.aggregate({
+      where: { campaignId },
+      _max: { orderIndex: true },
+    });
+    const nextOrder = (maxOrder._max.orderIndex ?? -1) + 1;
+
+    const sourceVideo = await this.databaseService.campaignSourceVideo.create({
+      data: {
+        campaignId,
+        url: dto.url,
+        urlType,
+        title: dto.title || null,
+        thumbnailUrl: thumbnailUrl || null,
+        orderIndex: nextOrder,
+      },
+    });
+
+    this.logger.log(`Added source video ${sourceVideo.id} to campaign ${campaignId}`);
+    return sourceVideo;
+  }
+
+  async getSourceVideos(campaignId: string) {
+    const campaign = await this.databaseService.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+
+    const videos = await this.databaseService.campaignSourceVideo.findMany({
+      where: { campaignId },
+      orderBy: { orderIndex: 'asc' },
+      include: {
+        _count: {
+          select: { clipRequests: true },
+        },
+      },
+    });
+
+    return videos.map((v) => ({
+      ...v,
+      clipRequestCount: v._count.clipRequests,
+    }));
+  }
+
+  async updateSourceVideo(
+    campaignId: string,
+    videoId: string,
+    dto: UpdateSourceVideoDto,
+    user: { id: string; role: string },
+  ) {
+    await this.assertCampaignOwnershipOrAdmin(campaignId, user);
+
+    const video = await this.databaseService.campaignSourceVideo.findFirst({
+      where: { id: videoId, campaignId },
+    });
+    if (!video) {
+      throw new NotFoundException('Source video not found');
+    }
+
+    const updated = await this.databaseService.campaignSourceVideo.update({
+      where: { id: videoId },
+      data: {
+        ...(dto.title !== undefined && { title: dto.title }),
+        ...(dto.orderIndex !== undefined && { orderIndex: dto.orderIndex }),
+      },
+    });
+
+    return updated;
+  }
+
+  async deleteSourceVideo(
+    campaignId: string,
+    videoId: string,
+    user: { id: string; role: string },
+  ) {
+    await this.assertCampaignOwnershipOrAdmin(campaignId, user);
+
+    const video = await this.databaseService.campaignSourceVideo.findFirst({
+      where: { id: videoId, campaignId },
+    });
+    if (!video) {
+      throw new NotFoundException('Source video not found');
+    }
+
+    await this.databaseService.campaignSourceVideo.delete({
+      where: { id: videoId },
+    });
+
+    this.logger.log(`Deleted source video ${videoId} from campaign ${campaignId}`);
+    return { success: true };
+  }
+
+  // ==================== SSEMBLE CLIP GENERATION ====================
+
+  async generateClips(campaignId: string, dto: GenerateClipsDto, creatorId: string) {
+    const campaign = await this.databaseService.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+
+    const sourceVideo = await this.databaseService.campaignSourceVideo.findFirst({
+      where: { id: dto.sourceVideoId, campaignId },
+    });
+    if (!sourceVideo) {
+      throw new NotFoundException('Source video not found');
+    }
+
+    if (dto.endSec <= dto.startSec) {
+      throw new BadRequestException('End time must be after start time');
+    }
+    if (dto.endSec - dto.startSec > 1200) {
+      throw new BadRequestException('Maximum clip window is 20 minutes (1200 seconds)');
+    }
+
+    const clipRequest = await this.databaseService.ssembleClipRequest.create({
+      data: {
+        sourceVideoId: dto.sourceVideoId,
+        creatorId,
+        campaignId,
+        status: 'QUEUED',
+        progress: 0,
+        startSec: dto.startSec,
+        endSec: dto.endSec,
+        preferredLength: dto.preferredLength || 'under60sec',
+        language: dto.language || 'en',
+        captionLanguage: dto.captionLanguage || null,
+        templateId: dto.templateId || null,
+        hookTitle: dto.hookTitle || false,
+        memeHook: dto.memeHook || false,
+        memeHookName: dto.memeHookName || null,
+        gameVideo: dto.gameVideo || false,
+        gameVideoName: dto.gameVideoName || null,
+        ctaEnabled: dto.ctaEnabled || false,
+        ctaText: dto.ctaText || null,
+        music: dto.music || false,
+        musicName: dto.musicName || null,
+        musicVolume: dto.musicVolume ?? 10,
+        layout: dto.layout || 'auto',
+      },
+    });
+
+    try {
+      const backendUrl = this.configService.get<string>('PUBLIC_ASSET_BASE_URL') || '';
+      
+      const ssembleParams: any = {
+        start: dto.startSec,
+        end: dto.endSec,
+        preferredLength: dto.preferredLength || 'under60sec',
+        language: dto.language || 'en',
+      };
+      
+      // Only add webhookUrl if we have a non-localhost public URL
+      // Ssemble rejects localhost/loopback webhook URLs
+      if (backendUrl && !backendUrl.includes('localhost') && !backendUrl.includes('127.0.0.1')) {
+        ssembleParams.webhookUrl = `${backendUrl}/api/internal/ssemble/webhook`;
+      } else {
+        this.logger.warn('Webhook URL not configured - will rely on polling for status updates');
+      }
+
+      if (sourceVideo.urlType === 'YOUTUBE') {
+        ssembleParams.url = sourceVideo.url;
+      } else {
+        ssembleParams.fileUrl = sourceVideo.url;
+      }
+
+      if (dto.captionLanguage) ssembleParams.captionLanguage = dto.captionLanguage;
+      if (dto.templateId) ssembleParams.templateId = dto.templateId;
+      if (dto.hookTitle) ssembleParams.hookTitle = true;
+      if (dto.memeHook) {
+        ssembleParams.memeHook = true;
+        if (dto.memeHookName) ssembleParams.memeHookName = dto.memeHookName;
+      }
+      if (dto.gameVideo) {
+        ssembleParams.gameVideo = true;
+        if (dto.gameVideoName) ssembleParams.gameVideoName = dto.gameVideoName;
+      }
+      if (dto.ctaEnabled) {
+        ssembleParams.ctaEnabled = true;
+        if (dto.ctaText) ssembleParams.ctaText = dto.ctaText;
+      }
+      if (dto.music) {
+        ssembleParams.music = true;
+        if (dto.musicName) ssembleParams.musicName = dto.musicName;
+        if (dto.musicVolume !== undefined) ssembleParams.musicVolume = dto.musicVolume;
+      }
+      if (dto.layout) ssembleParams.layout = dto.layout;
+
+      const response = await this.ssembleService.createShort(ssembleParams);
+
+      await this.databaseService.ssembleClipRequest.update({
+        where: { id: clipRequest.id },
+        data: {
+          ssembleRequestId: response.requestId,
+          status: 'PROCESSING',
+        },
+      });
+
+      this.logger.log(`Started Ssemble clip generation: requestId=${response.requestId}, dbId=${clipRequest.id}`);
+
+      return {
+        ...clipRequest,
+        ssembleRequestId: response.requestId,
+        status: 'PROCESSING',
+        estimatedCompletionTime: response.estimatedCompletionTime,
+      };
+    } catch (error) {
+      await this.databaseService.ssembleClipRequest.update({
+        where: { id: clipRequest.id },
+        data: {
+          status: 'FAILED',
+          errorMessage: error.message || 'Failed to start clip generation',
+        },
+      });
+      throw error;
+    }
+  }
+
+  async getMyClipRequests(campaignId: string, creatorId: string) {
+    const campaign = await this.databaseService.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+
+    const requests = await this.databaseService.ssembleClipRequest.findMany({
+      where: { campaignId, creatorId },
+      include: {
+        clips: {
+          orderBy: { viralScore: 'desc' },
+        },
+        sourceVideo: {
+          select: { id: true, url: true, urlType: true, title: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return requests;
+  }
+
+  async getClipRequestDetail(campaignId: string, requestId: string, creatorId: string) {
+    const request = await this.databaseService.ssembleClipRequest.findFirst({
+      where: { id: requestId, campaignId, creatorId },
+      include: {
+        clips: {
+          orderBy: { viralScore: 'desc' },
+        },
+        sourceVideo: {
+          select: { id: true, url: true, urlType: true, title: true },
+        },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Clip request not found');
+    }
+
+    return request;
+  }
+
+  private async assertCampaignOwnershipOrAdmin(
+    campaignId: string,
+    user: { id: string; role: string },
+  ) {
+    const campaign = await this.databaseService.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+    if (user.role !== 'ADMIN' && user.role !== 'OWNER' && campaign.brandId !== user.id) {
+      throw new ForbiddenException('You do not have permission to access this campaign');
+    }
+    return campaign;
   }
 }

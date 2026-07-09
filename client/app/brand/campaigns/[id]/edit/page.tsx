@@ -1,17 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
-import { ArrowLeft, Check, ChevronDown, Info, Paperclip } from 'lucide-react';
-import { BrandDatePicker, BrandPrimaryButton } from '@/components/brand';
+import { ArrowLeft, Check, ChevronDown, Info, Paperclip, Plus, Video } from 'lucide-react';
+import { BrandDatePicker, BrandPrimaryButton, BrandSecondaryButton } from '@/components/brand';
 import { addDays, parse as parseDate, startOfDay } from 'date-fns';
 import { cn } from '@/lib/utils/cn';
 import { PrizePoolEditor } from '@/components/campaigns/PrizePoolEditor';
 import { PrizePoolConfig, tiersForTemplate, isTiersValid, normalizePoolTiers } from '@/lib/campaigns/prize-pool';
+import SourceVideoCard from '@/components/campaigns/SourceVideoCard';
+import AddSourceVideoModal from '@/components/campaigns/AddSourceVideoModal';
 
 function cmpYmd(a: string, b: string): number {
   const da = parseDate(a, 'yyyy-MM-dd', new Date());
@@ -57,6 +59,9 @@ export default function EditCampaignPage() {
     gracePeriodHours: 24,
   });
   const [previewN, setPreviewN] = useState(1000);
+  const [sourceVideos, setSourceVideos] = useState<any[]>([]);
+  const [loadingSourceVideos, setLoadingSourceVideos] = useState(false);
+  const [showAddVideoModal, setShowAddVideoModal] = useState(false);
   const isDraft = campaignStatus === 'DRAFT';
   const budgetValue = parseFloat(formData.totalBudget) || 0;
   const maxBudgetForSlider = Math.max(500_000, Math.ceil(budgetValue || 0));
@@ -64,6 +69,19 @@ export default function EditCampaignPage() {
     maxBudgetForSlider > 0
       ? Math.min(100, Math.max(0, Math.round((budgetValue / maxBudgetForSlider) * 100)))
       : 0;
+
+  const loadSourceVideos = useCallback(async () => {
+    if (!campaignId) return;
+    setLoadingSourceVideos(true);
+    try {
+      const response = await apiClient.getCampaignSourceVideos(campaignId);
+      setSourceVideos(response.data || []);
+    } catch (error) {
+      console.error('Failed to load source videos:', error);
+    } finally {
+      setLoadingSourceVideos(false);
+    }
+  }, [campaignId]);
 
   useEffect(() => {
     const loadCampaign = async () => {
@@ -107,6 +125,8 @@ export default function EditCampaignPage() {
         if (campaign.previewN) {
           setPreviewN(Number(campaign.previewN));
         }
+        // Load source videos after campaign loads
+        loadSourceVideos();
       } catch (error: unknown) {
         showToast(error instanceof Error ? error.message : 'Failed to load campaign', 'error');
       } finally {
@@ -116,7 +136,29 @@ export default function EditCampaignPage() {
     if (campaignId) {
       void loadCampaign();
     }
-  }, [campaignId, router, showToast]);
+  }, [campaignId, router, showToast, loadSourceVideos]);
+
+  const handleAddSourceVideo = async (url: string, title?: string) => {
+    try {
+      await apiClient.addCampaignSourceVideo(campaignId, { url, title });
+      showToast('Source video added', 'success');
+      await loadSourceVideos();
+    } catch (error: unknown) {
+      showToast(error instanceof Error ? error.message : 'Failed to add video', 'error');
+      throw error;
+    }
+  };
+
+  const handleDeleteSourceVideo = async (videoId: string) => {
+    if (!confirm('Are you sure you want to remove this video?')) return;
+    try {
+      await apiClient.deleteCampaignSourceVideo(campaignId, videoId);
+      showToast('Video removed', 'success');
+      setSourceVideos((prev) => prev.filter((v) => v.id !== videoId));
+    } catch (error: unknown) {
+      showToast(error instanceof Error ? error.message : 'Failed to remove video', 'error');
+    }
+  };
 
   const handleSave = async () => {
     if (!formData.name.trim()) {
@@ -341,6 +383,59 @@ export default function EditCampaignPage() {
               />
             </div>
 
+            {/* Source Videos Section */}
+            <div className="rounded-2xl border border-[#E8E2DB] bg-white p-3 sm:p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Video className="h-5 w-5 text-[#E86512]" />
+                  <h3 className="font-heading text-sm font-semibold text-[#212121]">
+                    Source Videos for Clipping
+                  </h3>
+                </div>
+                <BrandSecondaryButton
+                  size="sm"
+                  onClick={() => setShowAddVideoModal(true)}
+                  disabled={loadingSourceVideos}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Video
+                </BrandSecondaryButton>
+              </div>
+              <p className="text-xs text-text-secondary mb-4">
+                Add YouTube or video URLs that creators can use to generate clips with AI.
+              </p>
+              {loadingSourceVideos ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary-600 border-t-transparent" />
+                </div>
+              ) : sourceVideos.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {sourceVideos.map((video) => (
+                    <SourceVideoCard
+                      key={video.id}
+                      video={video}
+                      editable
+                      onDelete={handleDeleteSourceVideo}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 border-2 border-dashed border-gray-200 rounded-xl">
+                  <Video className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm text-text-secondary">
+                    No source videos added yet
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddVideoModal(true)}
+                    className="mt-2 text-sm text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    Add your first video
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-4">
                 <div>
@@ -492,11 +587,71 @@ export default function EditCampaignPage() {
               disabled={isLoading}
               variant="brandCapsule"
             />
+            
+            {/* Source Videos Section (non-draft) */}
+            <div className="rounded-2xl border border-[#E8E2DB] bg-white p-3 sm:p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Video className="h-5 w-5 text-[#E86512]" />
+                  <h3 className="font-heading text-sm font-semibold text-[#212121]">
+                    Source Videos for Clipping
+                  </h3>
+                </div>
+                <BrandSecondaryButton
+                  size="sm"
+                  onClick={() => setShowAddVideoModal(true)}
+                  disabled={loadingSourceVideos}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Video
+                </BrandSecondaryButton>
+              </div>
+              <p className="text-xs text-text-secondary mb-4">
+                Add YouTube or video URLs that creators can use to generate clips with AI.
+              </p>
+              {loadingSourceVideos ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary-600 border-t-transparent" />
+                </div>
+              ) : sourceVideos.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {sourceVideos.map((video) => (
+                    <SourceVideoCard
+                      key={video.id}
+                      video={video}
+                      editable
+                      onDelete={handleDeleteSourceVideo}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 border-2 border-dashed border-gray-200 rounded-xl">
+                  <Video className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm text-text-secondary">
+                    No source videos added yet
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddVideoModal(true)}
+                    className="mt-2 text-sm text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    Add your first video
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
         </div>
       </div>
       </div>
+
+      {/* Add Source Video Modal */}
+      <AddSourceVideoModal
+        isOpen={showAddVideoModal}
+        onClose={() => setShowAddVideoModal(false)}
+        onAdd={handleAddSourceVideo}
+      />
     </div>
   );
 }

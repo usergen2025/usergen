@@ -2621,6 +2621,214 @@ class ApiClient {
     return response.data as Blob;
   }
 
+  // ==================== CAMPAIGN SOURCE VIDEOS ====================
+
+  async addCampaignSourceVideo(
+    campaignId: string,
+    data: { url: string; title?: string },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/source-videos`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getCampaignSourceVideos(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(
+      `${campaignServiceUrl}/campaigns/${campaignId}/source-videos`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async updateCampaignSourceVideo(
+    campaignId: string,
+    videoId: string,
+    data: { title?: string; orderIndex?: number },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.patch(
+      `${campaignServiceUrl}/campaigns/${campaignId}/source-videos/${videoId}`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async deleteCampaignSourceVideo(
+    campaignId: string,
+    videoId: string,
+  ): Promise<ApiResponse<{ success: boolean }>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/campaigns/${campaignId}/source-videos/${videoId}/delete`,
+      {},
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<{ success: boolean }>(response.data);
+  }
+
+  // ==================== SSEMBLE CLIP GENERATION ====================
+
+  async generateSsembleClips(
+    campaignId: string,
+    data: {
+      sourceVideoId: string;
+      startSec: number;
+      endSec: number;
+      preferredLength?: string;
+      language?: string;
+      captionLanguage?: string;
+      templateId?: string;
+      hookTitle?: boolean;
+      memeHook?: boolean;
+      memeHookName?: string;
+      gameVideo?: boolean;
+      gameVideoName?: string;
+      ctaEnabled?: boolean;
+      ctaText?: string;
+      music?: boolean;
+      musicName?: string;
+      musicVolume?: number;
+      layout?: string;
+    },
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.post(
+      `${campaignServiceUrl}/creator/campaigns/${campaignId}/clips/generate`,
+      data,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  async getMyClipRequests(campaignId: string): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(
+      `${campaignServiceUrl}/creator/campaigns/${campaignId}/clips/requests`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getClipRequestDetail(
+    campaignId: string,
+    requestId: string,
+  ): Promise<ApiResponse<any>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(
+      `${campaignServiceUrl}/creator/campaigns/${campaignId}/clips/requests/${requestId}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any>(response.data);
+  }
+
+  // ==================== SSEMBLE CATALOG ====================
+
+  async getSsembleTemplates(): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const response = await axios.get(`${campaignServiceUrl}/ssemble/templates`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getSsembleMusic(params?: { page?: number; limit?: number }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const query = new URLSearchParams();
+    if (params?.page) query.append('page', String(params.page));
+    if (params?.limit) query.append('limit', String(params.limit));
+    const response = await axios.get(
+      `${campaignServiceUrl}/ssemble/music${query.toString() ? `?${query.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getSsembleMemeHooks(params?: { page?: number; limit?: number }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const query = new URLSearchParams();
+    if (params?.page) query.append('page', String(params.page));
+    if (params?.limit) query.append('limit', String(params.limit));
+    const response = await axios.get(
+      `${campaignServiceUrl}/ssemble/meme-hooks${query.toString() ? `?${query.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
+  async getSsembleGameVideos(params?: { page?: number; limit?: number }): Promise<ApiResponse<any[]>> {
+    const campaignServiceUrl = getCampaignServiceApiRoot();
+    const token = this.getToken();
+    const query = new URLSearchParams();
+    if (params?.page) query.append('page', String(params.page));
+    if (params?.limit) query.append('limit', String(params.limit));
+    const response = await axios.get(
+      `${campaignServiceUrl}/ssemble/game-videos${query.toString() ? `?${query.toString()}` : ''}`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return normalizeCampaignServiceResponse<any[]>(response.data);
+  }
+
   // Speech-to-Speech (Voice Transformation) API methods
   
   /**

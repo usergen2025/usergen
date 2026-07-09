@@ -15,12 +15,14 @@ import { CampaignFinalizationService } from './campaign-finalization.service';
 import { DatabaseModule } from '../common/database/database.module';
 import { AuthModule } from '../common/auth/auth.module';
 import { ScraperModule } from '../scraper/scraper.module';
+import { SsembleModule } from '../ssemble/ssemble.module';
 
 @Module({
   imports: [
     DatabaseModule,
     AuthModule,
     forwardRef(() => ScraperModule),
+    SsembleModule,
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       imports: [ConfigModule],

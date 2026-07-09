@@ -7,6 +7,8 @@ import { CampaignFinalizationService } from './campaign-finalization.service';
 import { PostScraperService } from '../scraper/post-scraper.service';
 import { ApifyClientService } from '../scraper/apify.client';
 import { isOnOrAfterCampaignStartDay, isAfterCampaignEndDay } from './utils/date-compare.util';
+import { SsembleService } from '../ssemble/ssemble.service';
+import { CampaignEventsGateway } from './campaign-events.gateway';
 
 @Injectable()
 export class CampaignSchedulerService {
@@ -19,6 +21,8 @@ export class CampaignSchedulerService {
     private readonly campaignFinalizationService: CampaignFinalizationService,
     private readonly postScraperService: PostScraperService,
     private readonly apifyClient: ApifyClientService,
+    private readonly ssembleService: SsembleService,
+    private readonly eventsGateway: CampaignEventsGateway,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
@@ -279,6 +283,111 @@ export class CampaignSchedulerService {
       }
     } catch (error: any) {
       this.logger.error(`POOL finalization sweep failed: ${error?.message}`);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async pollSsembleRequests() {
+    try {
+      const pendingRequests = await this.databaseService.ssembleClipRequest.findMany({
+        where: {
+          status: { in: ['QUEUED', 'PROCESSING'] },
+          ssembleRequestId: { not: null },
+          createdAt: { gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 20,
+      });
+
+      if (!pendingRequests.length) {
+        return;
+      }
+
+      this.logger.debug(`Polling ${pendingRequests.length} Ssemble request(s)...`);
+
+      for (const request of pendingRequests) {
+        if (!request.ssembleRequestId) continue;
+
+        try {
+          const status = await this.ssembleService.getStatus(request.ssembleRequestId);
+
+          if (status.status === 'completed') {
+            const shortsData = await this.ssembleService.getShorts(request.ssembleRequestId);
+            const shorts = shortsData.shorts || [];
+
+            await this.databaseService.$transaction(async (tx) => {
+              for (const short of shorts) {
+                await tx.ssembleClip.create({
+                  data: {
+                    requestId: request.id,
+                    ssembleClipId: short.id,
+                    title: short.title || null,
+                    description: short.description || null,
+                    videoUrl: short.video_url,
+                    thumbnailUrl: short.thumbnail_url || null,
+                    durationSecs: short.duration || null,
+                    viralScore: short.viral_score || null,
+                  },
+                });
+              }
+
+              await tx.ssembleClipRequest.update({
+                where: { id: request.id },
+                data: {
+                  status: 'COMPLETED',
+                  progress: 100,
+                  currentStep: null,
+                },
+              });
+            });
+
+            this.eventsGateway.emitSsembleRequestComplete(request.creatorId, {
+              requestId: request.id,
+              campaignId: request.campaignId,
+              clipsCount: shorts.length,
+            });
+
+            this.logger.log(`Ssemble request ${request.id} completed with ${shorts.length} clips`);
+          } else if (status.status === 'failed') {
+            await this.databaseService.ssembleClipRequest.update({
+              where: { id: request.id },
+              data: {
+                status: 'FAILED',
+                errorMessage: status.error || 'Unknown error',
+              },
+            });
+
+            this.eventsGateway.emitSsembleRequestFailed(request.creatorId, {
+              requestId: request.id,
+              campaignId: request.campaignId,
+              error: status.error || 'Unknown error',
+            });
+
+            this.logger.warn(`Ssemble request ${request.id} failed: ${status.error}`);
+          } else if (status.status === 'processing') {
+            await this.databaseService.ssembleClipRequest.update({
+              where: { id: request.id },
+              data: {
+                progress: status.progress || 0,
+                currentStep: status.currentStep || null,
+              },
+            });
+
+            this.eventsGateway.emitSsembleRequestProgress(request.creatorId, {
+              requestId: request.id,
+              campaignId: request.campaignId,
+              progress: status.progress || 0,
+              currentStep: status.currentStep,
+            });
+          }
+        } catch (err: any) {
+          this.logger.error(
+            `Failed to poll Ssemble request ${request.id}: ${err?.message ?? err}`,
+          );
+        }
+      }
+    } catch (error: any) {
+      this.logger.error(`Ssemble polling failed: ${error?.message}`);
     }
   }
 }

@@ -78,6 +78,19 @@ describe('CampaignsService wallet sync retry', () => {
     finalizeCampaign: jest.fn(),
   };
 
+  const mockSsembleService: any = {
+    createShort: jest.fn(),
+    getStatus: jest.fn(),
+    getShorts: jest.fn(),
+    listTemplates: jest.fn().mockResolvedValue([]),
+    listMusic: jest.fn().mockResolvedValue([]),
+    listMemeHooks: jest.fn().mockResolvedValue([]),
+    listGameVideos: jest.fn().mockResolvedValue([]),
+    detectUrlType: jest.fn().mockReturnValue('YOUTUBE'),
+    extractYouTubeVideoId: jest.fn().mockReturnValue('abc123'),
+    buildYouTubeThumbnailUrl: jest.fn().mockReturnValue('https://img.youtube.com/vi/abc123/hqdefault.jpg'),
+  };
+
   let service: CampaignsService;
   const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -109,6 +122,7 @@ describe('CampaignsService wallet sync retry', () => {
       mockCampaignMediaService,
       mockNotificationService,
       mockCampaignFinalizationService,
+      mockSsembleService,
     );
   });
 
