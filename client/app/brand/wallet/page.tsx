@@ -14,11 +14,11 @@ function BrandWalletContent() {
   const { user, isAuthenticated } = useAuth();
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+  const [showBuy, setShowBuy] = useState(searchParams?.get('action') === 'add');
   const [purchases, setPurchases] = useState<any[]>([]);
 
   useEffect(() => {
-    setShowBuy(searchParams.get('action') === 'add');
+    setShowBuy(searchParams?.get('action') === 'add');
   }, [searchParams]);
 
   const loadBalance = useCallback(async () => {

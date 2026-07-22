@@ -171,10 +171,10 @@ function BrandBillingView() {
     walletBalance?: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+  const [showBuy, setShowBuy] = useState(searchParams?.get('action') === 'add');
 
   useEffect(() => {
-    setShowBuy(searchParams.get('action') === 'add');
+    setShowBuy(searchParams?.get('action') === 'add');
   }, [searchParams]);
 
   useEffect(() => {
@@ -398,11 +398,11 @@ function BillingContent() {
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
   const [projectBreakdowns, setProjectBreakdowns] = useState<Record<string, CostBreakdown>>({});
   const [loadingBreakdown, setLoadingBreakdown] = useState<string | null>(null);
-  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+  const [showBuy, setShowBuy] = useState(searchParams?.get('action') === 'add');
   const [purchases, setPurchases] = useState<any[]>([]);
 
   useEffect(() => {
-    setShowBuy(searchParams.get('action') === 'add');
+    setShowBuy(searchParams?.get('action') === 'add');
   }, [searchParams]);
 
   // Redirect if not authenticated
