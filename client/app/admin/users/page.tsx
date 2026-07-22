@@ -15,10 +15,12 @@ import {
   Coins,
   Video,
   ExternalLink,
+  Percent,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
+import { useAuth } from '@/hooks/useAuth';
 
 interface UserData {
   id: string;
@@ -63,6 +65,7 @@ function UsersLoadingSkeleton() {
 function AdminUsersContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { user: adminUser } = useAuth();
   const filterUserId = searchParams?.get('userId') ?? '';
 
   const [users, setUsers] = useState<UserData[]>([]);
@@ -76,10 +79,16 @@ function AdminUsersContent() {
   const [showUserModal, setShowUserModal] = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [showFeeModal, setShowFeeModal] = useState(false);
   const [actionUser, setActionUser] = useState<UserData | null>(null);
   const [newRole, setNewRole] = useState('');
   const [creditsAmount, setCreditsAmount] = useState(0);
   const [addToExisting, setAddToExisting] = useState(true);
+  const [feePercent, setFeePercent] = useState('');
+  const [feeTaxExempt, setFeeTaxExempt] = useState(false);
+  const [feeNotes, setFeeNotes] = useState('');
+  const [feeLoading, setFeeLoading] = useState(false);
+  const [feeSaving, setFeeSaving] = useState(false);
   const { showToast } = useToast();
 
   const usersPerPage = 20;
@@ -184,6 +193,79 @@ function AdminUsersContent() {
       }
     } catch (error: any) {
       showToast(error.message || 'Failed to update credits', 'error');
+    }
+  };
+
+  const openFeeModal = async (user: UserData) => {
+    setActionUser(user);
+    setShowFeeModal(true);
+    setFeeLoading(true);
+    setFeePercent('');
+    setFeeTaxExempt(false);
+    setFeeNotes('');
+    try {
+      const res = await apiClient.getAdminUserBillingOverride(user.id);
+      if (res.success && res.data) {
+        setFeePercent(
+          res.data.feeBps != null ? String((res.data.feeBps / 100).toFixed(2)) : '',
+        );
+        setFeeTaxExempt(!!res.data.taxExempt);
+        setFeeNotes(res.data.notes || '');
+      }
+    } catch {
+      /* no override yet */
+    } finally {
+      setFeeLoading(false);
+    }
+  };
+
+  const handleFeeOverrideSave = async () => {
+    if (!actionUser) return;
+    setFeeSaving(true);
+    try {
+      const feeBps =
+        feePercent.trim() === '' ? null : Math.round(Number(feePercent) * 100);
+      if (feeBps != null && (Number.isNaN(feeBps) || feeBps < 0)) {
+        showToast('Enter a valid fee percent', 'error');
+        return;
+      }
+      const res = await apiClient.upsertAdminUserBillingOverride(actionUser.id, {
+        feeBps,
+        feeType: feeBps != null ? 'PERCENT' : null,
+        taxExempt: feeTaxExempt,
+        notes: feeNotes.trim() || null,
+        updatedBy: adminUser?.id,
+      });
+      if (res.success) {
+        showToast('Billing override saved', 'success');
+        setShowFeeModal(false);
+        setActionUser(null);
+      } else {
+        showToast(res.error || 'Failed to save override', 'error');
+      }
+    } catch (error: any) {
+      showToast(error?.response?.data?.message || error.message || 'Failed to save override', 'error');
+    } finally {
+      setFeeSaving(false);
+    }
+  };
+
+  const handleFeeOverrideClear = async () => {
+    if (!actionUser) return;
+    setFeeSaving(true);
+    try {
+      const res = await apiClient.deleteAdminUserBillingOverride(actionUser.id);
+      if (res.success) {
+        showToast('Billing override cleared', 'success');
+        setShowFeeModal(false);
+        setActionUser(null);
+      } else {
+        showToast(res.error || 'Failed to clear override', 'error');
+      }
+    } catch (error: any) {
+      showToast(error?.response?.data?.message || error.message || 'Failed to clear override', 'error');
+    } finally {
+      setFeeSaving(false);
     }
   };
 
@@ -396,6 +478,13 @@ function AdminUsersContent() {
                         <Coins className="w-4 h-4" />
                       </button>
                       <button
+                        onClick={() => openFeeModal(user)}
+                        className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                        title="Fee override"
+                      >
+                        <Percent className="w-4 h-4" />
+                      </button>
+                      <button
                         onClick={() => handleToggleActive(user)}
                         className={cn(
                           "p-2 rounded-lg transition-colors",
@@ -600,6 +689,78 @@ function AdminUsersContent() {
                   Update Credits
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fee override modal */}
+      {showFeeModal && actionUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-xl max-w-md w-full">
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Fee override</h3>
+              <button onClick={() => setShowFeeModal(false)} className="text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-400 mb-4">
+                Per-user fee for <span className="text-white font-medium">{actionUser.email}</span>
+              </p>
+              {feeLoading ? (
+                <p className="text-sm text-gray-500">Loading…</p>
+              ) : (
+                <>
+                  <div className="mb-4">
+                    <label className="block text-sm text-gray-400 mb-2">
+                      Platform fee % (leave blank to use default)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={feePercent}
+                      onChange={(e) => setFeePercent(e.target.value)}
+                      placeholder="e.g. 3"
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 mb-4">
+                    <input
+                      type="checkbox"
+                      checked={feeTaxExempt}
+                      onChange={(e) => setFeeTaxExempt(e.target.checked)}
+                      className="w-4 h-4 rounded"
+                    />
+                    <span className="text-gray-400">Tax exempt (no GST)</span>
+                  </label>
+                  <div className="mb-4">
+                    <label className="block text-sm text-gray-400 mb-2">Notes</label>
+                    <textarea
+                      rows={2}
+                      value={feeNotes}
+                      onChange={(e) => setFeeNotes(e.target.value)}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleFeeOverrideClear}
+                      disabled={feeSaving}
+                      className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 disabled:opacity-50"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={handleFeeOverrideSave}
+                      disabled={feeSaving}
+                      className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

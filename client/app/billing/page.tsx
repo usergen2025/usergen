@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { 
   ArrowLeft, 
   Wallet, 
@@ -20,8 +20,9 @@ import Link from 'next/link';
 import { apiClient } from '@/lib/api/client';
 import { useAuth } from '@/hooks/useAuth';
 import CreditDisplay from '@/components/billing/CreditDisplay';
+import BuyCreditsPanel from '@/components/billing/BuyCreditsPanel';
 import Button from '@/components/ui/Button';
-import { BrandPageHeader, BrandStatStrip, BrandPrimaryButton, BrandStatusPill } from '@/components/brand';
+import { BrandPageHeader, BrandStatStrip, BrandPrimaryButton, BrandSecondaryButton, BrandStatusPill } from '@/components/brand';
 import { cn } from '@/lib/utils/cn';
 
 interface ProjectCost {
@@ -161,6 +162,7 @@ interface BrandCampaignRow {
 
 function BrandBillingView() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [campaigns, setCampaigns] = useState<BrandCampaignRow[]>([]);
   const [stats, setStats] = useState<{
@@ -169,6 +171,11 @@ function BrandBillingView() {
     walletBalance?: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+
+  useEffect(() => {
+    setShowBuy(searchParams.get('action') === 'add');
+  }, [searchParams]);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -264,7 +271,29 @@ function BrandBillingView() {
                   },
                 ]}
               />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <BrandPrimaryButton type="button" onClick={() => setShowBuy(true)}>
+                  Add funds
+                </BrandPrimaryButton>
+                <BrandSecondaryButton type="button" onClick={() => router.push('/brand/wallet')}>
+                  Open wallet
+                </BrandSecondaryButton>
+              </div>
             </div>
+
+            {showBuy && (
+              <div className="mb-4">
+                <BuyCreditsPanel
+                  audience="BRAND"
+                  embedded
+                  successRedirectTo="/brand/dashboard"
+                  onClose={() => {
+                    setShowBuy(false);
+                    router.replace('/billing');
+                  }}
+                />
+              </div>
+            )}
 
             <div className="brand-gradient-frame flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">
               <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[18px] bg-white/95 shadow-sm">
@@ -360,6 +389,7 @@ function ProjectListSkeleton() {
 
 function BillingContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isAuthenticated, user, isLoading: authLoading, isBrand: isBrandFn } = useAuth();
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([]);
@@ -368,6 +398,12 @@ function BillingContent() {
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
   const [projectBreakdowns, setProjectBreakdowns] = useState<Record<string, CostBreakdown>>({});
   const [loadingBreakdown, setLoadingBreakdown] = useState<string | null>(null);
+  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+  const [purchases, setPurchases] = useState<any[]>([]);
+
+  useEffect(() => {
+    setShowBuy(searchParams.get('action') === 'add');
+  }, [searchParams]);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -385,10 +421,13 @@ function BillingContent() {
       
       try {
         // Fetch both billing summary and video projects in parallel
-        const [billingSummaryResponse, videoProjectsResponse] = await Promise.all([
+        const [billingSummaryResponse, videoProjectsResponse, purchasesResponse] = await Promise.all([
           apiClient.getUserBillingSummary(user.id).catch(() => ({ success: false, data: null })),
-          apiClient.getVideoProjects().catch(() => ({ success: false, data: [] }))
+          apiClient.getVideoProjects().catch(() => ({ success: false, data: [] })),
+          apiClient.listBillingPurchases(user.id).catch(() => ({ success: false, data: [] as any[] })),
         ]);
+
+        setPurchases(Array.isArray(purchasesResponse.data) ? purchasesResponse.data : []);
 
         // Set billing summary
         if (billingSummaryResponse.success && billingSummaryResponse.data) {
@@ -429,6 +468,17 @@ function BillingContent() {
       fetchData();
     }
   }, [isAuthenticated, user?.id, user?.credits]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user?.id) return;
+    const onRefresh = () => {
+      void apiClient.listBillingPurchases(user.id).then((res) => {
+        setPurchases(Array.isArray(res.data) ? res.data : []);
+      });
+    };
+    window.addEventListener('credits-refresh', onRefresh);
+    return () => window.removeEventListener('credits-refresh', onRefresh);
+  }, [isAuthenticated, user?.id]);
 
   // Merge video projects with billing data
   useEffect(() => {
@@ -584,7 +634,26 @@ function BillingContent() {
             {/* Credits Overview Card */}
             <div className="mb-8">
               <CreditDisplay variant="full" />
+              <div className="mt-3">
+                <Button variant="primary" onClick={() => setShowBuy(true)}>
+                  Buy credits
+                </Button>
+              </div>
             </div>
+
+            {showBuy && (
+              <div className="mb-8">
+                <BuyCreditsPanel
+                  audience="CREATOR"
+                  embedded
+                  successRedirectTo="/"
+                  onClose={() => {
+                    setShowBuy(false);
+                    router.replace('/billing');
+                  }}
+                />
+              </div>
+            )}
 
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -647,6 +716,82 @@ function BillingContent() {
                 </div>
               </div>
             )}
+
+            {/* Top-up / purchase history */}
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden mb-8">
+              <div className="p-6 border-b border-gray-100">
+                <h2 className="text-lg font-semibold text-gray-800">Top-up history</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Payments and credit purchases for your account
+                </p>
+              </div>
+              {purchases.length > 0 ? (
+                <ul className="divide-y divide-gray-100">
+                  {purchases.map((p) => {
+                    const inv = p.invoices?.[0];
+                    const invoiceId = inv?.id as string | undefined;
+                    const invoiceLabel =
+                      inv?.providerInvoiceNumber || inv?.invoiceNumber || null;
+                    const status = String(p.status || '').toUpperCase();
+                    const statusClass =
+                      status === 'FULFILLED'
+                        ? 'bg-green-100 text-green-700'
+                        : status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED'
+                          ? 'bg-red-100 text-red-700'
+                          : status === 'AWAITING_PAYMENT'
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-gray-100 text-gray-700';
+                    return (
+                      <li
+                        key={p.id}
+                        className="px-6 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium text-gray-800">
+                              +{(p.creditsToGrant || 0).toLocaleString('en-IN')} credits
+                            </p>
+                            <span className={cn('text-xs px-2 py-0.5 rounded-full', statusClass)}>
+                              {status.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-500 mt-1">
+                            {p.createdAt ? new Date(p.createdAt).toLocaleString('en-IN') : '—'}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            Base ₹{((p.baseAmountPaise || 0) / 100).toLocaleString('en-IN')}
+                            {' · '}Fee ₹{((p.feeAmountPaise || 0) / 100).toLocaleString('en-IN')}
+                            {' · '}GST ₹{((p.gstAmountPaise || 0) / 100).toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                          <div className="text-left sm:text-right">
+                            <p className="font-semibold text-gray-800">
+                              ₹{((p.totalChargePaise || 0) / 100).toLocaleString('en-IN')}
+                            </p>
+                            <p className="text-xs text-gray-500">Total paid</p>
+                          </div>
+                          {invoiceId && status === 'FULFILLED' ? (
+                            <a
+                              href={`/billing/invoice/${invoiceId}`}
+                              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-100"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                              View invoice
+                              {invoiceLabel ? ` · ${invoiceLabel}` : ''}
+                            </a>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="px-6 py-10 text-center text-sm text-gray-500">
+                  No top-ups yet. Buy credits to see your payment history here.
+                </div>
+              )}
+            </div>
 
             {/* Projects List */}
             <div className="bg-white rounded-2xl shadow-sm overflow-hidden">

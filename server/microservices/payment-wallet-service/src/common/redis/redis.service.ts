@@ -6,6 +6,8 @@ import Redis from 'ioredis';
 export class RedisService {
   private readonly redis: Redis;
 
+  private connecting: Promise<void> | null = null;
+
   constructor(private configService: ConfigService) {
     this.redis = new Redis(this.configService.get('REDIS_URL') || 'redis://localhost:6379', {
       enableReadyCheck: false,
@@ -22,11 +24,24 @@ export class RedisService {
     });
   }
 
+  private async ensureConnected() {
+    if (this.redis.status === 'ready' || this.redis.status === 'connecting') return;
+    if (!this.connecting) {
+      this.connecting = this.redis.connect().catch((err) => {
+        this.connecting = null;
+        throw err;
+      });
+    }
+    await this.connecting;
+  }
+
   async get(key: string): Promise<string | null> {
+    await this.ensureConnected();
     return this.redis.get(key);
   }
 
   async set(key: string, value: string, ttl?: number): Promise<void> {
+    await this.ensureConnected();
     if (ttl) {
       await this.redis.setex(key, ttl, value);
     } else {

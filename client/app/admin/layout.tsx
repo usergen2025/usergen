@@ -15,7 +15,8 @@ import {
   LogOut,
   Menu,
   X,
-  ChevronRight
+  ChevronRight,
+  CreditCard,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils/cn';
@@ -25,6 +26,7 @@ const adminNavItems = [
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/generations', label: 'Generations', icon: Video },
   { href: '/admin/pricing', label: 'Pricing', icon: DollarSign },
+  { href: '/admin/payments', label: 'Payments', icon: CreditCard },
   { href: '/admin/iam', label: 'IAM', icon: Shield },
   { href: '/admin/campaign-sync', label: 'Campaign Sync', icon: RefreshCcw },
   { href: '/admin/campaigns', label: 'Campaigns', icon: Briefcase },

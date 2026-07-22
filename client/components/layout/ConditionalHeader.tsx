@@ -14,7 +14,7 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   const isAIChatPage = pathname === '/create-video/ai-chat';
   const isWorkspacePage = pathname === '/create-video/workspace';
   const isBrandRoute = pathname?.startsWith('/brand');
-  const isBillingPage = pathname === '/billing';
+  const isBillingRoute = pathname === '/billing' || pathname?.startsWith('/billing/');
   const isProjectsPage = pathname === '/projects';
   const isCreatorCampaignRoute = pathname === '/campaigns' || pathname?.startsWith('/campaigns/');
   const isCreatorEarningsPage = pathname === '/earnings';
@@ -30,7 +30,7 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
     isAIChatPage ||
     isBrandRoute ||
     isWorkspacePage ||
-    isBillingPage ||
+    isBillingRoute ||
     isProjectsPage ||
     isCreatorCampaignRoute ||
     isCreatorEarningsPage

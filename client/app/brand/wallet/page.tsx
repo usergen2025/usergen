@@ -1,17 +1,25 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState, useEffect, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { apiClient } from '@/lib/api/client';
 import { useAuth } from '@/hooks/useAuth';
 import { IndianRupee, RefreshCw, Wallet } from 'lucide-react';
 import { BrandPageHeader, BrandPrimaryButton, BrandSecondaryButton } from '@/components/brand';
+import BuyCreditsPanel from '@/components/billing/BuyCreditsPanel';
 
-export default function BrandWalletPage() {
+function BrandWalletContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, isAuthenticated } = useAuth();
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showBuy, setShowBuy] = useState(searchParams.get('action') === 'add');
+  const [purchases, setPurchases] = useState<any[]>([]);
+
+  useEffect(() => {
+    setShowBuy(searchParams.get('action') === 'add');
+  }, [searchParams]);
 
   const loadBalance = useCallback(async () => {
     if (!isAuthenticated || !user?.id) {
@@ -20,13 +28,17 @@ export default function BrandWalletPage() {
     }
     setIsLoading(true);
     try {
-      const res = await apiClient.getCreditsBalance(user.id);
+      const [res, purchasesRes] = await Promise.all([
+        apiClient.getCreditsBalance(user.id),
+        apiClient.listBillingPurchases(user.id).catch(() => ({ success: false, data: [] as any[] })),
+      ]);
       const c = (res.data as { credits?: number } | undefined)?.credits;
       if (typeof c === 'number' && !Number.isNaN(c)) {
         setWalletBalance(c);
       } else {
         setWalletBalance(null);
       }
+      setPurchases(Array.isArray(purchasesRes.data) ? purchasesRes.data : []);
     } catch (e) {
       console.error('Error loading wallet balance:', e);
       setWalletBalance(null);
@@ -73,6 +85,9 @@ export default function BrandWalletPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
+          <BrandPrimaryButton type="button" onClick={() => setShowBuy(true)}>
+            Add funds
+          </BrandPrimaryButton>
           <BrandSecondaryButton
             type="button"
             className="inline-flex items-center gap-2"
@@ -86,20 +101,84 @@ export default function BrandWalletPage() {
             <RefreshCw className="h-4 w-4 shrink-0" aria-hidden />
             Refresh balance
           </BrandSecondaryButton>
-          <BrandPrimaryButton type="button" onClick={() => router.push('/billing')}>
+          <BrandSecondaryButton type="button" onClick={() => router.push('/billing')}>
             View billing
-          </BrandPrimaryButton>
+          </BrandSecondaryButton>
         </div>
-        <p className="text-xs text-text-secondary mt-2">Opens campaign billing and ledger details.</p>
+
+        {showBuy && (
+          <div className="mt-4">
+            <BuyCreditsPanel
+              audience="BRAND"
+              embedded
+              successRedirectTo="/brand/dashboard"
+              onClose={() => {
+                setShowBuy(false);
+                router.replace('/brand/wallet');
+                void loadBalance();
+              }}
+            />
+          </div>
+        )}
 
         <div className="mt-6 sm:mt-7">
-          <h3 className="brand-page-section-title mb-2">Transaction history</h3>
-          <div className="text-center py-5 text-xs sm:text-sm text-text-secondary border-2 border-dashed border-[#E0E0E0] rounded-[14px]">
-            No transactions to show in this view yet. Campaign debits are recorded in the payment service.
-          </div>
+          <h3 className="brand-page-section-title mb-2">Purchase history</h3>
+          {purchases.length === 0 ? (
+            <div className="text-center py-5 text-xs sm:text-sm text-text-secondary border-2 border-dashed border-[#E0E0E0] rounded-[14px]">
+              No top-ups yet. Add funds to credit your campaign wallet.
+            </div>
+          ) : (
+            <ul className="divide-y divide-[#F1ECE7] rounded-[14px] border border-[#EFE8E3]">
+              {purchases.slice(0, 20).map((p) => {
+                const inv = p.invoices?.[0];
+                const invoiceId = inv?.id as string | undefined;
+                const fulfilled = String(p.status || '').toUpperCase() === 'FULFILLED';
+                return (
+                  <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                    <div>
+                      <p className="font-medium text-[#212121]">{p.status}</p>
+                      <p className="text-xs text-text-secondary">
+                        {new Date(p.createdAt).toLocaleString('en-IN')}
+                      </p>
+                      {invoiceId && fulfilled ? (
+                        <a
+                          href={`/billing/invoice/${invoiceId}`}
+                          className="mt-1 inline-block text-xs font-medium text-[#E86412] hover:underline"
+                        >
+                          View invoice
+                        </a>
+                      ) : null}
+                    </div>
+                    <div className="text-right">
+                      <p className="font-medium text-[#212121]">
+                        ₹{((p.totalChargePaise || 0) / 100).toLocaleString('en-IN')}
+                      </p>
+                      <p className="text-xs text-text-secondary">
+                        +{(p.creditsToGrant || 0).toLocaleString('en-IN')} credits
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       </div>
       </div>
     </div>
+  );
+}
+
+export default function BrandWalletPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="brand-page-shell">
+          <div className="h-40 animate-pulse rounded-[20px] bg-white/80" />
+        </div>
+      }
+    >
+      <BrandWalletContent />
+    </Suspense>
   );
 }

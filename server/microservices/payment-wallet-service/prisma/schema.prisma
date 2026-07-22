@@ -172,3 +172,334 @@ enum OperationType {
   VIDEO_TRANSLATION
 }
 
+// ==================== Billing / Payments (money-in) ====================
+
+enum BillingAudience {
+  CREATOR
+  BRAND
+}
+
+enum FeeType {
+  PERCENT
+  FIXED
+}
+
+enum ProductType {
+  CREDIT_TOPUP
+  SUBSCRIPTION
+  ADDON
+}
+
+enum PurchaseSource {
+  PACKAGE
+  CUSTOM
+  ADMIN_LINK
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  AWAITING_PAYMENT
+  PAID
+  FULFILLED
+  FAILED
+  EXPIRED
+  CANCELLED
+  REFUND_PENDING
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentAttemptStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  RAZORPAY
+  STRIPE
+  MANUAL
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+model BillingSettings {
+  id                 String   @id @default(cuid())
+  currency           String   @default("INR")
+  creditRateBps      Int      @default(10000) // 10000 = 1.0 credit per ₹1 net
+  creatorFeeBps      Int      @default(500) // 5%
+  brandFeeBps        Int      @default(1000) // 10%
+  feeType            FeeType  @default(PERCENT)
+  minTopUpPaise      Int      @default(10000) // ₹100
+  maxTopUpPaise      Int      @default(100000000) // ₹1,000,000
+  gstEnabled         Boolean  @default(true)
+  gstRateBps         Int      @default(1800) // 18%
+  platformGstin      String?
+  platformLegalName  String?
+  platformAddress    String?
+  invoicePrefix      String   @default("UG")
+  invoiceNextNumber  Int      @default(1)
+  updatedBy          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("billing_settings")
+}
+
+model UserBillingOverride {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  feeBps        Int?
+  feeType       FeeType?
+  feeFixedPaise Int?
+  taxExempt     Boolean   @default(false)
+  notes         String?
+  updatedBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("user_billing_overrides")
+  @@index([userId])
+}
+
+model CreditPackage {
+  id              String          @id @default(cuid())
+  audience        BillingAudience
+  title           String
+  description     String?
+  amountPaise     Int
+  creditsToGrant  Int
+  sortOrder       Int             @default(0)
+  isActive        Boolean         @default(true)
+  badge           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  updatedBy       String?
+
+  purchaseOrders  PurchaseOrder[]
+
+  @@map("credit_packages")
+  @@index([audience, isActive])
+  @@index([sortOrder])
+}
+
+model PurchaseOrder {
+  id                 String              @id @default(cuid())
+  userId             String? // required in v1 app logic; nullable for future claim-later
+  claimToken         String?             @unique
+  audience           BillingAudience
+  productType        ProductType         @default(CREDIT_TOPUP)
+  source             PurchaseSource
+  status             PurchaseOrderStatus @default(DRAFT)
+  packageId          String?
+  baseAmountPaise    Int
+  feeAmountPaise     Int
+  feeBpsApplied      Int
+  feeTypeApplied     FeeType
+  discountAmountPaise Int                @default(0)
+  gstAmountPaise     Int                 @default(0)
+  gstRateBpsApplied  Int                 @default(0)
+  totalChargePaise   Int
+  creditsToGrant     Int
+  currency           String              @default("INR")
+  creditRateBps      Int                 @default(10000)
+  quoteSnapshot      Json
+  provider           PaymentProvider     @default(RAZORPAY)
+  expiresAt          DateTime?
+  fulfilledAt        DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  package            CreditPackage?      @relation(fields: [packageId], references: [id])
+  paymentAttempts    PaymentAttempt[]
+  paymentLinks       PaymentLinkRecord[]
+  invoices           Invoice[]
+  refunds            RefundRecord[]
+
+  @@map("purchase_orders")
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([packageId])
+}
+
+model PaymentAttempt {
+  id                String               @id @default(cuid())
+  purchaseOrderId   String
+  provider          PaymentProvider
+  providerOrderId   String?
+  providerPaymentId String?              @unique
+  amountPaise       Int
+  currency          String               @default("INR")
+  status            PaymentAttemptStatus @default(CREATED)
+  rawPayload        Json?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  purchaseOrder     PurchaseOrder        @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@map("payment_attempts")
+  @@index([purchaseOrderId])
+  @@index([providerOrderId])
+  @@index([status])
+}
+
+model PaymentLinkRecord {
+  id                String          @id @default(cuid())
+  purchaseOrderId   String
+  provider          PaymentProvider @default(RAZORPAY)
+  providerLinkId    String          @unique
+  shortUrl          String
+  referenceId       String          @unique
+  customerEmail     String?
+  customerPhone     String?
+  customerName      String?
+  expireBy          DateTime?
+  createdByAdminId  String
+  cancelledAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  purchaseOrder     PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@map("payment_link_records")
+  @@index([purchaseOrderId])
+  @@index([createdByAdminId])
+}
+
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  provider        PaymentProvider
+  providerEventId String
+  eventType       String
+  payload         Json
+  processedAt     DateTime?
+  error           String?
+  createdAt       DateTime  @default(now())
+
+  @@unique([provider, providerEventId])
+  @@map("webhook_events")
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+model Invoice {
+  id                 String        @id @default(cuid())
+  invoiceNumber      String        @unique
+  purchaseOrderId    String
+  userId             String?
+  currency           String        @default("INR")
+  baseAmountPaise    Int
+  feeAmountPaise     Int
+  discountAmountPaise Int          @default(0)
+  gstAmountPaise     Int
+  gstRateBps         Int
+  totalChargePaise   Int
+  creditsGranted     Int
+  platformGstin      String?
+  buyerGstin         String?
+  platformLegalName  String?
+  lineItems          Json
+  /// Razorpay (or other gateway) invoice id — customer-facing document
+  providerInvoiceId  String?       @unique
+  providerInvoiceNumber String?
+  providerInvoiceUrl String?
+  providerInvoiceStatus String?
+  providerPayload    Json?
+  issuedAt           DateTime      @default(now())
+  createdAt          DateTime      @default(now())
+
+  purchaseOrder      PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@map("invoices")
+  @@index([purchaseOrderId])
+  @@index([userId])
+  @@index([issuedAt])
+}
+
+model RefundRecord {
+  id                 String        @id @default(cuid())
+  purchaseOrderId    String
+  provider           PaymentProvider
+  providerRefundId   String?       @unique
+  providerPaymentId  String?
+  amountPaise        Int
+  creditsToClawBack  Int
+  creditsClawedBack  Int           @default(0)
+  shortfallCredits   Int           @default(0)
+  status             RefundStatus  @default(PENDING)
+  reason             String?
+  adminUserId        String
+  rawPayload         Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  purchaseOrder      PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@map("refund_records")
+  @@index([purchaseOrderId])
+  @@index([status])
+  @@index([adminUserId])
+}
+
+model DiscountCode {
+  id              String       @id @default(cuid())
+  code            String       @unique
+  discountType    DiscountType
+  discountValue   Int // bps for PERCENT, paise for FIXED
+  audience        BillingAudience?
+  maxRedemptions  Int?
+  redeemedCount   Int          @default(0)
+  validFrom       DateTime?
+  validUntil      DateTime?
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  redemptions     DiscountRedemption[]
+
+  @@map("discount_codes")
+  @@index([isActive])
+}
+
+model DiscountRedemption {
+  id              String   @id @default(cuid())
+  discountCodeId  String
+  userId          String
+  purchaseOrderId String?
+  createdAt       DateTime @default(now())
+
+  discountCode    DiscountCode @relation(fields: [discountCodeId], references: [id], onDelete: Cascade)
+
+  @@map("discount_redemptions")
+  @@index([discountCodeId])
+  @@index([userId])
+}
+
+// Future creator withdrawals — stub tables only (eligibility not implemented)
+model PayoutAccount {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  provider          PaymentProvider @default(RAZORPAY)
+  providerContactId String?
+  providerFundAccountId String?
+  status            String   @default("PENDING")
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("payout_accounts")
+  @@index([userId])
+}
+

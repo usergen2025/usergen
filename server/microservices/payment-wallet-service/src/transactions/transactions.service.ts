@@ -2,16 +2,17 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { DatabaseService } from '../common/database/database.service';
 import { LoggerService } from '../common/logger/logger.service';
 import { MessageQueueService } from '../common/message-queue/message-queue.service';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { ContextType, TransactionType, TransactionStatus, EntityType } from '@prisma/client';
 import axios from 'axios';
 
 @Injectable()
 export class TransactionsService {
-  private readonly idempotentResponses = new Map<string, any>();
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
     private readonly messageQueueService: MessageQueueService,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   async deductCredits(params: {
@@ -24,8 +25,9 @@ export class TransactionsService {
     idempotencyKey?: string;
   }) {
     const { userId, workspaceId, amount, activityName, resourceId, metadata, idempotencyKey } = params;
-    if (idempotencyKey && this.idempotentResponses.has(idempotencyKey)) {
-      return this.idempotentResponses.get(idempotencyKey);
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getJson<any>(idempotencyKey);
+      if (cached) return cached;
     }
     const contextType = workspaceId ? ContextType.TEAM : ContextType.INDIVIDUAL;
 
@@ -120,7 +122,7 @@ export class TransactionsService {
 
     const response = { success: true, transactionId: transaction.id, balanceAfter, contextType };
     if (idempotencyKey) {
-      this.idempotentResponses.set(idempotencyKey, response);
+      await this.idempotency.setJson(idempotencyKey, response);
     }
     return response;
   }
@@ -135,8 +137,9 @@ export class TransactionsService {
     idempotencyKey?: string;
   }) {
     const { userId, workspaceId, amount, type, description, metadata, idempotencyKey } = params;
-    if (idempotencyKey && this.idempotentResponses.has(idempotencyKey)) {
-      return this.idempotentResponses.get(idempotencyKey);
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getJson<any>(idempotencyKey);
+      if (cached) return cached;
     }
     const contextType = workspaceId ? ContextType.TEAM : ContextType.INDIVIDUAL;
 
@@ -219,7 +222,98 @@ export class TransactionsService {
 
     const response = { success: true, transactionId: transaction.id, balanceAfter, contextType };
     if (idempotencyKey) {
-      this.idempotentResponses.set(idempotencyKey, response);
+      await this.idempotency.setJson(idempotencyKey, response);
+    }
+    return response;
+  }
+
+  /**
+   * Soft clawback: deduct up to `amount` credits (never throws on insufficient balance).
+   * Records TransactionType.REFUNDED with a negative amount.
+   */
+  async clawbackCredits(params: {
+    userId: string;
+    amount: number;
+    description: string;
+    metadata?: Record<string, any>;
+    idempotencyKey?: string;
+  }) {
+    const { userId, amount, description, metadata, idempotencyKey } = params;
+    if (amount <= 0) {
+      return { success: true, clawedBack: 0, shortfall: 0, balanceAfter: 0 };
+    }
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getJson<any>(idempotencyKey);
+      if (cached) return cached;
+    }
+
+    const creditsRecord = await this.databaseService.userCredits.upsert({
+      where: { userId },
+      create: { userId, credits: 0 },
+      update: {},
+    });
+    const balance = creditsRecord.credits;
+    const clawedBack = Math.min(balance, amount);
+    const shortfall = amount - clawedBack;
+
+    let balanceAfter = balance;
+    let transactionId: string | null = null;
+
+    if (clawedBack > 0) {
+      const updated = await this.databaseService.userCredits.update({
+        where: { userId },
+        data: { credits: { decrement: clawedBack } },
+      });
+      balanceAfter = updated.credits;
+
+      const transaction = await this.databaseService.transaction.create({
+        data: {
+          type: TransactionType.REFUNDED,
+          amount: -clawedBack,
+          contextType: ContextType.INDIVIDUAL,
+          userId,
+          status: TransactionStatus.COMPLETED,
+          activityName: 'REFUND_CLAWBACK',
+          metadata,
+        },
+      });
+      transactionId = transaction.id;
+
+      await this.databaseService.creditLedger.create({
+        data: {
+          entityType: EntityType.USER,
+          entityId: userId,
+          transactionId: transaction.id,
+          balanceBefore: balance,
+          balanceAfter,
+          change: -clawedBack,
+          description,
+        },
+      });
+
+      await this.messageQueueService.publish('credits.events', 'credits.refunded', {
+        transactionId: transaction.id,
+        entityId: userId,
+        amount: clawedBack,
+        balanceAfter,
+        shortfall,
+      });
+    }
+
+    this.logger.log(
+      `Credits clawed back: ${clawedBack} (shortfall ${shortfall}) for user ${userId}`,
+      'TransactionsService',
+    );
+
+    const response = {
+      success: true,
+      transactionId,
+      clawedBack,
+      shortfall,
+      balanceAfter,
+    };
+    if (idempotencyKey) {
+      await this.idempotency.setJson(idempotencyKey, response);
     }
     return response;
   }

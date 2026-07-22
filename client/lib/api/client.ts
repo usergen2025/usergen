@@ -3045,6 +3045,342 @@ class ApiClient {
     return response.data;
   }
 
+  private paymentHeaders() {
+    const token = this.getToken();
+    return {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+  }
+
+  private unwrapPaymentData<T>(payload: any): ApiResponse<T> {
+    if (payload && typeof payload === 'object' && 'success' in payload) {
+      return payload as ApiResponse<T>;
+    }
+    return { success: true, data: payload as T };
+  }
+
+  async getBillingPackages(audience: 'CREATOR' | 'BRAND'): Promise<ApiResponse<any[]>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/billing/packages?audience=${audience}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getBillingPublicSettings(): Promise<ApiResponse<any>> {
+    const response = await axios.get(`${PAYMENT_SERVICE_URL}/billing/settings/public`, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async quoteBilling(body: {
+    audience: 'CREATOR' | 'BRAND';
+    userId?: string;
+    packageId?: string;
+    inputMode?: 'AMOUNT' | 'CREDITS';
+    amountPaise?: number;
+    creditsDesired?: number;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(`${PAYMENT_SERVICE_URL}/billing/quote`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async createBillingCheckoutOrder(body: {
+    userId: string;
+    audience: 'CREATOR' | 'BRAND';
+    packageId?: string;
+    inputMode?: 'AMOUNT' | 'CREDITS';
+    amountPaise?: number;
+    creditsDesired?: number;
+    customerEmail?: string;
+    customerName?: string;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(`${PAYMENT_SERVICE_URL}/billing/checkout/orders`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async verifyBillingCheckout(body: {
+    userId: string;
+    purchaseOrderId: string;
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(`${PAYMENT_SERVICE_URL}/billing/checkout/verify`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getBillingCheckoutOrder(orderId: string, userId: string): Promise<ApiResponse<any>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/billing/checkout/orders/${orderId}?userId=${encodeURIComponent(userId)}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async listBillingPurchases(userId: string): Promise<ApiResponse<any[]>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/billing/checkout/orders?userId=${encodeURIComponent(userId)}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getBillingInvoice(invoiceId: string): Promise<ApiResponse<any>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/billing/invoices/${encodeURIComponent(invoiceId)}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async remindBillingCheckout(
+    purchaseOrderId: string,
+    userId: string,
+  ): Promise<ApiResponse<any>> {
+    const response = await axios.post(
+      `${PAYMENT_SERVICE_URL}/billing/checkout/orders/${purchaseOrderId}/remind`,
+      { userId },
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  // ── Admin billing / payments ──────────────────────────────────────────
+
+  async getAdminBillingSettings(): Promise<ApiResponse<any>> {
+    const response = await axios.get(`${PAYMENT_SERVICE_URL}/admin/billing/settings`, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async updateAdminBillingSettings(body: Record<string, any>): Promise<ApiResponse<any>> {
+    const response = await axios.put(`${PAYMENT_SERVICE_URL}/admin/billing/settings`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getAdminBillingPackages(audience?: 'CREATOR' | 'BRAND'): Promise<ApiResponse<any[]>> {
+    const qs = audience ? `?audience=${audience}` : '';
+    const response = await axios.get(`${PAYMENT_SERVICE_URL}/admin/billing/packages${qs}`, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async createAdminBillingPackage(body: {
+    audience: 'CREATOR' | 'BRAND';
+    title: string;
+    description?: string;
+    amountPaise: number;
+    creditsToGrant?: number;
+    sortOrder?: number;
+    isActive?: boolean;
+    badge?: string;
+    updatedBy?: string;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(`${PAYMENT_SERVICE_URL}/admin/billing/packages`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async updateAdminBillingPackage(
+    id: string,
+    body: Record<string, any>,
+  ): Promise<ApiResponse<any>> {
+    const response = await axios.put(`${PAYMENT_SERVICE_URL}/admin/billing/packages/${id}`, body, {
+      headers: this.paymentHeaders(),
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async deactivateAdminBillingPackage(
+    id: string,
+    updatedBy?: string,
+  ): Promise<ApiResponse<any>> {
+    const response = await axios.delete(`${PAYMENT_SERVICE_URL}/admin/billing/packages/${id}`, {
+      headers: this.paymentHeaders(),
+      data: { updatedBy },
+    });
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getAdminUserBillingOverride(userId: string): Promise<ApiResponse<any>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/users/${encodeURIComponent(userId)}/override`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async upsertAdminUserBillingOverride(
+    userId: string,
+    body: {
+      feeBps?: number | null;
+      feeType?: 'PERCENT' | 'FIXED' | null;
+      feeFixedPaise?: number | null;
+      taxExempt?: boolean;
+      notes?: string | null;
+      updatedBy?: string;
+    },
+  ): Promise<ApiResponse<any>> {
+    const response = await axios.put(
+      `${PAYMENT_SERVICE_URL}/admin/billing/users/${encodeURIComponent(userId)}/override`,
+      body,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async deleteAdminUserBillingOverride(userId: string): Promise<ApiResponse<any>> {
+    const response = await axios.delete(
+      `${PAYMENT_SERVICE_URL}/admin/billing/users/${encodeURIComponent(userId)}/override`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async listAdminBillingOrders(params?: {
+    status?: string;
+    statuses?: string;
+    userId?: string;
+    audience?: string;
+    q?: string;
+    take?: number;
+    skip?: number;
+  }): Promise<ApiResponse<{ items: any[]; total: number; take: number; skip: number }>> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.statuses) qs.set('statuses', params.statuses);
+    if (params?.userId) qs.set('userId', params.userId);
+    if (params?.audience) qs.set('audience', params.audience);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.take != null) qs.set('take', String(params.take));
+    if (params?.skip != null) qs.set('skip', String(params.skip));
+    const query = qs.toString();
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/orders${query ? `?${query}` : ''}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async exportAdminBillingOrdersCsv(params?: {
+    status?: string;
+    audience?: string;
+  }): Promise<string> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.audience) qs.set('audience', params.audience);
+    const query = qs.toString();
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/orders/export.csv${query ? `?${query}` : ''}`,
+      { headers: this.paymentHeaders(), responseType: 'text' },
+    );
+    return typeof response.data === 'string' ? response.data : String(response.data);
+  }
+
+  async listAdminBillingInvoices(take = 50): Promise<ApiResponse<any[]>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/invoices?take=${take}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async listAdminPaymentLinks(take = 50): Promise<ApiResponse<any[]>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/payment-links?take=${take}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async createAdminPaymentLink(body: {
+    userId: string;
+    audience: 'CREATOR' | 'BRAND';
+    adminUserId: string;
+    packageId?: string;
+    amountPaise?: number;
+    creditsDesired?: number;
+    customerEmail?: string;
+    customerName?: string;
+    customerPhone?: string;
+    description?: string;
+    notifyEmail?: boolean;
+    expireInHours?: number;
+    feeBpsOverride?: number;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(
+      `${PAYMENT_SERVICE_URL}/admin/billing/payment-links`,
+      body,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async notifyAdminPaymentLink(
+    id: string,
+    medium: 'email' | 'sms' = 'email',
+  ): Promise<ApiResponse<any>> {
+    const response = await axios.post(
+      `${PAYMENT_SERVICE_URL}/admin/billing/payment-links/${id}/notify`,
+      { medium },
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async cancelAdminPaymentLink(id: string): Promise<ApiResponse<any>> {
+    const response = await axios.post(
+      `${PAYMENT_SERVICE_URL}/admin/billing/payment-links/${id}/cancel`,
+      {},
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async listAdminBillingRefunds(take = 50): Promise<ApiResponse<any[]>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/refunds?take=${take}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async createAdminBillingRefund(body: {
+    purchaseOrderId: string;
+    adminUserId: string;
+    amountPaise?: number;
+    reason?: string;
+  }): Promise<ApiResponse<any>> {
+    const response = await axios.post(
+      `${PAYMENT_SERVICE_URL}/admin/billing/refunds`,
+      body,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
+  async getAdminBillingReconciliation(take = 50): Promise<ApiResponse<any>> {
+    const response = await axios.get(
+      `${PAYMENT_SERVICE_URL}/admin/billing/reconciliation?take=${take}`,
+      { headers: this.paymentHeaders() },
+    );
+    return this.unwrapPaymentData(response.data);
+  }
+
   async getTransactionHistory(
     userId: string, 
     options?: { 

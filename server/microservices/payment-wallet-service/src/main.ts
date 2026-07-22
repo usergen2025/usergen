@@ -7,7 +7,8 @@ import { AppModule } from './app.module';
 import { MessageQueueService } from './common/message-queue/message-queue.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody required for Razorpay webhook HMAC verification
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   try {
     await app.get(MessageQueueService).connect();
