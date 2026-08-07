@@ -28,6 +28,8 @@ interface User {
   name: string;
   role: string;
   credits?: number;
+  brandName?: string | null;
+  brandLogo?: string | null;
 }
 
 export function useAuth() {

@@ -617,6 +617,35 @@ body {
   margin-left: 8px;
 }
 
+/* Capsule field ending in a circular action button (send OTP, submit, etc.) —
+   trims the trailing inset so the button hugs the capsule edge. */
+.brand-field-shell--action {
+  padding-right: 4px;
+  gap: 6px;
+}
+
+/*
+ * Auth modal fields. Same capsule as the rest of the app, but pinned to 16px:
+ * iOS Safari zooms the viewport whenever a focused input renders below 16px,
+ * which throws the login sheet off-centre on phones.
+ */
+.auth-field,
+.brand-field-shell.auth-field .brand-field-shell__input {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.auth-field {
+  min-height: 44px;
+}
+
+.auth-field--otp {
+  text-align: center;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Hide native calendar picker icon when using custom trigger */
 .brand-hide-date-picker::-webkit-calendar-picker-indicator {
   opacity: 0;

@@ -2,14 +2,23 @@
 
 import { useState, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
-import Modal from '@/components/ui/Modal';
-import Button from '@/components/ui/Button';
-import { cn } from '@/lib/utils/cn';
-import Image from 'next/image';
-import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+import {
+  AuthEmailInput,
+  AuthField,
+  AuthModalShell,
+  AuthOtpInput,
+  AuthSocialRow,
+  AuthSwitchPrompt,
+  AuthTextInput,
+} from './AuthModalShell';
+
+/** OTP endpoints surface their reason in `message`; anything else falls back. */
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '';
+}
 
 interface CreatorSignupModalProps {
   isOpen: boolean;
@@ -63,8 +72,8 @@ function CreatorSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }
 
       setOtpSent(true);
       showToast('OTP sent successfully! Please check your email.', 'success');
-    } catch (err: any) {
-      showToast(err.message || 'Failed to send OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Failed to send OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -121,8 +130,8 @@ function CreatorSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }
       } else {
         throw new Error('Invalid response from server');
       }
-    } catch (err: any) {
-      showToast(err.message || 'Invalid OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Invalid OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -132,197 +141,97 @@ function CreatorSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }
     setIsLoading(true);
     try {
       await apiClient.socialLogin(provider);
-    } catch (err: any) {
-      showToast(err.message || `Failed to sign up with ${provider}`, 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || `Failed to sign up with ${provider}`, 'error');
       setIsLoading(false);
     }
   };
 
+  const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim());
+  const detailsComplete = Boolean(formData.name.trim()) && emailIsValid;
+
   return (
-    <Modal
+    <AuthModalShell
       isOpen={isOpen}
       onClose={onClose}
-      className="max-w-[546px] w-full bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl"
-      showCloseButton={false}
-    >
-      <div className="flex flex-col items-center p-10 gap-5">
-        {/* Header with back arrow and title */}
-        <div className="flex flex-row items-start w-full gap-2.5">
+      title="Sign up as a Creator"
+      subtitle="Join campaigns and get paid for the views you earn."
+      footer={
+        <>
           <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center flex-shrink-0 cursor-pointer hover:opacity-70 transition-opacity"
-            aria-label="Go back"
-            type="button"
+            type="submit"
+            form="auth-creator-signup-form"
+            className="brand-cta-primary w-full"
+            disabled={isLoading || (!otpSent && !detailsComplete) || (otpSent && otp.length !== 6)}
           >
-            <ArrowLeft className="w-6 h-6 text-[#212121]" strokeWidth={1.5} />
+            {isLoading
+              ? otpSent
+                ? 'Creating account…'
+                : 'Sending…'
+              : otpSent
+                ? 'Create account'
+                : 'Send OTP'}
           </button>
-          <h1 className={cn(
-            "flex-1 text-center font-heading font-normal text-[28px] leading-[28px] text-[#212121]"
-          )}>
-            Sign up as a Creator
-          </h1>
-          <div className="w-8 h-8" /> {/* Spacer for centering */}
-        </div>
+          <AuthSwitchPrompt
+            question="Already have an account?"
+            actionLabel="Login"
+            onAction={onShowLogin}
+          />
+        </>
+      }
+    >
+      <form
+        id="auth-creator-signup-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!otpSent) handleSendOtp();
+          else handleVerifyOtp();
+        }}
+        className="space-y-3.5"
+      >
+        <AuthField label="Name" htmlFor="auth-creator-name">
+          <AuthTextInput
+            id="auth-creator-name"
+            type="text"
+            placeholder="Your full name"
+            autoComplete="name"
+            required
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            disabled={isLoading || otpSent}
+          />
+        </AuthField>
 
-        <form 
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!otpSent) {
-              handleSendOtp();
-            } else {
-              handleVerifyOtp();
-            }
-          }} 
-          className="flex flex-col items-stretch w-full gap-5"
-        >
-          {/* Name Input */}
-          <div className="flex flex-col items-start gap-1 w-full">
-            <label className="font-heading font-light text-sm leading-[18px] text-[#616161]">
-              Name
-            </label>
-            <div className="box-border flex flex-row items-start px-4 py-3 gap-2.5 w-full h-[52px] border-2 border-[#E0E0E0] rounded-xl">
-              <input
-                type="text"
-                placeholder="Enter your Name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                disabled={isLoading || otpSent}
-                autoComplete="name"
-                required
-                className="flex-1 font-heading font-normal text-base leading-5 text-[#616161] placeholder:text-[#616161] bg-transparent border-0 outline-0 disabled:opacity-50"
-              />
-            </div>
-          </div>
+        <AuthField label="Email" htmlFor="auth-creator-email">
+          <AuthEmailInput
+            id="auth-creator-email"
+            value={formData.email}
+            onChange={(email) => setFormData({ ...formData, email })}
+            onSend={handleSendOtp}
+            canSend={detailsComplete && !isLoading}
+            isSending={isLoading && !otpSent}
+            disabled={isLoading || otpSent}
+          />
+        </AuthField>
 
-          {/* Email Input */}
-          <div className="flex flex-col items-start gap-1 w-full">
-            <label className="font-heading font-light text-sm leading-[18px] text-[#616161]">
-              Email
-            </label>
-            <div className="box-border flex flex-row items-center px-4 py-3 gap-2.5 w-full h-[52px] border-2 border-[#E0E0E0] rounded-xl">
-              <input
-                type="email"
-                placeholder="Email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                disabled={isLoading || otpSent}
-                autoComplete="email"
-                required
-                className="flex-1 font-heading font-normal text-base leading-5 text-[#616161] placeholder:text-[#616161] bg-transparent border-0 outline-0 disabled:opacity-50"
-              />
-              {formData.email.trim() && !otpSent && (
-                <button
-                  type="button"
-                  onClick={handleSendOtp}
-                  disabled={isLoading}
-                  className="w-4 h-4 flex items-center justify-center flex-shrink-0 cursor-pointer disabled:opacity-50 hover:opacity-70 transition-opacity"
-                >
-                  <Image src="/assets/icon-send.svg" alt="Send OTP" width={16} height={16} />
-                </button>
-              )}
-            </div>
-          </div>
+        <AuthField label="One time password" htmlFor="auth-creator-otp">
+          <AuthOtpInput
+            id="auth-creator-otp"
+            value={otp}
+            onChange={setOtp}
+            disabled={isLoading || !otpSent}
+            autoFocus={otpSent}
+          />
+          <p className="brand-campaign-meta mt-1.5 text-[#616161]">
+            {otpSent
+              ? `Code sent to ${formData.email.trim()}. Tap send again to resend.`
+              : 'Add your name and email, then tap send to get your code.'}
+          </p>
+        </AuthField>
 
-          {/* Mobile Input - TODO: Commented out for future use */}
-          {/* <div className="flex flex-col items-start gap-1 w-full">
-            <label className="font-heading font-light text-sm leading-[18px] text-[#616161]">
-              Mobile
-            </label>
-            <div className="box-border flex flex-row items-start px-4 py-3 gap-2.5 w-full h-[52px] border-2 border-[#E0E0E0] rounded-xl">
-              <input
-                type="tel"
-                placeholder="Mobile"
-                value={formData.mobile}
-                onChange={(e) => {
-                  const value = e.target.value.replace(/[^\d\s-+]/g, '');
-                  setFormData({ ...formData, mobile: value });
-                }}
-                disabled={isLoading || otpSent}
-                autoComplete="tel"
-                required
-                className="flex-1 font-heading font-normal text-base leading-5 text-[#616161] placeholder:text-[#616161] bg-transparent border-0 outline-0 disabled:opacity-50"
-              />
-            </div>
-          </div> */}
-
-          {/* OTP Input */}
-          <div className="flex flex-col items-start gap-1 w-full">
-            <label className="font-heading font-light text-sm leading-[18px] text-[#616161]">
-              One Time Password
-            </label>
-            <div className="box-border flex flex-row items-center px-4 py-3 gap-2.5 w-full h-[52px] border-2 border-[#E0E0E0] rounded-xl">
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="------"
-                value={otp}
-                onChange={(e) => {
-                  const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-                  setOtp(value);
-                }}
-                maxLength={6}
-                disabled={isLoading || !otpSent}
-                className="flex-1 font-heading font-normal text-[32px] leading-10 text-[#616161] placeholder:text-[#616161] bg-transparent border-0 outline-0 text-center tracking-widest disabled:opacity-50"
-                required
-                autoFocus={otpSent}
-              />
-            </div>
-          </div>
-
-          {/* Social Login Section */}
-          <div className="flex flex-row items-start gap-0 w-[252px] h-14 mx-auto">
-            <button
-              type="button"
-              onClick={() => handleSocialSignup('google')}
-              disabled={isLoading || otpSent}
-              className="flex flex-col justify-center items-center py-2 flex-1 h-14 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
-            >
-              <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                <Image src="/assets/icon-google.svg" alt="Google" width={24} height={24} className="w-full h-full" />
-              </div>
-              <span className="font-heading font-normal text-sm leading-4 text-[#212121] mt-1">Google</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSocialSignup('facebook')}
-              disabled={isLoading || otpSent}
-              className="flex flex-col justify-center items-center py-2 flex-1 h-14 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
-            >
-              <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                <Image src="/assets/icon-facebook.svg" alt="Facebook" width={24} height={24} className="w-full h-full" />
-              </div>
-              <span className="font-heading font-normal text-sm leading-4 text-[#212121] mt-1">Facebook</span>
-            </button>
-          </div>
-
-          {/* Submit Button */}
-          <Button 
-            type="submit" 
-            variant="primary" 
-            size="lg" 
-            className="w-[150px] min-w-[150px] max-w-[358px] h-[52px] mx-auto mt-0"
-            disabled={isLoading || (!otpSent && (!formData.name.trim() || !formData.email.trim())) || (otpSent && otp.length !== 6)}
-          >
-            {isLoading ? (otpSent ? 'Verifying...' : 'Sending...') : (otpSent ? 'Login' : 'SEND OTP')}
-          </Button>
-
-          {/* Login link */}
-          <div className="text-center">
-            <p className="text-sm text-text-secondary">
-              Already have an account?{' '}
-              <button
-                onClick={onShowLogin}
-                className="text-primary hover:underline font-medium cursor-pointer"
-                type="button"
-              >
-                Login
-              </button>
-            </p>
-          </div>
-        </form>
-      </div>
-    </Modal>
+        <AuthSocialRow onSelect={handleSocialSignup} disabled={isLoading || otpSent} />
+      </form>
+    </AuthModalShell>
   );
 }
 

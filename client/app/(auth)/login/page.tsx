@@ -3,14 +3,20 @@
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import Button from '@/components/ui/Button';
-import Input from '@/components/ui/Input';
-import { typography } from '@/lib/config/theme';
-import { cn } from '@/lib/utils/cn';
-import Image from 'next/image';
+import {
+  AuthEmailInput,
+  AuthField,
+  AuthOtpInput,
+  AuthSocialRow,
+} from '@/components/auth/AuthModalShell';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+
+/** OTP endpoints surface their reason in `message`; anything else falls back. */
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '';
+}
 
 function LoginPageContent() {
   const router = useRouter();
@@ -72,8 +78,8 @@ function LoginPageContent() {
 
       setOtpSent(true);
       showToast('OTP sent successfully! Please check your email.', 'success');
-    } catch (err: any) {
-      showToast(err.message || 'Failed to send OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Failed to send OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -143,8 +149,8 @@ function LoginPageContent() {
       } else {
         throw new Error('Invalid response from server');
       }
-    } catch (err: any) {
-      showToast(err.message || 'Invalid OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Invalid OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -157,8 +163,8 @@ function LoginPageContent() {
       // Redirect to social login endpoint
       await apiClient.socialLogin(provider);
       // The redirect happens in the API client
-    } catch (err: any) {
-      showToast(err.message || `Failed to login with ${provider}`, 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || `Failed to login with ${provider}`, 'error');
       setIsLoading(false);
     }
   };
@@ -179,131 +185,78 @@ function LoginPageContent() {
     return null;
   }
 
+  const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mobileEmail.trim());
+  const signupHref = `/signup${
+    getSearchParam('redirect')
+      ? `?redirect=${getSearchParam('redirect')}&from=${getSearchParam('from') || ''}&style=${getSearchParam('style') || ''}`
+      : ''
+  }`;
+
   return (
-    <div className="min-h-dvh gradient-overlay flex items-center justify-center px-4 py-12 relative">
-      <div className="max-w-[546px] w-full bg-white shadow-modal rounded-xl p-10 space-y-5 relative z-10">
-        <h1 className={cn(typography.heading.h3, "text-center font-heading")}>Login</h1>
-        
-        <form 
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!otpSent) {
-              handleSendOtp();
-            } else {
-              handleVerifyOtp();
-            }
-          }} 
-          className="space-y-4"
-        >
-          <Input
-            placeholder="Email"
-            type="email"
-            value={mobileEmail}
-            onChange={(e) => {
-              setMobileEmail(e.target.value);
+    <div className="gradient-overlay relative flex min-h-dvh items-center justify-center px-4 py-12">
+      <div className="brand-gradient-frame relative z-10 w-full max-w-[440px] rounded-[20px] p-2.5 sm:p-3">
+        <div className="rounded-[16px] bg-white shadow-sm">
+          <div className="border-b border-[#EFE8E3] p-3 sm:p-4">
+            <h1 className="brand-campaign-page-title">Login</h1>
+            <p className="brand-campaign-meta mt-0.5 text-[#616161]">
+              We&apos;ll email you a one time password.
+            </p>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!otpSent) handleSendOtp();
+              else handleVerifyOtp();
             }}
-            disabled={isLoading || otpSent}
-            autoComplete="email"
-            required
-            className="mb-4"
-            icon={
-              !otpSent && mobileEmail.trim() ? (
-                <Image src="/assets/icon-send.svg" alt="Send OTP" width={14} height={14} />
-              ) : undefined
-            }
-            iconPosition="right"
-            onIconClick={!otpSent && mobileEmail.trim() && !isLoading ? handleSendOtp : undefined}
-          />
-
-          {otpSent && (
-            <Input
-              placeholder="One Time Password"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={otp}
-              onChange={(e) => {
-                const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-                setOtp(value);
-                }}
-              maxLength={6}
-                disabled={isLoading}
-              className="text-center text-2xl tracking-widest font-mono mb-4"
-              required
-              autoFocus
-            />
-          )}
-
-
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-border"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-secondary text-text-secondary">or login via</span>
-            </div>
-          </div>
-
-          <div className="flex gap-4 justify-center">
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('google')}
-              disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Image src="/assets/icon-google.svg" alt="Google" width={22} height={22} />
-              <span className="text-sm font-sans text-black">G Google</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSocialLogin('facebook')}
-              disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Image src="/assets/icon-facebook.svg" alt="Facebook" width={11} height={20} />
-              <span className="text-sm font-sans text-black">f Facebook</span>
-            </button>
-          </div>
-
-          {!otpSent ? (
-          <Button 
-            type="submit" 
-            variant="primary" 
-            size="lg" 
-            fullWidth 
-            className="mt-6"
-              disabled={isLoading}
+            className="space-y-3.5 p-3 sm:p-4"
           >
-              {isLoading ? 'Sending...' : 'SEND OTP'}
-            </Button>
-          ) : (
-            <Button 
-              type="button" 
-              variant="primary" 
-              size="lg" 
-              fullWidth 
-              className="mt-6"
-              disabled={isLoading || otp.length !== 6}
-              onClick={handleVerifyOtp}
-            >
-              {isLoading ? 'Verifying...' : 'Login'}
-          </Button>
-          )}
+            <AuthField label="Email" htmlFor="login-page-email">
+              <AuthEmailInput
+                id="login-page-email"
+                value={mobileEmail}
+                onChange={setMobileEmail}
+                onSend={handleSendOtp}
+                canSend={emailIsValid && !isLoading}
+                isSending={isLoading && !otpSent}
+                disabled={isLoading || otpSent}
+              />
+            </AuthField>
 
-          <div className="text-center">
-            <p className="text-sm text-text-secondary">
-              Don't have an account?{' '}
-              <Link 
-                href={`/signup${getSearchParam('redirect') ? `?redirect=${getSearchParam('redirect')}&from=${getSearchParam('from') || ''}&style=${getSearchParam('style') || ''}` : ''}`}
-                className="text-primary hover:underline font-medium"
-              >
+            <AuthField label="One time password" htmlFor="login-page-otp">
+              <AuthOtpInput
+                id="login-page-otp"
+                value={otp}
+                onChange={setOtp}
+                disabled={isLoading || !otpSent}
+                autoFocus={otpSent}
+              />
+              <p className="brand-campaign-meta mt-1.5 text-[#616161]">
+                {otpSent
+                  ? `Code sent to ${mobileEmail.trim()}. Tap send again to resend.`
+                  : 'Enter your email, then tap send to get your code.'}
+              </p>
+            </AuthField>
+
+            <AuthSocialRow onSelect={handleSocialLogin} disabled={isLoading || otpSent} />
+
+            <button
+              type="submit"
+              className="brand-cta-primary w-full"
+              disabled={isLoading || (!otpSent && !emailIsValid) || (otpSent && otp.length !== 6)}
+            >
+              {isLoading ? (otpSent ? 'Verifying…' : 'Sending…') : otpSent ? 'Login' : 'Send OTP'}
+            </button>
+
+            <p className="brand-campaign-meta text-center text-[#616161]">
+              Don&apos;t have an account?{' '}
+              <Link href={signupHref} className="font-heading font-semibold text-[#E86512] hover:underline">
                 Sign up
               </Link>
             </p>
-          </div>
-        </form>
+          </form>
+        </div>
       </div>
-
     </div>
   );
 }

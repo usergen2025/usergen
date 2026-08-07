@@ -3,15 +3,21 @@
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import Button from '@/components/ui/Button';
-import Input from '@/components/ui/Input';
-import Modal from '@/components/ui/Modal';
-import { typography } from '@/lib/config/theme';
-import { cn } from '@/lib/utils/cn';
-import { Chrome, Facebook } from 'lucide-react';
+import {
+  AuthField,
+  AuthModalShell,
+  AuthOtpInput,
+  AuthSocialRow,
+  AuthTextInput,
+} from '@/components/auth/AuthModalShell';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+
+/** OTP endpoints surface their reason in `message`; anything else falls back. */
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '';
+}
 
 function SignupPageContent() {
   const router = useRouter();
@@ -74,8 +80,8 @@ function SignupPageContent() {
       setOtpSent(true);
       setShowOtpModal(true);
       showToast('OTP sent successfully! Please check your email and mobile.', 'success');
-    } catch (err: any) {
-      showToast(err.message || 'Failed to send OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Failed to send OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -150,8 +156,8 @@ function SignupPageContent() {
       } else {
         throw new Error('Invalid response from server');
       }
-    } catch (err: any) {
-      showToast(err.message || 'Invalid OTP. Please try again.', 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || 'Invalid OTP. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -164,8 +170,8 @@ function SignupPageContent() {
       // Redirect to social login endpoint
       await apiClient.socialLogin(provider);
       // The redirect happens in the API client
-    } catch (err: any) {
-      showToast(err.message || `Failed to sign up with ${provider}`, 'error');
+    } catch (err: unknown) {
+      showToast(errorMessage(err) || `Failed to sign up with ${provider}`, 'error');
       setIsLoading(false);
     }
   };
@@ -186,206 +192,142 @@ function SignupPageContent() {
     return null;
   }
 
-  return (
-    <div className="min-h-dvh bg-background flex items-center justify-center px-4 py-12">
-      <div className="max-w-md w-full bg-secondary border border-border rounded-lg p-8 space-y-6">
-        <h1 className={cn(typography.heading.h3, "text-center")}>Sign Up</h1>
-        
-        <form 
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!otpSent) {
-              handleSendOtp();
-            }
-          }} 
-          className="space-y-4"
-        >
-          <Input
-            placeholder="Name"
-            type="text"
-            value={formData.name}
-            onChange={(e) => {
-              setFormData({ ...formData, name: e.target.value });
-            }}
-            disabled={isLoading || otpSent}
-            required
-          />
-          
-          <Input
-            placeholder="Email"
-            type="email"
-            value={formData.email}
-            onChange={(e) => {
-              setFormData({ ...formData, email: e.target.value });
-            }}
-            disabled={isLoading || otpSent}
-            autoComplete="email"
-            required
-          />
-          
-          <Input
-            placeholder="Mobile"
-            type="tel"
-            value={formData.mobile}
-            onChange={(e) => {
-              // Allow only digits and basic formatting characters
-              const value = e.target.value.replace(/[^\d\s-+]/g, '');
-              setFormData({ ...formData, mobile: value });
-            }}
-            disabled={isLoading || otpSent}
-            autoComplete="tel"
-            required
-          />
+  const loginHref = `/login${
+    getSearchParam('redirect')
+      ? `?redirect=${getSearchParam('redirect')}&from=${getSearchParam('from') || ''}&style=${getSearchParam('style') || ''}`
+      : ''
+  }`;
 
-          {otpSent && (
-            <div className="space-y-2">
-              <p className="text-sm text-text-secondary">
-                OTP sent to {formData.email} and {formData.mobile}
-              </p>
-              <Button
+  return (
+    <div className="gradient-overlay relative flex min-h-dvh items-center justify-center px-4 py-12">
+      <div className="brand-gradient-frame relative z-10 w-full max-w-[440px] rounded-[20px] p-2.5 sm:p-3">
+        <div className="rounded-[16px] bg-white shadow-sm">
+          <div className="border-b border-[#EFE8E3] p-3 sm:p-4">
+            <h1 className="brand-campaign-page-title">Sign up</h1>
+            <p className="brand-campaign-meta mt-0.5 text-[#616161]">
+              We&apos;ll send a one time password to confirm it&apos;s you.
+            </p>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!otpSent) handleSendOtp();
+            }}
+            className="space-y-3.5 p-3 sm:p-4"
+          >
+            <AuthField label="Name" htmlFor="signup-page-name">
+              <AuthTextInput
+                id="signup-page-name"
+                type="text"
+                placeholder="Your full name"
+                autoComplete="name"
+                required
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                disabled={isLoading || otpSent}
+              />
+            </AuthField>
+
+            <AuthField label="Email" htmlFor="signup-page-email">
+              <AuthTextInput
+                id="signup-page-email"
+                type="email"
+                placeholder="you@example.com"
+                autoComplete="email"
+                required
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                disabled={isLoading || otpSent}
+              />
+            </AuthField>
+
+            <AuthField label="Mobile" htmlFor="signup-page-mobile">
+              <AuthTextInput
+                id="signup-page-mobile"
+                type="tel"
+                placeholder="Your mobile number"
+                autoComplete="tel"
+                required
+                value={formData.mobile}
+                onChange={(e) =>
+                  setFormData({ ...formData, mobile: e.target.value.replace(/[^\d\s\-+]/g, '') })
+                }
+                disabled={isLoading || otpSent}
+              />
+            </AuthField>
+
+            {otpSent && (
+              <button
                 type="button"
-                variant="outline"
-                size="sm"
-                fullWidth
                 onClick={() => {
                   setOtpSent(false);
                   setShowOtpModal(false);
                   setOtp('');
                 }}
                 disabled={isLoading}
+                className="brand-cta-secondary w-full"
               >
-                Change Details
-              </Button>
-            </div>
-          )}
+                Change details
+              </button>
+            )}
 
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-border"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-secondary text-text-secondary">or sign up via</span>
-            </div>
-          </div>
+            <AuthSocialRow onSelect={handleSocialSignup} disabled={isLoading || otpSent} />
 
-          <div className="flex gap-4 justify-center">
             <button
-              type="button"
-              onClick={() => handleSocialSignup('google')}
+              type="submit"
+              className="brand-cta-primary w-full"
               disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-border rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Chrome className="w-8 h-8" />
-              <span className="text-sm">Google</span>
+              {isLoading ? 'Sending…' : otpSent ? 'OTP sent' : 'Send OTP'}
             </button>
-            <button
-              type="button"
-              onClick={() => handleSocialSignup('facebook')}
-              disabled={isLoading || otpSent}
-              className="flex flex-col items-center gap-2 p-4 border border-border rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Facebook className="w-8 h-8" />
-              <span className="text-sm">Facebook</span>
-            </button>
-          </div>
 
-          <Button 
-            type="submit" 
-            variant="primary" 
-            size="lg" 
-            fullWidth 
-            className="mt-6"
-            disabled={isLoading || otpSent}
-          >
-            {isLoading ? 'Sending...' : otpSent ? 'OTP Sent' : 'SEND OTP'}
-          </Button>
-
-          <div className="text-center">
-            <p className="text-sm text-text-secondary">
+            <p className="brand-campaign-meta text-center text-[#616161]">
               Already have an account?{' '}
-              <Link 
-                href={`/login${getSearchParam('redirect') ? `?redirect=${getSearchParam('redirect')}&from=${getSearchParam('from') || ''}&style=${getSearchParam('style') || ''}` : ''}`}
-                className="text-primary hover:underline font-medium"
-              >
+              <Link href={loginHref} className="font-heading font-semibold text-[#E86512] hover:underline">
                 Login
               </Link>
             </p>
-          </div>
-        </form>
+          </form>
+        </div>
       </div>
 
-      {/* OTP Modal */}
-      <Modal
+      <AuthModalShell
         isOpen={showOtpModal}
         onClose={() => {
-          if (!isLoading) {
-            setShowOtpModal(false);
-          }
+          if (!isLoading) setShowOtpModal(false);
         }}
-        title="Enter OTP"
-        showCloseButton={!isLoading}
+        title="Enter your code"
+        subtitle={`Sent to ${formData.email} and ${formData.mobile}`}
+        footer={
+          <button
+            type="button"
+            onClick={handleVerifyOtp}
+            disabled={isLoading || otp.length !== 6}
+            className="brand-cta-primary w-full"
+          >
+            {isLoading ? 'Verifying…' : 'Verify OTP'}
+          </button>
+        }
       >
-        <div className="space-y-4">
-          <p className="text-sm text-text-secondary">
-            We've sent a 6-digit OTP to your email ({formData.email}) and mobile ({formData.mobile})
-          </p>
-
-          <Input
-            placeholder="000000"
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
+        <AuthField label="One time password" htmlFor="signup-page-otp">
+          <AuthOtpInput
+            id="signup-page-otp"
             value={otp}
-            onChange={(e) => {
-              // Only allow digits
-              const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-              setOtp(value);
-            }}
-            maxLength={6}
+            onChange={setOtp}
             disabled={isLoading}
-            className="text-center text-2xl tracking-widest font-mono"
-            required
             autoFocus
           />
-
-          <div className="flex gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="md"
-              fullWidth
-              onClick={() => {
-                setShowOtpModal(false);
-                setOtp('');
-              }}
-              disabled={isLoading}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              fullWidth
-              onClick={handleVerifyOtp}
-              disabled={isLoading || otp.length !== 6}
-            >
-              {isLoading ? 'Verifying...' : 'Verify OTP'}
-            </Button>
-          </div>
-
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={handleSendOtp}
-              disabled={isLoading}
-              className="text-sm text-primary hover:underline disabled:opacity-50"
-            >
-              Resend OTP
-            </button>
-          </div>
-        </div>
-      </Modal>
+        </AuthField>
+        <button
+          type="button"
+          onClick={handleSendOtp}
+          disabled={isLoading}
+          className="brand-campaign-meta mt-2.5 w-full text-center font-heading font-semibold text-[#E86512] hover:underline disabled:opacity-50"
+        >
+          Resend OTP
+        </button>
+      </AuthModalShell>
     </div>
   );
 }

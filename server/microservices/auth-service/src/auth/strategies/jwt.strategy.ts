@@ -27,6 +27,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         role: true,
         isActive: true,
         profilePicture: true,
+        // Brand identity travels with the session so the app can render the
+        // brand's own logo instead of an initial.
+        brandName: true,
+        brandLogo: true,
       },
     });
 

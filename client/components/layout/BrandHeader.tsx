@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Menu, X, LogOut } from 'lucide-react';
@@ -19,8 +19,34 @@ export default function BrandHeader({ position = 'relative' }: BrandHeaderProps)
   const router = useRouter();
   const { logout, user } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   useCloseOnRouteChange(() => setMobileMenuOpen(false));
+
+  // The menu overlays the page, so it needs its own outside-tap dismissal.
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node;
+      if (mobileMenuRef.current?.contains(target)) return;
+      if (mobileMenuButtonRef.current?.contains(target)) return;
+      setMobileMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobileMenuOpen]);
 
   const handleLogout = () => {
     logout();
@@ -48,7 +74,7 @@ export default function BrandHeader({ position = 'relative' }: BrandHeaderProps)
   return (
     <header className={cn(positionClasses[position], "w-full pt-[43px] pb-0")}>
       <div className="max-w-[1248px] mx-auto px-4 sm:px-6">
-        <div className="bg-white shadow-header rounded-2xl px-4 md:px-6 py-4">
+        <div className="relative bg-white shadow-header rounded-2xl px-4 md:px-6 py-4">
           <div className="flex items-center justify-between">
             {/* Logo */}
             <Link href="/brand/dashboard" className="flex items-center flex-shrink-0">
@@ -97,9 +123,11 @@ export default function BrandHeader({ position = 'relative' }: BrandHeaderProps)
 
               {/* Mobile Menu Button */}
               <button
+                ref={mobileMenuButtonRef}
                 className="md:hidden p-2 flex-shrink-0"
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                 aria-label="Toggle menu"
+                aria-expanded={mobileMenuOpen}
               >
                 {mobileMenuOpen ? (
                   <X className="w-6 h-6 text-black" />
@@ -110,9 +138,13 @@ export default function BrandHeader({ position = 'relative' }: BrandHeaderProps)
             </div>
           </div>
 
-          {/* Mobile Menu */}
+          {/* Mobile menu — overlays the page instead of growing the header bar,
+              which would otherwise push all page content down when opened. */}
           {mobileMenuOpen && (
-            <div className="md:hidden mt-4 pt-4 border-t border-gray-200">
+            <div
+              ref={mobileMenuRef}
+              className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70dvh] overflow-y-auto rounded-2xl bg-white p-2 shadow-header ring-1 ring-[#F0E6DF] md:hidden"
+            >
               <nav className="flex flex-col gap-2">
                 {navItems.map((item) => (
                   <Link

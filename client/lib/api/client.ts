@@ -159,6 +159,8 @@ export interface User {
   isEmailVerified?: boolean;
   isMobileVerified?: boolean;
   createdAt?: string;
+  brandName?: string | null;
+  brandLogo?: string | null;
 }
 
 class ApiClient {

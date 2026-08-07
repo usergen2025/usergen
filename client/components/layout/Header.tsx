@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { BarChart3, LogOut, Menu, X, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
@@ -37,8 +37,34 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
   const [brandSignupModalOpen, setBrandSignupModalOpen] = useState(false);
   const [creatorSignupModalOpen, setCreatorSignupModalOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   useCloseOnRouteChange(() => setMobileMenuOpen(false));
+
+  // The menu overlays the page, so it needs its own outside-tap dismissal.
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node;
+      if (mobileMenuRef.current?.contains(target)) return;
+      if (mobileMenuButtonRef.current?.contains(target)) return;
+      setMobileMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobileMenuOpen]);
 
   // Use authUser from useAuth hook, fallback to fetched user
   const currentUser = authUser || user;
@@ -189,9 +215,10 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
       : publicNavItems;
   
   // Get brand name or user name for display
-  const displayName = userIsBrand 
-    ? ((currentUser as any)?.brandName || currentUser?.name || 'Brand')
+  const displayName = userIsBrand
+    ? (currentUser?.brandName || currentUser?.name || 'Brand')
     : (currentUser?.name || 'User');
+  const brandLogo = userIsBrand ? currentUser?.brandLogo : null;
 
   return (
     <>
@@ -199,7 +226,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
       <div className="max-w-[1248px] mx-auto px-4 sm:px-6">
         <div
           className={cn(
-            'shadow-header rounded-2xl px-4 py-3 sm:px-6 sm:py-4',
+            'relative shadow-header rounded-2xl px-4 py-3 sm:px-6 sm:py-4',
             floatingBarSurface === 'translucent'
               ? 'bg-white/80 backdrop-blur-sm ring-1 ring-[#F0E6DF]/90'
               : 'bg-white'
@@ -268,13 +295,21 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                   trigger={
                     <div className="flex items-center gap-2 px-2 py-1.5 rounded-[26px] cursor-pointer hover:opacity-80 transition-opacity flex-shrink-0">
                       <div className={cn(
-                        "w-8 h-8 flex items-center justify-center rounded-full text-white font-heading font-medium text-sm flex-shrink-0",
-                        userIsBrand 
-                          ? "bg-gradient-to-b from-[#E86412] to-[#F12A4C]"
+                        "w-8 h-8 flex items-center justify-center overflow-hidden rounded-full text-white font-heading font-medium text-sm flex-shrink-0",
+                        userIsBrand
+                          ? brandLogo
+                            ? "bg-white ring-1 ring-[#E8E2DB]"
+                            : "bg-gradient-to-b from-[#E86412] to-[#F12A4C]"
                           : "bg-white"
                       )}>
                         {userIsBrand ? (
-                          displayName.charAt(0).toUpperCase()
+                          brandLogo ? (
+                            /* Uploaded at signup as a data URL — not optimisable */
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img src={brandLogo} alt="" className="h-full w-full object-contain" />
+                          ) : (
+                            displayName.charAt(0).toUpperCase()
+                          )
                         ) : (
                           <Image src="/assets/u_user.svg" alt="User" width={24} height={24} />
                         )}
@@ -386,9 +421,11 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
               
               {/* Mobile Menu Button */}
               <button
+                ref={mobileMenuButtonRef}
                 className="lg:hidden p-2"
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                 aria-label="Toggle menu"
+                aria-expanded={mobileMenuOpen}
               >
                 {mobileMenuOpen ? (
                   <X className="w-6 h-6 text-black" />
@@ -399,9 +436,13 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
             </div>
           </div>
 
-          {/* Mobile Menu - Conditionally render based on role */}
+          {/* Mobile menu — overlays the page instead of growing the header bar,
+              which would otherwise push all page content down when opened. */}
           {mobileMenuOpen && (
-            <div className="lg:hidden mt-4 pt-4 border-t border-gray-200">
+            <div
+              ref={mobileMenuRef}
+              className="absolute left-0 right-0 top-full z-50 mt-2 max-h-[70dvh] overflow-y-auto rounded-2xl bg-white p-2 shadow-header ring-1 ring-[#F0E6DF] lg:hidden"
+            >
               <nav className="flex flex-col gap-2">
                 {navItems.map((item) => (
                   <Link
