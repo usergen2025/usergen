@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
-import { IndianRupee, Lock, Wallet } from 'lucide-react';
+import { Banknote, IndianRupee, Lock, Wallet } from 'lucide-react';
 import { BrandPageHeader, BrandStatStrip, type BrandStatItem } from '@/components/brand';
+import WithdrawFundsModal from '@/components/earnings/WithdrawFundsModal';
 import { cn } from '@/lib/utils/cn';
 
 interface EarningEntry {
@@ -31,8 +32,7 @@ export default function EarningsPage() {
   const router = useRouter();
   const { showToast } = useToast();
   const [isLoading, setIsLoading] = useState(true);
-  const [isRequesting, setIsRequesting] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [showWithdraw, setShowWithdraw] = useState(false);
   const [summary, setSummary] = useState<EarningSummary>({
     totalEarnings: 0,
     availableEarnings: 0,
@@ -40,39 +40,22 @@ export default function EarningsPage() {
     entries: [],
   });
 
-  useEffect(() => {
-    const loadEarnings = async () => {
-      try {
-        const response = await apiClient.getCreatorEarnings();
-        if (response.data) {
-          setSummary(response.data);
-        }
-      } catch (error: unknown) {
-        showToast(error instanceof Error ? error.message : 'Failed to load earnings', 'error');
-      } finally {
-        setIsLoading(false);
+  const loadEarnings = useCallback(async () => {
+    try {
+      const response = await apiClient.getCreatorEarnings();
+      if (response.data) {
+        setSummary(response.data);
       }
-    };
-    void loadEarnings();
+    } catch (error: unknown) {
+      showToast(error instanceof Error ? error.message : 'Failed to load earnings', 'error');
+    } finally {
+      setIsLoading(false);
+    }
   }, [showToast]);
 
-  const handleWithdraw = async () => {
-    const amount = Number(withdrawAmount);
-    if (!amount || amount <= 0) {
-      showToast('Enter a valid withdrawal amount', 'error');
-      return;
-    }
-    setIsRequesting(true);
-    try {
-      await apiClient.requestCreatorWithdrawal(amount);
-      showToast('Withdrawal request created', 'success');
-      setWithdrawAmount('');
-    } catch (error: unknown) {
-      showToast(error instanceof Error ? error.message : 'Failed to create withdrawal request', 'error');
-    } finally {
-      setIsRequesting(false);
-    }
-  };
+  useEffect(() => {
+    void loadEarnings();
+  }, [loadEarnings]);
 
   const statItems: BrandStatItem[] = [
     {
@@ -105,6 +88,26 @@ export default function EarningsPage() {
         className="mb-3 shrink-0 sm:mb-3"
         title="Earnings"
         subtitle="Campaign payouts and withdrawals."
+        right={
+          <button
+            type="button"
+            onClick={() => setShowWithdraw(true)}
+            className="brand-campaign-cta w-full min-w-0 sm:w-auto"
+          >
+            <Banknote className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
+            <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
+              Withdraw
+            </span>
+          </button>
+        }
+      />
+
+      <WithdrawFundsModal
+        open={showWithdraw}
+        onClose={() => setShowWithdraw(false)}
+        availableEarnings={summary.availableEarnings}
+        lockedEarnings={summary.lockedEarnings}
+        onRequested={() => void loadEarnings()}
       />
 
       <div className="brand-gradient-frame mb-3 shrink-0 p-3 sm:mb-4 sm:p-4">
@@ -113,26 +116,14 @@ export default function EarningsPage() {
 
       <div className="brand-gradient-frame mb-0 flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4">
         <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[18px] bg-white/95 shadow-sm">
-          <div className="flex shrink-0 flex-col gap-3 border-b border-[#EFE8E3] p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#EFE8E3] p-3 sm:p-4">
             <h2 className="brand-page-section-title">Earning Entries</h2>
-            <div className="flex items-center gap-2">
-              <input
-                value={withdrawAmount}
-                onChange={(event) => setWithdrawAmount(event.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="Amount"
-                inputMode="numeric"
-                aria-label="Withdrawal amount"
-                className="brand-field-capsule w-full sm:w-[9rem]"
-              />
-              <button
-                type="button"
-                onClick={handleWithdraw}
-                disabled={isRequesting}
-                className="brand-cta-primary brand-cta-primary--sm shrink-0 disabled:opacity-50"
-              >
-                Request
-              </button>
-            </div>
+            {!isLoading && summary.entries.length > 0 && (
+              <span className="brand-campaign-meta shrink-0 text-[#616161]">
+                {summary.entries.length}{' '}
+                {summary.entries.length === 1 ? 'entry' : 'entries'}
+              </span>
+            )}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
