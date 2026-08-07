@@ -144,6 +144,18 @@ export class ElevenLabsProvider {
         },
       });
 
+      // Validate response structure before processing
+      if (!response.data) {
+        console.error('[ElevenLabs] API returned empty response');
+        throw new Error('ElevenLabs API returned empty response. Please check your API key.');
+      }
+
+      if (!response.data.voices || !Array.isArray(response.data.voices)) {
+        console.error('[ElevenLabs] Unexpected API response structure:', JSON.stringify(response.data).substring(0, 500));
+        const errorMessage = (response.data as any)?.detail?.message || (response.data as any)?.message || 'Unknown error';
+        throw new Error(`ElevenLabs API error: ${errorMessage}. Please verify your ELEVENLABS_API_KEY is valid.`);
+      }
+
       // Filter out disabled/unusable voices
       let filteredVoices = response.data.voices.filter((voice) => {
         if (!isVoiceUsable(voice)) {
