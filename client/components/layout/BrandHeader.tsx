@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Menu, X, LogOut } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import { useAuth } from '@/hooks/useAuth';
+import { useCloseOnRouteChange } from '@/hooks/useCloseOnRouteChange';
 import { cn } from '@/lib/utils/cn';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 
@@ -18,6 +19,8 @@ export default function BrandHeader({ position = 'relative' }: BrandHeaderProps)
   const router = useRouter();
   const { logout, user } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  useCloseOnRouteChange(() => setMobileMenuOpen(false));
 
   const handleLogout = () => {
     logout();

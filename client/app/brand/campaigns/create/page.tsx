@@ -211,7 +211,7 @@ export default function CreateCampaignPage() {
       return false;
     }
     if (!formData.totalBudget || parseFloat(formData.totalBudget) <= 0) {
-      showToast('Valid total budget is required', 'error');
+      showToast('Valid total prize pool is required', 'error');
       return false;
     }
     const poolValidation = isTiersValid(prizePool.tiers);
@@ -675,12 +675,12 @@ export default function CreateCampaignPage() {
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <label className="font-heading brand-campaign-row font-medium text-[#212121]">
-                      Total Budget of the Campaign
+                      Total Prize Pool of the Campaign
                     </label>
                     <div className="relative group">
                       <Info className="w-4 h-4 text-gray-400 cursor-help" />
                       <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                        The full budget will be distributed across approved creators based on the
+                        The full pool will be distributed across approved creators based on the
                         prize pool template you choose. Only refunded if zero creators qualify.
                       </div>
                     </div>

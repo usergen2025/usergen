@@ -511,6 +511,53 @@ body {
   @apply border-2 border-[#E0E0E0] bg-white p-3 sm:p-3.5 rounded-[20px];
 }
 
+/*
+ * Brand campaign card header. Grid areas rather than flex rows because mobile
+ * and desktop group the same five elements differently: mobile pairs the status
+ * with the title and the actions with the posted date, desktop keeps the posted
+ * date and status together and drops the actions beside the counts.
+ */
+.brand-campaign-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title  status'
+    'posted actions'
+    'stats  stats';
+  align-items: center;
+  column-gap: 0.5rem;
+  row-gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .brand-campaign-head {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'title posted status'
+      'stats stats  actions';
+    column-gap: 0.625rem;
+    row-gap: 0.625rem;
+  }
+}
+
+.brand-campaign-head__title {
+  grid-area: title;
+}
+.brand-campaign-head__posted {
+  grid-area: posted;
+}
+.brand-campaign-head__status {
+  grid-area: status;
+  justify-self: end;
+}
+.brand-campaign-head__stats {
+  grid-area: stats;
+}
+.brand-campaign-head__actions {
+  grid-area: actions;
+  justify-self: end;
+}
+
 /* Single-line pill inputs — full capsule ends; textarea uses --textarea variant */
 .brand-field-capsule {
   @apply w-full rounded-full border border-[#DED4CB] bg-white font-heading text-[clamp(12px,1.37vh,14px)] text-[#616161] shadow-[0_1px_2px_rgba(20,20,20,0.05)];

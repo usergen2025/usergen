@@ -11,13 +11,14 @@ import {
   BrandPrimaryButton,
   BrandSecondaryButton,
   BrandPageHeader,
-  BrandIconChip,
   BrandStatusPill,
 } from '@/components/brand';
 import { ProjectLibraryPickerModal } from '@/components/campaigns/ProjectLibraryPickerModal';
 import {
-  Calendar,
-  IndianRupee,
+  CampaignMetricsRow,
+  campaignPoolLabel,
+} from '@/components/campaigns/CampaignMetricsRow';
+import {
   Search,
   Link2,
   Video,
@@ -27,7 +28,7 @@ import {
   Eye,
   ArrowUpDown,
   ListFilter,
-  CalendarRange,
+  Target,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 
@@ -52,6 +53,7 @@ interface Campaign {
   brandAssetsUrl?: string;
   views?: number;
   targetViews?: number;
+  minViewsToQualify?: number;
   status?: string;
 }
 
@@ -71,29 +73,9 @@ interface CampaignStateRow {
     postUrl: string;
     platform: 'INSTAGRAM' | 'YOUTUBE';
     status: 'PENDING_REVIEW' | 'VERIFIED' | 'REJECTED';
+    currentViews?: number;
     createdAt: string;
   }>;
-}
-
-function formatDate(dateString: string) {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata',
-  });
-}
-
-function formatLineDate(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-IN', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata',
-  });
 }
 
 function formatCampaignDate(
@@ -111,12 +93,6 @@ function formatCampaignDate(
     return `${dateOnly}, 11:59 PM`;
   }
   return `${dateOnly}, 12:00 AM`;
-}
-
-function getDaysRemaining(dateString: string) {
-  const date = new Date(dateString);
-  const now = new Date();
-  return Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 /** Upload-tab label: local pick name, or processed upload title (not project-library rows). */
@@ -147,48 +123,22 @@ function CreatorLiveCampaignCard({
   campaign: Campaign;
   onApply: (c: Campaign) => void;
 }) {
-  const budgetLeft = Math.max(
-    Number(campaign.remainingBudget ?? campaign.totalBudget - campaign.budgetUsed),
-    0,
-  );
-  const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
-  const urgent = daysRemaining >= 0 && daysRemaining <= 7;
   const views = Number(campaign.views ?? 0);
-  const targetViews = Number(campaign.targetViews ?? 0);
+  const isPool = campaign.payoutModel === 'POOL';
+  const minViewsToQualify = Number(campaign.minViewsToQualify ?? 0);
   const st = publicCampaignStatus(campaign.status);
 
   return (
     <div className="brand-campaign-card-figma shadow-sm">
       <div className="flex flex-col gap-2 sm:gap-2.5">
-        <div className="flex flex-col gap-1 sm:gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-row items-start justify-between gap-2">
           <Link
             href={`/campaigns/${campaign.id}`}
-            className="brand-campaign-title font-heading leading-tight text-[#212121] hover:opacity-80 pr-2"
+            className="brand-campaign-title min-w-0 flex-1 font-heading leading-tight text-[#212121] hover:opacity-80 pr-2"
           >
             {campaign.name}
           </Link>
-          <div className="flex flex-wrap items-center justify-end gap-2 text-right sm:max-w-[50%] sm:gap-2.5">
-            {campaign.platformTarget ? (
-              <span className="brand-campaign-meta text-[#616161]">{campaign.platformTarget}</span>
-            ) : null}
-            <BrandStatusPill status={st} />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
-            <IndianRupee className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
-            <span>
-              {campaign.payoutModel === 'POOL'
-                ? `Prize pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
-                : `CPM ₹${Number(campaign.payoutRate || 0).toLocaleString('en-IN')} / 1k views`}
-            </span>
-          </div>
-          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
-            <Calendar className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
-            <span>Apply by {formatDate(campaign.deadlineToApply)}</span>
-          </div>
-          <div className="flex items-center gap-1.5 sm:ml-auto">
+          <div className="flex shrink-0 items-center gap-1.5">
             <Link
               href={`/campaigns/${campaign.id}`}
               className="inline-flex h-8 w-8 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-orange-50/50"
@@ -203,53 +153,29 @@ function CreatorLiveCampaignCard({
           </div>
         </div>
 
-        <div className="brand-campaign-row flex flex-col gap-1.5 text-[#212121] sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2.5 sm:gap-y-1">
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Eye className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span>
-                {campaign.payoutModel === 'POOL'
-                  ? `${views.toLocaleString('en-IN')} views · pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
-                  : `${views.toLocaleString('en-IN')} / ${targetViews.toLocaleString('en-IN')} views`}
-              </span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-y-3">
+          {/* Most campaigns leave the threshold at 0 — only surface a real one */}
+          {isPool && minViewsToQualify > 0 ? (
+            <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
+              <Target className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
+              <span>Qualify at {minViewsToQualify.toLocaleString('en-IN')} views</span>
             </div>
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Calendar className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span className={cn(urgent && daysRemaining >= 0 && 'text-red-600')}>
-                {formatLineDate(campaign.deadlineToApply)}
-                {daysRemaining >= 0
-                  ? ` — ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} to apply`
-                  : ' — past deadline'}
-              </span>
-            </div>
-          </div>
-          <div className="mt-0 inline-flex w-full min-w-0 items-center gap-1.5 sm:mt-0 sm:w-auto sm:max-w-[50%] sm:justify-end sm:pl-2 sm:text-right">
-            <BrandIconChip size="sm" className="self-center sm:self-center">
-              <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="min-w-0 text-left leading-snug sm:text-right">
-              Campaign timeline: {formatLineDate(campaign.startDate)} – {formatLineDate(campaign.endDate)}
-            </span>
+          ) : null}
+          <div className="ml-auto flex shrink-0 items-center gap-x-2 gap-y-1 text-right sm:gap-2.5">
+            {campaign.platformTarget ? (
+              <span className="brand-campaign-meta text-[#616161]">{campaign.platformTarget}</span>
+            ) : null}
+            <BrandStatusPill status={st} />
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-2.5">
-          {campaign.description ? (
-            <p className="line-clamp-2 min-w-0 flex-1 brand-campaign-row text-[#212121]">{campaign.description}</p>
-          ) : (
-            <div className="min-w-0 flex-1" />
-          )}
-          <div className="flex shrink-0 items-center gap-1.5 brand-campaign-row text-[#212121] sm:pl-2">
-            <BrandIconChip size="sm">
-              <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="whitespace-nowrap">Budget left: ₹{budgetLeft.toLocaleString('en-IN')}</span>
-          </div>
-        </div>
+        <CampaignMetricsRow
+          viewsLabel={`${views.toLocaleString('en-IN')} views`}
+          poolLabel={campaignPoolLabel(campaign)}
+          deadline={campaign.deadlineToApply}
+          startDate={campaign.startDate}
+          endDate={campaign.endDate}
+        />
       </div>
     </div>
   );
@@ -279,28 +205,77 @@ function CreatorStateCampaignCard({
   const hasPendingFinalPost = latestPostSubmission?.status === 'PENDING_REVIEW';
   const canSubmitFinalPost = !isFinalPostVerified && !hasPendingFinalPost && !hasEnded;
   const isRejected = listTab === 'REJECTED';
-  const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
-  const urgent = daysRemaining >= 0 && daysRemaining <= 7;
-  const views = Number(campaign.views ?? 0);
-  const targetViews = Number(campaign.targetViews ?? 0);
-  const budgetLeft = Math.max(
-    Number(campaign.remainingBudget ?? campaign.totalBudget - campaign.budgetUsed),
-    0,
-  );
+  // The creator's own post views — what decides their leaderboard rank. The
+  // campaign-wide total says nothing about where this creator stands.
+  const myViews = latestPostSubmission?.currentViews;
 
   const statusLabel = isRejected ? 'Rejected' : row.application.status;
 
   return (
     <div className="brand-campaign-card-figma shadow-sm">
       <div className="flex flex-col gap-2 sm:gap-2.5">
-        <div className="flex flex-col gap-1 sm:gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-row items-start justify-between gap-2">
           <Link
             href={`/campaigns/${campaign.id}`}
-            className="brand-campaign-title font-heading leading-tight text-[#212121] hover:opacity-80 pr-2"
+            className="brand-campaign-title min-w-0 flex-1 font-heading leading-tight text-[#212121] hover:opacity-80 pr-2"
           >
             {campaign.name}
           </Link>
-          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-2.5">
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Link
+              href={`/campaigns/${campaign.id}`}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-orange-50/50"
+              aria-label="View campaign details"
+              title="Details"
+            >
+              <Eye className="h-4 w-4 text-[#E86512]" />
+            </Link>
+            {listTab === 'APPROVED' ? (
+              isFinalPostVerified ? (
+                <Link href="/earnings" className="shrink-0">
+                  <BrandPrimaryButton type="button" size="sm" className="w-auto">
+                    View earnings
+                  </BrandPrimaryButton>
+                </Link>
+              ) : (
+                <BrandPrimaryButton
+                  type="button"
+                  size="sm"
+                  className="min-w-0"
+                  disabled={!hasStarted || !canSubmitFinalPost}
+                  onClick={() => {
+                    if (!hasStarted || !canSubmitFinalPost) return;
+                    onAttachFinalPost(row);
+                  }}
+                >
+                  {!hasStarted
+                    ? 'After campaign starts'
+                    : hasPendingFinalPost
+                      ? 'Final post under review'
+                      : hasEnded
+                        ? 'Campaign ended'
+                        : 'Submit final post link'}
+                </BrandPrimaryButton>
+              )
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-y-3">
+          {/* A final post supersedes the draft — showing both just repeats the same progress */}
+          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
+            <Video className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
+            <span>
+              {latestPostSubmission
+                ? `Final post: ${latestPostSubmission.status.replace(/_/g, ' ')}`
+                : `Draft: ${
+                    row.application.draftMediaUrl || row.application.draftMediaAssetId
+                      ? 'Submitted'
+                      : '—'
+                  }`}
+            </span>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-x-2 gap-y-1 sm:gap-2.5">
             {campaign.platformTarget ? (
               <span className="brand-campaign-meta text-[#616161]">{campaign.platformTarget}</span>
             ) : null}
@@ -320,108 +295,13 @@ function CreatorStateCampaignCard({
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
-            <Video className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
-            <span>
-              Draft:{' '}
-              {row.application.draftMediaUrl || row.application.draftMediaAssetId ? 'Submitted' : '—'}
-            </span>
-          </div>
-          {latestPostSubmission ? (
-            <span className="brand-campaign-row text-sm font-medium text-[#212121]">
-              Final post: {latestPostSubmission.status.replace('_', ' ')}
-            </span>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-1.5 sm:ml-auto">
-            <Link
-              href={`/campaigns/${campaign.id}`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-orange-50/50"
-              aria-label="View campaign details"
-              title="Details"
-            >
-              <Eye className="h-4 w-4 text-[#E86512]" />
-            </Link>
-            {listTab === 'APPROVED' ? (
-              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-                {isFinalPostVerified ? (
-                  <Link href="/earnings">
-                    <BrandPrimaryButton type="button" size="sm" className="w-full sm:w-auto">
-                      View earnings
-                    </BrandPrimaryButton>
-                  </Link>
-                ) : (
-                  <BrandPrimaryButton
-                    type="button"
-                    size="sm"
-                    className="min-w-0"
-                    disabled={!hasStarted || !canSubmitFinalPost}
-                    onClick={() => {
-                      if (!hasStarted || !canSubmitFinalPost) return;
-                      onAttachFinalPost(row);
-                    }}
-                  >
-                    {!hasStarted
-                      ? 'After campaign starts'
-                      : hasPendingFinalPost
-                        ? 'Final post under review'
-                        : hasEnded
-                          ? 'Campaign ended'
-                          : 'Submit final post link'}
-                  </BrandPrimaryButton>
-                )}
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="brand-campaign-row flex flex-col gap-1.5 text-[#212121] sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2.5 sm:gap-y-1">
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Eye className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span>
-                {campaign.payoutModel === 'POOL'
-                  ? `${views.toLocaleString('en-IN')} views · pool ₹${Number(campaign.totalBudget || 0).toLocaleString('en-IN')}`
-                  : `${views.toLocaleString('en-IN')} / ${targetViews.toLocaleString('en-IN')} views`}
-              </span>
-            </div>
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Calendar className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span className={cn(urgent && daysRemaining >= 0 && 'text-red-600')}>
-                {formatLineDate(campaign.deadlineToApply)}
-                {daysRemaining >= 0
-                  ? ` — ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} to apply`
-                  : ' — past deadline'}
-              </span>
-            </div>
-          </div>
-          <div className="mt-0 inline-flex w-full min-w-0 items-center gap-1.5 sm:mt-0 sm:w-auto sm:max-w-[50%] sm:justify-end sm:pl-2 sm:text-right">
-            <BrandIconChip size="sm" className="self-center sm:self-center">
-              <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="min-w-0 text-left leading-snug sm:text-right">
-              Campaign timeline: {formatLineDate(campaign.startDate)} – {formatLineDate(campaign.endDate)}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-2.5">
-          {campaign.description ? (
-            <p className="line-clamp-2 min-w-0 flex-1 brand-campaign-row text-[#212121]">{campaign.description}</p>
-          ) : (
-            <div className="min-w-0 flex-1" />
-          )}
-          <div className="flex shrink-0 items-center gap-1.5 brand-campaign-row text-[#212121] sm:pl-2">
-            <BrandIconChip size="sm">
-              <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="whitespace-nowrap">Budget left: ₹{budgetLeft.toLocaleString('en-IN')}</span>
-          </div>
-        </div>
+        <CampaignMetricsRow
+          viewsLabel={`${Number(myViews ?? 0).toLocaleString('en-IN')} views`}
+          poolLabel={campaignPoolLabel(campaign)}
+          deadline={campaign.deadlineToApply}
+          startDate={campaign.startDate}
+          endDate={campaign.endDate}
+        />
       </div>
     </div>
   );

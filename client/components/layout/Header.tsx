@@ -10,6 +10,7 @@ import Image from 'next/image';
 import Button from '@/components/ui/Button';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 import { useAuth } from '@/hooks/useAuth';
+import { useCloseOnRouteChange } from '@/hooks/useCloseOnRouteChange';
 import { cn } from '@/lib/utils/cn';
 import LoginModal from '@/components/auth/LoginModal';
 import GetStartedModal from '@/components/auth/GetStartedModal';
@@ -36,7 +37,9 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
   const [brandSignupModalOpen, setBrandSignupModalOpen] = useState(false);
   const [creatorSignupModalOpen, setCreatorSignupModalOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
-  
+
+  useCloseOnRouteChange(() => setMobileMenuOpen(false));
+
   // Use authUser from useAuth hook, fallback to fetched user
   const currentUser = authUser || user;
   const userIsBrand = isBrand();

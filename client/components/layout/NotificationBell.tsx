@@ -6,6 +6,7 @@ import { Bell } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { cn } from '@/lib/utils/cn';
 import { useCampaignEventsContext } from '@/contexts/CampaignEventsContext';
+import { useCloseOnRouteChange } from '@/hooks/useCloseOnRouteChange';
 
 const POLL_MS = 20_000;
 
@@ -16,6 +17,8 @@ export default function NotificationBell() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const { addGlobalHandler } = useCampaignEventsContext();
+
+  useCloseOnRouteChange(() => setOpen(false));
 
   const load = useCallback(async () => {
     const res = await apiClient.getNotifications();
@@ -154,7 +157,10 @@ export default function NotificationBell() {
                         <Link
                           href={`/create-video/workspace?projectId=${encodeURIComponent(pid)}`}
                           className="text-xs font-medium text-[#E86412] hover:underline"
-                          onClick={() => onMarkRead(n.id)}
+                          onClick={() => {
+                            setOpen(false);
+                            onMarkRead(n.id);
+                          }}
                         >
                           Open project
                         </Link>
@@ -163,7 +169,10 @@ export default function NotificationBell() {
                         <Link
                           href={campaignLink}
                           className="text-xs font-medium text-[#E86412] hover:underline"
-                          onClick={() => onMarkRead(n.id)}
+                          onClick={() => {
+                            setOpen(false);
+                            onMarkRead(n.id);
+                          }}
                         >
                           {isBrandNotification ? 'View applicants' : 'View campaign'}
                         </Link>

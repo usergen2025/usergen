@@ -14,8 +14,6 @@ import {
   UserPlus,
   CheckCircle,
   Pencil,
-  Calendar,
-  CalendarRange,
   Plus,
   ArrowUpDown,
   ListFilter,
@@ -32,8 +30,11 @@ import {
   BrandStatStrip,
   BrandStatusPill,
   BrandPageHeader,
-  BrandIconChip,
 } from '@/components/brand';
+import {
+  CampaignMetricsRow,
+  campaignPoolLabel,
+} from '@/components/campaigns/CampaignMetricsRow';
 import Dropdown, { DropdownItem } from '@/components/ui/Dropdown';
 import Modal from '@/components/ui/Modal';
 import { useAuth } from '@/hooks/useAuth';
@@ -272,7 +273,7 @@ export default function CampaignsPage() {
                 className="brand-text-link"
               >
                 <ArrowUpDown className="h-4 w-4 text-[#E86512]" />
-                {sortBy === 'latest' ? 'Sort' : 'Budget'}
+                {sortBy === 'latest' ? 'Sort' : 'Pool'}
               </button>
               <button
                 type="button"
@@ -335,15 +336,6 @@ function formatPostedAt(iso: string) {
   });
 }
 
-function formatLineDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-IN', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata',
-  });
-}
-
 function formatCampaignDate(
   dateString: string,
   type: 'deadline' | 'start' | 'end',
@@ -373,12 +365,6 @@ function formatCampaignDate(
   return `${dateOnly}, 12:00 AM`;
 }
 
-function getDaysRemaining(dateString: string) {
-  const date = new Date(dateString);
-  const now = new Date();
-  return Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-}
-
 function publicStatus(s: Campaign['status']): 'LIVE' | 'IN_PROGRESS' | 'PAUSED' | 'DRAFT' | 'COMPLETED' {
   if (s === 'LIVE' || s === 'IN_PROGRESS' || s === 'PAUSED' || s === 'DRAFT' || s === 'COMPLETED') {
     return s;
@@ -390,7 +376,6 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
   const router = useRouter();
   const { showToast } = useToast();
   const { user } = useAuth();
-  const daysRemaining = getDaysRemaining(campaign.deadlineToApply);
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishBalance, setPublishBalance] = useState<number | null>(null);
@@ -404,8 +389,6 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
     campaign.status === 'IN_PROGRESS' ||
     campaign.status === 'PAUSED' ||
     campaign.status === 'DRAFT';
-  const urgent =
-    daysRemaining >= 0 && daysRemaining <= 7 && daysRemaining < 30 && campaign.status !== 'COMPLETED';
   const requiredAmount = Math.max(Number(campaign.totalBudget) - Number(campaign.budgetUsed), 0);
   const hasSufficientBalance =
     publishBalanceStatus === 'ready' && publishBalance !== null && publishBalance >= requiredAmount;
@@ -453,29 +436,32 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
     <>
     <div className="brand-campaign-card-figma shadow-sm">
       <div className="flex flex-col gap-2 sm:gap-2.5">
-        <div className="flex flex-col gap-1 sm:gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="brand-campaign-head">
           <Link
             href={`/brand/campaigns/${campaign.id}`}
-            className="font-heading brand-campaign-title text-[#212121] leading-tight pr-2 hover:opacity-80"
+            className="brand-campaign-head__title font-heading brand-campaign-title text-[#212121] leading-tight pr-2 hover:opacity-80"
           >
             {campaign.name}
           </Link>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 justify-end text-right sm:max-w-[50%]">
-            <span className="brand-campaign-meta text-[#616161]">Posted on: {formatPostedAt(campaign.postedAt)}</span>
+          <span className="brand-campaign-head__posted brand-campaign-meta min-w-0 text-[#616161] sm:text-right">
+            Posted on: {formatPostedAt(campaign.postedAt)}
+          </span>
+          <div className="brand-campaign-head__status">
             <BrandStatusPill status={st} />
           </div>
-        </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap">
-          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
-            <UserPlus className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
-            <span>Applicants: {campaign.applicantsCount}</span>
+          <div className="brand-campaign-head__stats flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
+              <UserPlus className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
+              <span>Applicants: {campaign.applicantsCount}</span>
+            </div>
+            <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
+              <CheckCircle className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
+              <span>Shortlisted: {String(campaign.shortlistedCount).padStart(2, '0')}</span>
+            </div>
           </div>
-          <div className="inline-flex items-center gap-1.5 brand-campaign-row font-heading font-medium text-[#212121]">
-            <CheckCircle className="h-3.5 w-3.5 brand-campaign-metric-stroke" strokeWidth={2} aria-hidden />
-            <span>Shortlisted: {String(campaign.shortlistedCount).padStart(2, '0')}</span>
-          </div>
-          <div className="sm:ml-auto flex items-center gap-1.5 sm:gap-2">
+
+          <div className="brand-campaign-head__actions flex items-center gap-1.5 sm:gap-2">
             <Link
               href={`/brand/campaigns/${campaign.id}/edit`}
               className="inline-flex items-center gap-1 font-heading brand-campaign-meta font-medium text-[#212121] underline decoration-[#212121] underline-offset-2 hover:opacity-80"
@@ -540,7 +526,7 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
                           if (typeof window !== 'undefined') {
                             window.dispatchEvent(new CustomEvent('credits-refresh'));
                           }
-                          showToast('Budget topped up', 'success');
+                          showToast('Pool topped up', 'success');
                           await onReload();
                         } catch (e: unknown) {
                           showToast(getErrorMessage(e, 'Top-up failed'), 'error');
@@ -562,55 +548,13 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
           </div>
         </div>
 
-        <div className="brand-campaign-row flex flex-col gap-1.5 text-[#212121] sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2.5 sm:gap-y-1">
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Eye className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span>
-                {campaign.payoutModel === 'POOL'
-                  ? `Pool ₹${Number(campaign.totalBudget).toLocaleString('en-IN')} · ${campaign.views.toLocaleString('en-IN')} views`
-                  : `${campaign.views.toLocaleString('en-IN')} / ${campaign.targetViews.toLocaleString('en-IN')} views`}
-              </span>
-            </div>
-            <div className="inline-flex min-w-0 items-center gap-1.5">
-              <BrandIconChip size="sm">
-                <Calendar className="h-3 w-3" strokeWidth={1.8} />
-              </BrandIconChip>
-              <span className={cn(urgent && 'text-red-600')}>
-                {formatLineDate(campaign.deadlineToApply)}
-                {daysRemaining >= 0
-                  ? ` — ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} to go!`
-                  : ' — past deadline'}
-              </span>
-            </div>
-          </div>
-          <div className="mt-0 inline-flex w-full min-w-0 items-center gap-1.5 sm:mt-0 sm:w-auto sm:max-w-[50%] sm:justify-end sm:pl-2 sm:text-right">
-            <BrandIconChip size="sm" className="self-center sm:self-center">
-              <CalendarRange className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="min-w-0 text-left leading-snug sm:text-right">
-              Campaign timeline: {formatLineDate(campaign.startDate)} – {formatLineDate(campaign.endDate)}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-2.5">
-          {campaign.description ? (
-            <p className="line-clamp-2 min-w-0 flex-1 brand-campaign-row text-[#212121]">{campaign.description}</p>
-          ) : (
-            <div className="min-w-0 flex-1" />
-          )}
-          <div className="flex shrink-0 items-center gap-1.5 brand-campaign-row text-[#212121] sm:pl-2">
-            <BrandIconChip size="sm">
-              <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
-            </BrandIconChip>
-            <span className="whitespace-nowrap">
-              Budget left: {Math.max(Number(campaign.remainingBudget ?? campaign.totalBudget - campaign.budgetUsed), 0).toLocaleString('en-IN')}
-            </span>
-          </div>
-        </div>
+        <CampaignMetricsRow
+          viewsLabel={`${campaign.views.toLocaleString('en-IN')} views`}
+          poolLabel={campaignPoolLabel(campaign)}
+          deadline={campaign.deadlineToApply}
+          startDate={campaign.startDate}
+          endDate={campaign.endDate}
+        />
       </div>
     </div>
     <Modal
@@ -621,7 +565,7 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
       <div className="p-5">
         <h3 className="brand-page-section-title mb-2">Confirm campaign publish</h3>
         <p className="brand-campaign-meta mb-4">
-          Budget is deducted only at publish time.
+          The pool is deducted only at publish time.
         </p>
         <div className="space-y-2 rounded-2xl border border-[#E8E2DB] bg-[#FCFAF8] p-3">
           <div className="flex items-center justify-between text-sm">

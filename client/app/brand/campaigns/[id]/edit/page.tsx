@@ -178,7 +178,7 @@ export default function EditCampaignPage() {
           return;
         }
         if (!formData.totalBudget || Number(formData.totalBudget) <= 0) {
-          showToast('Valid total budget is required', 'error');
+          showToast('Valid total prize pool is required', 'error');
           setIsSaving(false);
           return;
         }
@@ -485,12 +485,12 @@ export default function EditCampaignPage() {
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <label className="font-heading brand-campaign-row font-medium text-[#212121]">
-                      Total Budget of the Campaign
+                      Total Prize Pool of the Campaign
                     </label>
                     <div className="relative group">
                       <Info className="w-4 h-4 text-gray-400 cursor-help" />
                       <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-                        The full budget is distributed across approved creators based on the prize
+                        The full pool is distributed across approved creators based on the prize
                         pool you configure. Locked once the campaign is published.
                       </div>
                     </div>

@@ -529,7 +529,7 @@ export default function CampaignDetailsPage() {
           <span className="brand-campaign-meta text-text-secondary">Posted: {formatCampaignDate(campaign.postedAt, 'posted')}</span>
         </div>
 
-        {/* Row 3: Views | Budget */}
+        {/* Row 3: Views | Pool */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="inline-flex min-w-0 items-center gap-1.5 brand-campaign-row text-[#212121]">
             <BrandIconChip size="sm">
@@ -541,7 +541,7 @@ export default function CampaignDetailsPage() {
             <BrandIconChip size="sm">
               <IndianRupee className="h-3 w-3" strokeWidth={1.8} />
             </BrandIconChip>
-            <span>₹{campaign.totalBudget.toLocaleString('en-IN')} budget</span>
+            <span>Pool ₹{campaign.totalBudget.toLocaleString('en-IN')}</span>
           </div>
         </div>
 
