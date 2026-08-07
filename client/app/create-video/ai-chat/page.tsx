@@ -5929,7 +5929,7 @@ function AIChatPageContent() {
 
   if (isLoading) {
     return (
-      <div className="h-screen flex items-center justify-center">
+      <div className="h-dvh flex items-center justify-center">
         <div className="text-center">Loading...</div>
       </div>
     );
@@ -5989,7 +5989,7 @@ function AIChatPageContent() {
       />
 
       {/* Main Container - Figma: width: 1248px, left: 96px, top: 43px */}
-      <div className="relative max-w-[1248px] w-full mx-auto px-3 sm:px-6 md:px-[96px] pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
+      <div className="relative max-w-[1248px] w-full mx-auto px-[clamp(12px,3vw,96px)] pt-[clamp(0.75rem,2.2vh,1.5rem)] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
         {/* Navigation Bar — mobile: auto height so stepper (2 rows) is not clipped */}
         <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] flex-shrink-0 max-lg:min-h-[52px] max-lg:py-1 lg:h-[clamp(20px,3.3vh,34px)]">
           {/* Left: Back Arrow + AI Chat - Figma: gap: 20px */}
@@ -6045,23 +6045,26 @@ function AIChatPageContent() {
             {/* Welcome Message - Step 0 - Always show once reached */}
             {hasReachedStep('welcome') && (
               <div className="flex flex-col justify-center items-start gap-[clamp(0.5rem,0.98vh,10px)] max-w-full sm:max-w-[597px]">
-                {/* AI Icon - Figma: 64px x 64px */}
-                <div className="w-[clamp(2rem,6.25vh,64px)] h-[clamp(2rem,6.25vh,64px)]">
-                  <Image
-                    src="/assets/mingcute_ai-line.svg"
-                    alt="AI"
-                    width={64}
-                    height={64}
-                    className="w-full h-full"
-                  />
+                {/* Icon sits inline with the greeting on mobile; `sm:contents` restores the stacked desktop layout */}
+                <div className="flex flex-row items-center gap-3 w-full min-w-0 sm:contents">
+                  {/* AI Icon - Figma: 64px x 64px */}
+                  <div className="w-[clamp(2rem,6.25vh,64px)] h-[clamp(2rem,6.25vh,64px)] max-sm:w-8 max-sm:h-8 max-sm:flex-shrink-0">
+                    <Image
+                      src="/assets/mingcute_ai-line.svg"
+                      alt="AI"
+                      width={64}
+                      height={64}
+                      className="w-full h-full"
+                    />
+                  </div>
+
+                  {/* Welcome Text - Figma: font: 48px, line-height: 48px */}
+                  <h1 className="font-heading text-[clamp(1.5rem,4.69vh,48px)] font-medium leading-[clamp(1.5rem,4.69vh,48px)] text-[#212121] max-w-full sm:max-w-[597px] max-sm:text-[22px] max-sm:leading-[26px] max-sm:min-w-0">
+                    Hey {firstName}
+                    <br />
+                    Welcome to UserGen
+                  </h1>
                 </div>
-                
-                {/* Welcome Text - Figma: font: 48px, line-height: 48px */}
-                <h1 className="font-heading text-[clamp(1.5rem,4.69vh,48px)] font-medium leading-[clamp(1.5rem,4.69vh,48px)] text-[#212121] max-w-full sm:max-w-[597px]">
-                  Hey {firstName}
-                  <br />
-                  Welcome to UserGen
-                </h1>
                 
                 {/* Body Text - Figma: font: 18px, line-height: 21px */}
                 <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] max-w-full sm:max-w-[428px]">
@@ -6103,19 +6106,19 @@ function AIChatPageContent() {
                 {/* Style Selection Cards */}
                 {hasReachedSubstep('style-selection', 'selection') && (
                   <div className={cn(
-                    "flex flex-row flex-wrap items-center gap-[clamp(0.75rem,1.56vh,16px)] w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full pl-[clamp(0.5rem,1vw,16px)]",
+                    "flex flex-row flex-wrap items-center gap-[clamp(0.75rem,1.56vh,16px)] max-sm:gap-2 w-full mt-[clamp(0.5rem,0.98vh,10px)] max-w-full pl-[clamp(0.5rem,1vw,16px)]",
                     hasReachedSubstep('style-selection', 'confirmed') && "opacity-50 pointer-events-none"
                   )}>
                     {/* TEMPORARILY DISABLED - Half-n-Half Card
                     <button
                       onClick={() => setSelectedVideoStyle('half-n-half')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'half-n-half'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-half-n-half.svg"
                             alt="Half-n-Half"
@@ -6124,7 +6127,7 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_user-square.svg"
@@ -6134,7 +6137,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Half-n-Half
                           </span>
                         </div>
@@ -6145,14 +6148,14 @@ function AIChatPageContent() {
                     {/* Avatar Only Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-only')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'avatar-only'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-only.svg"
                             alt="Avatar Only"
@@ -6162,7 +6165,7 @@ function AIChatPageContent() {
                           />
                         </div>
                         {/* Label */}
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_user-square.svg"
@@ -6172,7 +6175,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Avatar Only
                           </span>
                         </div>
@@ -6182,13 +6185,13 @@ function AIChatPageContent() {
                     {/* TEMPORARILY DISABLED - Avatar Cut-out Card
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-cutout')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'avatar-cutout'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-cutout.svg"
                             alt="Avatar Cut-out"
@@ -6197,7 +6200,7 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/fi_scissors.svg"
@@ -6207,7 +6210,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Avatar Cut-out
                           </span>
                         </div>
@@ -6218,14 +6221,14 @@ function AIChatPageContent() {
                     {/* Alternate Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('alternate')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'alternate'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-alternate.svg"
                             alt="Alternate"
@@ -6235,7 +6238,7 @@ function AIChatPageContent() {
                           />
                         </div>
                         {/* Label */}
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_sync.svg"
@@ -6245,7 +6248,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Alternate
                           </span>
                         </div>
@@ -6255,14 +6258,14 @@ function AIChatPageContent() {
                     {/* Product Only Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('product-only')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'product-only'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-product-only.svg"
                             alt="Product Only"
@@ -6272,7 +6275,7 @@ function AIChatPageContent() {
                           />
                         </div>
                         {/* Label */}
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_product.svg"
@@ -6282,7 +6285,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Product Only
                           </span>
                         </div>
@@ -6292,13 +6295,13 @@ function AIChatPageContent() {
                     {/* B-roll Only Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('broll-only')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'broll-only'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-alternate.svg"
                             alt="B-roll Only"
@@ -6307,7 +6310,7 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_sync.svg"
@@ -6317,7 +6320,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             B-roll Only
                           </span>
                         </div>
@@ -6327,14 +6330,14 @@ function AIChatPageContent() {
                     {/* Avatar with Product Card */}
                     <button
                       onClick={() => setSelectedVideoStyle('avatar-product')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'avatar-product'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
                         {/* Illustration */}
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-product.svg"
                             alt="Avatar with Product"
@@ -6344,7 +6347,7 @@ function AIChatPageContent() {
                           />
                         </div>
                         {/* Label */}
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_user-square.svg"
@@ -6354,7 +6357,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Avatar with Product
                           </span>
                         </div>
@@ -6364,13 +6367,13 @@ function AIChatPageContent() {
                     {/* TEMPORARILY DISABLED - Animated Avatar Card
                     <button
                       onClick={() => setSelectedVideoStyle('animated-avatar')}
-                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] p-[2px] transition-all"
+                      className="relative flex flex-col items-center rounded-[12px] flex-none w-[clamp(120px,11vw,152px)] max-sm:w-[31%] p-[2px] transition-all"
                       style={selectedVideoStyle === 'animated-avatar'
                         ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
                         : {}}
                     >
-                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
-                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
+                      <div className="bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[10px] p-[14px] max-sm:p-1.5 gap-[clamp(0.375rem,0.59vh,6px)] flex flex-col items-center w-full min-w-0">
+                        <div className="w-[clamp(110px,8.6vw,120px)] h-[clamp(150px,11.7vh,160px)] max-sm:w-full max-sm:h-auto max-sm:aspect-[3/4] rounded-[8px] border border-white overflow-hidden flex-shrink-0">
                           <Image
                             src="/assets/style-avatar-only.svg"
                             alt="Animated Avatar"
@@ -6379,7 +6382,7 @@ function AIChatPageContent() {
                             className="w-full h-full object-contain"
                           />
                         </div>
-                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0">
+                        <div className="flex flex-row justify-center items-center gap-[clamp(0.125rem,0.2vh,2px)] w-full min-w-0 max-sm:[&>div]:hidden">
                           <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] flex items-center justify-center flex-shrink-0">
                             <Image
                               src="/assets/u_user-square.svg"
@@ -6389,7 +6392,7 @@ function AIChatPageContent() {
                               className="w-full h-full"
                             />
                           </div>
-                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink">
+                          <span className="font-heading text-[clamp(0.875rem,1.56vh,16px)] leading-[clamp(1.5rem,2.34vh,24px)] text-center text-[#000000] truncate min-w-0 flex-shrink max-sm:text-[10px] max-sm:leading-[14px]">
                             Animated Avatar
                           </span>
                         </div>
@@ -7264,7 +7267,7 @@ Use a recent photo of yourself.`}
                           ) : (
                             <div 
                               key={activeAvatarTab} 
-                              className="grid grid-cols-5 gap-[clamp(0.75rem,0.98vh,12px)]"
+                              className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-[clamp(0.75rem,0.98vh,12px)]"
                               style={{
                                 animation: 'fadeIn 0.3s ease-in-out'
                               }}
@@ -8656,7 +8659,7 @@ Read everything on screen smoothly.`}
 
             {/* Voice Selection Buttons - Only show in question substep */}
             {currentStep === 'voice-selection' && voiceSubstep === 'question' && (
-            <div className="flex flex-row items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
+            <div className="flex flex-col sm:flex-row items-end sm:items-start gap-[clamp(0.5rem,0.98vh,10px)] w-full justify-end mt-[clamp(0.5rem,0.98vh,10px)] max-w-full">
               {/* Generate voice using AI */}
               <button
                 onClick={() => handleVoiceSelection('yes')}
@@ -10001,7 +10004,7 @@ Read everything on screen smoothly.`}
 
           {/* Add Assets Input Bar - Figma: height: 68px, padding: 8px 12px, gap: 16px, border-radius: 30px */}
           {currentStep === 'asset-upload' && (
-            <div className="flex flex-row justify-center items-center gap-[clamp(0.75rem,1.56vh,16px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0">
+            <div className="flex flex-row justify-end items-center gap-[clamp(0.75rem,1.56vh,16px)] px-[clamp(0.75rem,1.17vh,12px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] w-full h-[clamp(2.5rem,6.64vh,68px)] flex-shrink-0 mt-auto mb-0">
               {/* Add Assets Button - Always show gradient border */}
               <div
                 className="rounded-[24px] h-[clamp(2rem,4.3vh,44px)] flex-shrink-0 p-[2px]"
@@ -10011,10 +10014,11 @@ Read everything on screen smoothly.`}
               >
                 <button
                   onClick={handleAddAssets}
-                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[24px] h-full w-full hover:opacity-90 transition-opacity"
+                  aria-label="Add Assets"
+                  className="flex flex-row justify-center items-center gap-[clamp(0.5rem,0.78vh,8px)] px-[clamp(1rem,1.56vh,16px)] max-sm:px-2.5 py-[clamp(0.5rem,0.78vh,8px)] bg-white rounded-[24px] h-full w-full hover:opacity-90 transition-opacity"
                 >
                   {/* Plus Icon - Figma: 24px x 24px */}
-                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)]">
+                  <div className="w-[clamp(1.25rem,2.34vh,24px)] h-[clamp(1.25rem,2.34vh,24px)] max-sm:flex-shrink-0">
                     <Image
                       src="/assets/u_plus-circle.svg"
                       alt="Add"
@@ -10023,8 +10027,8 @@ Read everything on screen smoothly.`}
                       className="w-full h-full"
                     />
                   </div>
-                  {/* Font size consistent with other chat elements */}
-                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121]">Add Assets</span>
+                  {/* Label collapses to the icon alone on mobile to free room for the send button */}
+                  <span className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,1.56vh,16px)] text-[#212121] max-sm:hidden">Add Assets</span>
                 </button>
               </div>
               
@@ -11277,7 +11281,7 @@ Read everything on screen smoothly.`}
 export default function AIChatPage() {
   return (
     <Suspense fallback={
-      <div className="h-screen bg-[#FFFCF8] flex items-center justify-center">
+      <div className="h-dvh bg-[#FFFCF8] flex items-center justify-center">
         <div className="text-center">Loading...</div>
       </div>
     }>

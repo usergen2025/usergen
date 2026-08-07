@@ -745,7 +745,7 @@ function VoicePageContent() {
   const canProceed = (hasCloneSelection || hasLibrarySelection) && !isCloning && !isRecording && !isGeneratingAudio;
 
   return (
-    <div className="min-h-screen bg-background pb-20">
+    <div className="min-h-dvh bg-background pb-20">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <button
@@ -1110,7 +1110,7 @@ function VoicePageContent() {
 export default function VoicePage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

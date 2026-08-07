@@ -89,7 +89,7 @@ export function ScrapeHistoryTable({ campaignId, className }: ScrapeHistoryTable
             <div key={run.id} className="rounded-lg border border-[#F0E9E2]">
               <button
                 type="button"
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+                className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-left text-xs"
                 onClick={() => void toggleExpand(run.id)}
               >
                 {expanded ? (

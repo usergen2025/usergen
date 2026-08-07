@@ -101,7 +101,7 @@ export default function SourceVideoCard({
             <div className="flex items-center gap-1">
               <button
                 onClick={handleOpenExternal}
-                className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="p-1.5 max-sm:p-2.5 text-gray-400 hover:text-primary-600 hover:bg-gray-100 rounded-lg transition-colors"
                 title="Open in new tab"
               >
                 <ExternalLink className="w-4 h-4" />
@@ -109,7 +109,7 @@ export default function SourceVideoCard({
               {editable && onEdit && (
                 <button
                   onClick={() => onEdit(video)}
-                  className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  className="p-1.5 max-sm:p-2.5 text-gray-400 hover:text-primary-600 hover:bg-gray-100 rounded-lg transition-colors"
                   title="Edit"
                 >
                   <Edit2 className="w-4 h-4" />

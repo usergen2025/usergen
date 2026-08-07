@@ -71,7 +71,7 @@ function CreateVideoPageContent() {
 
   // Show loading state while redirecting
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
+    <div className="min-h-dvh bg-background flex items-center justify-center">
       <div className="text-center">
         <p className="text-text-primary">Loading...</p>
       </div>
@@ -82,7 +82,7 @@ function CreateVideoPageContent() {
 export default function CreateVideoPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

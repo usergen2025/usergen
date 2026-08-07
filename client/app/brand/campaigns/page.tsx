@@ -168,9 +168,9 @@ export default function CampaignsPage() {
   return (
     <div className="brand-page-shell brand-page-shell--campaigns">
       <BrandPageHeader
-        hideBackButton
+        onBack={() => router.back()}
         className="mb-3 sm:mb-3 shrink-0"
-        left={<h1 className="brand-campaign-page-title">My Campaigns</h1>}
+        title="My Campaigns"
         right={
           <button
             type="button"
@@ -484,7 +484,7 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
             </Link>
             <Link
               href={`/brand/campaigns/${campaign.id}`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-orange-50/50"
+              className="inline-flex h-8 w-8 max-sm:h-10 max-sm:w-10 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-orange-50/50"
               aria-label="View campaign"
               title="View"
             >
@@ -496,7 +496,7 @@ function CampaignCard({ campaign, onReload }: { campaign: Campaign; onReload: ()
                 trigger={
                   <button
                     type="button"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-gray-50"
+                    className="inline-flex h-8 w-8 max-sm:h-10 max-sm:w-10 items-center justify-center rounded-2xl border border-[#E8E2DB] hover:bg-gray-50"
                     aria-label="More campaign actions"
                   >
                     <MoreVertical className="h-4 w-4 text-[#212121]" />

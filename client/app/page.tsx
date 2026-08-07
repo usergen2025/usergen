@@ -65,10 +65,13 @@ export default function HomePage() {
   };
 
   return (
-    <div className="relative h-screen bg-background overflow-hidden flex flex-col pt-[calc(43px+64px)]">
-      {/* Gradient Ellipses Background */}
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
-      <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px] pointer-events-none" />
+    <div className="relative h-dvh bg-background overflow-y-auto overflow-x-hidden lg:overflow-hidden flex flex-col pt-[calc(43px+64px)]">
+      {/* Gradient Ellipses Background — pinned to the viewport so the oversized
+          blurs never add scrollable height to the page */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px]" />
+        <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px]" />
+      </div>
 
       <div className="relative container mx-auto px-4 flex-1 flex flex-col justify-center py-4 md:py-8 overflow-visible">
         {/* Social Proof Section */}
@@ -89,7 +92,7 @@ export default function HomePage() {
         <div className="flex flex-col items-center text-center mb-4 md:mb-6 overflow-visible">
           <h1 className={cn(
             typography.heading.h1,
-            "max-w-4xl mb-3 md:mb-4 text-center text-3xl md:text-4xl lg:text-5xl xl:text-6xl"
+            "max-w-4xl mb-3 md:mb-4 text-center text-3xl sm:text-3xl md:text-4xl lg:text-5xl xl:text-6xl"
           )}>
             Turn imagination into <span className="text-[#E86412]">impact</span> with UserGen
           </h1>
@@ -100,7 +103,7 @@ export default function HomePage() {
               <h2 className="font-heading text-[48px] md:text-[64px] lg:text-[72px] xl:text-[96px] font-normal leading-[1] text-black whitespace-nowrap">
                 UserGen
               </h2>
-              <div className="absolute left-[70.34%] right-[-49.74%] top-0 bottom-0 bg-[#FFFCF8] pointer-events-none" />
+              <div className="hidden md:block absolute left-[70.34%] right-[-49.74%] top-0 bottom-0 bg-[#FFFCF8] pointer-events-none" />
             </div>
           </div>
 

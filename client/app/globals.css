@@ -74,6 +74,9 @@ body {
   width: min(1248px, 100%);
   margin-inline: auto;
   padding-inline: clamp(12px, 3vw, 96px);
+  /* Gap between the floating app header and the page title — owned here so
+     every route lines up; page layouts must not add their own top padding. */
+  padding-top: clamp(0.75rem, 2.2vh, 1.5rem);
   /* Breathing room below last module — matches across brand routes + /billing */
   padding-bottom: clamp(1.25rem, 4vh, 2.5rem);
 }
@@ -293,6 +296,22 @@ body {
   min-width: 112px;
   color: #1f7a4f;
   background: linear-gradient(180deg, #d7f4e5 0%, #b9e8d0 100%);
+}
+
+/* Billing / usage pills — same silhouette, no campaign-specific min-widths */
+.brand-status-pill--failed {
+  color: #ffffff;
+  background: linear-gradient(180deg, #ef5350 0%, #c62828 100%);
+}
+
+.brand-status-pill--pending {
+  color: #8a5300;
+  background: linear-gradient(180deg, #ffe6a8 0%, #ffcf70 100%);
+}
+
+.brand-status-pill--auto {
+  min-width: 0;
+  letter-spacing: 0.12em;
 }
 
 /* Compact campaign text sizing (card name = step above CTA; body = CTA label scale) */

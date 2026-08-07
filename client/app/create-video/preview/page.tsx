@@ -478,7 +478,7 @@ function PreviewPageContent() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className={typography.body.large}>Loading preview...</p>
         </div>
@@ -487,7 +487,7 @@ function PreviewPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background pb-20">
+    <div className="min-h-dvh bg-background pb-20">
       <div className="container mx-auto px-4 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Left: Video Preview */}
@@ -881,7 +881,7 @@ function PreviewPageContent() {
 export default function PreviewPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

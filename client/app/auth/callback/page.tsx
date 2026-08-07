@@ -93,7 +93,7 @@ function OAuthCallbackContent() {
   }, [searchParams, login, router, showToast]);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
+    <div className="min-h-dvh flex flex-col items-center justify-center bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full mx-4 text-center">
         {status === 'processing' && (
           <>
@@ -141,7 +141,7 @@ function OAuthCallbackContent() {
 export default function OAuthCallbackPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
+      <div className="min-h-dvh flex flex-col items-center justify-center bg-gradient-to-br from-[#FFF5F0] to-[#FFF0F5]">
         <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full mx-4 text-center">
           <div className="mb-6">
             <div className="w-16 h-16 border-4 border-[#FF6B6B] border-t-transparent rounded-full animate-spin mx-auto"></div>

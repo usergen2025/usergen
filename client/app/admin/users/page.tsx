@@ -505,7 +505,7 @@ function AdminUsersContent() {
         </div>
 
         {/* Pagination */}
-        <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-4 border-t border-gray-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-gray-400">
             Showing {(currentPage - 1) * usersPerPage + 1} to {Math.min(currentPage * usersPerPage, totalUsers)} of {totalUsers} users
           </p>
@@ -534,7 +534,7 @@ function AdminUsersContent() {
       {/* User Details Modal */}
       {showUserModal && selectedUser && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto">
+          <div className="bg-gray-800 rounded-xl max-w-lg w-full max-h-[80dvh] overflow-y-auto">
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white">User Details</h3>
               <button onClick={() => setShowUserModal(false)} className="text-gray-400 hover:text-white">

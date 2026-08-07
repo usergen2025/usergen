@@ -448,8 +448,8 @@ function PackagesPanel({
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-gray-700 bg-gray-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-xl border border-gray-700 bg-gray-800">
+          <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="border-b border-gray-700 text-gray-400">
               <tr>
                 <th className="px-4 py-3">Title</th>
@@ -939,7 +939,7 @@ function PaymentLinksPanel({
 
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 p-5">
+          <div className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 p-5">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white">Create payment link</h3>
               <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white">
@@ -1303,7 +1303,7 @@ function RefundsPanel({
 
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 p-5">
+          <div className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 p-5">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white">Issue refund</h3>
               <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white">

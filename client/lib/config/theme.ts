@@ -81,11 +81,11 @@ export const theme = {
 // Typography presets for quick styling
 export const typography = {
   heading: {
-    h1: 'text-5xl font-bold text-black',
-    h2: 'text-4xl font-bold text-black',
-    h3: 'text-3xl font-bold text-black',
-    h4: 'text-2xl font-bold text-black',
-    h5: 'text-xl font-semibold text-black',
+    h1: 'text-3xl sm:text-4xl md:text-5xl font-bold text-black',
+    h2: 'text-2xl sm:text-3xl md:text-4xl font-bold text-black',
+    h3: 'text-xl sm:text-2xl md:text-3xl font-bold text-black',
+    h4: 'text-xl md:text-2xl font-bold text-black',
+    h5: 'text-lg md:text-xl font-semibold text-black',
     h6: 'text-lg font-semibold text-black',
   },
   body: {
@@ -96,9 +96,9 @@ export const typography = {
     muted: 'text-base text-gray-600',
   },
   button: {
-    primary: 'text-base font-medium',
-    secondary: 'text-base font-medium',
-    outline: 'text-base font-medium',
+    primary: 'font-medium',
+    secondary: 'font-medium',
+    outline: 'font-medium',
   },
 } as const;
 

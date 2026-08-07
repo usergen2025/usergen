@@ -462,7 +462,7 @@ function AdminGenerationsContent() {
         )}
 
         {projects.length > 0 && (
-          <div className="flex items-center justify-between border-t border-gray-700 px-6 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-t border-gray-700 px-4 sm:px-6 py-4">
             <p className="text-sm text-gray-400">
               Showing {(currentPage - 1) * itemsPerPage + 1} to{' '}
               {Math.min(currentPage * itemsPerPage, totalProjects)} of {totalProjects} projects
@@ -498,7 +498,7 @@ function AdminGenerationsContent() {
           onClick={() => setLogModalOpen(false)}
         >
           <div
-            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-700 bg-gray-900 shadow-xl"
+            className="flex max-h-[85dvh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-gray-700 bg-gray-900 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">

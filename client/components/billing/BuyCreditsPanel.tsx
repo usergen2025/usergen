@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
-import { IndianRupee, Loader2, X } from 'lucide-react';
+import { Coins, Loader2, Sparkles, X } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
-import Button from '@/components/ui/Button';
+import { BrandIconChip } from '@/components/brand';
 
 declare global {
   interface Window {
@@ -123,6 +124,20 @@ export default function BuyCreditsPanel({
   useEffect(() => {
     if (open) void loadPackages();
   }, [open, loadPackages]);
+
+  useEffect(() => {
+    if (!open || embedded) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose?.();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, embedded, onClose]);
 
   const refreshQuote = useCallback(async () => {
     if (!user?.id) return;
@@ -343,189 +358,237 @@ export default function BuyCreditsPanel({
 
   if (!open) return null;
 
-  const panel = (
-    <div
-      className={cn(
-        'rounded-2xl border border-orange-100 bg-white shadow-sm',
-        embedded ? 'p-4 sm:p-5' : 'p-5 sm:p-6',
-        className,
-      )}
-    >
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Buy credits</h3>
-          <p className="text-sm text-gray-500">
-            Choose a package or enter a custom amount. GST is added on top of the top-up.
-          </p>
-        </div>
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        )}
+  const header = (
+    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[#EFE8E3] p-3 sm:p-4">
+      <div className="min-w-0">
+        <h3 className="brand-campaign-page-title">Add Credits</h3>
+        <p className="brand-campaign-meta mt-0.5 text-[#616161]">
+          Pick a pack or enter your own amount. GST is added on top.
+        </p>
       </div>
-
-      {loading ? (
-        <div className="flex items-center justify-center py-10 text-gray-500">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading packages…
-        </div>
-      ) : (
-        <>
-          <div className="mb-4 grid gap-3 sm:grid-cols-2">
-            {packages.map((pkg) => {
-              const selected = !customMode && selectedPackageId === pkg.id;
-              return (
-                <button
-                  key={pkg.id}
-                  type="button"
-                  onClick={() => {
-                    setCustomMode(false);
-                    setSelectedPackageId(pkg.id);
-                  }}
-                  className={cn(
-                    'rounded-xl border p-4 text-left transition',
-                    selected
-                      ? 'border-orange-500 bg-orange-50 ring-1 ring-orange-500'
-                      : 'border-gray-200 hover:border-orange-300',
-                  )}
-                >
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="font-medium text-gray-900">{pkg.title}</span>
-                    {pkg.badge && (
-                      <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-orange-700">
-                        {pkg.badge}
-                      </span>
-                    )}
-                  </div>
-                  <p className="flex items-center gap-0.5 text-sm text-gray-700">
-                    <IndianRupee className="h-3.5 w-3.5" />
-                    {paiseToRupeeLabel(pkg.amountPaise)}
-                  </p>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {pkg.creditsToGrant.toLocaleString('en-IN')} credits
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setCustomMode(true)}
-            className={cn(
-              'mb-4 w-full rounded-xl border px-4 py-3 text-left text-sm transition',
-              customMode
-                ? 'border-orange-500 bg-orange-50 ring-1 ring-orange-500'
-                : 'border-dashed border-gray-300 hover:border-orange-300',
-            )}
-          >
-            Custom amount
-          </button>
-
-          {customMode && (
-            <div className="mb-4 space-y-3 rounded-xl bg-gray-50 p-4">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setInputMode('AMOUNT')}
-                  className={cn(
-                    'rounded-full px-3 py-1 text-xs font-medium',
-                    inputMode === 'AMOUNT' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600',
-                  )}
-                >
-                  I want to pay
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInputMode('CREDITS')}
-                  className={cn(
-                    'rounded-full px-3 py-1 text-xs font-medium',
-                    inputMode === 'CREDITS' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600',
-                  )}
-                >
-                  I want credits
-                </button>
-              </div>
-              {inputMode === 'AMOUNT' ? (
-                <label className="block text-sm">
-                  <span className="mb-1 block text-gray-600">Amount (₹)</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={amountRupees}
-                    onChange={(e) => setAmountRupees(e.target.value)}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2"
-                  />
-                </label>
-              ) : (
-                <label className="block text-sm">
-                  <span className="mb-1 block text-gray-600">Credits</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={creditsDesired}
-                    onChange={(e) => setCreditsDesired(e.target.value)}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2"
-                  />
-                </label>
-              )}
-            </div>
-          )}
-
-          <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <h4 className="text-sm font-semibold text-gray-800">Breakdown</h4>
-              {quoting && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
-            </div>
-            {breakdown ? (
-              <dl className="space-y-2">
-                {breakdown.map((row) => (
-                  <div key={row.label} className="flex items-center justify-between text-sm">
-                    <dt className={cn(row.strong ? 'font-semibold text-gray-900' : 'text-gray-600')}>
-                      {row.label}
-                    </dt>
-                    <dd className={cn(row.strong ? 'font-semibold text-orange-600' : 'text-gray-800')}>
-                      {row.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            ) : (
-              <p className="text-sm text-gray-500">Enter a valid amount to see the quote.</p>
-            )}
-          </div>
-
-          <Button
-            variant="primary"
-            className="w-full"
-            disabled={!quote || paying || quoting}
-            onClick={() => void handlePay()}
-          >
-            {paying ? (
-              <span className="inline-flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" /> Processing…
-              </span>
-            ) : quote ? (
-              `Pay ₹${paiseToRupeeLabel(quote.totalChargePaise)}`
-            ) : (
-              'Pay'
-            )}
-          </Button>
-        </>
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white text-[#212121] transition-colors hover:bg-orange-50/60"
+          aria-label="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
       )}
     </div>
   );
 
-  if (embedded) return panel;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto">{panel}</div>
+  const body = loading ? (
+    <div className="brand-campaign-row flex items-center justify-center gap-2 py-10 text-[#616161]">
+      <Loader2 className="h-4 w-4 animate-spin text-[#E86512]" /> Loading packages…
     </div>
+  ) : (
+    <div className="space-y-3">
+      {/* Portrait tiles with a 2px gradient ring on select — same pattern as the video style picker */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-2.5">
+        {packages.map((pkg) => {
+          const selected = !customMode && selectedPackageId === pkg.id;
+          return (
+            <button
+              key={pkg.id}
+              type="button"
+              onClick={() => {
+                setCustomMode(false);
+                setSelectedPackageId(pkg.id);
+              }}
+              aria-pressed={selected}
+              className="relative flex h-full flex-col rounded-[12px] p-[2px] transition-all"
+              style={
+                selected
+                  ? { background: 'linear-gradient(180deg, #E86412 0%, #F12A4C 100%)' }
+                  : undefined
+              }
+            >
+              <div className="flex h-full w-full min-w-0 flex-col items-center gap-1.5 rounded-[10px] bg-white p-2 shadow-[0px_1px_7px_rgba(87,73,119,0.23)]">
+                <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[8px] border border-white bg-gradient-to-b from-[#FFF3EA] to-[#FFE9EC] px-1.5 py-3">
+                  <BrandIconChip size="sm">
+                    <Coins className="text-white" strokeWidth={1.8} />
+                  </BrandIconChip>
+                  <p className="font-heading text-[clamp(0.95rem,1.7vh,1.125rem)] font-semibold leading-none text-[#212121]">
+                    ₹{paiseToRupeeLabel(pkg.amountPaise)}
+                  </p>
+                  <p className="brand-campaign-meta text-center leading-tight text-[#616161]">
+                    {pkg.creditsToGrant.toLocaleString('en-IN')} credits
+                  </p>
+                </div>
+                <span className="w-full truncate text-center font-heading text-[clamp(0.75rem,1.4vh,0.875rem)] font-medium text-[#212121]">
+                  {pkg.title}
+                </span>
+              </div>
+              {pkg.badge && (
+                <span
+                  className="brand-status-pill brand-status-pill--auto absolute right-1 top-1 origin-top-right scale-90 whitespace-nowrap"
+                  translate="no"
+                >
+                  {pkg.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setCustomMode(true)}
+        aria-pressed={customMode}
+        className={cn(
+          'brand-campaign-row flex w-full items-center gap-2 rounded-[16px] border-2 px-3 py-2.5 text-left font-heading font-medium transition-colors',
+          customMode
+            ? 'border-[#E86512] bg-[#FFF8F2] text-[#212121]'
+            : 'border-dashed border-[#E0E0E0] text-[#616161] hover:border-[#F0B48A]',
+        )}
+      >
+        <Sparkles className="brand-campaign-metric-stroke h-4 w-4" strokeWidth={2} aria-hidden />
+        Custom amount
+      </button>
+
+      {customMode && (
+        <div className="space-y-2.5 rounded-[16px] border border-[#F0E5DC] bg-[#FFFCFA] p-3">
+          <div className="brand-segmented">
+            <button
+              type="button"
+              onClick={() => setInputMode('AMOUNT')}
+              aria-pressed={inputMode === 'AMOUNT'}
+              className="brand-segmented__tab flex-1"
+            >
+              I want to pay
+            </button>
+            <button
+              type="button"
+              onClick={() => setInputMode('CREDITS')}
+              aria-pressed={inputMode === 'CREDITS'}
+              className="brand-segmented__tab flex-1"
+            >
+              I want credits
+            </button>
+          </div>
+          <label className="block">
+            <span className="brand-campaign-meta mb-1 block text-[#616161]">
+              {inputMode === 'AMOUNT' ? 'Amount (₹)' : 'Credits'}
+            </span>
+            <input
+              type="number"
+              min={1}
+              value={inputMode === 'AMOUNT' ? amountRupees : creditsDesired}
+              onChange={(e) =>
+                inputMode === 'AMOUNT'
+                  ? setAmountRupees(e.target.value)
+                  : setCreditsDesired(e.target.value)
+              }
+              className="brand-field-capsule"
+            />
+          </label>
+        </div>
+      )}
+
+      <div className="rounded-[16px] border border-[#F0E5DC] bg-[#FFFCFA] p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h4 className="brand-page-section-title">Breakdown</h4>
+          {quoting && <Loader2 className="h-4 w-4 animate-spin text-[#E86512]" />}
+        </div>
+        {breakdown ? (
+          <dl className="space-y-1.5">
+            {breakdown.map((row) => (
+              <div
+                key={row.label}
+                className={cn(
+                  'brand-campaign-row flex items-center justify-between gap-3',
+                  row.strong && 'mt-1 border-t border-[#F0E5DC] pt-2',
+                )}
+              >
+                <dt className={cn('text-[#616161]', row.strong && 'font-medium text-[#212121]')}>
+                  {row.label}
+                </dt>
+                <dd
+                  className={cn(
+                    'font-heading text-[#212121]',
+                    row.strong && 'font-semibold text-[#E85A1F]',
+                  )}
+                >
+                  {row.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="brand-campaign-meta text-[#616161]">
+            Enter a valid amount to see the quote.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
+  const footer = (
+    <div className="shrink-0 border-t border-[#EFE8E3] p-3 sm:p-4">
+      <button
+        type="button"
+        className="brand-cta-primary w-full"
+        disabled={!quote || paying || quoting}
+        onClick={() => void handlePay()}
+      >
+        {paying ? (
+          <span className="inline-flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> Processing…
+          </span>
+        ) : quote ? (
+          `Pay ₹${paiseToRupeeLabel(quote.totalChargePaise)}`
+        ) : (
+          'Pay'
+        )}
+      </button>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        className={cn(
+          'brand-gradient-frame overflow-hidden rounded-[20px] p-3 sm:p-4',
+          className,
+        )}
+      >
+        <div className="overflow-hidden rounded-[16px] bg-white shadow-sm">
+          {header}
+          <div className="p-3 sm:p-4">{body}</div>
+          {footer}
+        </div>
+      </div>
+    );
+  }
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-end justify-center gradient-overlay p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className={cn(
+          'brand-gradient-frame flex max-h-[92dvh] w-full max-w-[600px] flex-col overflow-hidden rounded-t-[20px] p-2.5 sm:rounded-[20px] sm:p-3',
+          className,
+        )}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add credits"
+      >
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] bg-white shadow-sm">
+          {header}
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">{body}</div>
+          {footer}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

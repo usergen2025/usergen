@@ -42,7 +42,7 @@ export default function Modal({
     >
       <div
         className={cn(
-          'bg-white shadow-modal rounded-xl max-w-md w-full max-h-[90vh] overflow-auto',
+          'bg-white shadow-modal rounded-xl max-w-md w-full max-h-[90dvh] overflow-auto',
           className
         )}
         onClick={(e) => e.stopPropagation()}

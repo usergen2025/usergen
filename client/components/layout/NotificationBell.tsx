@@ -12,7 +12,9 @@ const POLL_MS = 20_000;
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<any[]>([]);
+  const [panelPos, setPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const { addGlobalHandler } = useCampaignEventsContext();
 
   const load = useCallback(async () => {
@@ -51,6 +53,36 @@ export default function NotificationBell() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
+  /**
+   * Right-aligns the panel to the bell, then clamps it inside the viewport.
+   * The bell is not the last item in the header, so a plain `right-0` anchor
+   * pushes the panel off the left edge on narrow screens.
+   */
+  const updatePanelPos = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 16;
+    const viewportWidth = document.documentElement.clientWidth;
+    const width = Math.min(360, viewportWidth - margin * 2);
+    const left = Math.min(
+      Math.max(margin, rect.right - width),
+      viewportWidth - margin - width,
+    );
+    setPanelPos({ top: rect.bottom + 8, left, width });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePanelPos();
+    window.addEventListener('resize', updatePanelPos);
+    window.addEventListener('scroll', updatePanelPos, true);
+    return () => {
+      window.removeEventListener('resize', updatePanelPos);
+      window.removeEventListener('scroll', updatePanelPos, true);
+    };
+  }, [open, updatePanelPos]);
+
   const unread = items.filter((n) => !n.read).length;
 
   const onMarkRead = async (id: string) => {
@@ -61,6 +93,7 @@ export default function NotificationBell() {
   return (
     <div className="relative" ref={wrapRef}>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => {
           setOpen((o) => !o);
@@ -77,13 +110,14 @@ export default function NotificationBell() {
         )}
       </button>
 
-      {open && (
+      {open && panelPos && (
         <div
           className={cn(
-            'absolute right-0 z-[60] mt-2 w-[min(100vw-2rem,360px)] rounded-xl border border-[#E0D5CF] bg-white shadow-lg',
+            'fixed z-[60] rounded-xl border border-[#E0D5CF] bg-white shadow-lg',
           )}
+          style={{ top: panelPos.top, left: panelPos.left, width: panelPos.width }}
         >
-          <div className="max-h-[min(70vh,420px)] overflow-y-auto py-2">
+          <div className="max-h-[min(70dvh,420px)] overflow-y-auto py-2">
             {items.length === 0 ? (
               <p className="px-4 py-6 text-center text-sm text-gray-500">No notifications yet</p>
             ) : (

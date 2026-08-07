@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LogOut, Menu, X, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
+import { BarChart3, LogOut, Menu, X, Wallet, Briefcase, Video, Megaphone, Receipt } from 'lucide-react';
 import CreditDisplay from '@/components/billing/CreditDisplay';
 import BrandBalanceDisplay from '@/components/billing/BrandBalanceDisplay';
 import Image from 'next/image';
@@ -193,10 +193,10 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
   return (
     <>
       <header className={cn(positionClasses[position], "w-full pt-[43px] pb-0")}>
-      <div className="max-w-[1248px] mx-auto px-6">
+      <div className="max-w-[1248px] mx-auto px-4 sm:px-6">
         <div
           className={cn(
-            'shadow-header rounded-2xl px-6 py-4',
+            'shadow-header rounded-2xl px-4 py-3 sm:px-6 sm:py-4',
             floatingBarSurface === 'translucent'
               ? 'bg-white/80 backdrop-blur-sm ring-1 ring-[#F0E6DF]/90'
               : 'bg-white'
@@ -224,15 +224,15 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                 </div>
               </Link>
             ) : (
-              <Link href="/" className="flex items-center gap-2">
+              <Link href="/" className="flex items-center gap-2 min-w-0">
                 <Image 
                   src="/assets/logo.svg" 
                   alt="UserGen.ai Logo" 
                   width={38} 
                   height={44}
-                  className="w-[38px] h-[44px]"
+                  className="w-[30px] h-[35px] sm:w-[38px] sm:h-[44px] flex-shrink-0"
                 />
-                <span className="font-heading text-2xl font-medium text-black">UserGen.ai</span>
+                <span className="font-heading text-lg sm:text-2xl font-medium text-black whitespace-nowrap">UserGen.ai</span>
               </Link>
             )}
 
@@ -252,7 +252,7 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
             </div>
 
             {/* Right Side Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-shrink-0">
               {isAuthenticated && <NotificationBell />}
               {isAuthenticated && !userIsBrand && (
                 <CreditDisplay className="hidden sm:flex" showAddButton={false} />
@@ -339,6 +339,14 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                       >
                         Billing
                       </DropdownItem>
+                      <DropdownItem
+                        onClick={() => {
+                          router.push('/usage');
+                        }}
+                        icon={<BarChart3 className="w-5 h-5" />}
+                      >
+                        Usage
+                      </DropdownItem>
                       <DropdownItem onClick={handleLogout} icon={<LogOut className="w-5 h-5" />}>
                         Logout
                       </DropdownItem>
@@ -364,8 +372,10 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
                       variant="primary" 
                       size="sm"
                       onClick={handleCreateVideoClick}
+                      className="whitespace-nowrap flex-shrink-0 text-sm sm:text-base max-sm:shadow-none"
                     >
-                      Create a Video
+                      <span className="sm:hidden">Create</span>
+                      <span className="hidden sm:inline">Create a Video</span>
                     </Button>
                   )}
                 </>

@@ -224,7 +224,7 @@ export function ProjectLibraryPickerModal({
       {/*
         Leave vertical room for Modal chrome (close row). Fixed h-[min(90vh,...)] overflowed max-h-[90vh] and clipped the footer.
       */}
-      <div className="flex max-h-[min(calc(90vh-5.5rem),780px)] min-h-0 flex-col p-4 sm:p-5">
+      <div className="flex max-h-[min(calc(90dvh-5.5rem),780px)] min-h-0 flex-col p-4 sm:p-5">
         <h3 className="brand-page-section-title shrink-0">Choose a completed video</h3>
         <p className="brand-campaign-meta mb-4 shrink-0">
           Select a project card, preview with play/pause, then confirm. Only one preview plays at a time.

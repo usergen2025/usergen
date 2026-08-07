@@ -220,13 +220,13 @@ export default function CreatorCampaignDetailPage() {
 
   if (loading && !payload) {
     return (
-      <div className="brand-page-shell py-8 text-center text-text-secondary">Loading…</div>
+      <div className="brand-page-shell pb-8 text-center text-text-secondary">Loading…</div>
     );
   }
 
   if (!campaign) {
     return (
-      <div className="brand-page-shell py-8 text-center">
+      <div className="brand-page-shell pb-8 text-center">
         <p className="mb-4 text-text-secondary">Campaign not found.</p>
         <Link href="/campaigns" className="text-[#E86512] underline">
           Back to campaigns
@@ -236,7 +236,7 @@ export default function CreatorCampaignDetailPage() {
   }
 
   return (
-    <div className="brand-page-shell py-4 sm:py-6">
+    <div className="brand-page-shell pb-4 sm:pb-6">
       {/* Page Header */}
       <div className="mb-5 space-y-3 sm:mb-6">
         {/* Row 1: Back + Title */}

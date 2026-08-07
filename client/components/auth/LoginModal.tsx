@@ -140,10 +140,10 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      className="max-w-[546px] w-[546px] bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl"
+      className="max-w-[546px] w-full bg-white shadow-[0px_4px_22px_rgba(242,126,53,0.3)] rounded-xl"
       showCloseButton={false}
     >
-      <div className="flex flex-col items-center p-10 gap-5">
+      <div className="flex flex-col items-center p-5 sm:p-10 gap-5">
         {/* Header with back arrow and title */}
         <div className="flex flex-row items-start w-full gap-2.5">
           <button

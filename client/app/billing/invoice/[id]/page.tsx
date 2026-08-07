@@ -56,7 +56,7 @@ export default function BillingInvoicePage() {
 
   if (loading || authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#FAF8F5] text-gray-600 gap-2">
+      <div className="min-h-dvh flex items-center justify-center bg-[#FAF8F5] text-gray-600 gap-2">
         <Loader2 className="h-5 w-5 animate-spin" /> Loading invoice…
       </div>
     );
@@ -64,7 +64,7 @@ export default function BillingInvoicePage() {
 
   if (error || !invoice) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#FAF8F5] gap-3 p-6">
+      <div className="min-h-dvh flex flex-col items-center justify-center bg-[#FAF8F5] gap-3 p-6">
         <p className="text-gray-700">{error || 'Invoice not found'}</p>
         <button
           onClick={() => router.push('/billing')}
@@ -83,7 +83,7 @@ export default function BillingInvoicePage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#FAF8F5] print:bg-white">
+    <div className="min-h-dvh bg-[#FAF8F5] print:bg-white">
       <div className="mx-auto max-w-3xl px-4 py-6 print:p-0">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 print:hidden">
           <button
@@ -108,7 +108,7 @@ export default function BillingInvoicePage() {
           </div>
         </div>
 
-        <article className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm print:border-0 print:shadow-none">
+        <article className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 md:p-8 shadow-sm print:border-0 print:shadow-none">
           <header className="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 pb-6">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-orange-600">

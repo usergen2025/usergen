@@ -206,7 +206,7 @@ export default function AdminPricingPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[50vh]">
+      <div className="p-6 flex items-center justify-center min-h-[50dvh]">
         <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
       </div>
     );

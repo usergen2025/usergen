@@ -176,7 +176,7 @@ function RenderingPageContent() {
   // Show loading state if auth is still loading
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className={cn(typography.body.base, "text-text-secondary")}>Loading...</p>
         </div>
@@ -185,7 +185,7 @@ function RenderingPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+    <div className="min-h-dvh bg-background flex items-center justify-center px-4">
       <div className="max-w-2xl w-full text-center space-y-8">
         {/* Fun Facts */}
         <div>
@@ -235,7 +235,7 @@ function RenderingPageContent() {
 export default function RenderingPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

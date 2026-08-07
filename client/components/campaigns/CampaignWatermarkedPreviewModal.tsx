@@ -121,7 +121,7 @@ export function CampaignWatermarkedPreviewModal({
 
         <div
           ref={containerRef}
-          className="relative mx-auto aspect-[9/16] max-h-[70vh] w-full overflow-hidden rounded-2xl bg-black"
+          className="relative mx-auto aspect-[9/16] max-h-[70dvh] w-full overflow-hidden rounded-2xl bg-black"
           onContextMenu={(e) => e.preventDefault()}
         >
           {loading ? (

@@ -33,7 +33,7 @@ export default function ProgressBar({
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-secondary border-t border-border px-4 md:px-6 py-4 z-40">
+    <div className="fixed bottom-0 left-0 right-0 bg-secondary border-t border-border px-4 md:px-6 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] z-40">
       <div className="container mx-auto flex items-center justify-between gap-4">
         <p className="text-xs md:text-sm text-text-primary flex-1 min-w-0">{message}</p>
         

@@ -120,7 +120,7 @@ export default function SsembleClipsViewerModal({
       <div className="absolute inset-0 bg-black/60" onClick={handleClose} />
 
       {/* Modal */}
-      <div className="relative w-full max-w-4xl bg-white rounded-2xl shadow-xl flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-4xl bg-white rounded-2xl shadow-xl flex flex-col max-h-[90dvh]">
         {selectedClip ? (
           <>
             {/* Clip Detail View */}
@@ -148,7 +148,7 @@ export default function SsembleClipsViewerModal({
                 src={selectedClip.videoUrl}
                 controls
                 autoPlay
-                className="max-w-full max-h-[60vh]"
+                className="max-w-full max-h-[60dvh]"
               />
             </div>
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Input from '@/components/ui/Input';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
@@ -427,6 +428,7 @@ function CreatorStateCampaignCard({
 }
 
 export default function CreatorCampaignsPage() {
+  const router = useRouter();
   const { showToast } = useToast();
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -616,14 +618,10 @@ export default function CreatorCampaignsPage() {
   return (
     <div className="brand-page-shell brand-page-shell--campaigns">
       <BrandPageHeader
-        hideBackButton
+        onBack={() => router.back()}
         className="mb-3 shrink-0 sm:mb-3"
-        left={
-          <div>
-            <h1 className="brand-campaign-page-title">Campaigns</h1>
-            <p className="brand-campaign-meta mt-1">Explore, apply, and submit post links from one place.</p>
-          </div>
-        }
+        title="Campaigns"
+        subtitle="Explore, apply, and submit post links from one place."
       />
 
       <div className="brand-gradient-frame mb-0 flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-[20px] p-3 sm:p-4 p-[2px]">

@@ -47,7 +47,7 @@ export default function CampaignSubmissionPage() {
   };
 
   return (
-    <div className="brand-page-shell py-2">
+    <div className="brand-page-shell pb-2">
       <div className="flex items-center gap-3 mb-6">
         <Link href="/campaigns" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
           <ArrowLeft className="w-5 h-5 text-black" />

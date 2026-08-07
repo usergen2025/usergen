@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useTransition, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Plus, Play, Pause, Clock, CheckCircle, XCircle, Edit, Trash2 } from 'lucide-react';
+import { Plus, Play, Pause, Clock, CheckCircle, XCircle, Edit, Trash2 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ConfirmModal from '@/components/ui/ConfirmModal';
@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils/cn';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { BrandPageHeader } from '@/components/brand';
 import { getStepToRouteMap } from '@/lib/config/video-steps';
 import { getPreviewPlaybackUrl, isPreviewReady } from '@/lib/video-urls';
 
@@ -369,8 +370,8 @@ export default function ProjectsPage() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen pb-16">
-        <div className="max-w-[1248px] mx-auto px-4 pt-8 md:pt-12">
+      <div className="min-h-dvh pb-16">
+        <div className="brand-page-shell">
           <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="h-8 w-40 rounded-lg project-skeleton-shimmer" />
             <div className="h-9 w-32 rounded-full project-skeleton-shimmer" />
@@ -396,8 +397,8 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="min-h-screen pb-16">
-      <div className="max-w-[1248px] mx-auto px-4 pt-8 md:pt-12">
+    <div className="min-h-dvh pb-16">
+      <div className="brand-page-shell">
         <div className="max-w-[1248px] mx-auto">
           {loading && filteredProjects.length === 0 ? (
             <>
@@ -414,24 +415,22 @@ export default function ProjectsPage() {
             </>
           ) : (
             <>
-              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-row items-center gap-4">
-                  <button
-                    onClick={() => router.back()}
-                    className="flex items-center justify-center w-6 h-6 cursor-pointer hover:opacity-80 transition-opacity"
-                    aria-label="Back"
-                  >
-                    <ArrowLeft className="w-full h-full text-[#212121]" strokeWidth={1.5} />
-                  </button>
-                  <h1 className="font-heading text-2xl font-medium text-[#212121]">My Projects</h1>
-                </div>
-                <Link href="/create-video/ai-chat" className="shrink-0">
-                  <Button variant="primary" size="sm" className="!px-4 !py-2 text-sm shadow-button">
-                    <Plus className="w-4 h-4 mr-1.5" />
-                    New Project
-                  </Button>
-                </Link>
-              </div>
+              <BrandPageHeader
+                onBack={() => router.back()}
+                className="mb-4 shrink-0"
+                title="My Projects"
+                subtitle="Every video you've started, in one place."
+                right={
+                  <Link href="/create-video/ai-chat" className="shrink-0">
+                    <button type="button" className="brand-campaign-cta w-full min-w-0 sm:w-auto">
+                      <Plus className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
+                      <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
+                        New Project
+                      </span>
+                    </button>
+                  </Link>
+                }
+              />
 
               {/* Filters */}
               <div className="mb-6 inline-flex items-center gap-1 rounded-full bg-white/85 p-1 shadow-sm ring-1 ring-[#F0E6DF]">
@@ -639,7 +638,7 @@ export default function ProjectsPage() {
                     <button
                       type="button"
                       onClick={() => setProjectPendingDelete(project)}
-                      className="inline-flex items-center justify-center h-8 w-8 rounded-full border border-[#E7D9CF] text-[#8B6C5C] hover:text-[#E03A3A] hover:border-[#E03A3A] hover:bg-[#FFF4F4] transition-colors"
+                      className="inline-flex items-center justify-center h-8 w-8 max-sm:h-10 max-sm:w-10 rounded-full border border-[#E7D9CF] text-[#8B6C5C] hover:text-[#E03A3A] hover:border-[#E03A3A] hover:bg-[#FFF4F4] transition-colors"
                       aria-label="Delete project"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

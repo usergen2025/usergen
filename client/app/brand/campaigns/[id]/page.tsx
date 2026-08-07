@@ -402,7 +402,7 @@ export default function CampaignDetailsPage() {
 
   if (isLoading || !campaign) {
     return (
-      <div className="brand-page-shell py-8">
+      <div className="brand-page-shell pb-8">
         <p className="text-center text-text-secondary">Loading campaign details...</p>
       </div>
     );
@@ -458,7 +458,7 @@ export default function CampaignDetailsPage() {
       {/* Header */}
       <div className="mb-3 space-y-3 sm:mb-5">
         {/* Row 1: Back + Title | Action Buttons */}
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <Link
               href="/brand/campaigns"
@@ -1095,7 +1095,7 @@ function ApplicantCard({
                 <button
                   type="button"
                   onClick={() => onShortlist(applicant)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-green-500 text-white transition-colors hover:bg-green-600"
+                  className="inline-flex h-8 w-8 max-sm:h-10 max-sm:w-10 items-center justify-center rounded-full bg-green-500 text-white transition-colors hover:bg-green-600"
                 >
                   <Check className="h-4 w-4" strokeWidth={2.5} />
                 </button>
@@ -1104,7 +1104,7 @@ function ApplicantCard({
                 <button
                   type="button"
                   onClick={() => onReject(applicant)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-red-500 text-white transition-colors hover:bg-red-600"
+                  className="inline-flex h-8 w-8 max-sm:h-10 max-sm:w-10 items-center justify-center rounded-full bg-red-500 text-white transition-colors hover:bg-red-600"
                 >
                   <X className="h-4 w-4" strokeWidth={2.5} />
                 </button>

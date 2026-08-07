@@ -230,7 +230,7 @@ export default function AdminIAMPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6 border-b border-gray-700 pb-4">
+      <div className="flex flex-wrap gap-2 mb-6 border-b border-gray-700 pb-4">
         <button
           onClick={() => setActiveTab('roles')}
           className={cn(
@@ -338,7 +338,7 @@ export default function AdminIAMPage() {
       {/* Admins Tab */}
       {activeTab === 'admins' && (
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-6">
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
               <input
@@ -366,7 +366,8 @@ export default function AdminIAMPage() {
                 No admin users found
               </div>
             ) : (
-              <table className="w-full">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px]">
                 <thead>
                   <tr className="border-b border-gray-700">
                     <th className="px-6 py-4 text-left text-sm font-medium text-gray-400">Admin</th>
@@ -437,6 +438,7 @@ export default function AdminIAMPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>

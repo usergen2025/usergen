@@ -10,7 +10,7 @@ export default function WelcomePage() {
   const router = useRouter();
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 py-12">
+    <div className="min-h-dvh bg-background flex flex-col items-center justify-center px-4 py-12">
         <div className="max-w-md w-full text-center space-y-8">
         <h1 className={cn(typography.heading.h2, "mb-6")}>
           Bring Your Ideas to Life with AI

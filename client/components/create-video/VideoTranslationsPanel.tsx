@@ -478,7 +478,7 @@ export function VideoTranslationsPanel({
       aria-labelledby="translate-video-modal-title"
     >
       <div
-        className="bg-white rounded-2xl shadow-xl max-w-lg w-full flex flex-col max-h-[min(85vh,640px)] overflow-hidden"
+        className="bg-white rounded-2xl shadow-xl max-w-lg w-full flex flex-col max-h-[min(85dvh,640px)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3 border-b border-gray-100 shrink-0">

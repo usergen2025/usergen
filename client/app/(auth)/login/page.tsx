@@ -166,7 +166,7 @@ function LoginPageContent() {
   // Show loading state while checking authentication
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>
@@ -180,7 +180,7 @@ function LoginPageContent() {
   }
 
   return (
-    <div className="min-h-screen gradient-overlay flex items-center justify-center px-4 py-12 relative">
+    <div className="min-h-dvh gradient-overlay flex items-center justify-center px-4 py-12 relative">
       <div className="max-w-[546px] w-full bg-white shadow-modal rounded-xl p-10 space-y-5 relative z-10">
         <h1 className={cn(typography.heading.h3, "text-center font-heading")}>Login</h1>
         
@@ -311,7 +311,7 @@ function LoginPageContent() {
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

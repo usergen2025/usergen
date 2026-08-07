@@ -243,7 +243,7 @@ export default function BRollSelectionModal({
 
   return (
     <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-[20px] w-[calc(100vw-2rem)] max-w-[640px] max-h-[80vh] flex flex-col overflow-hidden shadow-xl">
+      <div className="bg-white rounded-[20px] w-[calc(100vw-2rem)] max-w-[640px] max-h-[80dvh] flex flex-col overflow-hidden shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
           <h2 className="text-xl font-heading font-semibold text-[#212121]">
@@ -400,7 +400,7 @@ export default function BRollSelectionModal({
               {/* Results area - fixed min height so layout is consistent */}
               <div className="min-h-[280px] flex flex-col">
                 {searchResults.length > 0 ? (
-                  <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {searchResults.map((item) => (
                       <div
                         key={item.id}

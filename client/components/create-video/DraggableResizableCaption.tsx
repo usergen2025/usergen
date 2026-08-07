@@ -638,7 +638,7 @@ export function DraggableResizableCaption({
     createPortal(
       <div
         ref={toolbarRef}
-        className="fixed z-[200] pointer-events-auto w-max max-w-[calc(100vw-16px)]"
+        className="fixed z-[200] pointer-events-auto w-max max-w-[calc(100vw-16px)] max-sm:overflow-x-auto"
         style={{
           top: toolbarPos.top,
           left: toolbarPos.left,

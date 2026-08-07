@@ -17,7 +17,7 @@ export default function ProjectsPage() {
   }));
 
   return (
-    <div className="min-h-screen bg-background pb-20">
+    <div className="min-h-dvh bg-background pb-20">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <h1 className={cn(typography.heading.h3, "mb-6")}>My Projects</h1>

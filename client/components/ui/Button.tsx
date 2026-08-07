@@ -34,9 +34,9 @@ export default function Button({
 
   const sizes = {
     xs: 'px-3.5 py-1.5 text-xs rounded-[18px] gap-0.5',
-    sm: 'px-6 py-3 text-sm rounded-[26px]',
-    md: 'px-6 py-4 text-base rounded-[26px]',
-    lg: 'px-6 py-4 text-xl rounded-[40px]',
+    sm: 'px-4 py-2.5 sm:px-6 sm:py-3 text-base rounded-[26px]',
+    md: 'px-4 py-3 sm:px-6 sm:py-4 text-base rounded-[26px]',
+    lg: 'px-5 py-3 sm:px-6 sm:py-4 text-base rounded-[32px] sm:rounded-[40px]',
   };
 
   return (

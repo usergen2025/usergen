@@ -248,7 +248,7 @@ function AvatarPageContent() {
   };
 
   return (
-    <div className="min-h-screen bg-background pb-20">
+    <div className="min-h-dvh bg-background pb-20">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-6xl mx-auto">
           <button
@@ -551,7 +551,7 @@ function AvatarPageContent() {
 export default function AvatarPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-dvh bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-text-secondary">Loading...</p>
         </div>

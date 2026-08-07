@@ -119,7 +119,7 @@ export default function AdminCampaignsPage() {
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
           <div className="rounded-xl border border-gray-700 bg-gray-800 p-3">
             <h2 className="mb-3 text-sm font-semibold text-white">All campaigns</h2>
-            <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-[70dvh] space-y-2 overflow-y-auto pr-1">
               {campaigns.map((campaign) => {
                 const selected = campaign.id === selectedCampaignId;
                 return (

@@ -246,12 +246,12 @@ export default function AdminCampaignSyncPage() {
         </div>
       </div>
 
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white mb-2">Campaign Wallet Sync</h1>
           <p className="text-gray-400">Track failed sync events and trigger manual retries.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as 'ALL' | 'SYNCED' | 'RETRY_PENDING' | 'FAILED')}

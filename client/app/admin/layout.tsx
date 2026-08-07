@@ -88,7 +88,7 @@ export default function AdminLayout({
 
   if (isLoading || !isAuthorized) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+      <div className="min-h-dvh bg-gray-900 flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-400">Verifying access...</p>
@@ -98,7 +98,7 @@ export default function AdminLayout({
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 flex">
+    <div className="min-h-dvh bg-gray-900 flex">
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -109,7 +109,7 @@ export default function AdminLayout({
 
       {/* Sidebar: fixed height = viewport; nav scrolls; profile stays at bottom */}
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-gray-800 flex flex-col h-screen min-h-0 transform transition-transform duration-200 lg:translate-x-0",
+        "fixed inset-y-0 left-0 z-50 w-64 bg-gray-800 flex flex-col h-dvh min-h-0 transform transition-transform duration-200 lg:translate-x-0",
         sidebarOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         {/* Logo */}

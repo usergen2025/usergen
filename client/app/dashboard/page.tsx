@@ -15,8 +15,8 @@ export default function DashboardPage() {
   }));
 
   return (
-    <div className="min-h-screen bg-background pb-20 md:pb-8 overflow-x-hidden">
-      <div className="brand-page-shell py-6">
+    <div className="min-h-dvh bg-background pb-20 md:pb-8 overflow-x-hidden">
+      <div className="brand-page-shell">
         <div className="brand-gradient-frame rounded-[20px] p-[2px] mb-4">
           <div className="brand-surface-card rounded-[18px] border-0 p-4 sm:p-5">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">

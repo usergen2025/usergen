@@ -15,6 +15,7 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   const isWorkspacePage = pathname === '/create-video/workspace';
   const isBrandRoute = pathname?.startsWith('/brand');
   const isBillingRoute = pathname === '/billing' || pathname?.startsWith('/billing/');
+  const isUsagePage = pathname === '/usage';
   const isProjectsPage = pathname === '/projects';
   const isCreatorCampaignRoute = pathname === '/campaigns' || pathname?.startsWith('/campaigns/');
   const isCreatorEarningsPage = pathname === '/earnings';
@@ -31,6 +32,7 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
     isBrandRoute ||
     isWorkspacePage ||
     isBillingRoute ||
+    isUsagePage ||
     isProjectsPage ||
     isCreatorCampaignRoute ||
     isCreatorEarningsPage

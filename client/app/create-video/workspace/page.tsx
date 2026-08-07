@@ -2850,7 +2850,7 @@ function WorkspacePageContent() {
 
   if (loading || authLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen">
+      <div className="flex flex-col items-center justify-center min-h-dvh">
         <div className="text-[clamp(1rem,1.76vh,18px)] text-[#212121]">Loading workspace...</div>
       </div>
     );
@@ -2940,7 +2940,7 @@ function WorkspacePageContent() {
       {/* Completed — dedicated full-area final video (not overlay) */}
       {showCompletedScreen && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
-          <div className="relative max-w-[1248px] w-full mx-auto pt-0 sm:pt-2 md:pt-[43px] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-3 sm:px-6 md:px-[96px]">
+          <div className="relative max-w-[1248px] w-full mx-auto pt-[clamp(0.75rem,2.2vh,1.5rem)] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0 px-[clamp(12px,3vw,96px)]">
             {/* Header Row */}
             <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0">
               {/* Left: Back + Workspace */}
@@ -3038,8 +3038,8 @@ function WorkspacePageContent() {
                 })()}
 
                 {/* Video player container - 9:16 aspect ratio */}
-                <div className="relative w-full flex-1 flex items-center justify-center min-h-[min(60vh,560px)] lg:min-h-0">
-                  <div className="relative h-full max-h-[min(70vh,640px)] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black w-auto">
+                <div className="relative w-full flex-1 flex items-center justify-center min-h-[min(60dvh,560px)] lg:min-h-0">
+                  <div className="relative h-full max-h-[min(70dvh,640px)] aspect-[9/16] rounded-[20px] overflow-hidden shadow-lg bg-black w-auto">
                     {showCompletedVideo ? (
                       <>
                         <video
@@ -3176,7 +3176,7 @@ function WorkspacePageContent() {
       {/* Main Container - matches AI chat page structure */}
       <div className="relative max-w-[1248px] w-full mx-auto pt-3 sm:pt-2 md:pt-[43px] pb-0 sm:pb-2 md:pb-[43px] flex flex-col flex-1 min-h-0">
         {/* Header Row - matches AI chat navigation bar */}
-        <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0 px-3 sm:px-6 md:px-[96px]">
+        <div className="flex flex-row justify-between items-center mb-0 sm:mb-2 md:mb-[24px] h-[clamp(20px,3.3vh,34px)] flex-shrink-0 px-[clamp(12px,3vw,96px)]">
           {/* Left: Back + Workspace */}
           <div className="flex flex-row items-center gap-2 sm:gap-[clamp(0.75rem,2vh,20px)] min-w-[90px] sm:min-w-[110px] md:min-w-[125px]">
             <button
@@ -3418,7 +3418,7 @@ function WorkspacePageContent() {
           </div>
 
           {/* Preview area with navigation arrows on sides */}
-          <div className="flex flex-row items-center justify-center gap-[clamp(8px,0.98vh,12px)] w-full flex-1 min-h-0 min-[0px]:min-h-[min(60vh,560px)] lg:min-h-0">
+          <div className="flex flex-row items-center justify-center gap-[clamp(8px,0.98vh,12px)] w-full flex-1 min-h-0 min-[0px]:min-h-[min(60dvh,560px)] lg:min-h-0">
             {/* Mobile edge rails */}
             <button
               type="button"
@@ -4111,7 +4111,7 @@ function WorkspacePageContent() {
               <h3 className="text-lg font-semibold text-[#212121]">Confirm Export</h3>
               <p className="text-sm text-gray-600 mt-1">Credits are charged only after successful final render.</p>
             </div>
-            <div className="px-5 py-4 space-y-3 max-h-[50vh] overflow-y-auto">
+            <div className="px-5 py-4 space-y-3 max-h-[50dvh] overflow-y-auto">
               {exportBreakdownDisplay.hasRows ? (
                 <>
                   {exportBreakdownDisplay.rows.map((row, idx) => (

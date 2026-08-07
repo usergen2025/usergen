@@ -106,20 +106,16 @@ function BrandWalletContent() {
           </BrandSecondaryButton>
         </div>
 
-        {showBuy && (
-          <div className="mt-4">
-            <BuyCreditsPanel
-              audience="BRAND"
-              embedded
-              successRedirectTo="/brand/dashboard"
-              onClose={() => {
-                setShowBuy(false);
-                router.replace('/brand/wallet');
-                void loadBalance();
-              }}
-            />
-          </div>
-        )}
+        <BuyCreditsPanel
+          audience="BRAND"
+          open={showBuy}
+          successRedirectTo="/brand/dashboard"
+          onClose={() => {
+            setShowBuy(false);
+            router.replace('/brand/wallet');
+            void loadBalance();
+          }}
+        />
 
         <div className="mt-6 sm:mt-7">
           <h3 className="brand-page-section-title mb-2">Purchase history</h3>
