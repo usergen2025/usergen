@@ -172,9 +172,10 @@ body {
   @apply flex items-center gap-2.5 w-full;
 }
 
-/* My Campaigns: single row per tile — icon, value, label */
+/* My Campaigns: single row per tile — icon, value, label.
+   Below sm the tile turns portrait so a full strip still fits one row. */
 .brand-stat-tile--inline {
-  @apply flex flex-row items-center gap-2 sm:gap-2.5 p-2.5 sm:p-3 min-h-0 rounded-lg bg-white border border-[#F0E5DC] min-w-0;
+  @apply flex flex-col sm:flex-row items-center gap-1 sm:gap-2.5 p-2 sm:p-3 min-h-0 rounded-lg bg-white border border-[#F0E5DC] min-w-0 text-center sm:text-left;
 }
 
 .brand-stat-tile__value--inline {
@@ -189,6 +190,57 @@ body {
   font-size: clamp(12px, 1.1vw, 0.875rem);
   line-height: 1.3;
   font-weight: 500;
+}
+
+@media (max-width: 639px) {
+  .brand-stat-tile--inline .brand-metric-icon-chip {
+    height: 1.5rem;
+    width: 1.5rem;
+  }
+
+  .brand-stat-tile--inline .brand-metric-icon-chip svg {
+    height: 0.8125rem;
+    width: 0.8125rem;
+  }
+
+  .brand-stat-tile__value--inline {
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .brand-stat-tile__label-inline {
+    font-size: 11px;
+    line-height: 1.25;
+    color: #616161;
+  }
+
+  /* 5-up strips (usage "By operation type") — tighter still so the row never wraps */
+  .brand-stat-tile--compact {
+    padding: 0.25rem 0.125rem;
+    gap: 0.125rem;
+  }
+
+  .brand-stat-tile--compact .brand-metric-icon-chip {
+    height: 1.125rem;
+    width: 1.125rem;
+  }
+
+  .brand-stat-tile--compact .brand-metric-icon-chip svg {
+    height: 0.625rem;
+    width: 0.625rem;
+  }
+
+  .brand-stat-tile--compact .brand-stat-tile__label-inline {
+    font-size: 9px;
+    line-height: 1.15;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+
+  .brand-stat-tile--compact .brand-campaign-meta {
+    font-size: 9px;
+    line-height: 1.2;
+  }
 }
 
 .brand-metric-icon-chip {
@@ -387,6 +439,23 @@ body {
 
 .brand-campaign-cta:hover:not(:disabled) {
   opacity: 0.92;
+}
+
+/* Mobile: collapse to a round icon button so the CTA stays on the page-title row */
+@media (max-width: 639px) {
+  .brand-campaign-cta--compact {
+    width: 2.25rem;
+    height: 2.25rem;
+    min-height: 2.25rem;
+    padding: 0;
+    gap: 0;
+    border-radius: 9999px;
+    box-shadow: 0px 6px 16px rgba(242, 126, 53, 0.35);
+  }
+
+  .brand-campaign-cta--compact .brand-campaign-cta__label {
+    display: none;
+  }
 }
 
 /* Underlined text controls (Sort / Filter) */

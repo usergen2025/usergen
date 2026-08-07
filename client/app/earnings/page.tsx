@@ -92,10 +92,11 @@ export default function EarningsPage() {
           <button
             type="button"
             onClick={() => setShowWithdraw(true)}
-            className="brand-campaign-cta w-full min-w-0 sm:w-auto"
+            className="brand-campaign-cta brand-campaign-cta--compact min-w-0"
+            aria-label="Withdraw earnings"
           >
             <Banknote className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
-            <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
+            <span className="brand-campaign-cta__label whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
               Withdraw
             </span>
           </button>
@@ -142,8 +143,8 @@ export default function EarningsPage() {
                 {summary.entries.map((entry) => (
                   <div key={entry.id} className="brand-campaign-card-figma shadow-sm">
                     <div className="flex flex-col gap-2 sm:gap-2.5">
-                      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
-                        <span className="brand-campaign-title min-w-0 truncate font-heading leading-tight text-[#212121]">
+                      <div className="flex flex-row items-start justify-between gap-2">
+                        <span className="brand-campaign-title min-w-0 flex-1 truncate font-heading leading-tight text-[#212121]">
                           Campaign: {entry.campaignId}
                         </span>
                         <span
@@ -156,7 +157,7 @@ export default function EarningsPage() {
                           {entry.status}
                         </span>
                       </div>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                         <span className="brand-campaign-row font-heading font-medium text-[#212121]">
                           Views delta: {entry.viewsDelta.toLocaleString('en-IN')}
                         </span>

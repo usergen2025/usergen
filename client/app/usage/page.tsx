@@ -173,23 +173,23 @@ export default function UsagePage() {
           <div className="shrink-0 space-y-2.5 border-b border-[#EFE8E3] p-3 sm:p-4">
             <h2 className="brand-page-section-title">By operation type</h2>
             {showSkeleton ? (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              <div className="grid grid-cols-5 gap-1 sm:grid-cols-3 sm:gap-2 lg:grid-cols-5">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <SkeletonPulse key={i} className="h-[2.75rem] rounded-lg" />
+                  <SkeletonPulse key={i} className="h-[4rem] rounded-lg sm:h-[2.75rem]" />
                 ))}
               </div>
             ) : operationEntries.length > 0 ? (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              <div className="grid grid-cols-5 gap-1 sm:grid-cols-3 sm:gap-2 lg:grid-cols-5">
                 {operationEntries.map(([type, data]) => {
                   const Icon = operationIconFor(type);
                   const average = Math.round(data.totalCost / Math.max(data.count, 1));
                   return (
-                    <div key={type} className="brand-stat-tile--inline">
+                    <div key={type} className="brand-stat-tile--inline brand-stat-tile--compact">
                       <BrandIconChip size="sm">
                         <Icon className="text-white" strokeWidth={1.8} />
                       </BrandIconChip>
-                      <div className="min-w-0">
-                        <p className="brand-stat-tile__label-inline truncate font-heading font-medium text-[#212121]">
+                      <div className="w-full min-w-0 sm:w-auto">
+                        <p className="brand-stat-tile__label-inline font-heading font-medium text-[#212121] sm:truncate">
                           {formatOperationLabel(type)}
                         </p>
                         <p className="brand-campaign-meta text-[#616161]">
@@ -231,8 +231,8 @@ export default function UsagePage() {
                         }
                         className="flex w-full flex-col gap-2 text-left sm:gap-2.5"
                       >
-                        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
+                        <div className="flex flex-row items-start justify-between gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
                             <BrandIconChip size="sm">
                               <Film className="text-white" strokeWidth={1.8} />
                             </BrandIconChip>
@@ -240,8 +240,9 @@ export default function UsagePage() {
                               {project.projectName}
                             </span>
                           </div>
-                          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-2.5">
-                            <span className="brand-campaign-meta text-[#616161]">
+                          <div className="flex shrink-0 items-center justify-end gap-2 sm:gap-2.5">
+                            {/* Moves to the meta row on mobile so the title keeps its width */}
+                            <span className="brand-campaign-meta hidden text-[#616161] sm:inline">
                               {formatDate(project.lastActivity)}
                             </span>
                             <span
@@ -256,7 +257,10 @@ export default function UsagePage() {
                           </div>
                         </div>
 
-                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                          <span className="brand-campaign-meta text-[#616161] sm:hidden">
+                            {formatDate(project.lastActivity)}
+                          </span>
                           <div className="brand-campaign-row inline-flex items-center gap-1.5 font-heading font-medium text-[#212121]">
                             <Layers
                               className="brand-campaign-metric-stroke h-3.5 w-3.5"

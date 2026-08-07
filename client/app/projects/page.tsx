@@ -422,9 +422,13 @@ export default function ProjectsPage() {
                 subtitle="Every video you've started, in one place."
                 right={
                   <Link href="/create-video/ai-chat" className="shrink-0">
-                    <button type="button" className="brand-campaign-cta w-full min-w-0 sm:w-auto">
+                    <button
+                      type="button"
+                      className="brand-campaign-cta brand-campaign-cta--compact min-w-0"
+                      aria-label="New project"
+                    >
                       <Plus className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
-                      <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
+                      <span className="brand-campaign-cta__label whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
                         New Project
                       </span>
                     </button>

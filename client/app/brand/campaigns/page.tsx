@@ -175,10 +175,11 @@ export default function CampaignsPage() {
           <button
             type="button"
             onClick={() => router.push('/brand/campaigns/create?type=REPOST_CPM')}
-            className="brand-campaign-cta w-full sm:w-auto min-w-0"
+            className="brand-campaign-cta brand-campaign-cta--compact min-w-0"
+            aria-label="Create a campaign"
           >
             <Plus className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
-            <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">Create a Campaign</span>
+            <span className="brand-campaign-cta__label whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">Create a Campaign</span>
           </button>
         }
       />

@@ -38,9 +38,12 @@ export function BrandPageHeader({
 
   return (
     <div
-      className={cn('flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-4', className)}
+      className={cn(
+        'flex flex-row items-start justify-between gap-2 sm:items-center sm:gap-4 mb-4',
+        className,
+      )}
     >
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
         {showBack ? (
           backHref ? (
             <Link href={backHref} className={BACK_BUTTON_CLASS} aria-label="Back">
@@ -61,7 +64,9 @@ export function BrandPageHeader({
           </div>
         )}
       </div>
-      {right ? <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-stretch sm:justify-end">{right}</div> : null}
+      {right ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{right}</div>
+      ) : null}
     </div>
   );
 }

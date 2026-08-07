@@ -338,10 +338,11 @@ function BillingContent() {
           <button
             type="button"
             onClick={() => setShowBuy((v) => !v)}
-            className="brand-campaign-cta w-full min-w-0 sm:w-auto"
+            className="brand-campaign-cta brand-campaign-cta--compact min-w-0"
+            aria-label="Add credits"
           >
             <Plus className="h-4 w-4 shrink-0" strokeWidth={2.2} aria-hidden />
-            <span className="whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
+            <span className="brand-campaign-cta__label whitespace-nowrap text-[clamp(12px,1.37vh,14px)] leading-[1]">
               Add Credits
             </span>
           </button>
@@ -387,17 +388,18 @@ function BillingContent() {
                   return (
                     <div key={p.id} className="brand-campaign-card-figma shadow-sm">
                       <div className="flex flex-col gap-2 sm:gap-2.5">
-                        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
+                        <div className="flex flex-row items-start justify-between gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
                             <BrandIconChip size="sm">
                               <CreditCard className="text-white" strokeWidth={1.8} />
                             </BrandIconChip>
-                            <span className="brand-campaign-title font-heading leading-tight text-[#212121]">
+                            <span className="brand-campaign-title min-w-0 truncate font-heading leading-tight text-[#212121]">
                               +{(p.creditsToGrant || 0).toLocaleString('en-IN')} credits
                             </span>
                           </div>
-                          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-2.5">
-                            <span className="brand-campaign-meta text-[#616161]">
+                          <div className="flex shrink-0 items-center justify-end gap-2 sm:gap-2.5">
+                            {/* Full timestamp is too wide for the mobile title row — it moves to the meta row below */}
+                            <span className="brand-campaign-meta hidden text-[#616161] sm:inline">
                               {formatPurchaseDate(p.createdAt)}
                             </span>
                             <span
@@ -412,7 +414,10 @@ function BillingContent() {
                           </div>
                         </div>
 
-                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                          <span className="brand-campaign-meta text-[#616161] sm:hidden">
+                            {formatPurchaseDate(p.createdAt)}
+                          </span>
                           <div className="brand-campaign-row inline-flex items-center gap-1.5 font-heading font-medium text-[#212121]">
                             <IndianRupee
                               className="brand-campaign-metric-stroke h-3.5 w-3.5"
