@@ -66,7 +66,45 @@ body {
 
 .app-global-gradient {
   background: linear-gradient(135deg, #fff5f0 0%, #fff0f5 100%);
-  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+/* Decorative brand glow, painted as radial gradients rather than `filter: blur()`
+   on oversized boxes. A 200px blur forces WebKit to allocate a backing store that
+   extends ~3x the radius past the element on every side; on a 3x iPhone screen that
+   ran to hundreds of MB per element, past the iOS content-process memory ceiling,
+   and the tab was killed before the page could finish loading. A gradient is the
+   same soft falloff for the cost of an ordinary paint. */
+.landing-glow {
+  background-image:
+    radial-gradient(
+      circle 950px at calc(50% + 1293px) calc(50% + 61px),
+      rgba(232, 101, 18, 0.1) 0%,
+      rgba(232, 101, 18, 0.06) 45%,
+      rgba(232, 101, 18, 0) 75%
+    ),
+    radial-gradient(
+      circle 950px at calc(50% - 147px) calc(50% + 1085px),
+      rgba(232, 101, 18, 0.1) 0%,
+      rgba(232, 101, 18, 0.06) 45%,
+      rgba(232, 101, 18, 0) 75%
+    );
+}
+
+.brand-page-glow {
+  background-image:
+    radial-gradient(
+      circle 480px at calc(100% - 64px) 112px,
+      rgba(232, 101, 18, 0.1) 0%,
+      rgba(232, 101, 18, 0.06) 40%,
+      rgba(232, 101, 18, 0) 70%
+    ),
+    radial-gradient(
+      circle 480px at 64px calc(100% - 64px),
+      rgba(232, 101, 18, 0.1) 0%,
+      rgba(232, 101, 18, 0.06) 40%,
+      rgba(232, 101, 18, 0) 70%
+    );
 }
 
 /* Shared responsive shell for brand surfaces based on 1440px Figma frames. */

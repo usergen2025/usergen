@@ -66,12 +66,9 @@ export default function HomePage() {
 
   return (
     <div className="relative h-dvh bg-background overflow-y-auto overflow-x-hidden lg:overflow-hidden flex flex-col pt-[calc(43px+64px)]">
-      {/* Gradient Ellipses Background — pinned to the viewport so the oversized
-          blurs never add scrollable height to the page */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute w-[1146px] h-[1146px] left-[calc(50%+720px)] top-[calc(50%-512px)] bg-[#E86512] opacity-10 blur-[200px]" />
-        <div className="absolute w-[1146px] h-[1146px] left-[calc(50%-720px)] top-[calc(50%+512px)] bg-[#E86512] opacity-10 blur-[200px]" />
-      </div>
+      {/* Gradient Ellipses Background — pinned to the viewport so it never adds
+          scrollable height to the page */}
+      <div className="landing-glow fixed inset-0 pointer-events-none" />
 
       <div className="relative container mx-auto px-4 flex-1 flex flex-col justify-center py-4 md:py-8 overflow-visible">
         {/* Social Proof Section */}
