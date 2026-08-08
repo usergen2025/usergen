@@ -5,6 +5,21 @@
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 import { getCampaignServiceApiRoot } from '@/lib/campaign-media';
+import { readStorage } from '@/lib/utils/safeStorage';
+
+/**
+ * Axios defaults to no timeout, so a connection that stalls at the transport
+ * layer leaves the promise pending forever. Pages that flip a `loading` flag
+ * before awaiting then sit on their skeleton indefinitely with nothing thrown
+ * and nothing logged. Capping every request turns those stalls into ordinary
+ * errors the UI can render.
+ *
+ * Set on the global defaults as well as the instance below, because several
+ * cross-service calls in this file use the bare `axios` export rather than
+ * `this.axiosInstance`.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+axios.defaults.timeout = REQUEST_TIMEOUT_MS;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 const AUTH_SERVICE_URL = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:9000/api';
@@ -169,6 +184,7 @@ class ApiClient {
   constructor(baseURL: string = API_BASE_URL) {
     this.axiosInstance = axios.create({
       baseURL,
+      timeout: REQUEST_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json',
       },
@@ -214,6 +230,12 @@ class ApiClient {
           customError.response = error.response;
           customError.status = error.response.status;
           throw customError;
+        } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+          // Distinguished from a plain network error so a stalled connection is
+          // identifiable in the field rather than looking like an outage.
+          throw new Error(
+            `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Check your connection and try again.`,
+          );
         } else if (error.request) {
           // Request was made but no response received
           throw new Error('Network error: No response from server');
@@ -243,8 +265,9 @@ class ApiClient {
   }
 
   private getToken(): string | null {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+    // Guarded: this runs inside the request interceptor, so a browser that
+    // refuses storage access would otherwise fail every single request.
+    return readStorage('authToken') || readStorage('authToken', 'session');
   }
 
   // Auth endpoints

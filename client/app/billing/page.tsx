@@ -325,7 +325,11 @@ function BillingContent() {
   const fulfilled = purchases.filter((p) => String(p.status || '').toUpperCase() === 'FULFILLED');
   const totalPaidPaise = fulfilled.reduce((sum, p) => sum + (p.totalChargePaise || 0), 0);
   const totalCredits = fulfilled.reduce((sum, p) => sum + (p.creditsToGrant || 0), 0);
-  const showSkeleton = isLoading || authLoading;
+  // `isLoading` starts true and is only cleared by the fetch, which never runs
+  // without a resolved user id. Gating on it too keeps a session that has a
+  // token but no profile from shimmering forever; it falls through to the
+  // empty state instead.
+  const showSkeleton = authLoading || (isLoading && Boolean(user?.id));
 
   return (
     <div className="brand-page-shell brand-page-shell--campaigns">

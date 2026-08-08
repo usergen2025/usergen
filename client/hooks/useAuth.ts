@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { apiClient } from '@/lib/api/client';
+import { readStorage, readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeStorage';
 
 // Global auth state to sync across components
 let authState = {
@@ -9,11 +11,7 @@ let authState = {
 };
 
 const checkAuth = () => {
-  // Check if we're in the browser environment
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+  const token = readStorage('authToken') || readStorage('authToken', 'session');
   return !!token;
 };
 
@@ -32,6 +30,49 @@ interface User {
   brandLogo?: string | null;
 }
 
+/** A cached entry without an `id` is useless to the pages that gate on it. */
+function readCachedUser(): User | null {
+  const cached = readStorageJson<User>('user');
+  return cached?.id ? cached : null;
+}
+
+/**
+ * Shared across every `useAuth` caller so the dozen or so components mounting
+ * at once issue a single profile request rather than one each.
+ */
+let profileRequest: Promise<User | null> | null = null;
+
+/**
+ * Recovers the signed-in user when a token exists but no profile is cached.
+ *
+ * Not every entry point persists the user object at login time, and Safari can
+ * evict storage independently of the token's lifetime. Without this, pages
+ * gated on `user.id` never fire their fetch and sit on a skeleton forever, so
+ * the profile is treated as something derived from the token rather than
+ * something each login form has to remember to pass along.
+ */
+function loadProfileOnce(): Promise<User | null> {
+  if (!profileRequest) {
+    profileRequest = apiClient
+      .getProfile()
+      .then((response) => {
+        const profile = (response?.success && response.data ? response.data : null) as User | null;
+        if (profile) {
+          writeStorage('user', JSON.stringify(profile));
+        }
+        return profile;
+      })
+      .catch(() => null)
+      .then((profile) => {
+        // Drop a failed attempt so the next mount can retry rather than leaving
+        // the session permanently userless after one transient network error.
+        if (!profile) profileRequest = null;
+        return profile;
+      });
+  }
+  return profileRequest;
+}
+
 export function useAuth() {
   // Initialize with false to avoid SSR issues
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -39,26 +80,29 @@ export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
-    // Only check auth on client side
-    if (typeof window !== 'undefined') {
-      const authenticated = checkAuth();
-      setIsAuthenticated(authenticated);
-      
-      // Load user from localStorage if authenticated
-      if (authenticated) {
-        const userStr = localStorage.getItem('user');
-        if (userStr) {
-          try {
-            setUser(JSON.parse(userStr));
-          } catch (e) {
-            // Invalid JSON, ignore
-          }
-        }
-      }
-      
+    let cancelled = false;
+    const authenticated = checkAuth();
+    setIsAuthenticated(authenticated);
+
+    if (!authenticated) {
       setIsLoading(false);
     } else {
-      setIsLoading(false);
+      const cached = readCachedUser();
+      if (cached) {
+        setUser(cached);
+        setIsLoading(false);
+      } else {
+        // Deliberately stay loading until the profile resolves: role-gated
+        // redirects read `user` as soon as `isLoading` clears, and would send a
+        // brand to the creator side of the app if it were still null.
+        void loadProfileOnce().then((profile) => {
+          if (cancelled) return;
+          if (profile) {
+            setUser(profile);
+          }
+          setIsLoading(false);
+        });
+      }
     }
 
     // Listener for state updates
@@ -88,6 +132,7 @@ export function useAuth() {
     }, 100);
 
     return () => {
+      cancelled = true;
       authState.listeners.delete(updateAuth);
       if (typeof window !== 'undefined') {
         window.removeEventListener('storage', handleStorageChange);
@@ -97,33 +142,30 @@ export function useAuth() {
   }, [isAuthenticated]);
 
   const login = useCallback((token: string, useSession = false, userData?: User) => {
-    // Check if we're in the browser environment
     if (typeof window === 'undefined') {
       return;
     }
-    if (useSession) {
-      sessionStorage.setItem('authToken', token);
-    } else {
-      localStorage.setItem('authToken', token);
-    }
-    
-    // Store user data if provided
+    writeStorage('authToken', token, useSession ? 'session' : 'local');
+
+    // A fresh session must not reuse the previous account's profile request.
+    profileRequest = null;
+
     if (userData) {
-      localStorage.setItem('user', JSON.stringify(userData));
+      writeStorage('user', JSON.stringify(userData));
       setUser(userData);
     }
-    
+
     notifyListeners();
   }, []);
 
   const logout = useCallback(() => {
-    // Check if we're in the browser environment
     if (typeof window === 'undefined') {
       return;
     }
-    localStorage.removeItem('authToken');
-    sessionStorage.removeItem('authToken');
-    localStorage.removeItem('user');
+    removeStorage('authToken');
+    removeStorage('authToken', 'session');
+    removeStorage('user');
+    profileRequest = null;
     setUser(null);
     notifyListeners();
   }, []);
