@@ -17,9 +17,28 @@ import { readStorage } from '@/lib/utils/safeStorage';
  * Set on the global defaults as well as the instance below, because several
  * cross-service calls in this file use the bare `axios` export rather than
  * `this.axiosInstance`.
+ *
+ * Keep the default short for CRUD. Long-running AI jobs (script, voice, avatar)
+ * override with AI_REQUEST_TIMEOUT_MS — a global 30s cap was aborting script
+ * generation on slower mobile networks while the server was still working.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Script / voice / avatar / STT — covers web-search + model generation. */
+const AI_REQUEST_TIMEOUT_MS = 180_000;
 axios.defaults.timeout = REQUEST_TIMEOUT_MS;
+
+/** Normalize Axios abort/timeout errors from bare `axios.*` AI calls (no interceptor). */
+function throwIfAxiosTimeout(error: unknown): void {
+  if (!axios.isAxiosError(error)) return;
+  if (error.code !== 'ECONNABORTED' && error.code !== 'ETIMEDOUT') return;
+  const timeoutMs =
+    typeof error.config?.timeout === 'number' && error.config.timeout > 0
+      ? error.config.timeout
+      : AI_REQUEST_TIMEOUT_MS;
+  throw new Error(
+    `Request timed out after ${Math.round(timeoutMs / 1000)}s. Check your connection and try again.`,
+  );
+}
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 const AUTH_SERVICE_URL = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:9000/api';
@@ -233,8 +252,13 @@ class ApiClient {
         } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
           // Distinguished from a plain network error so a stalled connection is
           // identifiable in the field rather than looking like an outage.
+          // Prefer the per-request timeout when one was set (AI endpoints use a longer cap).
+          const timeoutMs =
+            typeof error.config?.timeout === 'number' && error.config.timeout > 0
+              ? error.config.timeout
+              : REQUEST_TIMEOUT_MS;
           throw new Error(
-            `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Check your connection and try again.`,
+            `Request timed out after ${Math.round(timeoutMs / 1000)}s. Check your connection and try again.`,
           );
         } else if (error.request) {
           // Request was made but no response received
@@ -366,12 +390,16 @@ class ApiClient {
       `${avatarServiceUrl}/avatars/upload`,
       formData,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'multipart/form-data',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -391,12 +419,16 @@ class ApiClient {
       `${avatarServiceUrl}/avatars/create-from-upload`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -488,12 +520,16 @@ class ApiClient {
       `${avatarServiceUrl}/avatars/generate-preview`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -510,12 +546,16 @@ class ApiClient {
       `${avatarServiceUrl}/avatars/finalize-preview`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -549,12 +589,16 @@ class ApiClient {
       `${avatarServiceUrl}/avatars/generate-from-text`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -957,12 +1001,16 @@ class ApiClient {
       `${aiContentServiceUrl}/scripts/upload-product-image`,
       formData,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'multipart/form-data',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -1062,12 +1110,16 @@ class ApiClient {
       `${aiContentServiceUrl}/scripts/generate-video-script`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -1088,12 +1140,16 @@ class ApiClient {
       `${aiContentServiceUrl}/scripts/regenerate-scene`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -1107,12 +1163,16 @@ class ApiClient {
       `${aiContentServiceUrl}/assets/analyze-broll-image`,
       { imageUrl, sceneVoiceover },
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -1194,12 +1254,16 @@ class ApiClient {
       `${voiceServiceUrl}/voice/clone`,
       formData,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           // DO NOT set Content-Type - browser will set it automatically with boundary
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -1220,12 +1284,16 @@ class ApiClient {
       `${voiceServiceUrl}/voice/generate-script-audio`,
       data,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
@@ -3006,11 +3074,15 @@ class ApiClient {
       `${voiceServiceUrl}/voice/speech-to-text`,
       formData,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       }
-    );
+    ).catch((error) => {
+      throwIfAxiosTimeout(error);
+      throw error;
+    });
 
     return response.data;
   }
