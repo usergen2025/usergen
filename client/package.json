@@ -11,6 +11,7 @@
     "deploy:vm": "bash scripts/deploy-client.sh"
   },
   "dependencies": {
+    "@next/third-parties": "^16.3.4",
     "axios": "^1.6.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
