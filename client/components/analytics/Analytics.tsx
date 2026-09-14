@@ -19,13 +19,14 @@ function PageViewTracker() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    const qs = searchParams.toString();
+    const path = pathname ?? window.location.pathname;
+    const qs = searchParams?.toString() ?? '';
     pushEvent({
       event: 'spa_page_view',
-      page_path: qs ? `${pathname}?${qs}` : pathname,
+      page_path: qs ? `${path}?${qs}` : path,
       page_location: window.location.href,
       page_title: document.title,
-      page_section: sectionFor(pathname),
+      page_section: sectionFor(path),
     });
   }, [pathname, searchParams]);
 
