@@ -14,6 +14,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
+import { trackSignUp } from '@/lib/analytics/events';
 
 /** OTP endpoints surface their reason in `message`; anything else falls back. */
 function errorMessage(error: unknown) {
@@ -115,6 +116,7 @@ function SignupPageContent() {
           writeStorage('refreshToken', response.data.tokens.refreshToken);
         }
 
+        trackSignUp({ method: 'email', user_type: 'creator' });
         showToast('Registration successful! Welcome to UserGen.ai', 'success');
 
         // Get redirect URL from query params or sessionStorage

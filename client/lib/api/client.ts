@@ -353,6 +353,12 @@ class ApiClient {
   }
 
   async socialLogin(provider: 'google' | 'facebook'): Promise<void> {
+    // Remember provider for /auth/callback analytics attribution
+    try {
+      sessionStorage.setItem('oauth_method', provider);
+    } catch {
+      // ignore
+    }
     // Redirect to social login endpoint
     window.location.href = `${AUTH_SERVICE_URL}/auth/${provider}`;
   }

@@ -13,6 +13,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
+import { trackLogin } from '@/lib/analytics/events';
 
 /** OTP endpoints surface their reason in `message`; anything else falls back. */
 function errorMessage(error: unknown) {
@@ -111,6 +112,7 @@ function LoginPageContent() {
           writeStorage('refreshToken', response.data.tokens.refreshToken);
         }
 
+        trackLogin({ method: 'email' });
         showToast('Login successful!', 'success');
 
         // Get redirect URL from query params or sessionStorage

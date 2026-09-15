@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
+import { consumeOauthMethod, trackLogin } from '@/lib/analytics/events';
 
 function OAuthCallbackContent() {
   const router = useRouter();
@@ -56,6 +57,7 @@ function OAuthCallbackContent() {
         }
 
         setStatus('success');
+        trackLogin({ method: consumeOauthMethod() });
         showToast('Successfully logged in!', 'success');
 
         // Check for pending redirect from video creation flow

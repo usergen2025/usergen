@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
+import { trackLogin } from '@/lib/analytics/events';
 import {
   AuthEmailInput,
   AuthField,
@@ -89,6 +90,7 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
           writeStorage('refreshToken', response.data.tokens.refreshToken);
         }
 
+        trackLogin({ method: 'email' });
         showToast('Login successful!', 'success');
         onClose();
         
