@@ -141,3 +141,61 @@ export function trackPurchaseCancelled(params: {
     purchase_order_id: params.purchaseOrderId,
   });
 }
+
+export type FunnelKind = 'ai_chat' | 'classic';
+
+function oncePerSession(key: string): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    if (sessionStorage.getItem(key)) return false;
+    sessionStorage.setItem(key, '1');
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+export function trackVideoFunnelStep(params: {
+  stepName: string;
+  projectId?: string | null;
+  funnel: FunnelKind;
+  dedupe?: boolean;
+}): void {
+  if (params.dedupe !== false) {
+    const key = `ga_funnel_${params.funnel}_${params.stepName}_${params.projectId || 'none'}`;
+    if (!oncePerSession(key)) return;
+  }
+  pushEvent({
+    event: 'video_funnel_step',
+    step_name: params.stepName,
+    project_id: params.projectId || undefined,
+    funnel: params.funnel,
+    page_section: 'creation',
+  });
+}
+
+export function trackVideoRenderComplete(params: {
+  projectId: string;
+  funnel: FunnelKind;
+  source?: string;
+}): void {
+  const key = `ga_render_complete_${params.projectId}`;
+  if (!oncePerSession(key)) return;
+  pushEvent({
+    event: 'video_render_complete',
+    project_id: params.projectId,
+    funnel: params.funnel,
+    source: params.source,
+    page_section: 'creation',
+  });
+}
+
+export function trackVideoDownload(params: {
+  projectId: string;
+}): void {
+  pushEvent({
+    event: 'video_download',
+    project_id: params.projectId,
+    page_section: 'creation',
+  });
+}

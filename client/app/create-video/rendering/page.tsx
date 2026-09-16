@@ -8,6 +8,7 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useAuth } from '@/hooks/useAuth';
 import { getRenderingRollbackRoute, getStepRoute } from '@/lib/config/video-steps';
+import { trackVideoRenderComplete } from '@/lib/analytics/events';
 
 function RenderingPageContent() {
   const router = useRouter();
@@ -122,6 +123,13 @@ function RenderingPageContent() {
             setProgress(100);
             setStage('completed');
             setStageLabel('Video rendering completed!');
+            if (projectId) {
+              trackVideoRenderComplete({
+                projectId,
+                funnel: 'classic',
+                source: 'classic_rendering_page',
+              });
+            }
             setTimeout(() => {
               router.push(`/create-video/preview?projectId=${projectId}`);
             }, 1500);
