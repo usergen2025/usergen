@@ -27,6 +27,7 @@ import { isSingleClipVideoStyle, isRawAvatarClipEditingPhase, isProjectActivelyR
 import { longestWord } from '@/lib/workspace/captionBounds';
 import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
 import { VideoTranslationsPanel } from '@/components/create-video/VideoTranslationsPanel';
+import { trackVideoFunnelStep, trackVideoRenderComplete } from '@/lib/analytics/events';
 
 interface Scene {
   scene_number?: number;
@@ -305,6 +306,17 @@ function WorkspacePageContent() {
     projectId,
     project?.title ? `${String(project.title).replace(/[^\w\s-]/g, '').trim() || 'video'}.mp4` : undefined,
   );
+
+  // Funnel: entered workspace (AI path)
+  useEffect(() => {
+    if (!projectId) return;
+    trackVideoFunnelStep({
+      stepName: 'workspace_entered',
+      projectId,
+      funnel: 'ai_chat',
+    });
+  }, [projectId]);
+
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<BrollImage[]>([]);
   const [brollVideos, setBrollVideos] = useState<BrollVideo[]>([]);
@@ -2094,6 +2106,11 @@ function WorkspacePageContent() {
                 setWorkspaceMode('videos');
                 showToast('Avatar video ready — add music and captions, then export.', 'success');
               } else {
+                trackVideoRenderComplete({
+                  projectId,
+                  funnel: 'ai_chat',
+                  source: 'workspace_poll',
+                });
                 setWorkspaceMode('completed');
                 showToast('Video rendering completed!', 'success');
               }

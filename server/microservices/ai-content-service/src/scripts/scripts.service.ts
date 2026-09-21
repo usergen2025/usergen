@@ -843,13 +843,16 @@ TOPIC DEPTH (NO ASSETS — MANDATORY):
     if (groundedFactsContext?.trim()) {
       return `
 
-GROUNDED FACTS FROM WEB SEARCH (MANDATORY FOR FACTUAL CLAIMS):
+GROUNDED FACTS FROM WEB SEARCH (MANDATORY — THIS DEFINES THE VIDEO TOPIC):
 ${groundedFactsContext.trim()}
 
 RULES:
-- Use ONLY these facts for numbers, scores, dates, names, statistics, and specific claims.
+- The video subject MUST be the real-world entity, event, organisation, movement, person, or story described above — not a metaphorical, pun, or wordplay reinterpretation of the topic words.
+- Do NOT invent an alternate joke/creative meaning (e.g. literal animals "having a party") when the facts describe a real named organisation or news event.
+- Do NOT contradict the facts (e.g. do not say something "is not a political movement" if the facts say it is).
+- Use ONLY these facts for numbers, scores, dates, names, statistics, organisations, places, and specific claims.
 - Do NOT invent or update facts from training data when this block is present.
-- If a requested fact is missing above, the voiceover must say information is unavailable or speak in general terms without fake specifics.
+- If a requested detail is missing above, say it is unavailable or speak in general terms without fake specifics — still stay on the grounded real-world topic.
 - Optionally include top-level JSON "fact_sources": [{ "claim": "...", "source_url": "..." }] when citing specific facts.`;
     }
     if (opts?.searchAttemptedButEmpty) {
@@ -857,6 +860,7 @@ RULES:
 
 FACTUAL ACCURACY (web search returned no reliable facts):
 - Do NOT invent specific statistics, scores, dates, or names for current events.
+- If the topic looks like a real named organisation, movement, or news story, do NOT invent a literal pun/joke reinterpretation of the words.
 - Use general commentary only, or state that specific data could not be verified.`;
     }
     return '';
@@ -1417,16 +1421,23 @@ CRITICAL DURATION REQUIREMENTS:
         a.sourceType !== 'url'
       );
 
-      if (this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
-        webSearchMeta = await this.scriptWebSearchService.fetchGroundedFacts(request.userPrompt, {
-          force: request.useLiveWebSearch,
-        });
-        if (webSearchMeta?.summary) {
-          groundedFactsContext = groundedFactsContext
-            ? `${groundedFactsContext}\n\n--- Additional topic research ---\n${webSearchMeta.summary}`
-            : webSearchMeta.summary;
-        } else if (!groundedFactsContext) {
-          searchAttemptedButEmpty = true;
+      {
+        const searchDecision = await this.scriptWebSearchService.decideShouldSearch(
+          request.userPrompt,
+          request.useLiveWebSearch,
+        );
+        if (searchDecision.needsSearch) {
+          webSearchMeta = await this.scriptWebSearchService.fetchGroundedFacts(request.userPrompt, {
+            force: request.useLiveWebSearch,
+            alreadyDecided: true,
+          });
+          if (webSearchMeta?.summary) {
+            groundedFactsContext = groundedFactsContext
+              ? `${groundedFactsContext}\n\n--- Additional topic research ---\n${webSearchMeta.summary}`
+              : webSearchMeta.summary;
+          } else if (!groundedFactsContext) {
+            searchAttemptedButEmpty = true;
+          }
         }
       }
 
@@ -1663,7 +1674,7 @@ CRITICAL DURATION REQUIREMENTS:
           web_search_at: webSearchMeta.searchedAt,
           fact_sources: webSearchMeta.sources,
         };
-      } else if (searchAttemptedButEmpty && this.scriptWebSearchService.shouldSearch(request.userPrompt, request.useLiveWebSearch)) {
+      } else if (searchAttemptedButEmpty) {
         scriptData.generation_metadata = {
           ...scriptData.generation_metadata,
           web_search_used: false,
@@ -1783,17 +1794,20 @@ CRITICAL DURATION REQUIREMENTS:
       
       let groundedFactsContext: string | undefined;
       let searchAttemptedButEmpty = false;
-      if (
-        request.operation === 'regenerate' &&
-        this.scriptWebSearchService.shouldSearch(request.originalUserPrompt)
-      ) {
-        const webMeta = await this.scriptWebSearchService.fetchGroundedFacts(
+      if (request.operation === 'regenerate') {
+        const searchDecision = await this.scriptWebSearchService.decideShouldSearch(
           request.originalUserPrompt,
         );
-        if (webMeta?.summary) {
-          groundedFactsContext = webMeta.summary;
-        } else {
-          searchAttemptedButEmpty = true;
+        if (searchDecision.needsSearch) {
+          const webMeta = await this.scriptWebSearchService.fetchGroundedFacts(
+            request.originalUserPrompt,
+            { alreadyDecided: true },
+          );
+          if (webMeta?.summary) {
+            groundedFactsContext = webMeta.summary;
+          } else {
+            searchAttemptedButEmpty = true;
+          }
         }
       }
 

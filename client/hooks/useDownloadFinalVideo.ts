@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { downloadAuthenticatedProxyWithFallback } from '@/lib/download-video';
+import { trackVideoDownload } from '@/lib/analytics/events';
 
 /**
  * Download clean final video as a file (local server path or GCS via authenticated stream).
@@ -36,6 +37,7 @@ export function useDownloadFinalVideo(
 
       await downloadAuthenticatedProxyWithFallback(projectId, saveAs);
 
+      trackVideoDownload({ projectId });
       showToast('Download started', 'success');
     } catch (err) {
       console.error('[Download] Failed:', err);

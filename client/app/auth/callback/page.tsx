@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+import { writeStorage } from '@/lib/utils/safeStorage';
+import { consumeOauthMethod, trackLogin } from '@/lib/analytics/events';
 
 function OAuthCallbackContent() {
   const router = useRouter();
@@ -41,20 +43,21 @@ function OAuthCallbackContent() {
         login(accessToken);
         
         if (refreshToken) {
-          localStorage.setItem('refreshToken', refreshToken);
+          writeStorage('refreshToken', refreshToken);
         }
 
         // Fetch user profile to get user data
         try {
           const profileResponse = await apiClient.getProfile();
           if (profileResponse.data) {
-            localStorage.setItem('user', JSON.stringify(profileResponse.data));
+            writeStorage('user', JSON.stringify(profileResponse.data));
           }
         } catch (profileError) {
           console.warn('Failed to fetch profile after OAuth login:', profileError);
         }
 
         setStatus('success');
+        trackLogin({ method: consumeOauthMethod() });
         showToast('Successfully logged in!', 'success');
 
         // Check for pending redirect from video creation flow

@@ -9,6 +9,14 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { cn } from '@/lib/utils/cn';
 import { BrandIconChip } from '@/components/brand';
+import {
+  trackBeginCheckout,
+  trackPurchase,
+  trackPurchaseCancelled,
+  trackPurchaseFailed,
+  trackViewItem,
+  type CreditItemInput,
+} from '@/lib/analytics/events';
 
 declare global {
   interface Window {
@@ -101,6 +109,33 @@ export default function BuyCreditsPanel({
   const [loading, setLoading] = useState(true);
   const [quoting, setQuoting] = useState(false);
   const [paying, setPaying] = useState(false);
+  const lastViewItemKey = useRef<string | null>(null);
+
+  const resolveCreditItem = useCallback(
+    (quoteData: BillingQuote): CreditItemInput => {
+      if (!customMode && selectedPackageId) {
+        const pkg = packages.find((p) => p.id === selectedPackageId);
+        return {
+          itemId: selectedPackageId,
+          itemName: pkg?.title || 'Credit package',
+          pricePaise: quoteData.totalChargePaise,
+        };
+      }
+      if (inputMode === 'AMOUNT') {
+        return {
+          itemId: 'custom_amount',
+          itemName: 'Custom credit top-up (amount)',
+          pricePaise: quoteData.totalChargePaise,
+        };
+      }
+      return {
+        itemId: 'custom_credits',
+        itemName: 'Custom credit top-up (credits)',
+        pricePaise: quoteData.totalChargePaise,
+      };
+    },
+    [customMode, selectedPackageId, packages, inputMode],
+  );
 
   const loadPackages = useCallback(async () => {
     setLoading(true);
@@ -176,7 +211,17 @@ export default function BuyCreditsPanel({
         });
       }
       if (res.success && res.data) {
-        setQuote(res.data as BillingQuote);
+        const nextQuote = res.data as BillingQuote;
+        setQuote(nextQuote);
+        const item = resolveCreditItem(nextQuote);
+        const viewKey = `${item.itemId}:${nextQuote.totalChargePaise}:${nextQuote.creditsToGrant}`;
+        if (lastViewItemKey.current !== viewKey) {
+          lastViewItemKey.current = viewKey;
+          trackViewItem({
+            valuePaise: nextQuote.totalChargePaise,
+            item,
+          });
+        }
       } else {
         setQuote(null);
         showToast(res.error || res.message || 'Unable to calculate quote', 'error');
@@ -196,6 +241,7 @@ export default function BuyCreditsPanel({
     amountRupees,
     creditsDesired,
     showToast,
+    resolveCreditItem,
   ]);
 
   useEffect(() => {
@@ -224,12 +270,31 @@ export default function BuyCreditsPanel({
   }, [quote]);
 
   const finishSuccess = useCallback(
-    (creditsGranted: number, purchaseOrderId: string) => {
-      showToast(`Payment successful. ${creditsGranted.toLocaleString('en-IN')} credits added.`, 'success');
+    (details: {
+      creditsGranted: number;
+      purchaseOrderId: string;
+      amountPaise: number;
+      currency: string;
+      item: CreditItemInput;
+    }) => {
+      trackPurchase({
+        transactionId: details.purchaseOrderId,
+        valuePaise: details.amountPaise,
+        currency: details.currency,
+        creditsGranted: details.creditsGranted,
+        item: details.item,
+      });
+      showToast(
+        `Payment successful. ${details.creditsGranted.toLocaleString('en-IN')} credits added.`,
+        'success',
+      );
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('credits-refresh'));
       }
-      onPaymentSuccess?.({ creditsGranted, purchaseOrderId });
+      onPaymentSuccess?.({
+        creditsGranted: details.creditsGranted,
+        purchaseOrderId: details.purchaseOrderId,
+      });
       onClose?.();
       router.push(successRedirectTo);
     },
@@ -275,10 +340,29 @@ export default function BuyCreditsPanel({
         throw new Error(orderRes.message || orderRes.error || 'Failed to create payment order');
       }
 
+      const currency = order.currency || 'INR';
+      const checkoutItem = resolveCreditItem({
+        baseAmountPaise: quote.baseAmountPaise,
+        feeAmountPaise: quote.feeAmountPaise,
+        gstAmountPaise: quote.gstAmountPaise,
+        totalChargePaise: order.amountPaise,
+        creditsToGrant: order.creditsToGrant,
+        gstRateBpsApplied: quote.gstRateBpsApplied,
+        feeBpsApplied: quote.feeBpsApplied,
+      });
+
+      trackBeginCheckout({
+        purchaseOrderId: order.purchaseOrderId,
+        valuePaise: order.amountPaise,
+        currency,
+        creditsGranted: order.creditsToGrant,
+        item: checkoutItem,
+      });
+
       const rzp = new window.Razorpay({
         key: order.razorpayKeyId,
         amount: order.amountPaise,
-        currency: order.currency || 'INR',
+        currency,
         name: 'UserGen',
         description: `${order.creditsToGrant} credits`,
         order_id: order.razorpayOrderId,
@@ -306,8 +390,21 @@ export default function BuyCreditsPanel({
             if (!verify.success && !verify.data) {
               throw new Error(verify.message || verify.error || 'Payment verification failed');
             }
-            finishSuccess(order.creditsToGrant, order.purchaseOrderId);
+            finishSuccess({
+              creditsGranted: order.creditsToGrant,
+              purchaseOrderId: order.purchaseOrderId,
+              amountPaise: order.amountPaise,
+              currency,
+              item: checkoutItem,
+            });
           } catch (err: any) {
+            trackPurchaseFailed({
+              purchaseOrderId: order.purchaseOrderId,
+              errorReason: extractApiError(
+                err,
+                'Payment may have succeeded but verification failed.',
+              ),
+            });
             showToast(
               extractApiError(
                 err,
@@ -326,6 +423,7 @@ export default function BuyCreditsPanel({
           ondismiss: () => {
             setPaying(false);
             if (!paymentCompletedRef.current) {
+              trackPurchaseCancelled({ purchaseOrderId: order.purchaseOrderId });
               showToast(
                 'Payment cancelled. We emailed a link to complete it later.',
                 'info',
@@ -345,6 +443,10 @@ export default function BuyCreditsPanel({
           response?.error?.description ||
           response?.error?.reason ||
           'Payment failed. Please try another method.';
+        trackPurchaseFailed({
+          purchaseOrderId: order.purchaseOrderId,
+          errorReason: reason,
+        });
         showToast(reason, 'error');
         // Failed-payment email is sent by the Razorpay webhook path
       });
@@ -352,6 +454,9 @@ export default function BuyCreditsPanel({
       rzp.open();
     } catch (e: any) {
       setPaying(false);
+      trackPurchaseFailed({
+        errorReason: extractApiError(e, 'Checkout failed. Please try again.'),
+      });
       showToast(extractApiError(e, 'Checkout failed. Please try again.'), 'error');
     }
   };

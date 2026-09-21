@@ -56,21 +56,25 @@ export default function UsagePage() {
   }, [isAuthenticated, authLoading, router]);
 
   useEffect(() => {
+    const userId = user?.id;
+    if (!isAuthenticated || !userId) return;
+
+    let cancelled = false;
     const fetchData = async () => {
-      if (!user?.id) return;
       setIsLoading(true);
       try {
         const [summaryRes, projectsRes] = await Promise.all([
-          apiClient.getUserBillingSummary(user.id).catch(() => ({ success: false, data: null })),
+          apiClient.getUserBillingSummary(userId).catch(() => ({ success: false, data: null })),
           apiClient.getVideoProjects().catch(() => ({ success: false, data: [] })),
         ]);
+        if (cancelled) return;
 
         setSummary(
           summaryRes.success && summaryRes.data
             ? summaryRes.data
             : {
-                userId: user.id,
-                currentBalance: user.credits ?? 0,
+                userId,
+                currentBalance: user?.credits ?? 0,
                 totalSpent: 0,
                 projectCount: 0,
                 operationCount: 0,
@@ -85,13 +89,14 @@ export default function UsagePage() {
       } catch (error) {
         console.error('Failed to fetch usage data:', error);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
-    if (isAuthenticated && user?.id) {
-      void fetchData();
-    }
+    void fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [isAuthenticated, user?.id, user?.credits]);
 
   useEffect(() => {
@@ -144,7 +149,11 @@ export default function UsagePage() {
   ];
 
   const operationEntries = Object.entries(summary?.byOperationType ?? {});
-  const showSkeleton = isLoading || authLoading;
+  // `isLoading` starts true and is only cleared by the fetch, which never runs
+  // without a resolved user id. Gating on it too keeps a session that has a
+  // token but no profile from shimmering forever; it falls through to the
+  // empty state instead.
+  const showSkeleton = authLoading || (isLoading && Boolean(user?.id));
 
   return (
     <div className="brand-page-shell brand-page-shell--campaigns">

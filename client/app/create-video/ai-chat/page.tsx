@@ -25,6 +25,7 @@ import SceneEditInput from '@/components/ui/SceneEditInput';
 import { AVATAR_VISUAL_STYLE_PRESETS, type AvatarVisualStylePresetId } from '@/lib/config/avatar-visual-style-presets';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
 import { getVideoJobQueueType, isAlternateAvatarScene, isAlternateBrollScene } from '@/lib/video/alternateScene';
+import { trackVideoFunnelStep, trackVideoRenderComplete } from '@/lib/analytics/events';
 
 // Define asset types
 type UploadStatus = 'local' | 'uploading' | 'ready' | 'error';
@@ -132,6 +133,15 @@ function AIChatPageContent() {
     download: downloadFinalVideo,
     isDownloading: isDownloadingFinal,
   } = useDownloadFinalVideo(projectId, projectId ? `video-${projectId}.mp4` : undefined);
+
+  // Funnel: AI chat entry
+  useEffect(() => {
+    trackVideoFunnelStep({
+      stepName: 'welcome',
+      funnel: 'ai_chat',
+    });
+  }, []);
+
   const [proceedConfirmed, setProceedConfirmed] = useState<boolean>(false);
   const [isProceedingToAvatar, setIsProceedingToAvatar] = useState(false);
   const [avatarPreference, setAvatarPreference] = useState<'library' | 'generate' | 'skip' | null>(null);
@@ -1934,6 +1944,11 @@ function AIChatPageContent() {
         
         // Advance to script-generated step
         setCurrentStep('script-generated');
+        trackVideoFunnelStep({
+          stepName: 'script_generated',
+          projectId: scriptProjectId || projectId,
+          funnel: 'ai_chat',
+        });
         
         showToast('Script generated successfully!', 'success');
       } else {
@@ -3706,6 +3721,11 @@ function AIChatPageContent() {
       // Mark as confirmed and move to confirmed substep
       setVoiceConfirmed(true);
       setVoiceSubstep('confirmed');
+      trackVideoFunnelStep({
+        stepName: 'voice_selected',
+        projectId,
+        funnel: 'ai_chat',
+      });
       // Store in sessionStorage
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('selectedVoiceId', selectedVoiceId);
@@ -4633,6 +4653,11 @@ function AIChatPageContent() {
             setGenerationProgress(100);
             setIsRenderingVideo(false);
             setIsGeneratingVoice(false);
+            trackVideoRenderComplete({
+              projectId: pid,
+              funnel: 'ai_chat',
+              source: 'ai_chat_avatar_poll',
+            });
             
             const styleToCheck = selectedVideoStyle ||
               (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
@@ -5053,6 +5078,11 @@ function AIChatPageContent() {
         if (createResponse.success && createResponse.data) {
           const newProjectId = createResponse.data.id;
           setProjectId(newProjectId);
+          trackVideoFunnelStep({
+            stepName: 'style_confirmed',
+            projectId: newProjectId,
+            funnel: 'ai_chat',
+          });
           if (
             typeof window !== 'undefined' &&
             !window.location.search.includes('projectId')
@@ -5072,6 +5102,11 @@ function AIChatPageContent() {
             selectedVideoStyle,
             aiChatStyleSubstep: 'confirmed',
           },
+        });
+        trackVideoFunnelStep({
+          stepName: 'style_confirmed',
+          projectId,
+          funnel: 'ai_chat',
         });
       }
     } catch (error: any) {
@@ -5573,6 +5608,11 @@ function AIChatPageContent() {
         },
       });
       setCurrentStep('voice-selection');
+      trackVideoFunnelStep({
+        stepName: 'avatar_selected',
+        projectId,
+        funnel: 'ai_chat',
+      });
       setVoiceSubstep('question');
       setVoiceYesMessage(false);
       setSelectedVoiceId(null);

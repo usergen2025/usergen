@@ -37,8 +37,7 @@ export default function BrandLayout({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden app-global-gradient">
-      <div className="pointer-events-none absolute -top-40 -right-52 h-[34rem] w-[34rem] rounded-full bg-[#E86512]/10 blur-[140px]" />
-      <div className="pointer-events-none absolute -bottom-52 -left-52 h-[34rem] w-[34rem] rounded-full bg-[#E86512]/10 blur-[140px]" />
+      <div className="brand-page-glow pointer-events-none absolute inset-0" />
       <main className="flex min-h-0 w-full max-w-full flex-1 flex-col pb-0 pt-0">
         <div className="flex min-h-0 flex-1 flex-col">
           {children}

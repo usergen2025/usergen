@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+import { writeStorage } from '@/lib/utils/safeStorage';
+import { trackSignUp } from '@/lib/analytics/events';
 import BrandLogoPicker from './BrandLogoPicker';
 import {
   AuthEmailInput,
@@ -104,9 +106,10 @@ function BrandSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }: 
         login(response.data.tokens.accessToken, false, userData);
         
         if (response.data.tokens.refreshToken) {
-          localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
+          writeStorage('refreshToken', response.data.tokens.refreshToken);
         }
 
+        trackSignUp({ method: 'email', user_type: 'brand' });
         showToast('Registration successful! Welcome to UserGen.ai FOR BRANDS', 'success');
         onClose();
         

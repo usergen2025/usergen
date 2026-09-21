@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
+import { writeStorage } from '@/lib/utils/safeStorage';
+import { trackSignUp } from '@/lib/analytics/events';
 import {
   AuthEmailInput,
   AuthField,
@@ -97,12 +99,15 @@ function CreatorSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }
       });
 
       if (response.data?.tokens && response.data.tokens.accessToken) {
-        login(response.data.tokens.accessToken);
-        
+        // Persist the profile alongside the token — pages gated on `user.id`
+        // never fetch their data if only the token is stored.
+        login(response.data.tokens.accessToken, false, response.data.user);
+
         if (response.data.tokens.refreshToken) {
-          localStorage.setItem('refreshToken', response.data.tokens.refreshToken);
+          writeStorage('refreshToken', response.data.tokens.refreshToken);
         }
 
+        trackSignUp({ method: 'email', user_type: 'creator' });
         showToast('Registration successful! Welcome to UserGen.ai', 'success');
         onClose();
         
