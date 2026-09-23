@@ -33,6 +33,17 @@ export function mobileValue<T>(value: Responsive<T>): T {
 
 export type NavLink = { label: string; href: string };
 
+/**
+ * An illustration or poster lifted out of the design file.
+ *
+ * The `.fig` stores its artwork as content-hashed blobs with no names, so the
+ * exports under `public/marketing` are named after the slot they fill rather
+ * than anything the file called them. Alt text lives here because it is copy:
+ * it is the only description a screen reader gets of a section that is, on
+ * screen, mostly picture.
+ */
+export type MediaAsset = { src: string; alt: string };
+
 export type LandingContent = {
   nav: {
     links: NavLink[];
@@ -57,21 +68,21 @@ export type LandingContent = {
   reel: {
     eyebrow: string;
     headline: { lead: string; trail: string };
-    items: { title: string; caption: string }[];
+    items: { title: string; caption: string; media: MediaAsset }[];
     footnote: Responsive<string>;
   };
   avatars: {
     eyebrow: string;
     headline: { lead: string; trail: string };
     subcopy: Responsive<string>;
-    features: { title: Responsive<string>; body: Responsive<string> }[];
+    features: { title: Responsive<string>; body: Responsive<string>; media: MediaAsset }[];
     proof: string;
     cta: string;
   };
   howItWorks: {
     eyebrow: string;
     headline: { lead: string; trail: string };
-    steps: { label: string; title: string; body: string }[];
+    steps: { label: string; title: string; body: string; media: MediaAsset }[];
   };
   translation: {
     eyebrow: string;
@@ -82,7 +93,9 @@ export type LandingContent = {
     /** Clarifies which of `languages` are generated vs translated afterwards. */
     languagesNote: string;
     sample: { name: string; language: string };
-    features: Responsive<string>[];
+    /** Poster behind the player panel's play control. */
+    player: MediaAsset;
+    features: { title: Responsive<string>; media: MediaAsset }[];
   };
   costComparison: {
     eyebrow: string;
@@ -125,6 +138,7 @@ export type LandingContent = {
     subcopy: Responsive<string>;
     primary: string;
     whatsapp: Responsive<string>;
+    media: MediaAsset;
   };
   footer: {
     wordmark: string;
@@ -244,12 +258,54 @@ export const landing = {
     eyebrow: 'Real outputs',
     headline: { lead: 'Made on UserGen.', trail: 'No crew, no studio.' },
     items: [
-      { title: 'D2C Skincare', caption: 'With avatar' },
-      { title: 'Real Estate', caption: 'With avatar' },
-      { title: 'Restaurant', caption: 'With avatar' },
-      { title: 'Coaching Institute', caption: 'With avatar' },
-      { title: 'Clinic / Dental', caption: 'With avatar' },
-      { title: 'Jewellery', caption: 'With avatar' },
+      {
+        title: 'D2C Skincare',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/d2c-skincare.webp',
+          alt: 'A presenter holding a vitamin C serum bottle in a skincare ad with Hindi captions',
+        },
+      },
+      {
+        title: 'Real Estate',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/real-estate.webp',
+          alt: 'A presenter on a high-rise apartment balcony in a property ad',
+        },
+      },
+      {
+        title: 'Restaurant',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/restaurant.webp',
+          alt: 'A chef plating food at a restaurant counter in a food ad',
+        },
+      },
+      {
+        title: 'Coaching Institute',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/coaching-institute.webp',
+          alt: 'A teacher at a whiteboard in a coaching institute ad announcing new batches',
+        },
+      },
+      {
+        title: 'Clinic / Dental',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/clinic-dental.webp',
+          alt: 'A dentist in a treatment room in a dental clinic ad',
+        },
+      },
+      {
+        title: 'Jewellery',
+        caption: 'With avatar',
+        media: {
+          src: '/marketing/reel/jewellery.webp',
+          alt: 'A bride in bridal jewellery in a wedding-season jewellery ad',
+        },
+      },
     ],
     footnote: {
       base: 'Tap any video to play with sound. Every one was generated from a single link or brief.',
@@ -271,12 +327,20 @@ export const landing = {
           base: 'Avatar V maintains a single, coherent identity across every video you create. The same face, the same micro-expressions, the same presence across a 30-second clip or a 10-minute course module. No drift. No artefacts. No uncanny valley.',
           mobile: 'Avatar V maintains a single, coherent identity across every video. No face-drift or uncanny valley artifacts.',
         },
+        media: {
+          src: '/marketing/avatars/character-consistency.webp',
+          alt: 'The same avatar rendered in an office scene and an outdoor scene with identical features',
+        },
       },
       {
         title: 'Multiple viewpoints',
         body: {
           base: 'Wide shots, medium frames, and close-ups, all consistent, all from one recording. Angles that allow a single avatar to work seamlessly across every format.',
           mobile: 'Wide shots, medium frames, and close-ups, all consistent and generated seamlessly from a single rendering.',
+        },
+        media: {
+          src: '/marketing/avatars/multiple-viewpoints.webp',
+          alt: 'One avatar shown from three camera angles side by side',
         },
       },
       {
@@ -285,12 +349,20 @@ export const landing = {
           base: 'Phoneme-level accuracy across every supported language. What you hear and what you see stay perfectly in sync at any speed, in 175+ languages and dialects.',
           mobile: 'Phoneme-level accuracy across 175+ languages. What you hear stays perfectly in sync with the speaker.',
         },
+        media: {
+          src: '/marketing/avatars/lip-sync.webp',
+          alt: 'Close-up of an avatar mouth mid-syllable',
+        },
       },
       {
         title: 'Emotions synced',
         body: {
           base: 'Fluid upper-body motion, responsive gestures, and consistent movement across scene changes. The difference between an avatar that simply presents and one that truly performs.',
           mobile: 'Fluid upper-body motion, responsive gestures, and consistent movement across scene changes.',
+        },
+        media: {
+          src: '/marketing/avatars/emotions-synced.webp',
+          alt: 'An avatar presenting to camera with open-handed gestures',
         },
       },
     ],
@@ -312,16 +384,28 @@ export const landing = {
         label: 'Step 1',
         title: 'Paste your link or brief',
         body: 'Drop your product URL, or type what you want in Hindi or English. We pull the details automatically.',
+        media: {
+          src: '/marketing/steps/paste-link.webp',
+          alt: 'A product URL pasted into the generator, with an Extract product info button beneath it',
+        },
       },
       {
         label: 'Step 2',
         title: 'Pick your avatar, or skip it',
         body: 'Choose a presenter and voice, or go avatar-free with product-only visuals. Your ad, your call.',
+        media: {
+          src: '/marketing/steps/choose-avatar.webp',
+          alt: 'A grid of Indian presenter avatars with one selected',
+        },
       },
       {
         label: 'Step 3',
         title: 'Download your edited ad',
         body: 'Script, voiceover, captions, music and cuts, all done. Sized for Reels, Shorts and Meta ads.',
+        media: {
+          src: '/marketing/steps/download-ad.webp',
+          alt: 'A finished ad previewed as ready for export, with a Download final video button',
+        },
       },
     ],
   },
@@ -341,10 +425,32 @@ export const landing = {
     languages: ['Hindi', 'English', 'Hinglish', 'Tamil', 'Telugu', 'Marathi', 'Bengali', '+ more'],
     languagesNote: 'Write your ad in Hindi, English or Hinglish — then translate the finished video into the rest.',
     sample: { name: 'Priya', language: 'Hindi' },
+    player: {
+      src: '/marketing/translation/player-poster.webp',
+      alt: 'An Indian presenter speaking to camera in an office',
+    },
     features: [
-      'Effortless video translation',
-      { base: 'Perfect lip-synchronisation', mobile: 'Perfect lip-synch' },
-      'Designed for global scale',
+      {
+        title: 'Effortless video translation',
+        media: {
+          src: '/marketing/translation/effortless.webp',
+          alt: 'A speech bubble with नमस्ते and Hello either side of a swap arrow',
+        },
+      },
+      {
+        title: { base: 'Perfect lip-synchronisation', mobile: 'Perfect lip-synch' },
+        media: {
+          src: '/marketing/translation/lip-sync.webp',
+          alt: 'A pair of lips flanked by sound waves',
+        },
+      },
+      {
+        title: 'Designed for global scale',
+        media: {
+          src: '/marketing/translation/global-scale.webp',
+          alt: 'A globe wrapped in a connected network of nodes',
+        },
+      },
     ],
   },
 
@@ -475,6 +581,10 @@ export const landing = {
     subcopy: 'Create stunning and high converting video ads in minutes, optimized for social platforms.',
     primary: 'Generate your first ad',
     whatsapp: { base: 'Chat with us on WhatsApp', mobile: 'Chat on WhatsApp' },
+    media: {
+      src: '/marketing/cta/create-your-first-ad.webp',
+      alt: 'A creator filming a product on a phone in a small studio',
+    },
   },
 
   footer: {

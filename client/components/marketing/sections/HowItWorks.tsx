@@ -1,4 +1,4 @@
-import PlaceholderMedia from '../PlaceholderMedia';
+import MarketingMedia from '../MarketingMedia';
 import { MarketingSection, MarketingSectionHeading } from '../MarketingSection';
 import { landing } from '@/lib/content/landing';
 
@@ -16,7 +16,11 @@ export default function HowItWorks() {
       <ol className="mt-10 grid gap-6 md:mt-[75px] md:grid-cols-3 md:gap-8">
         {howItWorks.steps.map((step) => (
           <li key={step.label} className="flex flex-col gap-5">
-            <PlaceholderMedia className="h-[220px] w-full rounded-[10px] md:h-[242px]" />
+            <MarketingMedia
+              media={step.media}
+              className="h-[220px] w-full rounded-[10px] md:h-[242px]"
+              sizes="(min-width: 768px) 380px, 100vw"
+            />
             {/* The step number is a violet chip, the one place violet appears
                 outside the translation section. */}
             <span className="inline-flex h-[35px] w-fit items-center rounded-[10px] bg-mkt-violet px-[11px] font-mkt-display text-base font-bold uppercase tracking-[0.009em] text-white">

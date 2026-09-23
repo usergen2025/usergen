@@ -18,9 +18,9 @@ export const metadata: Metadata = {
  * The three things there is output to show: finished ads, the avatar range,
  * and a translated cut.
  *
- * TODO(assets): the reel and showcase are still placeholder tiles, so this
- * page has nothing to look at until real renders land. It exists now because
- * the header links to it.
+ * TODO(assets): the reel tiles are stills of finished ads, not the ads
+ * themselves — a page called Examples should play them. It needs the rendered
+ * clips before it is really doing its job.
  */
 export default function ExamplesPage() {
   return (

@@ -1,6 +1,6 @@
 import { ArrowRight, Play } from 'lucide-react';
 import GetStartedButton from '../GetStartedButton';
-import PlaceholderMedia from '../PlaceholderMedia';
+import MarketingMedia from '../MarketingMedia';
 import ResponsiveCopy from '../ResponsiveCopy';
 import { MarketingSection, MarketingSectionHeading } from '../MarketingSection';
 import { landing } from '@/lib/content/landing';
@@ -35,11 +35,15 @@ export default function VideoTranslation() {
       <div className="mt-8 rounded-2xl border border-mkt-line-cool bg-[#F4F4F4] p-4">
         <div className="flex flex-col gap-4 rounded-[15px] bg-white p-4 md:flex-row md:gap-[15px] md:p-5">
           <div className="relative flex-1">
-            <PlaceholderMedia className="aspect-[16/11] w-full rounded-[13px]">
+            <MarketingMedia
+              media={translation.player}
+              className="aspect-[16/11] w-full rounded-[13px]"
+              sizes="(min-width: 768px) 700px, 100vw"
+            >
               <span className="flex size-14 items-center justify-center rounded-full bg-white/70 shadow-sm">
                 <Play className="size-5 fill-mkt-ink text-mkt-ink" />
               </span>
-            </PlaceholderMedia>
+            </MarketingMedia>
 
             {/* Presenter chip, overlaid on the player as in the design. */}
             <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-[10px] border border-mkt-line-warm bg-white px-2 py-[5px]">
@@ -88,9 +92,20 @@ export default function VideoTranslation() {
               key={index}
               className="flex flex-col gap-4 rounded-[15px] bg-white p-5"
             >
-              <PlaceholderMedia className="h-[160px] w-full rounded-xl" />
+              {/*
+               * These three are line-art icons on a flat grey plate, not
+               * photographs. Contained rather than covered so none of the
+               * drawing is cropped, over the plate's own grey so the letterbox
+               * is invisible.
+               */}
+              <MarketingMedia
+                media={feature.media}
+                className="h-[160px] w-full rounded-xl bg-[#DFDFDF]"
+                sizes="(min-width: 768px) 380px, 100vw"
+                fit="contain"
+              />
               <h3 className="font-mkt-serif text-[26px] leading-[32px] text-mkt-ink md:text-[28px]">
-                <ResponsiveCopy value={feature} />
+                <ResponsiveCopy value={feature.title} />
               </h3>
             </li>
           ))}

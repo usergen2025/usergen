@@ -1,8 +1,9 @@
 import { Info, Play } from 'lucide-react';
 import MarketingEyebrow from '../MarketingEyebrow';
+import MarketingMedia from '../MarketingMedia';
 import ResponsiveCopy from '../ResponsiveCopy';
 import { MKT_CONTAINER } from '../MarketingSection';
-import { landing } from '@/lib/content/landing';
+import { landing, type MediaAsset } from '@/lib/content/landing';
 
 /**
  * The sample-output carousel.
@@ -46,7 +47,12 @@ export default function OutputReel() {
           <div className="mkt-scroll-x mt-6 md:mt-8">
             <ul className="flex w-max items-center gap-4 px-5 py-2 md:gap-[26px] md:px-[40px]">
               {reel.items.map((item) => (
-                <ReelCard key={item.title} title={item.title} caption={item.caption} />
+                <ReelCard
+                  key={item.title}
+                  title={item.title}
+                  caption={item.caption}
+                  media={item.media}
+                />
               ))}
             </ul>
           </div>
@@ -61,15 +67,24 @@ export default function OutputReel() {
   );
 }
 
-function ReelCard({ title, caption }: { title: string; caption: string }) {
+function ReelCard({
+  title,
+  caption,
+  media,
+}: {
+  title: string;
+  caption: string;
+  media: MediaAsset;
+}) {
   return (
     <li className="relative h-[300px] w-[210px] shrink-0 overflow-hidden rounded-[22px] bg-mkt-ink-soft">
       {/*
-       * TODO(assets): the design leaves these as empty `url(.png)` fills with
-       * a hidden "VIDEO PLACEHOLDER" label, so there is no poster to place
-       * yet. The tile is intentionally not a button until it has a video
-       * behind it — a play control that does nothing is worse than none.
+       * The poster only — the design's tiles are video fills, but there are no
+       * clips to play yet, so the tile stays a still and is deliberately not a
+       * button: a play control that does nothing is worse than none.
        */}
+      <MarketingMedia media={media} className="absolute inset-0 bg-transparent" sizes="210px" />
+
       <div
         aria-hidden="true"
         className="absolute inset-x-0 bottom-0 h-[158px]"

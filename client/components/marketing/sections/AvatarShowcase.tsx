@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react';
-import PlaceholderMedia from '../PlaceholderMedia';
+import MarketingMedia from '../MarketingMedia';
 import ResponsiveCopy from '../ResponsiveCopy';
 import GetStartedButton from '../GetStartedButton';
 import { MarketingSection, MarketingSectionHeading } from '../MarketingSection';
@@ -28,7 +28,11 @@ export default function AvatarShowcase() {
               key={baseValue(feature.title)}
               className="flex flex-col gap-6 rounded-xl bg-white p-6 md:gap-11 md:px-[30px] md:py-6"
             >
-              <PlaceholderMedia className="h-[200px] w-full rounded-xl border-b border-mkt-line-cool md:h-[253px]" />
+              <MarketingMedia
+                media={feature.media}
+                className="h-[200px] w-full rounded-xl border-b border-mkt-line-cool md:h-[253px]"
+                sizes="(min-width: 768px) 560px, 100vw"
+              />
               <div className="flex flex-col gap-4 md:gap-[22px]">
                 <h3 className="font-mkt-serif text-[26px] leading-[34px] text-black md:text-[32px] md:leading-[36px]">
                   <ResponsiveCopy value={feature.title} />

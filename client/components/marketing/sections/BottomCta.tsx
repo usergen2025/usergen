@@ -1,7 +1,7 @@
 import { ArrowRight } from 'lucide-react';
 import GetStartedButton from '../GetStartedButton';
 import MarketingButton from '../MarketingButton';
-import PlaceholderMedia from '../PlaceholderMedia';
+import MarketingMedia from '../MarketingMedia';
 import ResponsiveCopy from '../ResponsiveCopy';
 import { WhatsAppIcon } from '../BrandIcons';
 import { MKT_CONTAINER } from '../MarketingSection';
@@ -49,7 +49,11 @@ export default function BottomCta() {
         </div>
 
         <div className="flex shrink-0 gap-4">
-          <PlaceholderMedia className="h-[180px] w-full rounded-[10px] md:h-[242px] md:w-[354px]" />
+          <MarketingMedia
+            media={bottomCta.media}
+            className="h-[180px] w-full rounded-[10px] md:h-[242px] md:w-[354px]"
+            sizes="(min-width: 768px) 354px, 100vw"
+          />
         </div>
       </div>
       {/*
