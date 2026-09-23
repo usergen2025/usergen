@@ -1,0 +1,180 @@
+/*
+ * Design tokens for the public marketing pages, taken from the 1280px and
+ * 390px Figma frames.
+ *
+ * Namespaced `mkt-` rather than merged into the tokens in `globals.css`. The
+ * marketing design and the signed-in app share no palette — its ink is
+ * #0E0F1A against the app's #000000, its accent an orange-to-red gradient
+ * against the app's #E86412 — so overriding the global tokens would retheme
+ * every authenticated screen as a side effect of a landing page change.
+ * Utilities generated from these (`bg-mkt-cream`, `text-mkt-ink`) are
+ * therefore safe to use anywhere without reaching the rest of the app.
+ */
+
+@theme {
+  /* Text. `ink` carries nearly all headings and body copy; the navy is used
+     where copy sits on the warm gradient panels. */
+  --color-mkt-ink: #0e0f1a;
+  --color-mkt-ink-navy: #121b44;
+  --color-mkt-ink-soft: #3c3e4e;
+  --color-mkt-muted: #6b6d7c;
+  --color-mkt-muted-soft: #8a8ca0;
+
+  /* Surfaces */
+  --color-mkt-cream: #fffaf2;
+  --color-mkt-sand: #faefe4;
+
+  /* Accent ramp, warm end to cool end */
+  --color-mkt-amber: #f9a656;
+  --color-mkt-orange: #f5913e;
+  --color-mkt-orange-bright: #ff8029;
+  --color-mkt-coral: #fe4e3d;
+  --color-mkt-coral-deep: #eb584b;
+  --color-mkt-red: #e8434f;
+
+  /* Hairlines: warm for cream surfaces, cool for white ones */
+  --color-mkt-line-warm: #e4e2da;
+  --color-mkt-line-cool: #e0e1ef;
+
+  /* Violets appear only in the video translation section */
+  --color-mkt-violet: #5c4fbd;
+  --color-mkt-violet-deep: #4b507f;
+
+  --color-mkt-whatsapp: #23b33a;
+
+  /*
+   * Fallback-only here. These exist in `@theme` purely so Tailwind emits the
+   * `font-mkt-*` utilities; the real families are attached in `.mkt-root`
+   * below, and cannot be written here.
+   *
+   * A custom property is substituted on the element that declares it, not on
+   * the element that uses it. `@theme` declares these on `:root`, where
+   * next/font's `--font-instrument-serif` and friends do not exist — they are
+   * scoped to the marketing layout's wrapper. Referencing them from `:root`
+   * makes the value invalid at computed-value time, which resolves to the
+   * empty string and silently drops the whole `font-family` declaration, so
+   * every marketing page inherits the app's Inter instead.
+   */
+  --font-mkt-display: ui-sans-serif, system-ui, sans-serif;
+  --font-mkt-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mkt-serif: ui-serif, Georgia, serif;
+  /* Price figures only — the design sets every rupee amount in Bricolage. */
+  --font-mkt-price: ui-sans-serif, system-ui, sans-serif;
+}
+
+/*
+ * Applied to the marketing layout's wrapper, which is also where next/font
+ * puts its `--font-*` variables. Redeclaring the tokens here means the
+ * substitution happens on an element that can actually see them.
+ */
+.mkt-root {
+  --font-mkt-display: var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-mkt-sans: var(--font-instrument-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mkt-serif: var(--font-instrument-serif), ui-serif, Georgia, serif;
+  --font-mkt-price: var(--font-bricolage), var(--font-plus-jakarta), sans-serif;
+}
+
+/*
+ * Gradients live outside `@theme` because Tailwind would expose them as
+ * colours, and a gradient is not a valid value for `text-*` or `border-*`.
+ */
+:root {
+  /*
+   * The primary CTA fill. The mobile frame also carries a near-identical
+   * #FF8029 -> #FE4E3D at 105.95deg; the two are indistinguishable at button
+   * size, so both breakpoints use this one rather than carrying two tokens
+   * that will inevitably drift apart.
+   */
+  --mkt-gradient-cta: linear-gradient(103.96deg, #f5913e 19.56%, #e8434f 105.75%);
+  /* Warm panel behind the avatar and translation sections. */
+  --mkt-gradient-warm: linear-gradient(135.78deg, #faefe4 1.05%, #f9a656 141.83%);
+  /* Hero wash; the design applies it at 40% opacity behind the headline. */
+  --mkt-gradient-hero: linear-gradient(180deg, #ec5c4a 0%, #f6b2a9 78.77%, #ffffff 100%);
+  /* Bottom scrim on reel thumbnails so the caption stays legible on any frame. */
+  --mkt-gradient-scrim: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.99) 67.6%, #000000 100%);
+  --mkt-gradient-whatsapp: linear-gradient(179.66deg, #57d163 6.27%, #23b33a 91.23%);
+}
+
+/*
+ * One focus ring for every interactive element on these pages.
+ *
+ * The app sets no global focus style, so without this the marketing pages
+ * fall back to the browser default, which is a thin blue ring that all but
+ * disappears against the coral hero wash. Scoped to `.mkt-root`: the auth
+ * modals portal to `document.body` and keep the app's own styling.
+ *
+ * `:focus-visible` rather than `:focus`, so the ring appears for keyboard
+ * users without outlining every button that was merely clicked.
+ */
+.mkt-root :is(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-mkt-coral);
+  outline-offset: 2px;
+}
+
+/*
+ * Nothing here animates position or scale, so this is a safety net rather
+ * than a fix for a specific effect: it keeps the colour and opacity
+ * transitions on buttons and links from becoming motion for anyone who has
+ * asked the OS for none, and covers whatever gets added later.
+ *
+ * `1ms` instead of `0s` because a zero-length transition never fires
+ * `transitionend`, which silently breaks any handler waiting on it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .mkt-root *,
+  .mkt-root *::before,
+  .mkt-root *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * Horizontal scroller for the output reel. The scrollbar is hidden because
+ * the design shows none; the affordance is the next card sitting half in
+ * frame at the right edge. Touch, wheel and keyboard scrolling are untouched.
+ */
+.mkt-scroll-x {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.mkt-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+.mkt-gradient-cta {
+  background: var(--mkt-gradient-cta);
+}
+
+.mkt-gradient-warm {
+  background: var(--mkt-gradient-warm);
+}
+
+/*
+ * Gradient-filled text (the rupee figures in the hero and pricing).
+ * `background-clip: text` needs the -webkit- prefix to work in Safari and in
+ * Chrome below 120, and collapses to transparent text if the browser supports
+ * neither — so the colour is only dropped once the clip is known to apply.
+ */
+.mkt-text-gradient {
+  background: var(--mkt-gradient-cta);
+}
+
+/* Warm variant, used for labels on the near-black chips and buttons. */
+.mkt-text-gradient-warm {
+  background: var(--mkt-gradient-warm);
+}
+
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .mkt-text-gradient,
+  .mkt-text-gradient-warm {
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}

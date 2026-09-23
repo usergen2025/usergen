@@ -191,21 +191,31 @@ export default function Header({ position = 'fixed', floatingBarSurface = 'solid
     { href: '/brand/wallet', label: 'My Wallet' },
   ];
 
+  /**
+   * Marketing routes render their own header, so this list only shows up on
+   * the handful of non-marketing pages a signed-out visitor can reach. It
+   * mirrors the marketing nav rather than the old /features, /use-cases and
+   * /enterprise links, none of which were ever built.
+   */
   const publicNavItems = [
     { href: '/', label: 'Home' },
-    { href: '/features', label: 'Features' },
-    { href: '/use-cases', label: 'Use Cases' },
-    { href: '/enterprise', label: 'Enterprise' },
+    { href: '/examples', label: 'Examples' },
     { href: '/pricing', label: 'Pricing' },
+    { href: '/agencies', label: 'For Agencies' },
   ];
 
-  /** Logged-in creators: primary destinations only (wallet balance is in the header). */
+  /**
+   * Logged-in creators: primary destinations only (wallet balance is in the
+   * header). "Home" is `/`, which `proxy.ts` serves the signed-in home from.
+   * "Pricing" points at their own billing page instead of the public plans
+   * page, which would only redirect them back into the app.
+   */
   const loggedInCreatorNavItems = [
     { href: '/', label: 'Home' },
     { href: '/projects', label: 'My Projects' },
     { href: '/campaigns', label: 'Campaigns' },
     { href: '/earnings', label: 'Earnings' },
-    { href: '/pricing', label: 'Pricing' },
+    { href: '/billing', label: 'Billing' },
   ];
 
   const navItems = userIsBrand

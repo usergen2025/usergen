@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '@/lib/api/client';
 import { readStorage, readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeStorage';
+import { removeCookie, writeCookie } from '@/lib/utils/safeCookie';
+import { SESSION_HINT_COOKIE, hintForRole } from '@/lib/auth/session-hint';
 
 // Global auth state to sync across components
 let authState = {
@@ -41,6 +43,28 @@ function readCachedUser(): User | null {
  * at once issue a single profile request rather than one each.
  */
 let profileRequest: Promise<User | null> | null = null;
+
+const SESSION_HINT_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+
+/**
+ * Mirrors the user's role into the session hint cookie so `middleware.ts` can
+ * keep signed-in visitors off the logged-out marketing pages.
+ *
+ * Driven by resolved user state rather than by `login()` alone, because the
+ * OAuth callback signs in with only a token and learns the role later. Writing
+ * on every visit also refreshes the hint past Safari's seven-day cap on
+ * script-set cookies.
+ */
+function syncSessionHint(role: string | undefined) {
+  const hint = hintForRole(role);
+  if (!hint) return;
+  // A token in sessionStorage means the user opted out of being remembered, so
+  // the hint must not outlive the tab either.
+  const tabScoped = !readStorage('authToken') && !!readStorage('authToken', 'session');
+  writeCookie(SESSION_HINT_COOKIE, hint, {
+    maxAgeSeconds: tabScoped ? undefined : SESSION_HINT_MAX_AGE_SECONDS,
+  });
+}
 
 /**
  * Recovers the signed-in user when a token exists but no profile is cached.
@@ -141,6 +165,21 @@ export function useAuth() {
     };
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    // Read storage rather than `isAuthenticated`, which is false on the first
+    // render of an authenticated visit and would clear a valid hint.
+    if (!checkAuth()) {
+      // Drop a hint left behind by a session whose token was evicted, so the
+      // server stops routing this visitor to a dashboard that will bounce
+      // them straight back out.
+      removeCookie(SESSION_HINT_COOKIE);
+      return;
+    }
+    if (user?.role) {
+      syncSessionHint(user.role);
+    }
+  }, [isAuthenticated, user?.role]);
+
   const login = useCallback((token: string, useSession = false, userData?: User) => {
     if (typeof window === 'undefined') {
       return;
@@ -153,6 +192,9 @@ export function useAuth() {
     if (userData) {
       writeStorage('user', JSON.stringify(userData));
       setUser(userData);
+      // Set eagerly rather than waiting for the sync effect, so a redirect
+      // fired immediately after login already carries the hint.
+      syncSessionHint(userData.role);
     }
 
     notifyListeners();
@@ -165,6 +207,7 @@ export function useAuth() {
     removeStorage('authToken');
     removeStorage('authToken', 'session');
     removeStorage('user');
+    removeCookie(SESSION_HINT_COOKIE);
     profileRequest = null;
     setUser(null);
     notifyListeners();

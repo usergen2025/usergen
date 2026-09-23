@@ -16,6 +16,7 @@ import {
 } from '@/lib/video-urls';
 import { cn } from '@/lib/utils/cn';
 import { normalizeWebsiteUrl } from '@/lib/utils/normalize-website-url';
+import { consumeIntent } from '@/lib/marketing/generation-intent';
 import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
@@ -404,6 +405,49 @@ function AIChatPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  /*
+   * Seed a fresh funnel from what the landing page hero collected.
+   *
+   * Must stay declared after the effect above: that one resets the script
+   * substep back to 'language' for new projects, and effects run in
+   * declaration order, so seeding first would be undone on the same mount.
+   *
+   * Only for new projects. Resuming a draft restores from project metadata,
+   * and an intent applied on top of that would overwrite real saved choices
+   * with copy from a page the user visited before signing up.
+   */
+  const heroIntentApplied = useRef(false);
+  useEffect(() => {
+    if (heroIntentApplied.current) return;
+    // Wait for auth: AuthGuard shows a login overlay over this page, and
+    // consuming the single-use intent behind it would discard it if the
+    // visitor gives up on the modal.
+    if (!isAuthenticated || isLoading) return;
+    if (searchParams?.get('projectId')) {
+      heroIntentApplied.current = true;
+      return;
+    }
+
+    const intent = consumeIntent();
+    heroIntentApplied.current = true;
+    if (!intent) return;
+
+    setSelectedLanguage(intent.language);
+    setScriptSubstep('duration');
+    sessionStorage.setItem('selectedScriptLanguage', intent.language);
+
+    setAvatarPreference(intent.withAvatar ? 'library' : 'skip');
+
+    if (intent.kind === 'link') {
+      // Picked up by the existing asset-upload step, which commits it as a
+      // `type: 'url'` asset. That is what makes script generation ground
+      // itself in the page's content.
+      setModalCompanyUrl(intent.value);
+    } else {
+      setScriptInput(intent.value);
+    }
+  }, [isAuthenticated, isLoading, searchParams]);
 
   // AuthGuard shows LoginModal overlay when not authenticated - no redirect to /login
 

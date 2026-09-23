@@ -112,9 +112,12 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
             sessionStorage.removeItem('fromCreateVideo');
           }
           
-          // Brands don't use create-video flow
+          // Brands don't use create-video flow. The resolved URL can still
+          // point there — a pendingRedirect left by a create-video page, or a
+          // generate CTA on the landing page — so send them to their own
+          // dashboard instead of a funnel that has no brand variant.
           if (userRole === 'BRAND') {
-            router.push(finalRedirectUrl);
+            router.push(finalRedirectUrl.includes('/create-video') ? '/brand/dashboard' : finalRedirectUrl);
           } else if (finalRedirectUrl.includes('/create-video')) {
             // Prefer ai-chat flow (AuthGuard overlay), not style
             router.push('/create-video/ai-chat');

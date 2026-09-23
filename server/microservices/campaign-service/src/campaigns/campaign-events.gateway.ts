@@ -74,48 +74,74 @@ export class CampaignEventsGateway
 
   afterInit(server: Server) {
     this.logger.log(`Campaign Events WebSocket Gateway initialized for namespace /campaign-events`);
+
+    /*
+     * Authenticate during the handshake, not in `handleConnection`.
+     *
+     * Disconnecting an already-established socket looks to the client like a
+     * connection that succeeded and then dropped, so Socket.IO resets its
+     * retry counter and reconnects — turning an unusable token into an
+     * endless once-a-second loop that `reconnectionAttempts` never caps.
+     * Failing the handshake instead surfaces as `connect_error`, which the
+     * client backs off on and eventually gives up.
+     */
+    server.use((client: Socket, next: (err?: Error) => void) => {
+      try {
+        client.data.userId = this.authenticateHandshake(client);
+        next();
+      } catch (error: any) {
+        this.logger.warn(`Connection rejected for socket ${client.id}: ${error.message}`);
+        // Generic message: the client only needs to know it was refused, and
+        // the detail is already in our logs.
+        next(new Error('unauthorized'));
+      }
+    });
+  }
+
+  private authenticateHandshake(client: Socket): string {
+    const token =
+      client.handshake.auth.token ||
+      client.handshake.headers.authorization?.replace('Bearer ', '');
+
+    if (!token) {
+      throw new Error('No token provided');
+    }
+
+    const jwtSecret = this.configService.get<string>('JWT_SECRET');
+    if (!jwtSecret) {
+      this.logger.error('JWT_SECRET not configured');
+      throw new Error('JWT_SECRET not configured');
+    }
+
+    const payload = this.jwtService.verify(token, { secret: jwtSecret });
+    const userId = payload.sub || payload.userId || payload.id;
+
+    if (!userId) {
+      throw new Error('Invalid token payload');
+    }
+
+    return userId;
   }
 
   async handleConnection(client: Socket) {
-    try {
-      const token =
-        client.handshake.auth.token || client.handshake.headers.authorization?.replace('Bearer ', '');
-
-      if (!token) {
-        this.logger.warn(`Connection rejected: No token provided for socket ${client.id}`);
-        client.disconnect();
-        return;
-      }
-
-      const jwtSecret = this.configService.get<string>('JWT_SECRET');
-      if (!jwtSecret) {
-        this.logger.error('JWT_SECRET not configured');
-        client.disconnect();
-        return;
-      }
-
-      const payload = this.jwtService.verify(token, { secret: jwtSecret });
-      const userId = payload.sub || payload.userId || payload.id;
-
-      if (!userId) {
-        this.logger.warn(`Connection rejected: Invalid token payload for socket ${client.id}`);
-        client.disconnect();
-        return;
-      }
-
-      client.join(`user:${userId}`);
-
-      if (!this.userSockets.has(userId)) {
-        this.userSockets.set(userId, new Set());
-      }
-      this.userSockets.get(userId)!.add(client.id);
-      this.socketToUser.set(client.id, userId);
-
-      this.logger.log(`Campaign client connected: ${client.id} for user ${userId}`);
-    } catch (error: any) {
-      this.logger.error(`Connection error for socket ${client.id}: ${error.message}`);
+    // Set by the handshake middleware above, which refuses the connection
+    // outright when it cannot resolve a user.
+    const userId = client.data.userId as string | undefined;
+    if (!userId) {
+      this.logger.error(`Socket ${client.id} connected without a user; disconnecting`);
       client.disconnect();
+      return;
     }
+
+    client.join(`user:${userId}`);
+
+    if (!this.userSockets.has(userId)) {
+      this.userSockets.set(userId, new Set());
+    }
+    this.userSockets.get(userId)!.add(client.id);
+    this.socketToUser.set(client.id, userId);
+
+    this.logger.log(`Campaign client connected: ${client.id} for user ${userId}`);
   }
 
   handleDisconnect(client: Socket) {

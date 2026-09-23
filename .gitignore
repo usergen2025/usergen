@@ -47,3 +47,6 @@ coverage/
 *.pem
 *.key
 
+
+# Figma 'Copy as CSS' dumps of the landing page design (reference only)
+.design-spec/
