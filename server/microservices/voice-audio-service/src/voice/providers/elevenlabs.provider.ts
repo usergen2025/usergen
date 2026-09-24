@@ -34,14 +34,19 @@ export interface ElevenLabsVoice {
   permission_on_resource?: string | null;
 }
 
+/**
+ * Whether we can actually synthesise with a voice the account already holds.
+ *
+ * `copied_disabled` is the one state that genuinely blocks us: the original
+ * owner withdrew the voice after we copied it, and generation fails.
+ *
+ * `enabled_in_library: false` does not. It only means the voice is no longer
+ * listed in the public library for others to find — our copy still works, and
+ * it is set on every library voice in the account. Treating it as unusable hid
+ * all sixteen of them, which is every Indian-accent voice we have.
+ */
 export function isVoiceUsable(voice: ElevenLabsVoice): boolean {
-  if (voice.sharing?.status === 'copied_disabled') {
-    return false;
-  }
-  if (voice.category === 'professional' && voice.sharing?.enabled_in_library === false) {
-    return false;
-  }
-  return true;
+  return voice.sharing?.status !== 'copied_disabled';
 }
 
 export interface ElevenLabsVoicesResponse {
@@ -107,13 +112,20 @@ export class ElevenLabsProvider {
   }
 
   /**
-   * Check if voice supports the requested language
+   * Check if voice supports the requested language.
+   *
+   * `verified_languages` is only populated for premade and library voices.
+   * ElevenLabs returns it empty for cloned voices, so reading empty as "speaks
+   * nothing" dropped every voice the account had cloned itself from every
+   * language — including the Indian ones cloned specifically for Hindi. The
+   * multilingual model speaks any of its languages in a cloned voice, so an
+   * absent list means unknown, not unsupported, and the voice is kept.
    */
   private voiceSupportsLanguage(voice: ElevenLabsVoice, languageCode: string): boolean {
     if (!voice.verified_languages || voice.verified_languages.length === 0) {
-      return false; // Skip voices without language info
+      return true;
     }
-    
+
     // Match language code (e.g., "hi" matches "hi" or "hi-IN")
     return voice.verified_languages.some(vl => 
       vl.language?.toLowerCase().startsWith(languageCode.toLowerCase())
