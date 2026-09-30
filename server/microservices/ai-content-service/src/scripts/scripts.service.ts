@@ -1375,6 +1375,14 @@ CRITICAL DURATION REQUIREMENTS:
           });
         }
       }
+      // A typed brief with no uploaded product still needs a shot mix, or the
+      // model is free to make every scene a product still.
+      if (!productPresentationPlan && request.videoStyle === 'PRODUCT_ONLY' && request.userPrompt) {
+        productPresentationPlan = buildProductPresentationPlan({
+          productType: request.userPrompt.slice(0, 400),
+          rationale: 'Inferred from the brief because no product image was analysed',
+        });
+      }
 
       // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
@@ -1621,6 +1629,9 @@ CRITICAL DURATION REQUIREMENTS:
           scriptData,
           productPresentationPlan,
         );
+      }
+      if (request.videoStyle === 'AVATAR_PRODUCT') {
+        scriptData = this.validateAndNormalizeAvatarProductScript(scriptData);
       }
 
       // Normalize prompts to ensure visual consistency (region-aware fallback)
@@ -2958,6 +2969,7 @@ Video Duration and Scene Planning (CRITICAL):
 - For 30s: 5-7 scenes; 60s: 10-12; 120s: 20-24; custom: total seconds ÷ 5
 - Scene time ranges must cover ENTIRE duration without gaps or overlap
 - At least 40% of scenes must use DIFFERENT presentation_mode / composition — avoid all flat-lays
+- HUMAN / PRODUCT SPLIT: about half the scenes must show a person using or wearing the product (on_model or hands_interaction) and about half must be product-only (hero_flat_lay, detail_macro, display_mannequin). Alternate them — do not group all product shots together. Skip people entirely only when the plan says human interaction is discouraged.
 
 IMPORTANT: Return valid JSON.
 
@@ -3090,7 +3102,8 @@ The video will feature:
 
 CRITICAL REQUIREMENTS:
 - Product must be prominently featured in every scene
-- Presenter (avatar or person) should interact with the product naturally
+- EVERY scene must show a real person (the presenter) visibly interacting with the product. A face or hands must be in frame. A product-only still is not a valid scene for this style.
+- Set "requires_human": true on every scene
 - Create engaging product demonstration scenarios
 - Visual style must be consistent
 - IMPORTANT: Use the actual product name and features from the pre-analyzed information. Do NOT use generic placeholders like "[Product Name]" or "[Product]"
@@ -3144,6 +3157,7 @@ Structure Your Output in This JSON Format:
       "scene_number": 1,
       "time_range": "0-5s",
       "voiceover": "${lang.exampleHook}",
+      "requires_human": true,
       "broll_visual_description": "Presenter (avatar or person) showcasing/using the product",
       "broll_image_prompt": "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images] [Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: presenter demonstrating product; FULL product visible in frame with presenter] [CRITICAL: no tight crop of product packaging edges]",
       "broll_video_prompt": "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: subtle in-frame motion only; slow push-in or gentle drift; NO zoom-out or reveal of new product areas]",
@@ -3156,7 +3170,7 @@ Structure Your Output in This JSON Format:
 
 CRITICAL PROMPT GENERATION RULES:
 1. Product must be visible and prominent in every scene
-2. Presenter must interact with product naturally
+2. Presenter must interact with product naturally, and a person must be visible in EVERY scene (requires_human is always true)
 3. Create engaging product demonstration scenarios
 4. Maintain visual consistency across all scenes
 5. FIRST, determine the visual_style_guide based on the user's topic/idea
@@ -3562,7 +3576,7 @@ DISPLAY HOLDER NOTE: presentation_mode "display_mannequin" = retail display prop
 
 PRODUCT FORM LOCK: Every scene must depict the SAME product form as analyzed (e.g. bracelet stays bracelet in ALL scenes — never become a necklace in one scene).
 
-Assign presentation_mode per scene following this mix (±1 scene tolerance). When humanInteraction is discouraged, never use on_model, hands_interaction, or requires_human: true.
+Assign presentation_mode per scene following this mix (±1 scene tolerance). Alternate human scenes (on_model, hands_interaction) with product-only scenes rather than grouping them. Target about ${Math.round((plan.humanShareTarget ?? 0) * 100)}% of scenes showing a person. When humanInteraction is discouraged, never use on_model, hands_interaction, or requires_human: true.
 `;
   }
 
@@ -3691,53 +3705,117 @@ Assign presentation_mode per scene following this mix (±1 scene tolerance). Whe
     }
 
     if (plan?.shotMix?.length) {
-      const expectedCounts: Record<string, number> = {};
-      for (const entry of plan.shotMix) {
-        expectedCounts[entry.mode] = (expectedCounts[entry.mode] || 0) + 1;
-      }
-      const actualCounts: Record<string, number> = {};
-      for (const scene of scenes) {
-        const m = scene.presentation_mode as string;
-        actualCounts[m] = (actualCounts[m] || 0) + 1;
-      }
-      const issues: string[] = [];
-      for (const [mode, expected] of Object.entries(expectedCounts)) {
-        const actual = actualCounts[mode] || 0;
-        if (Math.abs(actual - expected) > 1) {
-          issues.push(`${mode}: expected ~${expected}, got ${actual}`);
-        }
-      }
-      if (issues.length) {
-        this.logger.warn(
-          `PRODUCT_ONLY shot mix deviation: ${issues.join('; ')} — reassigning presentation modes`,
-          'ScriptsService',
-        );
-        const targetModes: PresentationMode[] = [];
-        for (const entry of plan.shotMix) {
-          const n = Math.max(1, Math.round(entry.share * scenes.length));
-          for (let i = 0; i < n; i++) targetModes.push(entry.mode);
-        }
-        while (targetModes.length < scenes.length) {
-          const fill =
-            plan.shotMix[targetModes.length % plan.shotMix.length]?.mode || 'hero_flat_lay';
-          targetModes.push(fill);
-        }
-        let motionCursor = 0;
-        scenes.forEach((scene: any, idx: number) => {
-          const assigned = targetModes[idx % targetModes.length];
-          if (humanDiscouraged && (assigned === 'on_model' || assigned === 'hands_interaction')) {
-            scene.presentation_mode = 'hero_flat_lay';
-          } else if (assigned === 'display_mannequin' && !hasDedicatedDisplayHolder(lockedForm)) {
-            scene.presentation_mode = 'hero_flat_lay';
-          } else {
-            scene.presentation_mode = assigned;
-          }
-          const mode = scene.presentation_mode as PresentationMode;
-          scene.camera_motion = inferDefaultCameraMotion(mode, motionCursor++);
-        });
-      }
+      this.rebalanceProductOnlyScenes(scenes, plan, humanDiscouraged, lockedForm);
     }
 
+    return scriptData;
+  }
+
+  /**
+   * Force the planned human/product split and alternate the two kinds of shot.
+   * Expected counts come from each mode's share of the scene count, not from
+   * how many times the mode is listed in the mix.
+   */
+  private rebalanceProductOnlyScenes(
+    scenes: any[],
+    plan: ProductPresentationPlan,
+    humanDiscouraged: boolean,
+    lockedForm: ReturnType<typeof inferProductForm>,
+  ): void {
+    const humanModes = new Set<PresentationMode>(['on_model', 'hands_interaction']);
+    const countsAsHuman = (scene: any) => {
+      const mode = scene.presentation_mode as PresentationMode;
+      if (humanModes.has(mode)) return true;
+      return mode === 'lifestyle_context' && scene.requires_human === true;
+    };
+    const targetHuman = humanDiscouraged
+      ? 0
+      : Math.round((plan.humanShareTarget ?? 0.5) * scenes.length);
+    const actualHuman = scenes.filter(countsAsHuman).length;
+
+    const expected: Record<string, number> = {};
+    for (const entry of plan.shotMix) {
+      expected[entry.mode] = (expected[entry.mode] || 0) + Math.round(entry.share * scenes.length);
+    }
+    const actual: Record<string, number> = {};
+    for (const scene of scenes) {
+      const mode = scene.presentation_mode as string;
+      actual[mode] = (actual[mode] || 0) + 1;
+    }
+    const mixOff = Object.entries(expected).some(
+      ([mode, n]) => Math.abs((actual[mode] || 0) - n) > 1,
+    );
+    if (!mixOff && actualHuman === targetHuman) return;
+
+    this.logger.warn(
+      `PRODUCT_ONLY shot mix off (human scenes ${actualHuman}/${scenes.length}, target ${targetHuman}) — reassigning`,
+      'ScriptsService',
+    );
+
+    const product: PresentationMode[] = [];
+    const human: PresentationMode[] = [];
+    for (const entry of plan.shotMix) {
+      const n = Math.max(0, Math.round(entry.share * scenes.length));
+      for (let i = 0; i < n; i++) {
+        (humanModes.has(entry.mode) ? human : product).push(entry.mode);
+      }
+    }
+    while (human.length + product.length > scenes.length && product.length) product.pop();
+    while (human.length + product.length > scenes.length && human.length) human.pop();
+    while (human.length < targetHuman && product.length) {
+      product.pop();
+      human.push(human.length % 2 === 0 ? 'on_model' : 'hands_interaction');
+    }
+    while (human.length > targetHuman) {
+      human.pop();
+      product.push('hero_flat_lay');
+    }
+    while (human.length + product.length < scenes.length) {
+      product.push('hero_flat_lay');
+    }
+
+    const order: PresentationMode[] = [];
+    let hi = 0;
+    let pi = 0;
+    while (order.length < scenes.length) {
+      const wantProduct = order.length % 2 === 0;
+      if (wantProduct && pi < product.length) order.push(product[pi++]);
+      else if (!wantProduct && hi < human.length) order.push(human[hi++]);
+      else if (pi < product.length) order.push(product[pi++]);
+      else if (hi < human.length) order.push(human[hi++]);
+      else break;
+    }
+
+    let motionCursor = 0;
+    scenes.forEach((scene: any, idx: number) => {
+      let assigned = order[idx] || 'hero_flat_lay';
+      if (humanDiscouraged && humanModes.has(assigned)) assigned = 'hero_flat_lay';
+      if (assigned === 'display_mannequin' && !hasDedicatedDisplayHolder(lockedForm)) {
+        assigned = 'hero_flat_lay';
+      }
+      scene.presentation_mode = assigned;
+      scene.requires_human = humanModes.has(assigned);
+      scene.camera_motion = inferDefaultCameraMotion(assigned, motionCursor++);
+      for (const field of ['broll_image_prompt', 'broll_video_prompt'] as const) {
+        if (typeof scene[field] !== 'string') continue;
+        if (scene[field].includes('[PRESENTATION:')) {
+          scene[field] = scene[field].replace(/\[PRESENTATION:\s*[^\]]+\]/, `[PRESENTATION: ${assigned}]`);
+        }
+      }
+    });
+  }
+
+  /** AVATAR_PRODUCT cannot survive a faceless still — HeyGen rejects it. */
+  private validateAndNormalizeAvatarProductScript(scriptData: any): any {
+    const scenes = scriptData?.scenes;
+    if (!Array.isArray(scenes)) return scriptData;
+    for (const scene of scenes) {
+      scene.requires_human = true;
+      const prompt = typeof scene.broll_image_prompt === 'string' ? scene.broll_image_prompt : '';
+      if (!/person|presenter|model|human|avatar|wearing|holding|hands/i.test(prompt)) {
+        scene.broll_image_prompt = `${prompt} A person is visibly in frame, face or hands interacting with the product.`.trim();
+      }
+    }
     return scriptData;
   }
 

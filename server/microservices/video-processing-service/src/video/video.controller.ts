@@ -311,6 +311,36 @@ export class VideoController {
     return { success: true, data: { languages } };
   }
 
+  @Post(':projectId/share')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Create or return the public share link for a finished video' })
+  async createShareLink(@Request() req: any, @Param('projectId') projectId: string) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+    const data = await this.videoService.ensureShareLink(projectId, userId);
+    return { success: true, data };
+  }
+
+  @Get('shared/:shareId')
+  @ApiOperation({ summary: 'Public metadata for a shared video' })
+  async getSharedVideo(@Param('shareId') shareId: string) {
+    const data = await this.videoService.getSharedVideo(shareId);
+    return { success: true, data };
+  }
+
+  @Get('shared/:shareId/video')
+  @ApiOperation({ summary: 'Stream a shared video without authentication' })
+  async streamSharedVideo(
+    @Param('shareId') shareId: string,
+    @Query('disposition') disposition: string | undefined,
+    @Res() res: Response,
+  ) {
+    const mode = disposition === 'attachment' ? 'attachment' : 'inline';
+    await this.videoService.streamSharedVideo(shareId, res, mode);
+  }
+
   @Get(':projectId/download-url')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
@@ -1841,7 +1871,7 @@ export class VideoController {
     @Request() req: any,
     @Param('projectId') projectId: string,
     @Param('sceneNumber') sceneNumber: string,
-    @Body() body: { force?: boolean; modelId?: string } = {},
+    @Body() body: { force?: boolean; modelId?: string; prompt?: string } = {},
   ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
@@ -1992,7 +2022,8 @@ export class VideoController {
       userId,
       sceneNumber: sceneNum,
       imageUrl: publicImageUrl,
-      prompt: image.prompt,
+      prompt: body.prompt?.trim() || image.prompt,
+      ...(body.prompt?.trim() ? { promptOverride: body.prompt.trim() } : {}),
       duration: videoDuration,
       modelId: body.modelId || 'video-model-1',
       heygenImageKey: heygenImageKey || undefined,

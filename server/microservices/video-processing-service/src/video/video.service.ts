@@ -456,6 +456,22 @@ export class VideoService {
       updateData.completedAt = new Date();
     }
 
+    if (dto.script !== undefined) {
+      const edits = this.diffSceneEdits(existing.script, dto.script);
+      if (edits.length) {
+        const base =
+          updateData.metadata && typeof updateData.metadata === 'object' && !Array.isArray(updateData.metadata)
+            ? { ...(updateData.metadata as Record<string, unknown>) }
+            : existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+              ? { ...(existing.metadata as Record<string, unknown>) }
+              : {};
+        const history = Array.isArray(base.editHistory) ? [...(base.editHistory as unknown[])] : [];
+        history.push(...edits);
+        base.editHistory = history.slice(-200);
+        updateData.metadata = base;
+      }
+    }
+
     const project = await this.databaseService.videoProject.update({
       where: { id: projectId },
       data: updateData,
@@ -1144,6 +1160,61 @@ export class VideoService {
     };
   }
 
+  async ensureShareLink(projectId: string, userId: string) {
+    const { data: project } = await this.getProject(projectId, userId);
+    if (!project.videoUrl) {
+      throw new NotFoundException('Final video not available');
+    }
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? { ...(project.metadata as Record<string, unknown>) }
+        : {};
+    const shareId =
+      typeof meta.shareId === 'string' && meta.shareId ? meta.shareId : crypto.randomUUID();
+    if (meta.shareId !== shareId) {
+      meta.shareId = shareId;
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { metadata: meta as object },
+      });
+    }
+    return {
+      shareId,
+      path: `/v/${shareId}`,
+      title: project.title || 'UserGen video',
+    };
+  }
+
+  private async findByShareId(shareId: string) {
+    return this.databaseService.videoProject.findFirst({
+      where: { metadata: { path: ['shareId'], equals: shareId } },
+    });
+  }
+
+  async getSharedVideo(shareId: string) {
+    const project = await this.findByShareId(shareId);
+    if (!project?.videoUrl) {
+      throw new NotFoundException('Shared video not found');
+    }
+    return {
+      shareId,
+      title: project.title || 'UserGen video',
+      videoUrl: `/api/video/shared/${shareId}/video`,
+    };
+  }
+
+  async streamSharedVideo(
+    shareId: string,
+    res: Response,
+    disposition: 'attachment' | 'inline',
+  ): Promise<void> {
+    const project = await this.findByShareId(shareId);
+    if (!project?.videoUrl) {
+      throw new NotFoundException('Shared video not found');
+    }
+    await this.streamFinalVideoDownload(project.id, project.userId, res, disposition);
+  }
+
   /**
    * Stream the clean final video (never preview) for authenticated download.
    */
@@ -1352,6 +1423,46 @@ export class VideoService {
     }
 
     throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);
+  }
+
+  /**
+   * Scene-level diff of a script save. Stored on the project so a manual edit
+   * is visible later without changing how generation reads the script.
+   */
+  private diffSceneEdits(before: unknown, after: unknown): Array<Record<string, unknown>> {
+    const scenesOf = (value: unknown): any[] => {
+      const parsed = typeof value === 'string' ? this.safeJson(value) : value;
+      if (!parsed || typeof parsed !== 'object') return [];
+      const scenes = (parsed as any).scenes || (parsed as any).scene_plan;
+      return Array.isArray(scenes) ? scenes : [];
+    };
+    const fields = ['voiceover', 'broll_image_prompt', 'broll_video_prompt', 'broll_visual_description'] as const;
+    const previous = scenesOf(before);
+    const next = scenesOf(after);
+    const edits: Array<Record<string, unknown>> = [];
+    const at = new Date().toISOString();
+    next.forEach((scene, index) => {
+      const sceneNumber = scene?.scene_number || scene?.sceneNumber || index + 1;
+      const prior =
+        previous.find((s) => (s?.scene_number || s?.sceneNumber) === sceneNumber) || previous[index];
+      if (!prior) return;
+      for (const field of fields) {
+        const from = typeof prior[field] === 'string' ? prior[field] : '';
+        const to = typeof scene[field] === 'string' ? scene[field] : '';
+        if (from !== to && (from || to)) {
+          edits.push({ sceneNumber, field, from, to, at, source: 'manual' });
+        }
+      }
+    });
+    return edits;
+  }
+
+  private safeJson(value: string): unknown {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
   }
 }
 

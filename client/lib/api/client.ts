@@ -897,6 +897,23 @@ class ApiClient {
   }
 
   /** Resolve signed GCS, public GCS, or proxy download URL for clean final video. */
+  async createShareLink(
+    projectId: string,
+  ): Promise<ApiResponse<{ shareId: string; path: string; title: string }>> {
+    const token = this.getToken();
+    const response = await axios.post<ApiResponse<{ shareId: string; path: string; title: string }>>(
+      `${VIDEO_SERVICE_URL}/video-projects/${projectId}/share`,
+      {},
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+    return response.data;
+  }
+
   async getVideoDownloadUrl(projectId: string): Promise<
     ApiResponse<{
       downloadUrl: string;
@@ -1623,14 +1640,15 @@ class ApiClient {
     projectId: string, 
     sceneNumber: number, 
     modelId?: string,
-    force: boolean = false
+    force: boolean = false,
+    prompt?: string,
   ): Promise<ApiResponse<{ jobId: string; type?: 'scene' | 'avatar' | 'broll'; existing?: boolean; video?: any }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string; existing?: boolean; video?: any }>>(
       `${videoServiceUrl}/video-projects/${projectId}/regenerate-video/${sceneNumber}`,
-      { modelId, force },
+      { modelId, force, ...(prompt?.trim() ? { prompt: prompt.trim() } : {}) },
       {
         headers: {
           'Content-Type': 'application/json',

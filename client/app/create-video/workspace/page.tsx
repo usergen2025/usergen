@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X, Languages } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X, Languages, Pencil } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import {
   getFinalVideoUrl,
@@ -22,6 +22,8 @@ import { cn } from '@/lib/utils/cn';
 import { DraggableResizableAvatar } from '@/components/create-video/DraggableResizableAvatar';
 import { DraggableResizableCaption } from '@/components/create-video/DraggableResizableCaption';
 import BRollSelectionModal, { BRollSelection } from '@/components/create-video/BRollSelectionModal';
+import ShareActions from '@/components/create-video/ShareActions';
+import SceneEditModal, { applySceneTextEdit } from '@/components/create-video/SceneEditModal';
 import { GradientTabBar } from '@/components/ui/GradientTabBar';
 import { isSingleClipVideoStyle, isRawAvatarClipEditingPhase, isProjectActivelyRendering, isVideoTranslationEligible } from '@/lib/workspace/singleClipStyle';
 import { longestWord } from '@/lib/workspace/captionBounds';
@@ -445,6 +447,12 @@ function WorkspacePageContent() {
   const previewPollFingerprintRef = useRef<string | null>(null);
   const { subscribeToQueueType } = useWebSocketContext();
   const [showExportConfirm, setShowExportConfirm] = useState(false);
+  const [sceneEdit, setSceneEdit] = useState<{
+    sceneNumber: number;
+    sceneIndex: number;
+    voiceover: string;
+    prompt: string;
+  } | null>(null);
   const [exportCostBreakdown, setExportCostBreakdown] = useState<any>(null);
   const [exportConfirmLoading, setExportConfirmLoading] = useState(false);
   const exportBreakdownDisplay = useMemo(
@@ -1740,7 +1748,7 @@ function WorkspacePageContent() {
   }, [updateTabInUrl]);
 
   // Handle image regeneration
-  const handleRegenerate = async (sceneIndexOverride?: number) => {
+  const handleRegenerate = async (sceneIndexOverride?: number, promptOverride?: string) => {
     if (!projectId) return;
 
     const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
@@ -1750,7 +1758,7 @@ function WorkspacePageContent() {
     const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
     
     // For ALTERNATE style, only b-roll-type scenes need b-roll image prompts
-    let prompt = currentScene.broll_image_prompt || currentScene.broll_prompt || currentScene.broll_visual_description || '';
+    let prompt = promptOverride || currentScene.broll_image_prompt || currentScene.broll_prompt || currentScene.broll_visual_description || '';
     
     if (!prompt && project?.style === 'ALTERNATE' && isAlternateBrollScene(currentScene, sceneNumber)) {
       prompt = currentScene.broll_visual_description || `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
@@ -1812,7 +1820,7 @@ function WorkspacePageContent() {
     }
   };
 
-  const handleRegenerateVideo = async (sceneIndexOverride?: number) => {
+  const handleRegenerateVideo = async (sceneIndexOverride?: number, promptOverride?: string) => {
     if (!projectId) return;
 
     const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
@@ -1846,7 +1854,7 @@ function WorkspacePageContent() {
       setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
       showToast('Regenerating video...', 'info');
 
-      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true);
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true, promptOverride);
 
       if (response.success && response.data?.existing && response.data?.video) {
         const existingVideo = response.data.video;
@@ -1899,6 +1907,33 @@ function WorkspacePageContent() {
         return next;
       });
       showToast(error?.message || 'Failed to regenerate video', 'error');
+    }
+  };
+
+  const saveSceneEdit = async (next: { voiceover: string; prompt: string; regenerate: boolean }) => {
+    if (!projectId || !sceneEdit) return;
+    const promptField = workspaceMode === 'videos' ? 'broll_video_prompt' : 'broll_image_prompt';
+    const nextScript = applySceneTextEdit(
+      project?.script,
+      sceneEdit.sceneNumber,
+      next.voiceover,
+      next.prompt,
+      promptField,
+    );
+    const response = await apiClient.updateVideoProject(projectId, { script: nextScript });
+    if (!response.success) {
+      showToast(response.message || 'Could not save the edit', 'error');
+      throw new Error('save failed');
+    }
+    setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+    if (next.regenerate) {
+      if (workspaceMode === 'videos') {
+        await handleRegenerateVideo(sceneEdit.sceneIndex, next.prompt);
+      } else {
+        await handleRegenerate(sceneEdit.sceneIndex, next.prompt);
+      }
+    } else {
+      showToast('Scene updated', 'success');
     }
   };
 
@@ -2202,6 +2237,12 @@ function WorkspacePageContent() {
   // Handle export - show cost confirmation before starting final rendering
   const handleExport = async () => {
     if (!projectId) return;
+    // Modal and the quote stay in the file. They only run when billing is
+    // explicitly turned back on.
+    if (process.env.NEXT_PUBLIC_BILLING_ENFORCEMENT_ENABLED !== 'true') {
+      await startRenderAfterConfirmation();
+      return;
+    }
     try {
       const quote = await apiClient.getProjectCostBreakdown(projectId);
       if (quote.success) {
@@ -3125,46 +3166,7 @@ function WorkspacePageContent() {
                       <span className="text-xs text-gray-600">Download</span>
                     </button>
 
-                    <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
-                      <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zM12 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
-                      </svg>
-                      <span className="text-xs text-gray-600">Instagram</span>
-                    </button>
-
-                    <button className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]">
-                      <svg className="w-6 h-6 text-[#E86412]" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-                      </svg>
-                      <span className="text-xs text-gray-600">Facebook</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const shareUrl =
-                          typeof window !== 'undefined'
-                            ? window.location.href
-                            : projectId
-                              ? `/create-video/workspace?projectId=${projectId}`
-                              : '';
-                        if (navigator.share) {
-                          void navigator.share({
-                            title: project?.title || 'My Video',
-                            url: shareUrl,
-                          });
-                        } else {
-                          void navigator.clipboard.writeText(shareUrl);
-                          showToast('Link copied to clipboard!', 'success');
-                        }
-                      }}
-                      className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors min-w-[70px]"
-                    >
-                      <svg className="w-6 h-6 text-[#E86412]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-                      </svg>
-                      <span className="text-xs text-gray-600">Share</span>
-                    </button>
+                    {projectId ? <ShareActions projectId={projectId} variant="workspace" /> : null}
                   </div>
                 </div>
               </div>
@@ -3387,6 +3389,29 @@ function WorkspacePageContent() {
                               aria-label={`Upload media for scene ${sceneNumber}`}
                             >
                               <Upload className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const sceneNumber = scene.scene_number || scene.sceneNumber || index + 1;
+                                const sceneRecord = scene as typeof scene & { broll_video_prompt?: string };
+                                setSceneEdit({
+                                  sceneNumber,
+                                  sceneIndex: index,
+                                  voiceover: scene.voiceover || sceneText || '',
+                                  prompt:
+                                    (workspaceMode === 'videos' ? sceneRecord.broll_video_prompt : scene.broll_image_prompt) ||
+                                    scene.broll_image_prompt ||
+                                    scene.broll_visual_description ||
+                                    '',
+                                });
+                              }}
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors"
+                              title="Edit scene"
+                              aria-label={`Edit scene ${scene.scene_number || scene.sceneNumber || index + 1}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
                               type="button"
@@ -4121,6 +4146,16 @@ function WorkspacePageContent() {
             : undefined
         }
       />
+      <SceneEditModal
+        isOpen={!!sceneEdit}
+        onClose={() => setSceneEdit(null)}
+        sceneNumber={sceneEdit?.sceneNumber ?? 1}
+        voiceover={sceneEdit?.voiceover ?? ''}
+        prompt={sceneEdit?.prompt ?? ''}
+        promptLabel={workspaceMode === 'videos' ? 'Video prompt' : 'Image prompt'}
+        onSave={saveSceneEdit}
+      />
+
       {showExportConfirm && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white border border-[#E0E0E0] shadow-xl">

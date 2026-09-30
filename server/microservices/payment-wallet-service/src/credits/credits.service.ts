@@ -74,6 +74,15 @@ export class CreditsService {
    * Pre-export check: unsettled snapshots + FINAL_RENDER fee vs wallet balance.
    */
   async checkExportAffordability(userId: string, projectId: string) {
+    if (process.env.BILLING_ENFORCEMENT_ENABLED !== 'true') {
+      const balance = await this.transactionsService.checkBalance(userId);
+      return {
+        affordable: true,
+        requiredCredits: 0,
+        currentBalance: balance.credits ?? 0,
+        message: 'Billing enforcement is disabled',
+      };
+    }
     const { totalDue } = await this.pricingService.getUnsettledProjectTotalPlusFinalRender(projectId);
     const balance = await this.transactionsService.checkBalance(userId);
     const currentBalance = balance.credits ?? 0;
@@ -93,6 +102,9 @@ export class CreditsService {
    * Optional settlementNonce prevents duplicate debits if the video service retries the same completion.
    */
   async settleProjectWallet(userId: string, projectId: string, settlementNonce?: string) {
+    if (process.env.BILLING_ENFORCEMENT_ENABLED !== 'true') {
+      return { settled: true, amount: 0, snapshotIds: [] as string[], skipped: true };
+    }
     if (settlementNonce) {
       const finals = await this.databaseService.generationCostSnapshot.findMany({
         where: { projectId, userId, operationType: 'FINAL_RENDER' },
@@ -118,9 +130,24 @@ export class CreditsService {
       });
     }
 
-    const pending = await this.databaseService.generationCostSnapshot.findMany({
+    const cutoffRaw = process.env.BILLING_SETTLEMENT_CUTOFF_AT;
+    const cutoff = cutoffRaw ? new Date(cutoffRaw) : null;
+    const pendingAll = await this.databaseService.generationCostSnapshot.findMany({
       where: { projectId, userId, walletSettledAt: null },
     });
+    // Snapshots from before the cutoff are the backlog recorded while billing
+    // was off. Mark them settled without charging so re-enabling does not
+    // bill every scene ever generated.
+    const pending = cutoff && !Number.isNaN(cutoff.getTime())
+      ? pendingAll.filter((row) => row.createdAt >= cutoff)
+      : pendingAll;
+    const waived = pendingAll.filter((row) => !pending.includes(row));
+    if (waived.length) {
+      await this.databaseService.generationCostSnapshot.updateMany({
+        where: { id: { in: waived.map((row) => row.id) } },
+        data: { walletSettledAt: new Date() },
+      });
+    }
 
     if (pending.length === 0) {
       return { settled: true, amount: 0, snapshotIds: [] as string[] };

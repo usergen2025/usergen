@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, RefreshCw, Loader2, Play, Pause, Video as VideoIcon } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Loader2, Play, Pause, Video as VideoIcon, Pencil } from 'lucide-react';
+import SceneEditModal, { applySceneTextEdit } from '@/components/create-video/SceneEditModal';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -52,6 +53,7 @@ function BrollVideosPageContent() {
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
+  const [sceneEdit, setSceneEdit] = useState<{ sceneNumber: number; voiceover: string; prompt: string } | null>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<any[]>([]);
@@ -690,7 +692,7 @@ function BrollVideosPageContent() {
     }
   };
 
-  const handleRegenerate = async (sceneNumber: number) => {
+  const handleRegenerate = async (sceneNumber: number, promptOverride?: string) => {
     if (!projectId) return;
 
     // Ensure we're regenerating VIDEO, not image
@@ -745,7 +747,7 @@ function BrollVideosPageContent() {
       // IMPORTANT: Always regenerate VIDEO (not image) when on broll-videos page
       // Pass force: true to always regenerate when user manually clicks the button
       console.log(`[BrollVideos] Regenerating VIDEO (not image) for scene ${sceneNumber} with model ${selectedModelId}`);
-      const response = await apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, true);
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, true, promptOverride);
       
       // Handle existing video response
       if (response.success && response.data?.existing && response.data?.video) {
@@ -1048,6 +1050,22 @@ function BrollVideosPageContent() {
                         <Button
                           variant="outline"
                           size="sm"
+                          onClick={() => {
+                            const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
+                            setSceneEdit({
+                              sceneNumber,
+                              voiceover: voiceover || scene?.voiceover || '',
+                              prompt: (scene as any)?.broll_video_prompt || (scene as any)?.broll_image_prompt || '',
+                            });
+                          }}
+                          disabled={isRegenerating}
+                          className="rounded-none border-0 border-r border-border"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={() => handleRegenerate(sceneNumber)}
                           disabled={isRegenerating}
                           className="flex-1 rounded-none border-0 border-r border-border"
@@ -1081,6 +1099,33 @@ function BrollVideosPageContent() {
           )}
         </div>
       </div>
+
+      <SceneEditModal
+        isOpen={!!sceneEdit}
+        onClose={() => setSceneEdit(null)}
+        sceneNumber={sceneEdit?.sceneNumber ?? 1}
+        voiceover={sceneEdit?.voiceover ?? ''}
+        prompt={sceneEdit?.prompt ?? ''}
+        promptLabel="Video prompt"
+        onSave={async ({ voiceover, prompt, regenerate }) => {
+          if (!projectId || !sceneEdit) return;
+          const nextScript = applySceneTextEdit(
+            project?.script,
+            sceneEdit.sceneNumber,
+            voiceover,
+            prompt,
+            'broll_video_prompt',
+          );
+          const response = await apiClient.updateVideoProject(projectId, { script: nextScript });
+          if (!response.success) {
+            showToast(response.message || 'Could not save the edit', 'error');
+            throw new Error('save failed');
+          }
+          setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+          if (regenerate) await handleRegenerate(sceneEdit.sceneNumber, prompt);
+          else showToast('Scene updated', 'success');
+        }}
+      />
 
       <ProgressBar
         progress={scenesNeedingVideos.length > 0 && brollVideos.length === scenesNeedingVideos.length ? 80 : 70}

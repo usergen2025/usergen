@@ -131,6 +131,7 @@ export function inferProductForm(ctx: ProductFormContext): ProductForm {
   }
   if (/handbag|tote|clutch|\bbag\b/.test(combined)) return 'bag';
   if (/phone|laptop|tablet|gadget|device|earbud|headphone/.test(combined)) return 'handheld_gadget';
+  if (/shoe|sneaker|footwear|\bboot\b|sandal|loafer|trainer/.test(combined)) return 'footwear';
 
   if (ctx.profile === 'wearable_jewelry' || /jewel/.test(combined)) return 'generic_wearable';
 

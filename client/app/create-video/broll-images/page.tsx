@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, RefreshCw, Loader2, Image as ImageIcon } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Loader2, Image as ImageIcon, Pencil } from 'lucide-react';
+import SceneEditModal, { applySceneTextEdit } from '@/components/create-video/SceneEditModal';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -51,6 +52,7 @@ function BrollImagesPageContent() {
   
   const [projectId, setProjectId] = useState<string | null>(projectIdFromUrl);
   const [project, setProject] = useState<any>(null);
+  const [sceneEdit, setSceneEdit] = useState<{ sceneNumber: number; voiceover: string; prompt: string } | null>(null);
   const { goToPreviousStep } = useVideoStepNavigation(projectId, project?.currentStep);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [brollImages, setBrollImages] = useState<BrollImage[]>([]);
@@ -553,7 +555,7 @@ function BrollImagesPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, scenesNeedingBroll.length, loading, dbLoaded, project, brollImages.length]);
 
-  const handleRegenerate = async (sceneNumber: number) => {
+  const handleRegenerate = async (sceneNumber: number, promptOverride?: string) => {
     if (!projectId) return;
 
     const scene = scenesNeedingBroll.find(
@@ -563,7 +565,7 @@ function BrollImagesPageContent() {
     if (!scene) return;
 
     // Try multiple prompt fields: broll_image_prompt, broll_prompt, broll_visual_description
-    const prompt = scene.broll_image_prompt || scene.broll_prompt || scene.broll_visual_description;
+    const prompt = promptOverride || scene.broll_image_prompt || scene.broll_prompt || scene.broll_visual_description;
     if (!prompt) {
       showToast('No prompt found for this scene', 'warning');
       return;
@@ -869,6 +871,21 @@ function BrollImagesPageContent() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() =>
+                              setSceneEdit({
+                                sceneNumber,
+                                voiceover: voiceover || scene.voiceover || '',
+                                prompt: scene.broll_image_prompt || scene.broll_prompt || scene.broll_visual_description || '',
+                              })
+                            }
+                            disabled={isRegenerating}
+                            className="rounded-none border-0 border-r border-border"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleRegenerate(sceneNumber)}
                             disabled={isRegenerating}
                             className="flex-1 rounded-none border-0 border-r border-border"
@@ -912,6 +929,33 @@ function BrollImagesPageContent() {
           )}
         </div>
       </div>
+
+      <SceneEditModal
+        isOpen={!!sceneEdit}
+        onClose={() => setSceneEdit(null)}
+        sceneNumber={sceneEdit?.sceneNumber ?? 1}
+        voiceover={sceneEdit?.voiceover ?? ''}
+        prompt={sceneEdit?.prompt ?? ''}
+        promptLabel="Image prompt"
+        onSave={async ({ voiceover, prompt, regenerate }) => {
+          if (!projectId || !sceneEdit) return;
+          const nextScript = applySceneTextEdit(
+            project?.script,
+            sceneEdit.sceneNumber,
+            voiceover,
+            prompt,
+            'broll_image_prompt',
+          );
+          const response = await apiClient.updateVideoProject(projectId, { script: nextScript });
+          if (!response.success) {
+            showToast(response.message || 'Could not save the edit', 'error');
+            throw new Error('save failed');
+          }
+          setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+          if (regenerate) await handleRegenerate(sceneEdit.sceneNumber, prompt);
+          else showToast('Scene updated', 'success');
+        }}
+      />
 
       <ImagePreview
         imageUrl={previewImage || ''}

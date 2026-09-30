@@ -418,6 +418,8 @@ function AIChatPageContent() {
    * with copy from a page the user visited before signing up.
    */
   const heroIntentApplied = useRef(false);
+  /** In-flight draft project created from a landing handoff that included files. */
+  const heroProjectPromiseRef = useRef<Promise<string | null> | null>(null);
   useEffect(() => {
     if (heroIntentApplied.current) return;
     // Wait for auth: AuthGuard shows a login overlay over this page, and
@@ -429,23 +431,70 @@ function AIChatPageContent() {
       return;
     }
 
-    const intent = consumeIntent();
+    const consumed = consumeIntent();
     heroIntentApplied.current = true;
-    if (!intent) return;
+    if (!consumed) return;
+    const { intent, assets } = consumed;
 
     setSelectedLanguage(intent.language);
-    setScriptSubstep('duration');
+    setSelectedVideoDuration(intent.duration);
+    setSelectedVideoStyle(intent.videoStyle);
+    setStyleSubstep('confirmed');
+    setCurrentStep('assets-attached');
+    setScriptSubstep('input');
+    // Pre-fill only. The visitor still presses enter to generate the script.
+    setScriptInput(intent.value);
     sessionStorage.setItem('selectedScriptLanguage', intent.language);
+    sessionStorage.setItem('selectedVideoStyle', intent.videoStyle);
 
-    setAvatarPreference(intent.withAvatar ? 'library' : 'skip');
+    const mapped: Asset[] = assets.map((draft) => ({
+      id: draft.id,
+      name: draft.name,
+      type: draft.kind === 'url' ? 'url' : 'image',
+      file: draft.file,
+      preview: draft.preview,
+      url: draft.url,
+      category: draft.kind === 'logo' ? 'logo' : draft.kind === 'product' ? 'product' : undefined,
+      uploadStatus: draft.kind === 'url' ? undefined : 'local',
+      active: true,
+    }));
+    if (mapped.length > 0) {
+      setAttachedAssets(mapped);
+      setPendingAssets(mapped);
+      // Send refuses assets until a project exists. Create it here and keep
+      // the id in memory so a reload of the chat URL is not required — that
+      // reload would restore from the server and drop the local files.
+      heroProjectPromiseRef.current = apiClient
+        .createVideoProject({
+          videoType: 'WITHOUT_AVATAR',
+          style: STYLE_MAP[intent.videoStyle],
+          currentStep: 'STYLE_SELECTION',
+          metadata: {
+            generationFlow: 'AI_CHAT',
+            aiChatStep: 'assets-attached',
+            selectedVideoStyle: intent.videoStyle,
+            aiChatStyleSubstep: 'confirmed',
+            aiChatScriptSubstep: 'input',
+            selectedLanguage: intent.language,
+            selectedVideoDuration: intent.duration,
+          },
+        })
+        .then((createResponse) => {
+          if (createResponse.success && createResponse.data?.id) {
+            setProjectId(createResponse.data.id);
+            return createResponse.data.id;
+          }
+          return null;
+        })
+        .catch((error) => {
+          console.error('[AIChat] Failed to create draft project from landing intent:', error);
+          return null;
+        });
+    }
 
-    if (intent.kind === 'link') {
-      // Picked up by the existing asset-upload step, which commits it as a
-      // `type: 'url'` asset. That is what makes script generation ground
-      // itself in the page's content.
-      setModalCompanyUrl(intent.value);
-    } else {
-      setScriptInput(intent.value);
+    if (intent.videoStyle === 'product-only' || intent.videoStyle === 'broll-only') {
+      setAvatarPreference('skip');
+      sessionStorage.setItem('avatarPreference', 'skip');
     }
   }, [isAuthenticated, isLoading, searchParams]);
 
@@ -1893,8 +1942,12 @@ function AIChatPageContent() {
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
 
-      // Draft project is created at style confirm; assets committed on Send
-      const scriptProjectId = projectId ?? null;
+      // Draft project is created at style confirm, or from a landing handoff
+      // that included assets. Wait for that create if Send lands first.
+      let scriptProjectId = projectId ?? null;
+      if (attachedAssets.length > 0 && !scriptProjectId && heroProjectPromiseRef.current) {
+        scriptProjectId = await heroProjectPromiseRef.current;
+      }
       if (attachedAssets.length > 0 && !scriptProjectId) {
         showToast('Project not ready. Please confirm your video style first.', 'error');
         setIsGeneratingScript(false);

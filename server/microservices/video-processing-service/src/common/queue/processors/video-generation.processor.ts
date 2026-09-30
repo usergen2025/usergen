@@ -10,7 +10,7 @@ import { ModelRegistryService } from '../../../rendering/providers/model-registr
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { FalProviderError } from '../../../rendering/providers/fal/fal-errors';
 import { VideoCompositorProvider } from '../../../rendering/providers/video-compositor.provider';
-import { HeyGenVideoProvider } from '../../../rendering/providers/heygen-video.provider';
+import { HeyGenRenderError, HeyGenVideoProvider } from '../../../rendering/providers/heygen-video.provider';
 import { PublicUrlService } from '../../storage/public-url.service';
 import { ProjectLogService } from '../../logging/project-log.service';
 import { UserNotificationService } from '../../../notifications/user-notification.service';
@@ -34,6 +34,8 @@ export interface VideoGenerationJobData {
   sceneJobId?: string; // For ALTERNATE odd (half-n-half): client subscribes to this; scene-composite emits with it
   /** Original product image URL for PRODUCT_ONLY/AVATAR_PRODUCT; BytePlus uses as first image in content array */
   referenceImageUrl?: string;
+  /** When set, used as the video prompt instead of the script's stored prompt. */
+  promptOverride?: string;
 }
 
 @Processor('video-generation', {
@@ -97,7 +99,10 @@ export class VideoGenerationProcessor extends WorkerHost {
           heygenImageKey,
           duration,
           userId,
-          projectId
+          projectId,
+          imageUrl,
+          prompt,
+          modelId,
         );
         await this.recordOperationCharge(projectId, userId, sceneNumber, style, job.id);
         return result;
@@ -222,7 +227,10 @@ export class VideoGenerationProcessor extends WorkerHost {
     heygenImageKeyFromJob: string | undefined,
     duration: number,
     userId: string,
-    projectId: string
+    projectId: string,
+    imageUrl?: string,
+    prompt?: string,
+    modelId?: string,
   ): Promise<any> {
     console.log(`[VideoGenerationProcessor] Processing AVATAR_PRODUCT style for scene ${sceneNumber}`);
 
@@ -555,7 +563,103 @@ export class VideoGenerationProcessor extends WorkerHost {
       };
     } catch (error: any) {
       console.error(`[VideoGenerationProcessor] HeyGen Avatar IV error:`, error);
+
+      const nonRetryable = error instanceof HeyGenRenderError && error.kind === 'non_retryable';
+      const fallbackEnabled =
+        this.configService.get<string>('BROLL_VIDEO_PROVIDER_FALLBACK') !== 'false';
+
+      await this.recordSceneGenerationAttempt(projectId, sceneNumber, {
+        provider: 'heygen',
+        outcome: 'failed',
+        errorKind: error instanceof HeyGenRenderError ? error.kind : 'unknown',
+        errorMessage: error?.message || String(error),
+      });
+
+      // A finished HeyGen rejection (no face, rejected image) will fail the
+      // same way on every retry. Animate the still with the normal image-to-
+      // video provider instead of dropping the scene from the export.
+      if (nonRetryable && fallbackEnabled && imageUrl) {
+        console.warn(
+          `[VideoGenerationProcessor] HeyGen refused scene ${sceneNumber} (${error.message}); falling back to image-to-video`,
+        );
+        try {
+          const result = await this.processDefaultVideo(
+            job,
+            project,
+            sceneNumber,
+            imageUrl,
+            prompt,
+            duration,
+            modelId,
+            userId,
+            projectId,
+            {
+              generationMethod: 'fallback-seedance-after-heygen',
+              fallbackReason: error.message,
+            },
+          );
+          await this.recordSceneGenerationAttempt(projectId, sceneNumber, {
+            provider: 'image-to-video',
+            outcome: 'fallback_success',
+            errorKind: 'non_retryable',
+            errorMessage: error.message,
+          });
+          return result;
+        } catch (fallbackError: any) {
+          await this.recordSceneGenerationAttempt(projectId, sceneNumber, {
+            provider: 'image-to-video',
+            outcome: 'fallback_failed',
+            errorKind: 'unknown',
+            errorMessage: fallbackError?.message || String(fallbackError),
+          });
+          throw fallbackError;
+        }
+      }
+
       throw error;
+    }
+  }
+
+  /**
+   * Append one attempt to metadata.sceneGenerationAttempts so a scene that
+   * recovered through the fallback still shows that the first provider refused it.
+   */
+  private async recordSceneGenerationAttempt(
+    projectId: string,
+    sceneNumber: number,
+    attempt: {
+      provider: string;
+      outcome: 'failed' | 'fallback_success' | 'fallback_failed';
+      errorKind: string;
+      errorMessage: string;
+    },
+  ): Promise<void> {
+    try {
+      await this.databaseService.withProjectLock(projectId, async (tx) => {
+        const latest = await tx.videoProject.findUnique({ where: { id: projectId } });
+        const raw = (latest as any)?.metadata;
+        const meta =
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? { ...(raw as Record<string, unknown>) }
+            : {};
+        const history = Array.isArray(meta.sceneGenerationAttempts)
+          ? [...(meta.sceneGenerationAttempts as unknown[])]
+          : [];
+        history.push({
+          sceneNumber,
+          ...attempt,
+          attempt: history.filter((h: any) => h?.sceneNumber === sceneNumber).length + 1,
+          at: new Date().toISOString(),
+        });
+        await tx.videoProject.update({
+          where: { id: projectId },
+          data: { metadata: { ...meta, sceneGenerationAttempts: history } as any } as any,
+        });
+      });
+    } catch (err: any) {
+      console.warn(
+        `[VideoGenerationProcessor] Could not record generation attempt for scene ${sceneNumber}: ${err?.message}`,
+      );
     }
   }
 
@@ -571,12 +675,13 @@ export class VideoGenerationProcessor extends WorkerHost {
     duration: number,
     modelId: string | undefined,
     userId: string,
-    projectId: string
+    projectId: string,
+    options?: { generationMethod?: string; fallbackReason?: string },
   ): Promise<any> {
     try {
     // Get video prompt from script if available
-    let videoPrompt = prompt || 'A cinematic video scene';
-    if (project.script) {
+    let videoPrompt = job.data.promptOverride?.trim() || prompt || 'A cinematic video scene';
+    if (!job.data.promptOverride?.trim() && project.script) {
       const script = typeof project.script === 'string' 
         ? JSON.parse(project.script) 
         : project.script;
@@ -665,7 +770,7 @@ export class VideoGenerationProcessor extends WorkerHost {
         videoRatio = '3:4';
       }
       videoResolution = '1080p';
-    } else if (project.style === 'AVATAR_CUTOUT' || project.style === 'PRODUCT_ONLY' || project.style === 'B_ROLL_ONLY' || project.style === 'ALTERNATE') {
+    } else if (project.style === 'AVATAR_CUTOUT' || project.style === 'PRODUCT_ONLY' || project.style === 'B_ROLL_ONLY' || project.style === 'ALTERNATE' || project.style === 'AVATAR_PRODUCT') {
       // For cutout, product-only, broll-only, and ALTERNATE b-roll scenes: 9:16 ratio
       videoRatio = '9:16';
       videoResolution = '1080p'; // Results in 1080x1920
@@ -808,6 +913,9 @@ export class VideoGenerationProcessor extends WorkerHost {
       model: model.displayName, // Store display name
       source: 'ai-video', // Content source type for tracking
       contentType: 'video',
+      ...(options?.generationMethod
+        ? { generationMethod: options.generationMethod, fallbackReason: options.fallbackReason }
+        : {}),
     };
 
     // Serialize the read-modify-write under a row lock so concurrent scene

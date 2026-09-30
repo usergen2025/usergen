@@ -4,6 +4,7 @@ import MarketingAuthProvider from '@/components/marketing/MarketingAuthProvider'
 import MarketingHeader from '@/components/marketing/MarketingHeader';
 import MarketingFooter from '@/components/marketing/MarketingFooter';
 import MarketingTheme from '@/components/marketing/MarketingTheme';
+import MarketingJsonLd from '@/components/marketing/MarketingJsonLd';
 
 /**
  * `metadataBase` turns the relative `canonical` and `og:url` values below into
@@ -13,7 +14,9 @@ import MarketingTheme from '@/components/marketing/MarketingTheme';
  * TODO(deploy): set NEXT_PUBLIC_SITE_URL in the production environment. The
  * default is only right if the site ends up on this apex domain.
  */
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://usergen.ai';
+const seoEnabled = process.env.NEXT_PUBLIC_ENABLE_SEO === 'true';
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ?? (seoEnabled ? 'https://usergen.ai' : 'http://localhost:3200');
 
 /**
  * Shared across the four public pages. Subpages set a bare title ("Pricing")
@@ -43,6 +46,7 @@ export const metadata: Metadata = {
 export default function MarketingLayout({ children }: { children: React.ReactNode }) {
   return (
     <MarketingTheme className="flex min-h-0 flex-1 flex-col">
+      <MarketingJsonLd />
       <LoggedOutGate>
         <MarketingAuthProvider>
           <MarketingHeader />

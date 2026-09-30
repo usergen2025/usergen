@@ -549,23 +549,49 @@ export const landing = {
     headline: { lead: 'Frequently Asked', trail: 'Questions' },
     items: [
       {
-        question: 'What are AI video generators?',
-        answer: {
-          base: 'AI video generators are AI-powered tools that create videos from a text prompt, text and images, or scripts. These AI tools work like an intelligent video editor, turning prompts into impressive, impactful, and realistic AI videos or video clips without requiring advanced video editing skills.',
-          mobile: 'AI tools that convert product links or descriptions into complete video ads with custom avatars, script narration, background scores, and visual templates.',
-        },
-      },
-      {
-        question: 'How to create an AI video of yourself?',
-        answer: {
-          base: 'Upload a short clip or reference image, then type your script. The platform will generate a video with realistic AI motion and voice. You can animate, adjust the format, and create explainer videos or social clips with AI-powered editing tools.',
-          mobile: 'Upload a short clip or reference image, then type your script. The platform will generate a video with realistic AI motion and voice.',
-        },
-      },
-      {
-        question: 'Can I customize the avatars?',
+        question: 'What is UserGen?',
         answer:
-          'Yes, you can choose from dozens of high fidelity Indian presenters with various accents, regions, and styles, or use pure product assets.',
+          'UserGen is an AI video generation platform that helps you turn ideas into ready-to-use videos. You can create videos using AI avatars, product visuals, B-roll, or a combination of different formats, then add AI voices, captions, and background music.',
+      },
+      {
+        question: 'How can I create a video using AI with UserGen?',
+        answer:
+          'Start by choosing the type of video you want to make. UserGen can create Avatar Only, Product Only, B-roll Only, Avatar with Product, or mixed-format videos. From there, you can customize your content, choose an AI voice, add captions and background music, and generate your video.',
+      },
+      {
+        question: 'Can I add an AI voice to my video?',
+        answer:
+          'Yes. UserGen lets you select an AI voice for your video, so you can add spoken narration without recording your own voice. Simply choose the voice that fits your content and audience.',
+      },
+      {
+        question: 'Can UserGen automatically add captions to AI-generated videos?',
+        answer:
+          'Yes. Captions can be added to your videos directly within UserGen. This gives you a more complete AI video creation workflow without needing a separate tool just to add subtitles.',
+      },
+      {
+        question: 'Do I need video editing experience to create AI videos?',
+        answer:
+          "No. UserGen is designed to simplify creating videos with AI, so you don't need traditional video editing or production experience. Choose your format, provide your content, customize the available options, and let UserGen handle the video generation process.",
+      },
+      {
+        question: 'What can I use AI-generated videos for?',
+        answer:
+          'You can use UserGen to make content for social media, advertisements, product promotions, brand content, explainers, UGC-style creatives, and other marketing campaigns. It can be especially useful when you need to produce more video content without organizing a traditional shoot.',
+      },
+      {
+        question: 'How does AI video generation make content creation easier?',
+        answer:
+          'Traditional video production can involve scripting, filming, voice recording, editing, captions, and music. Video generation with AI can bring several of these steps into one workflow, helping creators and businesses produce videos more efficiently.',
+      },
+      {
+        question: 'Can businesses and brands use UserGen for video creation?',
+        answer:
+          'Yes. UserGen can help brands create videos with AI for products, campaigns, social media, advertising, and other marketing needs. Different video formats let you choose whether your content should focus on a presenter, your product, supporting visuals, or a combination of them.',
+      },
+      {
+        question: 'Is UserGen an AI video maker or a video editor?',
+        answer:
+          'UserGen is primarily built around AI video making and generation rather than traditional timeline-based editing. The goal is to help you create a video using AI without having to manually build every scene, voiceover, caption and visual from scratch.',
       },
     ],
     viewAll: 'View all',

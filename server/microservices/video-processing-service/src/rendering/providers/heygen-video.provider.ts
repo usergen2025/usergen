@@ -26,6 +26,24 @@ export interface HeyGenVideoGenerationResponse {
   video_id: string;
 }
 
+/**
+ * `non_retryable` is a finished HeyGen job that failed on the input itself
+ * (no face, rejected image). Retrying the same still against HeyGen will fail
+ * the same way, so the caller should switch provider.
+ * `transient` is a timeout or transport error, which a retry might clear.
+ */
+export type HeyGenFailureKind = 'non_retryable' | 'transient';
+
+export class HeyGenRenderError extends Error {
+  readonly kind: HeyGenFailureKind;
+
+  constructor(message: string, kind: HeyGenFailureKind) {
+    super(message);
+    this.name = 'HeyGenRenderError';
+    this.kind = kind;
+  }
+}
+
 export interface HeyGenVideoStatus {
   code: number;
   data: {
@@ -434,7 +452,9 @@ export class HeyGenVideoProvider {
       
       if (status.data.status === 'failed') {
         const errorMsg = status.data.error?.message || status.data.error?.detail || status.message || 'Unknown error';
-        throw new Error(`Video generation failed: ${errorMsg}`);
+        // A completed poll that landed on `failed` is deterministic for this
+        // still — face detection and rejected images both arrive this way.
+        throw new HeyGenRenderError(`Video generation failed: ${errorMsg}`, 'non_retryable');
       }
       
       // Continue polling for 'processing', 'pending', 'waiting' statuses
@@ -444,7 +464,10 @@ export class HeyGenVideoProvider {
       attempts++;
     }
     
-    throw new Error(`Video generation timed out after ${maxAttempts} attempts`);
+    throw new HeyGenRenderError(
+      `Video generation timed out after ${maxAttempts} attempts`,
+      'transient',
+    );
   }
 
   /**
@@ -930,12 +953,15 @@ export class HeyGenVideoProvider {
       if (status.data.status === 'completed') return status;
       if (status.data.status === 'failed') {
         const msg = status.data.error?.message || 'Unknown error';
-        throw new Error(`HeyGen v3 video failed: ${msg}`);
+        throw new HeyGenRenderError(`HeyGen v3 video failed: ${msg}`, 'non_retryable');
       }
       await new Promise((r) => setTimeout(r, intervalMs));
       attempts++;
     }
-    throw new Error(`HeyGen v3 video ${videoId} timed out after ${maxAttempts} attempts`);
+    throw new HeyGenRenderError(
+      `HeyGen v3 video ${videoId} timed out after ${maxAttempts} attempts`,
+      'transient',
+    );
   }
 
   private buildV3VideoAudioParams(

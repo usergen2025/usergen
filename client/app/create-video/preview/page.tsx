@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Play, Pause, Download, Instagram, Facebook, Share2, Edit2, Home, Eye, EyeOff, X, Bold, Italic, Underline, Loader2 } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Download, Edit2, Home, Eye, EyeOff, X, Bold, Italic, Underline, Loader2 } from 'lucide-react';
+import ShareActions from '@/components/create-video/ShareActions';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import { typography } from '@/lib/config/theme';
@@ -569,19 +570,7 @@ function PreviewPageContent() {
                   )}
                   <span className="text-xs">Download</span>
                 </button>
-                <button className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors relative">
-                  <Instagram className="w-6 h-6" />
-                  <span className="text-xs">Instagram</span>
-                  <span className="absolute -top-1 -right-1 text-xs bg-primary text-secondary px-1 rounded">+¢50</span>
-                </button>
-                <button className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors">
-                  <Facebook className="w-6 h-6" />
-                  <span className="text-xs">Facebook</span>
-                </button>
-                <button className="flex flex-col items-center gap-2 p-3 border border-border rounded-lg hover:bg-primary-light transition-colors">
-                  <Share2 className="w-6 h-6" />
-                  <span className="text-xs">Share</span>
-                </button>
+                {projectId ? <ShareActions projectId={projectId} variant="preview" /> : null}
               </div>
 
               <Button 

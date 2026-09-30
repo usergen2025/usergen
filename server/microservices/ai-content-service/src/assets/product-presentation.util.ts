@@ -10,6 +10,7 @@ export type PresentationProfile =
   | 'home_furniture'
   | 'food_beverage'
   | 'beauty_cosmetic'
+  | 'footwear'
   | 'generic';
 
 export type HumanInteraction = 'required' | 'recommended' | 'optional' | 'discouraged';
@@ -38,6 +39,11 @@ export interface ProductPresentationPlan {
   productType?: string;
   productForm?: string;
   jewelryForm?: string;
+  /**
+   * Share of scenes that must show a person using the product.
+   * 0 when human interaction is discouraged (vehicles).
+   */
+  humanShareTarget?: number;
 }
 
 const DEFAULT_SHOT_MIX: Record<PresentationProfile, ProductPresentationShotMix[]> = {
@@ -94,10 +100,19 @@ const DEFAULT_SHOT_MIX: Record<PresentationProfile, ProductPresentationShotMix[]
     { mode: 'detail_macro', share: 0.15 },
     { mode: 'lifestyle_context', share: 0.15 },
   ],
+  footwear: [
+    { mode: 'hero_flat_lay', share: 0.17, framingHint: 'Full shoe on a clean surface, both shoes if a pair' },
+    { mode: 'on_model', share: 0.33, framingHint: 'Person wearing the shoe, mid-stride or standing, product clearly visible' },
+    { mode: 'hands_interaction', share: 0.17, framingHint: 'Hands tying laces or holding the shoe' },
+    { mode: 'lifestyle_context', share: 0.17, framingHint: 'The shoe in the lifestyle setting the brief names' },
+    { mode: 'detail_macro', share: 0.16, framingHint: 'Sole, stitching or material close-up' },
+  ],
   generic: [
-    { mode: 'hero_flat_lay', share: 0.33 },
-    { mode: 'lifestyle_context', share: 0.34 },
-    { mode: 'detail_macro', share: 0.33 },
+    { mode: 'hero_flat_lay', share: 0.2, framingHint: 'Full product on a clean surface' },
+    { mode: 'on_model', share: 0.25, framingHint: 'Person using or wearing the product' },
+    { mode: 'hands_interaction', share: 0.25, framingHint: 'Hands interacting with the product' },
+    { mode: 'lifestyle_context', share: 0.15, framingHint: 'Product in its real-world setting' },
+    { mode: 'detail_macro', share: 0.15, framingHint: 'Material or feature close-up' },
   ],
 };
 
@@ -130,6 +145,7 @@ export function inferProfileFromProductType(productType?: string): PresentationP
   if (/sofa|chair|table|furniture|bed|mattress|desk/.test(t)) return 'home_furniture';
   if (/food|snack|beverage|drink|coffee|tea|meal|noodle|packaged/.test(t)) return 'food_beverage';
   if (/cosmetic|makeup|skincare|beauty|lipstick|perfume|cream|serum/.test(t)) return 'beauty_cosmetic';
+  if (/shoe|sneaker|footwear|boot|sandal|loafer|heel|trainer/.test(t)) return 'footwear';
   return 'generic';
 }
 
@@ -141,6 +157,7 @@ function humanInteractionForProfile(profile: PresentationProfile): HumanInteract
     case 'wearable_accessory':
     case 'beauty_cosmetic':
     case 'handheld_gadget':
+    case 'footwear':
       return 'recommended';
     case 'vehicle':
       return 'discouraged';
@@ -156,7 +173,7 @@ function defaultPresenterDescription(profile: PresentationProfile): string | und
   if (profile === 'wearable_jewelry') {
     return `${base}, elegant styling suitable for jewelry advertisement`;
   }
-  if (profile === 'wearable_apparel') {
+  if (profile === 'wearable_apparel' || profile === 'footwear') {
     return `${base}, contemporary casual fashion styling`;
   }
   return base;
@@ -207,6 +224,8 @@ export function buildProductPresentationPlan(input: {
     shotMix = shotMix.filter((s) => s.mode !== 'on_model' && s.mode !== 'hands_interaction');
   }
 
+  const humanShareTarget = humanInteraction === 'discouraged' ? 0 : 0.5;
+
   const needsPresenter = shotMix.some((s) => s.mode === 'on_model');
   const presenterDescription =
     input.presenterDescription?.trim() ||
@@ -223,6 +242,7 @@ export function buildProductPresentationPlan(input: {
     productType: input.productType?.trim() || undefined,
     productForm,
     jewelryForm: input.jewelryForm || productForm,
+    humanShareTarget,
   };
 }
 

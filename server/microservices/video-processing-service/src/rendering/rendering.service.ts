@@ -127,8 +127,14 @@ export class RenderingService {
     return (this.configService.get<string>('PAYMENT_SERVICE_URL') || 'http://localhost:9005').replace(/\/api\/?$/, '');
   }
 
+  /** Off unless explicitly re-enabled. The checks below stay in place for the plan-based quota work. */
+  private billingEnforced(): boolean {
+    return this.configService.get<string>('BILLING_ENFORCEMENT_ENABLED') === 'true';
+  }
+
   /** Block start of render if unsettled + final render fee exceeds wallet. */
   private async assertExportAffordable(projectId: string, userId: string): Promise<void> {
+    if (!this.billingEnforced()) return;
     const paymentBase = this.paymentServiceBase();
     try {
       const response = await axios.post(
@@ -165,6 +171,7 @@ export class RenderingService {
    * Single wallet debit for all unsettled snapshots + FINAL_RENDER line (deferred billing).
    */
   private async chargeFinalRenderCredits(projectId: string, userId: string): Promise<void> {
+    if (!this.billingEnforced()) return;
     try {
       const proj = await this.databaseService.videoProject.findUnique({ where: { id: projectId } });
       if (!proj) return;
@@ -203,6 +210,40 @@ export class RenderingService {
       });
     } catch (err: any) {
       console.error('[RenderingService] chargeFinalRenderCredits (settlement):', err?.message ?? err);
+    }
+  }
+
+  /**
+   * A missing scene used to be a console.warn and a shorter export. Record it
+   * on the project so the drop is visible after the render succeeds.
+   */
+  private async noteSkippedScene(projectId: string, sceneNumber: number, reason: string): Promise<void> {
+    console.warn(`[RenderingService] Skipping scene ${sceneNumber} for ${projectId}: ${reason}`);
+    await this.projectLog
+      .logProject(projectId, 'WARN', `Export skipped scene ${sceneNumber}: ${reason}`, {
+        op: 'export',
+        scene: sceneNumber,
+      })
+      .catch(() => {});
+    try {
+      await this.databaseService.withProjectLock(projectId, async (tx) => {
+        const latest = await tx.videoProject.findUnique({ where: { id: projectId } });
+        const raw = (latest as any)?.metadata;
+        const meta =
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? { ...(raw as Record<string, unknown>) }
+            : {};
+        const skipped = Array.isArray(meta.exportSkippedScenes)
+          ? [...(meta.exportSkippedScenes as unknown[])]
+          : [];
+        skipped.push({ sceneNumber, reason, at: new Date().toISOString() });
+        await tx.videoProject.update({
+          where: { id: projectId },
+          data: { metadata: { ...meta, exportSkippedScenes: skipped } as any },
+        });
+      });
+    } catch (err: any) {
+      console.warn(`[RenderingService] Could not record skipped scene ${sceneNumber}: ${err?.message}`);
     }
   }
 
@@ -1682,8 +1723,17 @@ export class RenderingService {
       return null;
     };
     
-    const brollVideoPaths = sortedBrollVideos
-      .map(v => resolveVideoPath(v, 'HALF_N_HALF'))
+    const resolvedHalf = sortedBrollVideos.map((v) => ({
+      scene: v.sceneNumber,
+      path: resolveVideoPath(v, 'HALF_N_HALF'),
+    }));
+    for (const entry of resolvedHalf) {
+      if (!entry.path) {
+        await this.noteSkippedScene(projectId, entry.scene, 'b-roll video file missing');
+      }
+    }
+    const brollVideoPaths = resolvedHalf
+      .map((entry) => entry.path)
       .filter((p): p is string => p !== null);
     
     if (brollVideoPaths.length === 0) {
@@ -2595,8 +2645,17 @@ export class RenderingService {
     };
     
     // Convert paths to absolute paths before concatenation
-    const brollVideoPaths = sortedBrollVideos
-      .map(v => resolveVideoPathCutout(v, 'CUTOUT'))
+    const resolvedCutout = sortedBrollVideos.map((v) => ({
+      scene: v.sceneNumber,
+      path: resolveVideoPathCutout(v, 'CUTOUT'),
+    }));
+    for (const entry of resolvedCutout) {
+      if (!entry.path) {
+        await this.noteSkippedScene(projectId, entry.scene, 'b-roll video file missing');
+      }
+    }
+    const brollVideoPaths = resolvedCutout
+      .map((entry) => entry.path)
       .filter((p): p is string => p !== null);
     
     if (brollVideoPaths.length === 0) {
@@ -3338,6 +3397,22 @@ export class RenderingService {
     const serverRoot = path.join(process.cwd(), '..', '..');
     const sceneVideoPaths: string[] = [];
 
+    // Scenes that never produced a video are invisible to this loop, which
+    // only walks stored tasks. Note them so the export is not silently short.
+    try {
+      const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+      const scriptScenes: any[] = script?.scenes || script?.scene_plan || [];
+      const present = new Set(sortedBrollVideos.map((v) => v.sceneNumber));
+      for (const scene of scriptScenes) {
+        const n = scene.scene_number || scene.sceneNumber;
+        if (typeof n === 'number' && !present.has(n)) {
+          await this.noteSkippedScene(projectId, n, 'no b-roll video was generated');
+        }
+      }
+    } catch {
+      // A script that will not parse should not block the stitch.
+    }
+
     for (const brollVideo of sortedBrollVideos) {
       const sceneNumber = brollVideo.sceneNumber;
       const audioFile = sortedAudioFiles.find((af) => af.sceneNumber === sceneNumber);
@@ -3502,7 +3577,11 @@ export class RenderingService {
       const audioFile = sortedAudioFiles.find((af: any) => af.sceneNumber === sceneNumber);
 
       if (!brollVideo || !audioFile) {
-        console.warn(`[RenderingService] AVATAR_PRODUCT: Missing video or audio for scene ${sceneNumber}`);
+        await this.noteSkippedScene(
+          projectId,
+          sceneNumber,
+          !brollVideo ? 'no b-roll video was generated' : 'no audio file',
+        );
         continue;
       }
 
@@ -3540,7 +3619,7 @@ export class RenderingService {
       }
       
       if (!brollVideoPath || !fs.existsSync(brollVideoPath)) {
-        console.warn(`[RenderingService] AVATAR_PRODUCT: B-roll video not found for scene ${sceneNumber}`);
+        await this.noteSkippedScene(projectId, sceneNumber, 'b-roll video file missing on disk');
         continue;
       }
         
@@ -3569,7 +3648,7 @@ export class RenderingService {
         }
         
         if (!audioFilePath || !fs.existsSync(audioFilePath)) {
-        console.warn(`[RenderingService] AVATAR_PRODUCT: Audio not found for scene ${sceneNumber}`);
+        await this.noteSkippedScene(projectId, sceneNumber, 'audio file missing on disk');
         continue;
       }
 

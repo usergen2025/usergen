@@ -135,6 +135,16 @@ export function resolveFormAwareShotMix(
     ];
   }
 
+  if (form === 'footwear' || profile === 'footwear') {
+    return [
+      { mode: 'hero_flat_lay', share: 0.17, framingHint: 'Full shoe on a clean surface, pair if applicable' },
+      { mode: 'on_model', share: 0.33, framingHint: 'Person wearing the shoe in motion or standing, product clearly visible' },
+      { mode: 'hands_interaction', share: 0.17, framingHint: 'Hands tying the laces or presenting the shoe' },
+      { mode: 'lifestyle_context', share: 0.17, framingHint: 'Shoe in the lifestyle setting named in the brief' },
+      { mode: 'detail_macro', share: 0.16, framingHint: 'Sole, stitching or material close-up' },
+    ];
+  }
+
   if (!hasDedicatedDisplayHolder(form) && profile === 'wearable_jewelry') {
     return [
       { mode: 'hero_flat_lay', share: 0.3, framingHint: 'Product on neutral luxury surface, full item visible' },
