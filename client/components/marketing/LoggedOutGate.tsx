@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { hintForRole, signedInPathFor } from '@/lib/auth/session-hint';
+import { clearIntent, GENERATION_FUNNEL_PATH, hasPendingGenerationFunnel } from '@/lib/marketing/generation-intent';
 
 /**
  * Client-side backstop for the redirect `proxy.ts` normally performs.
@@ -26,12 +27,23 @@ export default function LoggedOutGate({ children }: { children: React.ReactNode 
     !isLoading && isAuthenticated ? hintForRole(user?.role) : null;
 
   useEffect(() => {
-    if (redirectHint) {
-      // Navigating rather than rewriting, so unlike the proxy path a creator
-      // recovered here ends up on `/home` in the address bar. This only runs
-      // when the cookie failed, so it is the degraded case either way.
+    if (!redirectHint) return;
+    /*
+     * A homepage "Generate my ad" is already in flight. Sending a creator to
+     * `/home` here blanks the page and races the login modal's chat redirect.
+     * Brands never enter that funnel.
+     */
+    if (redirectHint !== 'creator') {
+      if (hasPendingGenerationFunnel()) clearIntent();
       router.replace(signedInPathFor(redirectHint, pathname ?? '/'));
+      return;
     }
+    if (hasPendingGenerationFunnel()) {
+      sessionStorage.removeItem('fromCreateVideo');
+      router.replace(GENERATION_FUNNEL_PATH);
+      return;
+    }
+    router.replace(signedInPathFor(redirectHint, pathname ?? '/'));
   }, [redirectHint, router, pathname]);
 
   if (redirectHint) {

@@ -7,6 +7,7 @@ import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
 import { consumeOauthMethod, trackLogin } from '@/lib/analytics/events';
+import { clearIntent, GENERATION_FUNNEL_PATH, hasPendingGenerationFunnel } from '@/lib/marketing/generation-intent';
 
 function OAuthCallbackContent() {
   const router = useRouter();
@@ -60,28 +61,34 @@ function OAuthCallbackContent() {
         trackLogin({ method: consumeOauthMethod() });
         showToast('Successfully logged in!', 'success');
 
+        const userStr = localStorage.getItem('user');
+        let role: string | undefined;
+        if (userStr) {
+          try {
+            role = JSON.parse(userStr).role as string | undefined;
+          } catch {
+            role = undefined;
+          }
+        }
+
+        // Homepage "Generate my ad" must survive the provider redirect.
+        if (role === 'BRAND') {
+          clearIntent();
+        } else if (hasPendingGenerationFunnel()) {
+          sessionStorage.removeItem('fromCreateVideo');
+          router.push(GENERATION_FUNNEL_PATH);
+          return;
+        }
+
         // Check for pending redirect from video creation flow
         const pendingRedirect = sessionStorage.getItem('pendingRedirect');
         if (pendingRedirect) {
           sessionStorage.removeItem('pendingRedirect');
           router.push(pendingRedirect);
+        } else if (role === 'BRAND') {
+          router.push('/brand/dashboard');
         } else {
-          // Check user role and redirect appropriately
-          const userStr = localStorage.getItem('user');
-          if (userStr) {
-            try {
-              const user = JSON.parse(userStr);
-              if (user.role === 'BRAND') {
-                router.push('/brand/dashboard');
-              } else {
-                router.push('/dashboard');
-              }
-            } catch {
-              router.push('/dashboard');
-            }
-          } else {
-            router.push('/dashboard');
-          }
+          router.push('/dashboard');
         }
       } catch (err: any) {
         console.error('OAuth callback error:', err);

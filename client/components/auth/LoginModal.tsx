@@ -7,6 +7,7 @@ import { useToast } from '@/lib/toast/toast';
 import { apiClient } from '@/lib/api/client';
 import { writeStorage } from '@/lib/utils/safeStorage';
 import { trackLogin } from '@/lib/analytics/events';
+import { clearIntent, hasPendingGenerationFunnel } from '@/lib/marketing/generation-intent';
 import {
   AuthEmailInput,
   AuthField,
@@ -117,8 +118,9 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
           // generate CTA on the landing page — so send them to their own
           // dashboard instead of a funnel that has no brand variant.
           if (userRole === 'BRAND') {
+            clearIntent();
             router.push(finalRedirectUrl.includes('/create-video') ? '/brand/dashboard' : finalRedirectUrl);
-          } else if (finalRedirectUrl.includes('/create-video')) {
+          } else if (finalRedirectUrl.includes('/create-video') || hasPendingGenerationFunnel()) {
             // Prefer ai-chat flow (AuthGuard overlay), not style
             router.push('/create-video/ai-chat');
           } else if (finalRedirectUrl === '/dashboard' || finalRedirectUrl === '/dashboard/projects') {

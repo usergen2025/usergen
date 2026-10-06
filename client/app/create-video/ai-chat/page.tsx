@@ -86,6 +86,10 @@ const USE_STAGED_ASSETS =
   typeof process !== 'undefined' &&
   process.env.NEXT_PUBLIC_USE_STAGED_ASSETS !== 'false';
 
+/** One upload for a homepage handoff, shared if the chat page remounts while it is in flight. */
+let heroHandoffKey: number | null = null;
+let heroHandoffPromise: Promise<{ projectId: string | null; assets: Asset[] }> | null = null;
+
 const STYLE_MAP: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT' | 'AVATAR_ONLY' | 'PRODUCT_ONLY' | 'AVATAR_PRODUCT' | 'ANIMATED_AVATAR' | 'B_ROLL_ONLY'> = {
   'half-n-half': 'HALF_N_HALF',
   'alternate': 'ALTERNATE',
@@ -130,6 +134,8 @@ function AIChatPageContent() {
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [userScriptMessage, setUserScriptMessage] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
+  /** Mirrors projectId, and is set before state flushes so a homepage upload can register immediately. */
+  const projectIdRef = useRef<string | null>(null);
   const {
     download: downloadFinalVideo,
     isDownloading: isDownloadingFinal,
@@ -418,8 +424,8 @@ function AIChatPageContent() {
    * with copy from a page the user visited before signing up.
    */
   const heroIntentApplied = useRef(false);
-  /** In-flight draft project created from a landing handoff that included files. */
-  const heroProjectPromiseRef = useRef<Promise<string | null> | null>(null);
+  /** In-flight draft project plus uploaded assets from a landing handoff. */
+  const heroProjectPromiseRef = useRef<Promise<{ projectId: string | null; assets: Asset[] }> | null>(null);
   useEffect(() => {
     if (heroIntentApplied.current) return;
     // Wait for auth: AuthGuard shows a login overlay over this page, and
@@ -431,8 +437,9 @@ function AIChatPageContent() {
       return;
     }
 
-    const consumed = consumeIntent();
     heroIntentApplied.current = true;
+    void (async () => {
+    const consumed = await consumeIntent();
     if (!consumed) return;
     const { intent, assets } = consumed;
 
@@ -464,38 +471,73 @@ function AIChatPageContent() {
       // Send refuses assets until a project exists. Create it here and keep
       // the id in memory so a reload of the chat URL is not required — that
       // reload would restore from the server and drop the local files.
-      heroProjectPromiseRef.current = apiClient
-        .createVideoProject({
-          videoType: 'WITHOUT_AVATAR',
-          style: STYLE_MAP[intent.videoStyle],
-          currentStep: 'STYLE_SELECTION',
-          metadata: {
-            generationFlow: 'AI_CHAT',
-            aiChatStep: 'assets-attached',
-            selectedVideoStyle: intent.videoStyle,
-            aiChatStyleSubstep: 'confirmed',
-            aiChatScriptSubstep: 'input',
-            selectedLanguage: intent.language,
-            selectedVideoDuration: intent.duration,
-          },
-        })
-        .then((createResponse) => {
-          if (createResponse.success && createResponse.data?.id) {
-            setProjectId(createResponse.data.id);
-            return createResponse.data.id;
+      if (heroHandoffKey !== intent.createdAt || !heroHandoffPromise) {
+        heroHandoffKey = intent.createdAt;
+        heroHandoffPromise = (async () => {
+        try {
+          const createResponse = await apiClient.createVideoProject({
+            videoType: 'WITHOUT_AVATAR',
+            style: STYLE_MAP[intent.videoStyle],
+            currentStep: 'STYLE_SELECTION',
+            metadata: {
+              generationFlow: 'AI_CHAT',
+              aiChatStep: 'assets-attached',
+              selectedVideoStyle: intent.videoStyle,
+              aiChatStyleSubstep: 'confirmed',
+              aiChatScriptSubstep: 'input',
+              selectedLanguage: intent.language,
+              selectedVideoDuration: intent.duration,
+            },
+          });
+          const createdId = createResponse.success ? createResponse.data?.id : null;
+          if (!createdId) return { projectId: null, assets: mapped };
+          projectIdRef.current = createdId;
+          setProjectId(createdId);
+          const ready = await ensureAssetsUploaded(mapped);
+          if (USE_STAGED_ASSETS) {
+            const commitPayload = ready.map((asset) => {
+              const category =
+                asset.category ||
+                (asset.id.startsWith('logo-')
+                  ? 'logo'
+                  : asset.id.startsWith('product-')
+                    ? 'product'
+                    : 'reference');
+              if (asset.type === 'url') {
+                return {
+                  clientAssetId: asset.id,
+                  category,
+                  label: asset.name || category,
+                  type: 'url' as const,
+                  url: normalizeWebsiteUrl(asset.url || asset.name || '') || asset.url || '',
+                };
+              }
+              return {
+                clientAssetId: asset.id,
+                category,
+                label: asset.name || category,
+                type: 'image' as const,
+              };
+            });
+            await apiClient.commitStagedAssets(createdId, commitPayload);
           }
-          return null;
-        })
-        .catch((error) => {
+          const uploaded = ready.map((asset) => ({ ...asset, active: true }));
+          setAttachedAssets(uploaded);
+          return { projectId: createdId, assets: uploaded };
+        } catch (error) {
           console.error('[AIChat] Failed to create draft project from landing intent:', error);
-          return null;
-        });
+          return { projectId: projectIdRef.current, assets: mapped };
+        }
+      })();
+      }
+      heroProjectPromiseRef.current = heroHandoffPromise;
     }
 
     if (intent.videoStyle === 'product-only' || intent.videoStyle === 'broll-only') {
       setAvatarPreference('skip');
       sessionStorage.setItem('avatarPreference', 'skip');
     }
+    })();
   }, [isAuthenticated, isLoading, searchParams]);
 
   // AuthGuard shows LoginModal overlay when not authenticated - no redirect to /login
@@ -1153,7 +1195,8 @@ function AIChatPageContent() {
       throw new Error(uploadResponse.message || 'Upload failed');
     }
 
-    if (!projectId) {
+    const activeProjectId = projectIdRef.current || projectId;
+    if (!activeProjectId) {
       throw new Error('Project not ready for asset upload');
     }
 
@@ -1163,7 +1206,7 @@ function AIChatPageContent() {
     }
 
     const category = asset.category || inferAssetCategory(asset.id);
-    const registerResponse = await apiClient.registerStagedAsset(projectId, {
+    const registerResponse = await apiClient.registerStagedAsset(activeProjectId, {
       clientAssetId: asset.id,
       category,
       publicUrl: uploadResponse.data.publicUrl,
@@ -1864,9 +1907,19 @@ function AIChatPageContent() {
         'broll-only': 'B_ROLL_ONLY',
       };
       
+      // Homepage files upload on a promise started at handoff. Await it before
+      // the product-image check so a local file is not treated as missing.
+      let assetsForScript = attachedAssets;
+      let scriptProjectId = projectId ?? null;
+      if (heroProjectPromiseRef.current) {
+        const handoff = await heroProjectPromiseRef.current;
+        scriptProjectId = scriptProjectId || handoff.projectId;
+        if (handoff.assets.length > 0) assetsForScript = handoff.assets;
+      }
+
       // Extract product image URL from attached assets (already uploaded on modal pick)
       let productImageUrl: string | null = null;
-      const productImageAsset = attachedAssets.find(
+      const productImageAsset = assetsForScript.find(
         (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
       );
       productImageUrl = resolveProductImageUrl(productImageAsset);
@@ -1942,13 +1995,7 @@ function AIChatPageContent() {
       // Get avatar ID if available
       const avatarId = selectedAvatar || null;
 
-      // Draft project is created at style confirm, or from a landing handoff
-      // that included assets. Wait for that create if Send lands first.
-      let scriptProjectId = projectId ?? null;
-      if (attachedAssets.length > 0 && !scriptProjectId && heroProjectPromiseRef.current) {
-        scriptProjectId = await heroProjectPromiseRef.current;
-      }
-      if (attachedAssets.length > 0 && !scriptProjectId) {
+      if (assetsForScript.length > 0 && !scriptProjectId) {
         showToast('Project not ready. Please confirm your video style first.', 'error');
         setIsGeneratingScript(false);
         return;
@@ -2094,9 +2141,17 @@ function AIChatPageContent() {
         'broll-only': 'B_ROLL_ONLY',
       };
       
+      let assetsForScript = attachedAssets;
+      let scriptProjectId = projectId ?? null;
+      if (heroProjectPromiseRef.current) {
+        const handoff = await heroProjectPromiseRef.current;
+        scriptProjectId = scriptProjectId || handoff.projectId;
+        if (handoff.assets.length > 0) assetsForScript = handoff.assets;
+      }
+
       // Extract product image URL from attached assets (already uploaded on modal pick)
       let productImageUrl: string | null = null;
-      const productImageAsset = attachedAssets.find(
+      const productImageAsset = assetsForScript.find(
         (asset) => asset.type === 'image' && asset.id.startsWith('product-'),
       );
       productImageUrl = resolveProductImageUrl(productImageAsset);
@@ -2182,7 +2237,7 @@ function AIChatPageContent() {
         productImageUrl: productImageUrl || undefined,
         hasAvatar: hasAvatar,
         avatarId: avatarId || undefined,
-        projectId: projectId || undefined, // Pass projectId for metadata/context; analysis wait is asset-gated on backend
+        projectId: scriptProjectId || undefined,
       });
 
       if (response.success && response.data) {
@@ -2193,9 +2248,9 @@ function AIChatPageContent() {
         setFormattedScript(displayScript);
         
         // Update project with regenerated script if project exists
-        if (projectId) {
+        if (scriptProjectId) {
           try {
-            await apiClient.updateVideoProject(projectId, {
+            await apiClient.updateVideoProject(scriptProjectId, {
               script: JSON.stringify(scriptData),
               scriptGenerated: true,
               metadata: {
@@ -2203,7 +2258,7 @@ function AIChatPageContent() {
                 userScriptMessage: userScriptMessage,
               },
             });
-            console.log(`[AIChat] Updated project ${projectId} with regenerated script`);
+            console.log(`[AIChat] Updated project ${scriptProjectId} with regenerated script`);
           } catch (error: any) {
             console.error('Failed to update project with regenerated script:', error);
             // Don't block user flow

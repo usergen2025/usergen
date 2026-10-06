@@ -16,7 +16,11 @@ import {
   type HeroAssetDraft,
 } from '@/lib/marketing/generation-intent';
 import { cn } from '@/lib/utils/cn';
+import { useToast } from '@/lib/toast/toast';
 import HeroAssetsModal from './HeroAssetsModal';
+
+const PRODUCT_IMAGE_REQUIRED =
+  'Product image is required for this video style. Please upload a product image.';
 
 /**
  * The five styles the AI chat style step offers, using the same illustrations
@@ -66,17 +70,26 @@ export default function HeroGeneratorWidget({
   const [value, setValue] = useState('');
   const [assets, setAssets] = useState<HeroAssetDraft[]>([]);
   const [assetsOpen, setAssetsOpen] = useState(false);
+  const [nudgeAttach, setNudgeAttach] = useState(false);
   const [videoStyle, setVideoStyle] = useState<GenerationVideoStyle>('avatar-only');
   const [duration, setDuration] = useState<GenerationDuration>('30 seconds');
   const [language, setLanguage] = useState(baseValue(widget.languages)[0]);
   const router = useRouter();
   const marketingAuth = useOptionalMarketingAuth();
+  const { showToast } = useToast();
 
   return (
     <>
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          const needsProduct = videoStyle === 'product-only' || videoStyle === 'avatar-product';
+          if (needsProduct && !assets.some((asset) => asset.kind === 'product')) {
+            showToast(PRODUCT_IMAGE_REQUIRED, 'error');
+            setNudgeAttach(true);
+            window.setTimeout(() => setNudgeAttach(false), 2400);
+            return;
+          }
           const scriptLanguage = languageFromLabel(language);
           if (scriptLanguage) {
             const stored = writeIntent({
@@ -122,7 +135,10 @@ export default function HeroGeneratorWidget({
           <button
             type="button"
             onClick={() => setAssetsOpen(true)}
-            className="relative flex size-8 shrink-0 items-center justify-center rounded-full text-[#7B695E] hover:bg-white"
+            className={cn(
+              'relative flex size-8 shrink-0 items-center justify-center rounded-full text-[#7B695E] hover:bg-white',
+              nudgeAttach && 'animate-bounce text-[#E86412]',
+            )}
             aria-label={assets.length > 0 ? `Attach assets, ${assets.length} attached` : 'Attach assets'}
           >
             <Paperclip className="size-4" strokeWidth={2} />

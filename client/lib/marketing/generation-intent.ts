@@ -1,4 +1,4 @@
-import { readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeStorage';
+import { readStorage, readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeStorage';
 
 /**
  * What the landing page hero collected, held across sign-up.
@@ -11,8 +11,8 @@ import { readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeSt
  *
  * Session storage rather than local: this is one visitor's half-finished
  * thought, not a preference. Closing the tab should throw it away. Image
- * files cannot survive that store (or a full reload); they are held in module
- * memory, which client-side navigation to the funnel keeps alive.
+ * files cannot live in that store, so they are held in module memory for a
+ * client-side navigation and in IndexedDB for a full load (Google login).
  */
 export type GenerationIntent = {
   /** Bumped when the shape changes; a mismatched version is discarded. */
@@ -53,6 +53,13 @@ export type HeroAssetDraft = {
 };
 
 const STORAGE_KEY = 'ug_generation_intent';
+const FROM_CREATE_VIDEO_KEY = 'fromCreateVideo';
+const IDB_NAME = 'ug-hero-assets';
+const IDB_STORE = 'files';
+const IDB_KEY = 'current';
+
+/** Where a homepage "Generate my ad" should land after sign-in. */
+export const GENERATION_FUNNEL_PATH = '/create-video/ai-chat';
 
 /**
  * Long enough to survive sign-up including an OAuth round trip and an OTP
@@ -98,14 +105,110 @@ export function languageFromLabel(label: string): GenerationLanguage | null {
   return LANGUAGE_BY_LABEL[label.trim().toLowerCase()] ?? null;
 }
 
+type StoredHeroAsset = {
+  id: string;
+  name: string;
+  kind: HeroAssetKind;
+  url?: string;
+  blob?: Blob;
+  mime?: string;
+};
+
+function openAssetDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = indexedDB.open(IDB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(IDB_STORE)) {
+        request.result.createObjectStore(IDB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+}
+
+function persistHeroAssets(assets: HeroAssetDraft[]): void {
+  void (async () => {
+    const db = await openAssetDb();
+    if (!db) return;
+    const stored: StoredHeroAsset[] = assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      kind: asset.kind,
+      url: asset.url,
+      blob: asset.file,
+      mime: asset.file?.type,
+    }));
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(stored, IDB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+    db.close();
+  })();
+}
+
+async function readPersistedHeroAssets(): Promise<HeroAssetDraft[]> {
+  const db = await openAssetDb();
+  if (!db) return [];
+  const stored = await new Promise<StoredHeroAsset[] | undefined>((resolve) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const request = tx.objectStore(IDB_STORE).get(IDB_KEY);
+    request.onsuccess = () => resolve(request.result as StoredHeroAsset[] | undefined);
+    request.onerror = () => resolve(undefined);
+  });
+  db.close();
+  if (!Array.isArray(stored)) return [];
+  return stored.map((item) => {
+    const file = item.blob
+      ? new File([item.blob], item.name, { type: item.mime || item.blob.type || 'application/octet-stream' })
+      : undefined;
+    return {
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      url: item.url,
+      file,
+      preview: file ? URL.createObjectURL(file) : undefined,
+    };
+  });
+}
+
+function clearPersistedHeroAssets(): void {
+  void (async () => {
+    const db = await openAssetDb();
+    if (!db) return;
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(IDB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+    db.close();
+  })();
+}
+
 export function stageHeroAssets(assets: HeroAssetDraft[]): void {
   stagedAssets = assets;
+  persistHeroAssets(assets);
 }
 
 function takeHeroAssets(): HeroAssetDraft[] {
   const next = stagedAssets;
   stagedAssets = [];
   return next;
+}
+
+/**
+ * True while a homepage "Generate my ad" is waiting to be applied.
+ * Login redirects must follow this instead of the normal dashboard/home.
+ */
+export function hasPendingGenerationFunnel(): boolean {
+  if (readStorage(FROM_CREATE_VIDEO_KEY, 'session') === 'true') return true;
+  const stored = readStorageJson<GenerationIntent>(STORAGE_KEY, 'session');
+  return !!stored && stored.version === 2;
 }
 
 /**
@@ -148,25 +251,47 @@ export type ConsumedIntent = {
  * storage would seed every one of those with copy from a landing page the
  * user saw once.
  */
-export function consumeIntent(): ConsumedIntent | null {
+let consumeInFlight: Promise<ConsumedIntent | null> | null = null;
+
+async function readConsumedIntent(): Promise<ConsumedIntent | null> {
   if (recentConsume && Date.now() - recentConsume.at < RECONSUME_MS) {
     return recentConsume.value;
   }
 
   const stored = readStorageJson<GenerationIntent>(STORAGE_KEY, 'session');
-  const assets = takeHeroAssets();
   removeStorage(STORAGE_KEY, 'session');
 
-  if (!stored || stored.version !== 2) return null;
-  if (typeof stored.value !== 'string') return null;
-  if (!VIDEO_STYLES.has(stored.videoStyle)) return null;
-  if (!DURATIONS.has(stored.duration)) return null;
-  if (!LANGUAGE_BY_LABEL[stored.language]) return null;
-  if (typeof stored.createdAt !== 'number' || Date.now() - stored.createdAt > TTL_MS) return null;
+  const memory = takeHeroAssets();
+  if (
+    !stored ||
+    stored.version !== 2 ||
+    typeof stored.value !== 'string' ||
+    !VIDEO_STYLES.has(stored.videoStyle) ||
+    !DURATIONS.has(stored.duration) ||
+    !LANGUAGE_BY_LABEL[stored.language] ||
+    typeof stored.createdAt !== 'number' ||
+    Date.now() - stored.createdAt > TTL_MS
+  ) {
+    clearPersistedHeroAssets();
+    return null;
+  }
 
+  const assets = memory.length > 0 ? memory : await readPersistedHeroAssets();
+  clearPersistedHeroAssets();
   const value = { intent: stored, assets };
   recentConsume = { at: Date.now(), value };
   return value;
+}
+
+export function consumeIntent(): Promise<ConsumedIntent | null> {
+  if (recentConsume && Date.now() - recentConsume.at < RECONSUME_MS) {
+    return Promise.resolve(recentConsume.value);
+  }
+  if (consumeInFlight) return consumeInFlight;
+  consumeInFlight = readConsumedIntent().finally(() => {
+    consumeInFlight = null;
+  });
+  return consumeInFlight;
 }
 
 /**
@@ -179,4 +304,5 @@ export function clearIntent(): void {
   removeStorage(STORAGE_KEY, 'session');
   stagedAssets = [];
   recentConsume = null;
+  clearPersistedHeroAssets();
 }
