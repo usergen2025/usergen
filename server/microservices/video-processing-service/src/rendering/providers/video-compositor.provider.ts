@@ -1424,12 +1424,38 @@ export class VideoCompositorProvider {
         -shortest -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      try {
+        execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024, encoding: 'utf-8' });
+      } catch (ffmpegErr: any) {
+        const stderr =
+          typeof ffmpegErr?.stderr === 'string'
+            ? ffmpegErr.stderr
+            : Buffer.isBuffer(ffmpegErr?.stderr)
+              ? ffmpegErr.stderr.toString('utf-8')
+              : '';
+        const stdout =
+          typeof ffmpegErr?.stdout === 'string'
+            ? ffmpegErr.stdout
+            : Buffer.isBuffer(ffmpegErr?.stdout)
+              ? ffmpegErr.stdout.toString('utf-8')
+              : '';
+        const detail = [stderr, stdout, ffmpegErr?.message].filter(Boolean).join('\n').trim();
+        console.error(`[VideoCompositor] FFmpeg add audio stderr/detail:`, detail.slice(-4000));
+        throw new Error(
+          `Failed to add audio to video: ${ffmpegErr?.message || 'ffmpeg failed'}${
+            stderr ? ` | ${stderr.split('\n').filter(Boolean).slice(-8).join(' | ')}` : ''
+          }`,
+        );
+      }
       console.log(`[VideoCompositor] Audio added to video successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
       console.error(`[VideoCompositor] FFmpeg add audio error:`, error.message);
-      throw new Error(`Failed to add audio to video: ${error.message}`);
+      throw new Error(
+        error?.message?.startsWith('Failed to add audio')
+          ? error.message
+          : `Failed to add audio to video: ${error.message}`,
+      );
     }
   }
 

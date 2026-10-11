@@ -14,7 +14,11 @@ export {
   resolveStorageRefToLocalPath,
   resolveStorageRefExternalUrl,
   legacyPngUrlToRef,
+  legacyMediaRecordToRef,
+  ensureLocalMedia,
 } from './resolve-storage-ref';
+export { getStoragePriority, isGcsPriority } from './storage-priority';
+export type { StoragePriority } from './storage-priority';
 
 // Export constants and utilities
 export * from './storage.constants';

@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { ensureLocalMedia } from '@shared/storage';
 
 /**
  * Resolve a project audio filePath (relative or absolute) to an on-disk path.
@@ -36,6 +37,38 @@ export function resolveAudioPathOnDisk(
     if (fs.existsSync(full)) return full;
   }
 
+  return null;
+}
+
+/**
+ * Resolve a full audioFile JSON record to a local path, hydrating from GCS when needed.
+ */
+export async function ensureAudioFileOnDisk(
+  audioFile: Record<string, any> | null | undefined,
+  options?: { uploadsDir?: string; cwd?: string; backendBaseUrl?: string },
+): Promise<string | null> {
+  if (!audioFile) return null;
+  const cwd = options?.cwd ?? process.cwd();
+  const uploadsDir = options?.uploadsDir ?? path.join(cwd, 'uploads');
+  const serverRoot = path.join(cwd, '..', '..');
+  const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
+
+  const resolved = await ensureLocalMedia(audioFile, {
+    uploadsDir,
+    backendBaseUrl: options?.backendBaseUrl,
+    extraLocalRoots: [voiceServiceDir, serverRoot, cwd],
+    service: 'voice-audio',
+  });
+  if (resolved?.localPath) return resolved.localPath;
+
+  const logical =
+    audioFile.original?.filePath ||
+    audioFile.filePath ||
+    audioFile.localPath ||
+    audioFile.localUrl;
+  if (typeof logical === 'string') {
+    return resolveAudioPathOnDisk(logical, { uploadsDir, cwd });
+  }
   return null;
 }
 

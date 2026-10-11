@@ -7,11 +7,12 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../../database/database.service';
 import { AlternateAvatarService } from '../../../rendering/alternate-avatar.service';
-import { RenderingService } from '../../../rendering/rendering.service';
 import { JobStatusGateway } from '../../websocket/job-status.gateway';
 import { VideoService } from '../../../video/video.service';
 import { UserNotificationService } from '../../../notifications/user-notification.service';
-import { resolveAudioPathOnDisk, prepareMp3ForHeyGen } from '../../utils/audio-for-heygen.util';
+import { PublicUrlService } from '../../storage/public-url.service';
+import { ensureLocalMedia } from '@shared/storage';
+import { ensureAudioFileOnDisk, prepareMp3ForHeyGen } from '../../utils/audio-for-heygen.util';
 
 export interface AvatarVideoGenerationJobData {
   projectId: string;
@@ -32,34 +33,54 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
     private readonly alternateAvatarService: AlternateAvatarService,
-    private readonly renderingService: RenderingService,
     private readonly jobStatusGateway: JobStatusGateway,
     private readonly videoService: VideoService,
     private readonly userNotificationService: UserNotificationService,
+    private readonly publicUrlService: PublicUrlService,
   ) {
     super();
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
   }
 
-  private resolveAudioPath(audioFile: any): string | null {
-    const logicalPath = this.renderingService.getAudioFilePathPublic(audioFile);
-    if (logicalPath) {
-      const resolved = resolveAudioPathOnDisk(logicalPath, {
-        uploadsDir: this.uploadsDir,
-        cwd: process.cwd(),
-      });
-      if (resolved) return resolved;
-    }
+  private async resolveAudioPath(audioFile: any): Promise<string | null> {
+    return ensureAudioFileOnDisk(audioFile, {
+      uploadsDir: this.uploadsDir,
+      cwd: process.cwd(),
+      backendBaseUrl:
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        `http://localhost:${this.configService.get<number>('SERVICE_PORT', 9004)}`,
+    });
+  }
 
-    // Legacy fallback when only top-level filePath is set
-    if (audioFile.filePath) {
-      return resolveAudioPathOnDisk(audioFile.filePath, {
-        uploadsDir: this.uploadsDir,
-        cwd: process.cwd(),
-      });
-    }
+  private async uploadAvatarClip(
+    avatarVideoPath: string,
+    userId: string,
+    projectId: string,
+    sceneNumber: number,
+  ): Promise<{ gcsUrl?: string; publicUrl?: string; localUrl: string }> {
+    const relativePath = path.relative(this.uploadsDir, avatarVideoPath);
+    const localUrl = `/uploads/${relativePath.replace(/\\/g, '/')}`;
+    const filename = path.basename(avatarVideoPath);
+    const subPath = `videos/${userId}/avatars/${projectId}`;
 
-    return null;
+    try {
+      const storageResult = await this.publicUrlService.uploadFromPath(
+        avatarVideoPath,
+        subPath,
+        filename,
+        'video/mp4',
+      );
+      return {
+        gcsUrl: storageResult.gcsUrl,
+        publicUrl: storageResult.publicUrl,
+        localUrl: storageResult.localUrl || localUrl,
+      };
+    } catch (err: any) {
+      console.warn(
+        `[AvatarVideoGenerationProcessor] GCS upload failed for scene ${sceneNumber}: ${err?.message}`,
+      );
+      return { localUrl };
+    }
   }
 
   async process(job: Job<AvatarVideoGenerationJobData>): Promise<any> {
@@ -80,7 +101,7 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
         throw new Error(`Missing audio file for scene ${sceneNumber}`);
       }
 
-      const audioPath = this.resolveAudioPath(audioFile);
+      const audioPath = await this.resolveAudioPath(audioFile);
       if (!audioPath || !fs.existsSync(audioPath)) {
         throw new Error(`Audio file not found for scene ${sceneNumber}`);
       }
@@ -111,16 +132,53 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
       let avatarVideoPath: string;
       let avatarEntry: any;
 
-      if (cacheEntry?.audioHash === audioHash && cacheEntry?.localPath && fs.existsSync(cacheEntry.localPath)) {
-        avatarVideoPath = cacheEntry.localPath;
+      const cacheLocalOk =
+        cacheEntry?.audioHash === audioHash &&
+        cacheEntry?.localPath &&
+        fs.existsSync(cacheEntry.localPath);
+
+      let cacheHydratedPath: string | null = null;
+      if (
+        !cacheLocalOk &&
+        cacheEntry?.audioHash === audioHash &&
+        (cacheEntry?.gcsUrl || cacheEntry?.publicUrl)
+      ) {
+        const hydrated = await ensureLocalMedia(cacheEntry, {
+          uploadsDir: this.uploadsDir,
+          backendBaseUrl:
+            this.configService.get<string>('BACKEND_BASE_URL') ||
+            `http://localhost:${this.configService.get<number>('SERVICE_PORT', 9004)}`,
+          service: 'video-processing',
+        });
+        if (hydrated?.localPath && fs.existsSync(hydrated.localPath)) {
+          cacheHydratedPath = hydrated.localPath;
+        }
+      }
+
+      if (cacheLocalOk || cacheHydratedPath) {
+        avatarVideoPath = cacheLocalOk ? cacheEntry.localPath : cacheHydratedPath!;
         avatarEntry = {
           sceneNumber,
           jobId: emitJobId,
           localPath: avatarVideoPath,
           localUrl: cacheEntry.localUrl,
+          gcsUrl: cacheEntry.gcsUrl,
+          publicUrl: cacheEntry.publicUrl || cacheEntry.gcsUrl,
           duration: audioFile.duration,
           sceneType: 'avatar',
         };
+
+        // Backfill GCS if cache hit was local-only
+        if (!avatarEntry.gcsUrl && fs.existsSync(avatarVideoPath)) {
+          const uploaded = await this.uploadAvatarClip(
+            avatarVideoPath,
+            userId,
+            projectId,
+            sceneNumber,
+          );
+          avatarEntry = { ...avatarEntry, ...uploaded };
+        }
+
         await this.databaseService.withProjectLock(projectId, async (tx) => {
           const latest = await tx.videoProject.findUnique({ where: { id: projectId } });
           const avatarVideos = ((latest as any)?.avatarVideos as any[]) || [];
@@ -130,9 +188,22 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           } else {
             avatarVideos.push(avatarEntry);
           }
+          const meta = ((latest as any)?.metadata as any) || {};
+          const cache = { ...(meta.avatarVideoCache || {}) };
+          cache[sceneNumber] = {
+            localPath: avatarVideoPath,
+            localUrl: avatarEntry.localUrl,
+            gcsUrl: avatarEntry.gcsUrl,
+            publicUrl: avatarEntry.publicUrl,
+            audioHash,
+            generatedAt: cacheEntry?.generatedAt || new Date().toISOString(),
+          };
           await tx.videoProject.update({
             where: { id: projectId },
-            data: { avatarVideos: avatarVideos as any } as any,
+            data: {
+              avatarVideos: avatarVideos as any,
+              metadata: { ...meta, avatarVideoCache: cache } as any,
+            } as any,
           });
         });
       } else {
@@ -144,14 +215,20 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           authToken,
         );
 
-        const relativePath = path.relative(this.uploadsDir, avatarVideoPath);
-        const localUrl = `/uploads/${relativePath.replace(/\\/g, '/')}`;
+        const uploaded = await this.uploadAvatarClip(
+          avatarVideoPath,
+          userId,
+          projectId,
+          sceneNumber,
+        );
 
         avatarEntry = {
           sceneNumber,
           jobId: emitJobId,
           localPath: avatarVideoPath,
-          localUrl,
+          localUrl: uploaded.localUrl,
+          gcsUrl: uploaded.gcsUrl,
+          publicUrl: uploaded.publicUrl,
           duration: audioFile.duration,
           sceneType: 'avatar',
         };
@@ -171,7 +248,9 @@ export class AvatarVideoGenerationProcessor extends WorkerHost {
           const cache = meta.avatarVideoCache || {};
           cache[sceneNumber] = {
             localPath: avatarVideoPath,
-            localUrl,
+            localUrl: uploaded.localUrl,
+            gcsUrl: uploaded.gcsUrl,
+            publicUrl: uploaded.publicUrl,
             audioHash,
             generatedAt: new Date().toISOString(),
           };

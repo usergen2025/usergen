@@ -21,7 +21,7 @@ import * as crypto from 'crypto';
 import { ProjectLogService } from '../common/logging/project-log.service';
 import { UserNotificationService } from '../notifications/user-notification.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
-import { parseGcsPublicUrl } from '@shared/storage';
+import { isGcsPriority, parseGcsPublicUrl } from '@shared/storage';
 import { normalizeWebsiteUrl } from '@shared/utils/normalize-website-url';
 import { parseMetadataAssets, metadataHasLogoAsset } from '@shared/brand';
 import { parseVideoTranslations } from './video-translation.types';
@@ -1249,6 +1249,8 @@ export class VideoService {
         : {};
     const brandPackagingApplied = Boolean(metadata.brandPackagingApplied);
 
+    const preferRemote = isGcsPriority() && (videoUrl.startsWith('http://') || videoUrl.startsWith('https://'));
+
     const localFinal = this.findLocalFinalVideoPath(
       userId,
       projectId,
@@ -1259,7 +1261,9 @@ export class VideoService {
     const localMatchesPublished =
       !publishedBasename ||
       (localFinal != null && path.basename(localFinal) === publishedBasename);
-    if (localFinal && fs.existsSync(localFinal) && localMatchesPublished) {
+    // When STORAGE_PRIORITY=local (default), prefer local final on disk.
+    // When STORAGE_PRIORITY=gcs, stream from published HTTPS URL first.
+    if (!preferRemote && localFinal && fs.existsSync(localFinal) && localMatchesPublished) {
       const stat = fs.statSync(localFinal);
       res.setHeader('Content-Length', stat.size);
       fs.createReadStream(localFinal).pipe(res);
@@ -1310,11 +1314,27 @@ export class VideoService {
         console.warn(
           `[VideoService] streamFinalVideoDownload upstream ${status ?? 'error'} for ${projectId}: ${fetchErr?.message}`,
         );
+        if (preferRemote && localFinal && fs.existsSync(localFinal) && localMatchesPublished) {
+          console.warn(
+            `[VideoService] Falling back to local final for ${projectId} after GCS/remote failure`,
+          );
+          const stat = fs.statSync(localFinal);
+          res.setHeader('Content-Length', stat.size);
+          fs.createReadStream(localFinal).pipe(res);
+          return;
+        }
         throw new HttpException(
           'Failed to stream video from storage',
           status === 404 ? HttpStatus.NOT_FOUND : HttpStatus.BAD_GATEWAY,
         );
       }
+    }
+
+    if (localFinal && fs.existsSync(localFinal) && localMatchesPublished) {
+      const stat = fs.statSync(localFinal);
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(localFinal).pipe(res);
+      return;
     }
 
     throw new HttpException('Unsupported video URL format', HttpStatus.BAD_REQUEST);

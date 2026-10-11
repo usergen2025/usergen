@@ -25,6 +25,7 @@ import {
   LogoBrandMetadata,
   logoBrandHasPackagingAssets,
 } from '@shared/brand/logo-brand.types';
+import { ensureLocalMedia } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -1076,70 +1077,92 @@ export class RenderingService {
     return audioFile.filePath || null;
   }
 
-  /** Resolve a project audio file record to an on-disk path. */
-  private resolveAudioPathOnDisk(audioFile: any): string | null {
+  private getMediaResolveRoots(): string[] {
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    return [
+      path.join(serverRoot, 'microservices', 'voice-audio-service'),
+      path.join(serverRoot, 'microservices', 'media-management-service'),
+      serverRoot,
+      process.cwd(),
+    ];
+  }
+
+  /** Resolve a project audio file record to an on-disk path (GCS-aware when STORAGE_PRIORITY=gcs). */
+  private async resolveAudioPathOnDisk(audioFile: any): Promise<string | null> {
+    const resolved = await ensureLocalMedia(audioFile, {
+      uploadsDir: this.uploadsDir,
+      backendBaseUrl:
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        `http://localhost:${this.configService.get<number>('SERVICE_PORT', 9004)}`,
+      aiContentServiceUrl: this.configService.get<string>('AI_CONTENT_SERVICE_URL'),
+      extraLocalRoots: this.getMediaResolveRoots(),
+      service: 'voice-audio',
+    });
+    if (resolved?.localPath) return resolved.localPath;
+
+    // Legacy relative filePath walk (kept for STORAGE_PRIORITY=local parity)
     const audioFilePath = this.getAudioFilePath(audioFile);
     if (!audioFilePath) return null;
-
     if (path.isAbsolute(audioFilePath) && fs.existsSync(audioFilePath)) {
       return audioFilePath;
     }
-
-    const serverRoot = path.join(process.cwd(), '..', '..');
-    const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
     const rel = audioFilePath.startsWith('/') ? audioFilePath.slice(1) : audioFilePath;
-
-    for (const candidate of [
-      path.join(voiceServiceDir, rel),
-      path.join(serverRoot, rel),
-      path.join(process.cwd(), rel),
-    ]) {
+    for (const base of this.getMediaResolveRoots()) {
+      const candidate = path.join(base, rel);
       if (fs.existsSync(candidate)) return candidate;
     }
-
     return null;
   }
 
-  /** Resolve a b-roll video task to a local file path (AI or stock). */
-  private resolveBrollVideoPathOnDisk(
+  /** Resolve a b-roll video task to a local file path (AI or stock); hydrates from GCS when needed. */
+  private async resolveBrollVideoPathOnDisk(
     v: any,
     userDir: string,
     serverRoot: string,
     sceneLabel: string,
-  ): string | null {
-    let videoPath: string | null = null;
+  ): Promise<string | null> {
+    const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
 
+    // Fast path: existing local / stock layout (preserves prior behavior)
     if (v.localPath) {
-      videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
-    } else if (v.localUrl) {
-      const urlPath = v.localUrl.startsWith('/uploads') ? v.localUrl : v.localUrl;
-
+      const videoPath = path.isAbsolute(v.localPath) ? v.localPath : path.resolve(v.localPath);
+      if (fs.existsSync(videoPath)) return videoPath;
+    }
+    if (v.localUrl) {
+      const urlPath = v.localUrl as string;
       if (urlPath.includes('/uploads/stock/')) {
-        const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-        videoPath = path.join(mediaServiceDir, urlPath);
+        const stockCandidates = [
+          path.join(mediaServiceDir, urlPath.replace(/^\//, '')),
+          path.join(mediaServiceDir, 'uploads', urlPath.replace(/^\/uploads\//, '')),
+          path.join(mediaServiceDir, urlPath),
+        ];
+        for (const stockPath of stockCandidates) {
+          if (fs.existsSync(stockPath)) {
+            console.log(
+              `[RenderingService] ${sceneLabel}: Found stock video at ${stockPath}`,
+            );
+            return stockPath;
+          }
+        }
       } else {
         const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-        videoPath = path.join(userDir, relativePath);
+        const videoPath = path.join(userDir, relativePath);
+        if (fs.existsSync(videoPath)) return videoPath;
       }
     }
 
-    if (videoPath && fs.existsSync(videoPath)) {
-      return videoPath;
-    }
-
-    if (v.localUrl && v.localUrl.includes('/uploads/stock/')) {
-      const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-      const stockPath = path.join(mediaServiceDir, v.localUrl);
-      if (fs.existsSync(stockPath)) {
-        console.log(
-          `[RenderingService] ${sceneLabel}: Found stock video at fallback path: ${stockPath}`,
-        );
-        return stockPath;
-      }
-    }
+    const resolved = await ensureLocalMedia(v, {
+      uploadsDir: this.uploadsDir,
+      backendBaseUrl:
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        `http://localhost:${this.configService.get<number>('SERVICE_PORT', 9004)}`,
+      extraLocalRoots: [mediaServiceDir, ...this.getMediaResolveRoots()],
+      service: typeof v.localUrl === 'string' && v.localUrl.includes('/stock/') ? 'media' : 'video-processing',
+    });
+    if (resolved?.localPath) return resolved.localPath;
 
     console.warn(
-      `[RenderingService] ${sceneLabel}: B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl}`,
+      `[RenderingService] ${sceneLabel}: B-roll video not found for scene ${v.sceneNumber}: ${v.localPath || v.localUrl || v.gcsUrl}`,
     );
     return null;
   }
@@ -1361,6 +1384,30 @@ export class RenderingService {
       project.videoUrl
     ) {
       return this.postProcessExport(projectId, userId, authToken);
+    }
+
+    // Prevent overlapping exports for the same project (shared temp names + CPU saturation).
+    const activeStatuses = new Set([
+      'avatar_generating',
+      'stitching_broll',
+      'stitching',
+      'adding_captions',
+      'adding_bgm',
+      'uploading',
+      'processing',
+      'pending',
+    ]);
+    const currentRenderStatus = String((project as any).renderingStatus || '');
+    if (
+      project.status === 'IN_PROGRESS' &&
+      activeStatuses.has(currentRenderStatus) &&
+      currentRenderStatus !== 'failed' &&
+      currentRenderStatus !== 'completed'
+    ) {
+      throw new HttpException(
+        'Export already in progress for this project. Please wait for it to finish.',
+        HttpStatus.CONFLICT,
+      );
     }
 
     await this.assertExportAffordable(projectId, userId);
@@ -2984,7 +3031,7 @@ export class RenderingService {
     return sceneNumber % 2 === 1 ? 'b-roll' : 'avatar';
   }
 
-  private resolveAlternateAvatarVideoPath(avatarEntry: any): string | null {
+  private async resolveAlternateAvatarVideoPath(avatarEntry: any): Promise<string | null> {
     if (!avatarEntry) return null;
     if (avatarEntry.localPath) {
       const p = path.isAbsolute(avatarEntry.localPath)
@@ -2997,7 +3044,15 @@ export class RenderingService {
       const full = path.join(this.uploadsDir, rel);
       if (fs.existsSync(full)) return full;
     }
-    return null;
+    const resolved = await ensureLocalMedia(avatarEntry, {
+      uploadsDir: this.uploadsDir,
+      backendBaseUrl:
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        `http://localhost:${this.configService.get<number>('SERVICE_PORT', 9004)}`,
+      extraLocalRoots: this.getMediaResolveRoots(),
+      service: 'video-processing',
+    });
+    return resolved?.localPath ?? null;
   }
 
   /**
@@ -3058,7 +3113,7 @@ export class RenderingService {
 
       if (role === 'avatar') {
         const avatarEntry = avatarVideos.find((v: any) => v.sceneNumber === sceneNumber);
-        const avatarPath = this.resolveAlternateAvatarVideoPath(avatarEntry);
+        const avatarPath = await this.resolveAlternateAvatarVideoPath(avatarEntry);
         if (!avatarPath) {
           throw new Error(`Missing avatar video for scene ${sceneNumber}`);
         }
@@ -3080,36 +3135,19 @@ export class RenderingService {
       }
 
       const videoEntry = bRollVideos.find((v: any) => v.sceneNumber === sceneNumber);
-      if (!videoEntry || (!videoEntry.localPath && !videoEntry.localUrl)) {
+      if (
+        !videoEntry ||
+        (!videoEntry.localPath && !videoEntry.localUrl && !videoEntry.gcsUrl && !videoEntry.publicUrl)
+      ) {
         throw new Error(`Missing b-roll video for scene ${sceneNumber}`);
       }
 
-      // Resolve video path (supports both regular and stock videos)
-      let videoPath: string | null = null;
-      if (videoEntry.localPath) {
-        videoPath = path.isAbsolute(videoEntry.localPath) ? videoEntry.localPath : path.resolve(videoEntry.localPath);
-      } else if (videoEntry.localUrl) {
-        const urlPath = (videoEntry.localUrl as string).startsWith('/uploads') ? videoEntry.localUrl : videoEntry.localUrl;
-
-        if (urlPath.includes('/uploads/stock/')) {
-          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-          videoPath = path.join(mediaServiceDir, urlPath);
-        } else {
-          const rel = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-          videoPath = path.join(userDir, rel);
-        }
-      }
-
-      if (!videoPath || !fs.existsSync(videoPath)) {
-        if (videoEntry.localUrl && videoEntry.localUrl.includes('/uploads/stock/')) {
-          const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-          const stockPath = path.join(mediaServiceDir, videoEntry.localUrl);
-          if (fs.existsSync(stockPath)) {
-            console.log(`[RenderingService] ALTERNATE: Found stock video at fallback path: ${stockPath}`);
-            videoPath = stockPath;
-          }
-        }
-      }
+      let videoPath = await this.resolveBrollVideoPathOnDisk(
+        videoEntry,
+        userDir,
+        serverRoot,
+        'ALTERNATE',
+      );
 
       if (!videoPath || !fs.existsSync(videoPath)) {
         throw new Error(`Video file not found for scene ${sceneNumber}`);
@@ -3125,19 +3163,21 @@ export class RenderingService {
       }
 
       if (!audioFile) throw new Error(`Missing audio for scene ${sceneNumber}`);
-      const audioPath = resolveAudioPath(audioFile);
+      const audioPath =
+        (await this.resolveAudioPathOnDisk(audioFile)) || resolveAudioPath(audioFile);
       if (!audioPath || !fs.existsSync(audioPath)) {
         throw new Error(`Audio file not found for scene ${sceneNumber}`);
       }
+      const runId = `${Date.now()}`;
       const brollRes = await this.videoCompositor.getVideoResolution(videoPath);
       if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
-        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}_${runId}.mp4`);
         await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
         if (fs.existsSync(scaledPath)) videoPath = scaledPath;
       }
       const targetDur = audioFile.duration || 0;
       if (targetDur > 0) {
-        const refitPath = path.join(userDir, `refit_broll_${sceneNumber}_${projectId}.mp4`);
+        const refitPath = path.join(userDir, `refit_broll_${sceneNumber}_${projectId}_${runId}.mp4`);
         videoPath = await this.videoCompositor.refitVideoToTargetDuration(
           videoPath,
           refitPath,
@@ -3423,7 +3463,7 @@ export class RenderingService {
         throw new Error(`Invalid audio duration for scene ${sceneNumber}`);
       }
 
-      let videoPath = this.resolveBrollVideoPathOnDisk(
+      let videoPath = await this.resolveBrollVideoPathOnDisk(
         brollVideo,
         userDir,
         serverRoot,
@@ -3433,11 +3473,12 @@ export class RenderingService {
         throw new Error(`B-roll video not found for scene ${sceneNumber}`);
       }
 
-      const audioPath = this.resolveAudioPathOnDisk(audioFile);
+      const audioPath = await this.resolveAudioPathOnDisk(audioFile);
       if (!audioPath) {
         throw new Error(`Audio file not found for scene ${sceneNumber}`);
       }
 
+      const runId = `${Date.now()}`;
       const targetDur = audioFile.duration;
       const videoDurBefore = await this.videoCompositor.getVideoDuration(videoPath).catch(() => 0);
       if (videoDurBefore > 0 && Math.abs(videoDurBefore - targetDur) >= 0.3) {
@@ -3445,7 +3486,7 @@ export class RenderingService {
           `[RenderingService] ${styleLabel}: Scene ${sceneNumber} refitting video ` +
             `${videoDurBefore.toFixed(2)}s → ${targetDur.toFixed(2)}s to match voiceover`,
         );
-        const refitPath = path.join(userDir, `refit_scene_${sceneNumber}_${projectId}.mp4`);
+        const refitPath = path.join(userDir, `refit_scene_${sceneNumber}_${projectId}_${runId}.mp4`);
         videoPath = await this.videoCompositor.refitVideoToTargetDuration(
           videoPath,
           refitPath,
@@ -3455,7 +3496,7 @@ export class RenderingService {
 
       const brollRes = await this.videoCompositor.getVideoResolution(videoPath);
       if (brollRes && (brollRes.width !== 1080 || brollRes.height !== 1920)) {
-        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}.mp4`);
+        const scaledPath = path.join(userDir, `broll_scaled_${sceneNumber}_${projectId}_${runId}.mp4`);
         await this.videoCompositor.scaleVideoToDimensions(videoPath, scaledPath, 1080, 1920);
         if (fs.existsSync(scaledPath)) {
           videoPath = scaledPath;
@@ -3653,8 +3694,15 @@ export class RenderingService {
       }
 
       const targetDur = audioFile.duration;
+      const hydratedAudio = await this.resolveAudioPathOnDisk(audioFile);
+      if (hydratedAudio) {
+        audioFilePath = hydratedAudio;
+      }
       if (targetDur && targetDur > 0) {
-        const refitPath = path.join(userDir, `refit_scene_${sceneNumber}_${projectId}.mp4`);
+        const refitPath = path.join(
+          userDir,
+          `refit_scene_${sceneNumber}_${projectId}_${Date.now()}.mp4`,
+        );
         brollVideoPath = await this.videoCompositor.refitVideoToTargetDuration(
           brollVideoPath,
           refitPath,

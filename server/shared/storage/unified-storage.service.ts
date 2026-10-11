@@ -22,6 +22,7 @@ import {
   FileInfo,
 } from './storage.types';
 import { buildGcsPath, getContentType } from './storage.constants';
+import { isGcsPriority } from './storage-priority';
 
 export interface UnifiedStorageConfig {
   /** GCS configuration */
@@ -98,9 +99,19 @@ export class UnifiedStorageService {
 
         console.log(`[UnifiedStorage] File uploaded to GCS: ${gcsResult.gcsUrl}`);
       } catch (error: any) {
-        console.warn(`[UnifiedStorage] GCS upload failed, using local fallback: ${error.message}`);
-        // Keep local-only result
+        if (isGcsPriority()) {
+          console.error(
+            `[UnifiedStorage] GCS upload failed (STORAGE_PRIORITY=gcs); falling back to local: ${error.message}`,
+          );
+        } else {
+          console.warn(`[UnifiedStorage] GCS upload failed, using local fallback: ${error.message}`);
+        }
+        // Keep local-only result (availability fallback when GCS is down)
       }
+    } else if (isGcsPriority()) {
+      console.warn(
+        '[UnifiedStorage] STORAGE_PRIORITY=gcs but GCS is unavailable; storing local-only',
+      );
     }
 
     return result;
@@ -150,9 +161,19 @@ export class UnifiedStorageService {
 
         console.log(`[UnifiedStorage] File uploaded to GCS: ${gcsResult.gcsUrl}`);
       } catch (error: any) {
-        console.warn(`[UnifiedStorage] GCS upload failed, using local fallback: ${error.message}`);
-        // Keep local-only result
+        if (isGcsPriority()) {
+          console.error(
+            `[UnifiedStorage] GCS upload failed (STORAGE_PRIORITY=gcs); falling back to local: ${error.message}`,
+          );
+        } else {
+          console.warn(`[UnifiedStorage] GCS upload failed, using local fallback: ${error.message}`);
+        }
+        // Keep local-only result (availability fallback when GCS is down)
       }
+    } else if (isGcsPriority()) {
+      console.warn(
+        '[UnifiedStorage] STORAGE_PRIORITY=gcs but GCS is unavailable; storing local-only',
+      );
     }
 
     return result;

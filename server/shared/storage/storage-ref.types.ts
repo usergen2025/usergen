@@ -18,6 +18,8 @@ export interface StorageRef {
   service?: StorageService;
 }
 
+export type StoragePriorityMode = 'gcs' | 'local';
+
 export interface ResolveStorageRefOptions {
   uploadsDir: string;
   /** Base URL for cross-service HTTP fetch e.g. http://localhost:9001 */
@@ -27,6 +29,15 @@ export interface ResolveStorageRefOptions {
   aiContentUploadsDir?: string;
   /** When true, prefer gcsUrl/publicUrl for external APIs (BytePlus) */
   external?: boolean;
+  /**
+   * Read preference. Defaults from STORAGE_PRIORITY env via getStoragePriority().
+   * gcs = try remote/GCS first; local = try disk first (legacy).
+   */
+  priority?: StoragePriorityMode;
+  /**
+   * Extra local candidate directories (e.g. voice-audio-service root) checked after uploadsDir.
+   */
+  extraLocalRoots?: string[];
 }
 
 export interface ResolvedStorageRef {
