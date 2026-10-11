@@ -1,7 +1,5 @@
 'use client';
 
-export const dynamic = 'force-dynamic';
-
 import Link from 'next/link';
 import { Play, Wallet, Eye, BadgeCheck, Rocket, IndianRupee } from 'lucide-react';
 import { BrandPrimaryButton, BrandSecondaryButton, BrandStatStrip } from '@/components/brand';

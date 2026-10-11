@@ -1,4 +1,8 @@
 import type { Metadata } from "next";
+
+/** Skip static prerendering — every page uses auth/session/API data. */
+export const dynamic = 'force-dynamic';
+
 import { Inter } from "next/font/google";
 import { GoogleTagManager } from "@next/third-parties/google";
 import "./globals.css";
