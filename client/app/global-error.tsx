@@ -1,7 +1,5 @@
 'use client';
 
-import { useEffect } from 'react';
-
 /**
  * Last-resort boundary for crashes in the root layout itself — the providers in
  * `layout.tsx` sit above every route boundary, so an error thrown there would
@@ -10,6 +8,9 @@ import { useEffect } from 'react';
  * This replaces the root layout when it renders, which means it must supply its
  * own `<html>`/`<body>` and cannot rely on the global stylesheet. Everything
  * here is inlined deliberately.
+ *
+ * NOTE: No React hooks — this page must survive prerendering where the React
+ * runtime may not be fully initialised.
  */
 export default function GlobalError({
   error,
@@ -18,9 +19,9 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  useEffect(() => {
+  if (typeof console !== 'undefined') {
     console.error('[global-error]', error);
-  }, [error]);
+  }
 
   return (
     <html lang="en">
