@@ -829,10 +829,12 @@ class ApiClient {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
+    // Render start is quick, but the video service can be event-loop-busy with FFmpeg.
     const response = await axios.post<ApiResponse<any>>(
       `${videoServiceUrl}/video-projects/${projectId}/start-rendering`,
       {},
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -883,9 +885,11 @@ class ApiClient {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
+    // Status is a light DB read, but Nest can stall while sync FFmpeg holds the event loop.
     const response = await axios.get<ApiResponse<any>>(
       `${videoServiceUrl}/video-projects/${projectId}/rendering-status`,
       {
+        timeout: AI_REQUEST_TIMEOUT_MS,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),

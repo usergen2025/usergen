@@ -824,7 +824,12 @@ export class RenderingService {
     projectId: string,
     userId: string,
     authToken?: string,
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{
+    success: boolean;
+    message: string;
+    alreadyCompleted?: boolean;
+    alreadyInProgress?: boolean;
+  }> {
     const project = await this.databaseService.videoProject.findFirst({
       where: { id: projectId, userId },
     });
@@ -839,6 +844,31 @@ export class RenderingService {
         'Post-process export is only available for avatar-only video styles',
         HttpStatus.BAD_REQUEST,
       );
+    }
+
+    const postMeta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    if (project.status === 'COMPLETED' && project.videoUrl && postMeta.finalExportedAt) {
+      return {
+        success: true,
+        message: 'Video already completed',
+        alreadyCompleted: true,
+      };
+    }
+
+    const postRenderStatus = String((project as any).renderingStatus || '');
+    if (
+      project.status === 'IN_PROGRESS' &&
+      postRenderStatus !== 'failed' &&
+      postRenderStatus !== 'completed'
+    ) {
+      return {
+        success: true,
+        message: 'Export already in progress for this project',
+        alreadyInProgress: true,
+      };
     }
 
     if (!project.videoUrl) {
@@ -858,10 +888,7 @@ export class RenderingService {
 
     await this.assertExportAffordable(projectId, userId);
 
-    const meta =
-      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
-        ? (project.metadata as Record<string, unknown>)
-        : {};
+    const meta = postMeta;
     const brandPackagingApplied = meta.brandPackagingApplied === true;
 
     await this.databaseService.videoProject.update({
@@ -1363,7 +1390,12 @@ export class RenderingService {
   /**
    * Start rendering process for a video project
    */
-  async startRendering(projectId: string, userId: string, authToken?: string): Promise<{ success: boolean; message: string }> {
+  async startRendering(projectId: string, userId: string, authToken?: string): Promise<{
+    success: boolean;
+    message: string;
+    alreadyCompleted?: boolean;
+    alreadyInProgress?: boolean;
+  }> {
     const project = await this.databaseService.videoProject.findFirst({
       where: { id: projectId, userId },
     });
@@ -1377,6 +1409,17 @@ export class RenderingService {
         ? (project.metadata as Record<string, unknown>)
         : {};
     const style = String(project.style || '');
+    const currentRenderStatus = String((project as any).renderingStatus || '');
+
+    // Final video already published — do not restart a multi-minute FFmpeg job.
+    if (project.status === 'COMPLETED' && project.videoUrl) {
+      return {
+        success: true,
+        message: 'Video already completed',
+        alreadyCompleted: true,
+      };
+    }
+
     if (
       (style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR') &&
       meta.rawAvatarClipReady &&
@@ -1386,28 +1429,18 @@ export class RenderingService {
       return this.postProcessExport(projectId, userId, authToken);
     }
 
-    // Prevent overlapping exports for the same project (shared temp names + CPU saturation).
-    const activeStatuses = new Set([
-      'avatar_generating',
-      'stitching_broll',
-      'stitching',
-      'adding_captions',
-      'adding_bgm',
-      'uploading',
-      'processing',
-      'pending',
-    ]);
-    const currentRenderStatus = String((project as any).renderingStatus || '');
+    // Prevent overlapping exports (event-loop-blocking FFmpeg + shared temps).
+    // Any IN_PROGRESS that is not terminal counts — status strings vary by style.
     if (
       project.status === 'IN_PROGRESS' &&
-      activeStatuses.has(currentRenderStatus) &&
       currentRenderStatus !== 'failed' &&
       currentRenderStatus !== 'completed'
     ) {
-      throw new HttpException(
-        'Export already in progress for this project. Please wait for it to finish.',
-        HttpStatus.CONFLICT,
-      );
+      return {
+        success: true,
+        message: 'Export already in progress for this project',
+        alreadyInProgress: true,
+      };
     }
 
     await this.assertExportAffordable(projectId, userId);

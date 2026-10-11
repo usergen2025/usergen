@@ -160,9 +160,22 @@ function RenderingPageContent() {
         throw new Error(response.message || 'Failed to start rendering');
       }
 
-      console.log('Rendering started successfully');
+      if ((response as any).alreadyCompleted) {
+        router.push(`/create-video/preview?projectId=${projectId}`);
+        return;
+      }
+
+      console.log(
+        (response as any).alreadyInProgress
+          ? 'Export already in progress — polling status'
+          : 'Rendering started successfully',
+      );
     } catch (error: any) {
       console.error('Failed to start rendering:', error);
+      // Older servers returned 409 for in-progress — keep polling instead of bouncing away.
+      if (error?.response?.status === 409) {
+        return;
+      }
       showToast(error.response?.data?.message || error.message || 'Failed to start rendering. Please try again.', 'error');
       
       // Redirect to previous step (BROLL_VIDEOS) using step configuration

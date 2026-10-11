@@ -2041,29 +2041,42 @@ function WorkspacePageContent() {
     'failed': 'Video rendering failed',
   };
 
-  // Rendering timeout (10 minutes)
+  // Rendering timeout (30 minutes — PRODUCT_ONLY FFmpeg can run a long time)
   const RENDERING_TIMEOUT_MS = 30 * 60 * 1000;
+  const RENDERING_POLL_MS = 3000;
   const renderingStartTimeRef = useRef<number | null>(null);
   const consecutiveErrorsRef = useRef<number>(0);
-  const MAX_CONSECUTIVE_ERRORS = 5;
+  const connectionWarningShownRef = useRef(false);
+  /** Soft warning after this many consecutive poll failures (do not abandon render). */
+  const CONNECTION_WARN_AFTER = 3;
 
-  // Start rendering status polling
-  const startRenderingPolling = useCallback(() => {
+  const stopRenderingPolling = useCallback(() => {
     if (renderingPollingRef.current) {
-      clearInterval(renderingPollingRef.current);
+      clearTimeout(renderingPollingRef.current);
+      renderingPollingRef.current = null;
     }
+  }, []);
 
-    // Reset counters
+  // Start rendering status polling (chained setTimeout — avoids pile-up when Nest stalls on FFmpeg)
+  const startRenderingPolling = useCallback(() => {
+    stopRenderingPolling();
+
     renderingStartTimeRef.current = Date.now();
     consecutiveErrorsRef.current = 0;
+    connectionWarningShownRef.current = false;
 
-    renderingPollingRef.current = setInterval(async () => {
+    const scheduleNext = () => {
+      renderingPollingRef.current = setTimeout(pollOnce, RENDERING_POLL_MS);
+    };
+
+    const pollOnce = async () => {
       if (!projectId) return;
 
-      // Check for timeout
-      if (renderingStartTimeRef.current && (Date.now() - renderingStartTimeRef.current > RENDERING_TIMEOUT_MS)) {
-        clearInterval(renderingPollingRef.current!);
-        renderingPollingRef.current = null;
+      if (
+        renderingStartTimeRef.current &&
+        Date.now() - renderingStartTimeRef.current > RENDERING_TIMEOUT_MS
+      ) {
+        stopRenderingPolling();
         showToast('Video rendering timed out. Please try again.', 'error');
         setWorkspaceMode('videos');
         return;
@@ -2071,30 +2084,30 @@ function WorkspacePageContent() {
 
       try {
         const response = await apiClient.getRenderingStatus(projectId);
-        
-        // Reset error counter on successful response
         consecutiveErrorsRef.current = 0;
-        
+        connectionWarningShownRef.current = false;
+
         if (response.success && response.data) {
-          const { renderingStatus, renderingProgress: progress, status, videoUrl, videoPublicUrl, videoGcsUrl, errorMessage } = response.data;
-          
-          // Update progress
+          const {
+            renderingStatus,
+            renderingProgress: progress,
+            status,
+            videoUrl,
+            errorMessage,
+          } = response.data;
+
           setRenderingProgress(progress || 0);
           setRenderingStage(renderingStatus || 'pending');
 
-          // Check for failure
           if (status === 'FAILED' || renderingStatus === 'failed') {
-            clearInterval(renderingPollingRef.current!);
-            renderingPollingRef.current = null;
+            stopRenderingPolling();
             showToast(errorMessage || 'Video rendering failed. Please try again.', 'error');
             setWorkspaceMode('videos');
             return;
           }
 
-          // Check for completion — final ready: exit render UI; preview continues in background
           if (status === 'COMPLETED' || renderingStatus === 'completed') {
-            clearInterval(renderingPollingRef.current!);
-            renderingPollingRef.current = null;
+            stopRenderingPolling();
             setRenderingProgress(100);
             setRenderingStage('completed');
 
@@ -2159,22 +2172,99 @@ function WorkspacePageContent() {
       } catch (error: any) {
         console.error('Failed to poll rendering status:', error);
         consecutiveErrorsRef.current++;
-        
-        // Stop polling after too many consecutive errors
-        if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
-          clearInterval(renderingPollingRef.current!);
-          renderingPollingRef.current = null;
-          showToast('Lost connection to server. Please check your connection and try again.', 'error');
-          setWorkspaceMode('videos');
-          return;
+        // Keep polling — Nest often times out while sync FFmpeg holds the event loop.
+        // Leaving the render UI made users re-click Export and race the in-flight job.
+        if (
+          consecutiveErrorsRef.current >= CONNECTION_WARN_AFTER &&
+          !connectionWarningShownRef.current
+        ) {
+          connectionWarningShownRef.current = true;
+          showToast(
+            'Server is busy finishing your export. Staying on this page — please wait.',
+            'warning',
+          );
         }
-        // Otherwise, don't stop polling on transient errors
       }
-    }, 2000);
-  }, [projectId, showToast]);
+
+      scheduleNext();
+    };
+
+    // Kick off immediately so we don't wait a full interval after Export
+    void pollOnce();
+  }, [projectId, showToast, stopRenderingPolling]);
+
+  const landOnCompletedExport = useCallback(
+    async (statusData?: { videoUrl?: string; metadata?: unknown }) => {
+      stopRenderingPolling();
+      setRenderingProgress(100);
+      setRenderingStage('completed');
+      try {
+        const projectRes = await apiClient.getVideoProject(projectId!);
+        if (projectRes.success && projectRes.data) {
+          setProject(projectRes.data);
+          applyProjectVideoUrls(projectRes.data);
+          if (isRawAvatarClipEditingPhase(projectRes.data)) {
+            setWorkspaceMode('videos');
+            showToast('Avatar video ready — add music and captions, then export.', 'success');
+            return;
+          }
+        } else if (statusData?.videoUrl) {
+          applyProjectVideoUrls({
+            videoUrl: statusData.videoUrl,
+            metadata: statusData.metadata as any,
+          });
+        }
+      } catch {
+        if (statusData?.videoUrl) {
+          applyProjectVideoUrls({
+            videoUrl: statusData.videoUrl,
+            metadata: statusData.metadata as any,
+          });
+        }
+      }
+      trackVideoRenderComplete({
+        projectId: projectId!,
+        funnel: 'ai_chat',
+        source: 'workspace_export_already_done',
+      });
+      setWorkspaceMode('completed');
+      showToast('Your video is ready!', 'success');
+    },
+    [projectId, showToast, stopRenderingPolling],
+  );
 
   const startRenderAfterConfirmation = async () => {
     if (!projectId) return;
+
+    // Prefer server truth before flipping UI — avoids re-entering rendering when already done.
+    try {
+      const statusRes = await apiClient.getRenderingStatus(projectId);
+      if (statusRes.success && statusRes.data) {
+        const { status, renderingStatus, videoUrl } = statusRes.data;
+        if (
+          (status === 'COMPLETED' || renderingStatus === 'completed') &&
+          (videoUrl || hasFinalVideo(project || {}))
+        ) {
+          await landOnCompletedExport(statusRes.data);
+          return;
+        }
+        if (
+          status === 'IN_PROGRESS' &&
+          renderingStatus !== 'failed' &&
+          renderingStatus !== 'completed'
+        ) {
+          setWorkspaceMode('rendering');
+          setRenderingProgress(statusRes.data.renderingProgress || 0);
+          setRenderingStage(renderingStatus || 'pending');
+          startRenderingPolling();
+          showToast('Export already in progress — picking up where it left off.', 'info');
+          return;
+        }
+      }
+    } catch {
+      // Fall through to start; start endpoint is also idempotent for completed / in-progress.
+    }
+
     setWorkspaceMode('rendering');
     setRenderingProgress(0);
     setRenderingStage('pending');
@@ -2197,10 +2287,18 @@ function WorkspacePageContent() {
         throw new Error(response.message || 'Failed to start rendering');
       }
 
+      const data = (response as any).data ?? response;
+      if (data?.alreadyCompleted || (response as any).alreadyCompleted) {
+        await landOnCompletedExport();
+        return;
+      }
+
       console.log(
         usePostProcess
           ? '[Workspace] Post-process export started successfully'
-          : '[Workspace] Rendering started successfully',
+          : data?.alreadyInProgress || (response as any).alreadyInProgress
+            ? '[Workspace] Export already in progress — resuming poll'
+            : '[Workspace] Rendering started successfully',
       );
       startRenderingPolling();
     } catch (error: any) {
@@ -2208,6 +2306,15 @@ function WorkspacePageContent() {
       const status = error?.response?.status;
       const raw = error?.response?.data;
       const payload = typeof raw?.message === 'object' && raw?.message !== null ? raw.message : raw;
+
+      // Legacy CONFLICT from older servers — keep polling, do not bounce to videos.
+      if (status === 409) {
+        setWorkspaceMode('rendering');
+        startRenderingPolling();
+        showToast('Export already in progress — picking up where it left off.', 'info');
+        return;
+      }
+
       if (
         status === 402 ||
         payload?.code === 'INSUFFICIENT_CREDITS' ||
@@ -2386,7 +2493,7 @@ function WorkspacePageContent() {
   // Cancel rendering and go back to videos mode
   const handleCancelRendering = useCallback(() => {
     if (renderingPollingRef.current) {
-      clearInterval(renderingPollingRef.current);
+      clearTimeout(renderingPollingRef.current);
       renderingPollingRef.current = null;
     }
     setWorkspaceMode('videos');
@@ -2397,7 +2504,7 @@ function WorkspacePageContent() {
   useEffect(() => {
     return () => {
       if (renderingPollingRef.current) {
-        clearInterval(renderingPollingRef.current);
+        clearTimeout(renderingPollingRef.current);
       }
     };
   }, []);
