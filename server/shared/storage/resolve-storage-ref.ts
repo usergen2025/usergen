@@ -159,15 +159,17 @@ export async function resolveStorageRefToLocalPath(
 
   const priority = options.priority ?? getStoragePriority();
 
-  if (priority === 'gcs') {
-    const remote = await tryRemoteFetch(ref, options, true);
-    if (remote) return remote;
-    return tryLocalDisk(ref, options);
-  }
-
+  // Always check local disk first — even with GCS priority.
+  // When the generating service and rendering service run on the same VM the
+  // file is already on disk; downloading it from GCS again just adds latency
+  // and blocks the event loop.
   const local = tryLocalDisk(ref, options);
   if (local) return local;
-  return tryRemoteFetch(ref, options, false);
+
+  // File not on disk — fetch from GCS / HTTP.
+  // GCS priority uses a stable hash-based cache path so repeated reads don't
+  // re-download; local priority uses a temp path.
+  return tryRemoteFetch(ref, options, priority === 'gcs');
 }
 
 /**

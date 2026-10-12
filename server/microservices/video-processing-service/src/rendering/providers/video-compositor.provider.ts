@@ -5,6 +5,43 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { computeCaptionBoxPixels } from './html-caption-layer.provider';
 
+/**
+ * Run an FFmpeg command asynchronously so the Node.js event loop stays
+ * responsive (status-polling, WebSocket heartbeats, etc.).
+ *
+ * Returns the combined stderr output (FFmpeg writes progress/info to stderr).
+ * Throws with the last 4 KB of stderr on non-zero exit.
+ */
+function execFFmpegAsync(
+  command: string,
+  options: { maxStderrKB?: number } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = command.replace(/\s+/g, ' ').trim().split(' ');
+    const bin = args.shift()!;
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const stderrChunks: Buffer[] = [];
+    let stdoutData = '';
+
+    child.stdout.on('data', (d: Buffer) => { stdoutData += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { stderrChunks.push(d); });
+
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+      if (code === 0) {
+        resolve(stderr);
+      } else {
+        const tail = stderr.slice(-(options.maxStderrKB ?? 4) * 1024);
+        reject(new Error(
+          `FFmpeg exited with code ${code}\n${tail}`,
+        ));
+      }
+    });
+  });
+}
+
 @Injectable()
 export class VideoCompositorProvider {
   constructor(private readonly configService: ConfigService) {}
@@ -136,7 +173,7 @@ export class VideoCompositorProvider {
         -c:a copy \
         -y "${normalizedTopPath}"
       `.replace(/\s+/g, ' ').trim();
-      execSync(normalizeTopCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(normalizeTopCommand);
 
       const normalizeBottomCommand = `
         ffmpeg -i "${finalBottomPath}" \
@@ -144,7 +181,7 @@ export class VideoCompositorProvider {
         -c:a copy \
         -y "${normalizedBottomPath}"
       `.replace(/\s+/g, ' ').trim();
-      execSync(normalizeBottomCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(normalizeBottomCommand);
     } catch (error: any) {
       console.error(`[VideoCompositor] Error normalizing videos before compositing:`, error.message);
       throw new Error(`Failed to normalize videos for compositing: ${error.message}`);
@@ -162,7 +199,7 @@ export class VideoCompositorProvider {
 
     try {
       console.log(`[VideoCompositor] Executing FFmpeg command for HALF_N_HALF compositing...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] Video composited successfully: ${outputPath}`);
       
       // Cleanup temporary files
@@ -312,7 +349,7 @@ export class VideoCompositorProvider {
       return outputPath;
     }
 
-    const tryConcatCopy = (paths: string[]): boolean => {
+    const tryConcatCopy = async (paths: string[]): Promise<boolean> => {
       const listPath = path.resolve(
         absoluteOutputDir,
         `concat_list_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`,
@@ -327,7 +364,7 @@ export class VideoCompositorProvider {
           -c copy -movflags +faststart \
           -y "${outputPath}"
         `.replace(/\s+/g, ' ').trim();
-        execSync(cmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+        await execFFmpegAsync(cmd);
         return fs.existsSync(outputPath);
       } catch (err: any) {
         console.warn(`[VideoCompositor] Concat copy failed: ${err?.message || err}`);
@@ -363,7 +400,7 @@ export class VideoCompositorProvider {
     );
 
     // Fast path: identical clips concatenate losslessly with perfect A/V sync.
-    if (uniform && tryConcatCopy(absolutePaths)) {
+    if (uniform && await tryConcatCopy(absolutePaths)) {
       console.log(`[VideoCompositor] Concatenated ${absolutePaths.length} clips via stream copy (lossless)`);
       return outputPath;
     }
@@ -428,7 +465,7 @@ export class VideoCompositorProvider {
           `.replace(/\s+/g, ' ').trim();
         }
 
-        execSync(cmd, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+        await execFFmpegAsync(cmd);
         if (!fs.existsSync(normalizedPath)) {
           throw new Error(`Normalized clip not created: ${normalizedPath}`);
         }
@@ -436,7 +473,7 @@ export class VideoCompositorProvider {
         console.log(`[VideoCompositor] Normalized clip ${i + 1}/${metas.length}`);
       }
 
-      if (!tryConcatCopy(normalizedPaths)) {
+      if (!await tryConcatCopy(normalizedPaths)) {
         throw new Error('Concat failed after sync-safe normalization');
       }
       console.log(`[VideoCompositor] Concatenated ${normalizedPaths.length} clips after sync-safe normalize`);
@@ -557,7 +594,7 @@ export class VideoCompositorProvider {
     `.replace(/\s+/g, ' ').trim();
     
     try {
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] Video scaled successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -1119,7 +1156,7 @@ export class VideoCompositorProvider {
 
       try {
         console.log(`[VideoCompositor] Scaling avatar for chroma key...`);
-        execSync(scaleCommand, { stdio: 'pipe' });
+        await execFFmpegAsync(scaleCommand);
       } catch (error: any) {
         console.error(`[VideoCompositor] Failed to scale avatar: ${error.message}`);
         throw new Error(`Failed to scale avatar: ${error.message}`);
@@ -1199,7 +1236,7 @@ export class VideoCompositorProvider {
       `.replace(/\s+/g, ' ').trim();
 
       try {
-        execSync(scaleCommand, { stdio: 'pipe' });
+        await execFFmpegAsync(scaleCommand);
       } catch (error: any) {
         console.error(`[VideoCompositor] Failed to scale avatar for overlay fallback: ${error.message}`);
         throw new Error(`Failed to scale avatar for overlay: ${error.message}`);
@@ -1220,11 +1257,7 @@ export class VideoCompositorProvider {
       console.log(`[VideoCompositor] Executing FFmpeg overlay command...`);
       console.log(`[VideoCompositor] Full command: ${ffmpegCommand}`);
       
-      // Execute with pipe to capture output
-      const result = execSync(ffmpegCommand, { 
-        stdio: 'pipe',
-        maxBuffer: 50 * 1024 * 1024 // 50MB buffer for FFmpeg output
-      });
+      await execFFmpegAsync(ffmpegCommand);
       
       const ffmpegElapsed = ((Date.now() - ffmpegStartTime) / 1000).toFixed(1);
       console.log(`[VideoCompositor] FFmpeg overlay completed in ${ffmpegElapsed}s`);
@@ -1386,7 +1419,7 @@ export class VideoCompositorProvider {
       `.replace(/\s+/g, ' ').trim();
 
       console.log(`[VideoCompositor] Executing FFmpeg command for audio concatenation...`);
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       
       console.log(`[VideoCompositor] Audio files concatenated successfully: ${outputPath}`);
       return outputPath;
@@ -1438,26 +1471,12 @@ export class VideoCompositorProvider {
       `.replace(/\s+/g, ' ').trim();
 
       try {
-        execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024, encoding: 'utf-8' });
+        await execFFmpegAsync(ffmpegCommand);
       } catch (ffmpegErr: any) {
-        const stderr =
-          typeof ffmpegErr?.stderr === 'string'
-            ? ffmpegErr.stderr
-            : Buffer.isBuffer(ffmpegErr?.stderr)
-              ? ffmpegErr.stderr.toString('utf-8')
-              : '';
-        const stdout =
-          typeof ffmpegErr?.stdout === 'string'
-            ? ffmpegErr.stdout
-            : Buffer.isBuffer(ffmpegErr?.stdout)
-              ? ffmpegErr.stdout.toString('utf-8')
-              : '';
-        const detail = [stderr, stdout, ffmpegErr?.message].filter(Boolean).join('\n').trim();
+        const detail = ffmpegErr?.message || '';
         console.error(`[VideoCompositor] FFmpeg add audio stderr/detail:`, detail.slice(-4000));
         throw new Error(
-          `Failed to add audio to video: ${ffmpegErr?.message || 'ffmpeg failed'}${
-            stderr ? ` | ${stderr.split('\n').filter(Boolean).slice(-8).join(' | ')}` : ''
-          }`,
+          `Failed to add audio to video: ${detail.split('\n').filter(Boolean).slice(-8).join(' | ')}`,
         );
       }
       console.log(`[VideoCompositor] Audio added to video successfully: ${outputPath}`);
@@ -1477,7 +1496,7 @@ export class VideoCompositorProvider {
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
     const cmd = `ffmpeg -ss ${startSec} -i "${inputPath}" -t ${durationSec} -c:v libx264 -preset medium -crf 23 -c:a aac -y "${outputPath}"`.replace(/\s+/g, ' ').trim();
-    execSync(cmd, { stdio: 'inherit' });
+    await execFFmpegAsync(cmd);
     return outputPath;
   }
 
@@ -1486,7 +1505,7 @@ export class VideoCompositorProvider {
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
     const cmd = `ffmpeg -stream_loop -1 -i "${inputPath}" -t ${targetDurationSec} -c:v libx264 -preset medium -crf 23 -c:a aac -shortest -y "${outputPath}"`.replace(/\s+/g, ' ').trim();
-    execSync(cmd, { stdio: 'inherit' });
+    await execFFmpegAsync(cmd);
     return outputPath;
   }
 
@@ -1562,7 +1581,7 @@ export class VideoCompositorProvider {
         .replace(/\s+/g, ' ')
         .trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit', maxBuffer: 50 * 1024 * 1024 });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] BGM mix complete: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -1609,7 +1628,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] Audio fade-out applied successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -1670,7 +1689,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] Video cropped successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -1714,7 +1733,7 @@ export class VideoCompositorProvider {
         -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
-      execSync(ffmpegCommand, { stdio: 'inherit' });
+      await execFFmpegAsync(ffmpegCommand);
       console.log(`[VideoCompositor] Video segment extracted successfully: ${outputPath}`);
       return outputPath;
     } catch (error: any) {
@@ -2063,7 +2082,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       .replace(/\s+/g, ' ')
       .trim();
 
-    execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+    await execFFmpegAsync(ffmpegCommand);
     return outputPath;
   }
 
@@ -2092,7 +2111,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       .replace(/\s+/g, ' ')
       .trim();
 
-    execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+    await execFFmpegAsync(ffmpegCommand);
     return outputPath;
   }
 
@@ -2231,7 +2250,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
       console.log(`[VideoCompositor] FFmpeg caption command: ${ffmpegCommand}`);
       
-      execSync(ffmpegCommand, { stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+      await execFFmpegAsync(ffmpegCommand);
       
       // Verify output
       if (fs.existsSync(outputPath)) {

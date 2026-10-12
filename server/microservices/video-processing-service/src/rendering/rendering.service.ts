@@ -3123,6 +3123,9 @@ export class RenderingService {
     const serverRoot = path.join(process.cwd(), '..', '..');
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
 
+    // Parallel pre-fetch: download all GCS assets concurrently
+    await this.prefetchSceneAssets(audioFiles, bRollVideos, userDir, serverRoot, 'ALTERNATE');
+
     const resolveAudioPath = (audioFile: any): string | null => {
       const p = this.getAudioFilePath(audioFile);
       if (!p) return null;
@@ -3444,6 +3447,43 @@ export class RenderingService {
   }
 
   /**
+   * Pre-fetch all audio and video files for every scene in parallel.
+   * Resolves GCS downloads concurrently so the sequential FFmpeg loop
+   * doesn't wait for one download at a time.
+   */
+  private async prefetchSceneAssets(
+    audioFiles: any[],
+    bRollVideos: any[],
+    userDir: string,
+    serverRoot: string,
+    styleLabel: string,
+  ): Promise<void> {
+    const t0 = Date.now();
+    const promises: Promise<any>[] = [];
+
+    for (const audioFile of audioFiles) {
+      promises.push(
+        this.resolveAudioPathOnDisk(audioFile).catch((err) => {
+          console.warn(`[RenderingService] Prefetch audio scene ${audioFile.sceneNumber} failed: ${err.message}`);
+        }),
+      );
+    }
+
+    for (const broll of bRollVideos) {
+      promises.push(
+        this.resolveBrollVideoPathOnDisk(broll, userDir, serverRoot, styleLabel).catch((err) => {
+          console.warn(`[RenderingService] Prefetch video scene ${broll.sceneNumber} failed: ${err.message}`);
+        }),
+      );
+    }
+
+    await Promise.all(promises);
+    console.log(
+      `[RenderingService] ${styleLabel}: Prefetched ${audioFiles.length} audio + ${bRollVideos.length} video assets in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    );
+  }
+
+  /**
    * Process B_ROLL_ONLY / PRODUCT_ONLY styles:
    * - Per scene: refit video to audio duration, mux voice, then stitch (no global -shortest drift)
    */
@@ -3468,6 +3508,10 @@ export class RenderingService {
     }
 
     const serverRoot = path.join(process.cwd(), '..', '..');
+
+    // Parallel pre-fetch: download all GCS assets concurrently before
+    // the sequential FFmpeg loop starts.
+    await this.prefetchSceneAssets(sortedAudioFiles, sortedBrollVideos, userDir, serverRoot, styleLabel);
     const sceneVideoPaths: string[] = [];
 
     // Scenes that never produced a video are invisible to this loop, which
@@ -3640,6 +3684,9 @@ export class RenderingService {
     const voiceServiceDir = path.join(serverRoot, 'microservices', 'voice-audio-service');
 
     await this.updateRenderingStatus(projectId, 'stitching_broll', 40);
+
+    // Parallel pre-fetch: download all GCS assets concurrently
+    await this.prefetchSceneAssets(sortedAudioFiles, bRollVideos, userDir, serverRoot, 'AVATAR_PRODUCT');
 
     const sceneVideoPaths: string[] = [];
     const sceneAudioPaths: string[] = [];
