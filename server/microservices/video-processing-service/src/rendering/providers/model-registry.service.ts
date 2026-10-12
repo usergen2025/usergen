@@ -154,12 +154,12 @@ export class ModelRegistryService {
   }
 
   /**
-   * Get default model (Model 1 - FAL imagen4)
+   * Get default model (Model 5 - BytePlus Seedream, text-to-image)
    */
   getDefaultModel(): ModelInfo {
-    const defaultModel = this.models.get('model-1');
+    const defaultModel = this.models.get('model-5');
     if (!defaultModel) {
-      throw new Error('Default model (model-1) not found');
+      throw new Error('Default model (model-5) not found');
     }
     return defaultModel;
   }
@@ -178,10 +178,12 @@ export class ModelRegistryService {
       }
       return model;
     }
-    // Default to model-1 (FAL imagen4) for other styles (ALTERNATE, HALF_N_HALF, etc.) when no asset references; processor overrides to model-4 when refs present.
-    const model = this.models.get('model-1');
+    // Default to model-5 (BytePlus Seedream) for other styles (ALTERNATE, HALF_N_HALF, etc.)
+    // when no asset references (text-to-image). Replaces model-1 (FAL imagen4) which is unavailable.
+    // Processor overrides to model-4 when refs present.
+    const model = this.models.get('model-5');
     if (!model) {
-      throw new Error('Default model for default styles (model-1) not found');
+      throw new Error('Default model for default styles (model-5) not found');
     }
     return model;
   }

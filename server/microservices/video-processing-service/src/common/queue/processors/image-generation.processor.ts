@@ -1311,12 +1311,13 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = aspectRatio || finalAspectRatio;
 
     const hasReferenceAssets = referenceImages && referenceImages.length > 0;
-    // Use model-4 (nano-banana-pro) when we have asset references – same as AVATAR_PRODUCT/PRODUCT_ONLY; use model-1 (imagen4) when no assets (text-to-image).
+    // Use model-4 (nano-banana-pro) when we have asset references – same as AVATAR_PRODUCT/PRODUCT_ONLY;
+    // use model-5 (BytePlus Seedream) when no assets (text-to-image) — replaces model-1 (imagen4) which is unavailable.
     let selectedModelId: string;
     if (hasReferenceAssets) {
       selectedModelId = 'model-4'; // FAL nano-banana-pro: multi-reference image-to-image for all styles
     } else {
-      selectedModelId = modelId || (project as any).defaultImageModel || 'model-1'; // No assets: text-to-image with model-1 (imagen4)
+      selectedModelId = modelId || (project as any).defaultImageModel || 'model-5'; // No assets: text-to-image with model-5 (BytePlus Seedream)
     }
     const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
 
