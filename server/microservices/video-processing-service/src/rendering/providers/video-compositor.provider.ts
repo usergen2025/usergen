@@ -1413,15 +1413,28 @@ export class VideoCompositorProvider {
     console.log(`[VideoCompositor] Adding audio to video...`);
 
     try {
+      // Probe audio duration so we can use explicit -t instead of -shortest.
+      // FFmpeg 6.1.x has a bug where -shortest + -c:v copy + -af can produce
+      // size=0kB output because the audio filter graph's latency causes the
+      // muxer to terminate before the first filtered packet arrives.
+      const audioDur = await this.getVideoDuration(audioPath);
+      const videoDur = await this.getVideoDuration(videoPath);
+      const targetDur = audioDur > 0 && videoDur > 0
+        ? Math.min(audioDur, videoDur)
+        : 0;
+
       // `aresample=async=1:first_pts=0` anchors the audio to presentation
       // timestamp 0 and corrects any sample drift so the muxed track stays
       // aligned with the (stream-copied) video, preventing lip-sync drift.
+      const durationFlag = targetDur > 0
+        ? `-t ${targetDur.toFixed(3)}`
+        : '-shortest';
       const ffmpegCommand = `
         ffmpeg -i "${videoPath}" -i "${audioPath}" \
         -c:v copy -c:a aac -b:a 192k -ar 48000 \
         -af "aresample=async=1:first_pts=0" \
         -map 0:v:0 -map 1:a:0 \
-        -shortest -y "${outputPath}"
+        ${durationFlag} -y "${outputPath}"
       `.replace(/\s+/g, ' ').trim();
 
       try {
