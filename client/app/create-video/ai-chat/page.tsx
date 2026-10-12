@@ -101,6 +101,8 @@ const STYLE_MAP: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT
   'broll-only': 'B_ROLL_ONLY',
 };
 
+const STOCK_FOOTAGE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_STOCK_FOOTAGE === 'true';
+
 function AIChatPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -9759,6 +9761,7 @@ Read everything on screen smoothly.`}
                             </button>
 
                             {/* Stock Selection Option - Opens modal with stock tabs only */}
+                            {STOCK_FOOTAGE_ENABLED && (
                             <button
                               onClick={() => handleBrollSourceSelection('stock')}
                               className="flex flex-row justify-center items-center px-[clamp(0.75rem,1.56vh,16px)] py-[clamp(0.75rem,1.17vh,12px)] bg-white shadow-[0px_1px_7px_rgba(87,73,119,0.23)] rounded-[30px] h-[clamp(2.5rem,4.2vh,42px)] hover:opacity-90 transition-opacity flex-shrink-0"
@@ -9767,6 +9770,7 @@ Read everything on screen smoothly.`}
                                 Use stock visuals
                               </span>
                             </button>
+                            )}
 
                             {/* Upload Option - Opens modal with upload tab only */}
                             <button
@@ -9781,7 +9785,7 @@ Read everything on screen smoothly.`}
                         )}
 
                         {/* Stock/Upload Manual Selection: Scene Cards Grid */}
-                        {(brollSourcePreference === 'stock' || brollSourcePreference === 'upload') && (
+                        {((STOCK_FOOTAGE_ENABLED && brollSourcePreference === 'stock') || brollSourcePreference === 'upload') && (
                           <>
                             {/* User Selection Message */}
                             <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -9934,7 +9938,7 @@ Read everything on screen smoothly.`}
                         )}
 
                         {/* Legacy Stock-Auto Loading State (kept for backwards compatibility) */}
-                        {brollSourcePreference === 'stock-auto' && isAutoSelectingStock && (
+                        {STOCK_FOOTAGE_ENABLED && brollSourcePreference === 'stock-auto' && isAutoSelectingStock && (
                           <>
                             {/* User Selection Message */}
                             <div className="flex flex-col justify-center items-end gap-[clamp(0.5rem,0.98vh,10px)] w-full mt-[clamp(0.5rem,0.98vh,10px)]">
@@ -11458,11 +11462,13 @@ Read everything on screen smoothly.`}
           ''
         }
         allowedTabs={
-          brollSourcePreference === 'upload' 
-            ? ['upload'] 
-            : brollSourcePreference === 'stock' 
-              ? ['images', 'videos'] 
-              : ['images', 'videos', 'upload']
+          brollSourcePreference === 'upload'
+            ? ['upload']
+            : brollSourcePreference === 'stock' && STOCK_FOOTAGE_ENABLED
+              ? ['images', 'videos']
+              : STOCK_FOOTAGE_ENABLED
+                ? ['images', 'videos', 'upload']
+                : ['upload']
         }
         targetAspectRatio="9:16"
       />

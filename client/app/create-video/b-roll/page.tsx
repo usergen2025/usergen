@@ -13,6 +13,8 @@ import { apiClient } from '@/lib/api/client';
 import { useToast } from '@/lib/toast/toast';
 import { useVideoStepNavigation } from '@/hooks/useVideoStepNavigation';
 
+const STOCK_FOOTAGE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_STOCK_FOOTAGE === 'true';
+
 function BRollPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -76,7 +78,7 @@ function BRollPageContent() {
           <h1 className={cn(typography.heading.h2, "mb-6")}>Add B-Roll</h1>
 
           {/* Source Selection */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className={`grid grid-cols-1 ${STOCK_FOOTAGE_ENABLED ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-8`}>
             <Card
               selected={selectedSource === 'ai-generated'}
               onClick={() => setSelectedSource('ai-generated')}
@@ -93,6 +95,7 @@ function BRollPageContent() {
               <Upload className="w-12 h-12 mx-auto mb-2" />
               <p className="font-medium">Upload from Device</p>
             </Card>
+            {STOCK_FOOTAGE_ENABLED && (
             <Card
               selected={selectedSource === 'stock'}
               onClick={() => setSelectedSource('stock')}
@@ -101,6 +104,7 @@ function BRollPageContent() {
               <ImageIcon className="w-12 h-12 mx-auto mb-2" />
               <p className="font-medium">Select from Stock</p>
             </Card>
+            )}
           </div>
 
           {selectedSource && (

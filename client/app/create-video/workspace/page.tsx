@@ -291,6 +291,7 @@ const VIDEO_SERVICE_ORIGIN = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost
 
 /** Matches Tailwind `lg` — left/right rails fixed from this width; drawers below. */
 const WORKSPACE_SIDEBAR_BREAKPOINT_PX = 1024;
+const STOCK_FOOTAGE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_STOCK_FOOTAGE === 'true';
 
 function WorkspacePageContent() {
   const router = useRouter();
@@ -4241,7 +4242,11 @@ function WorkspacePageContent() {
         onSelect={handleBrollSelection}
         sceneNumber={brollModalSceneNumber}
         defaultSearchTerm={scenes[brollModalSceneNumber - 1]?.stock_search_term || ''}
-        allowedTabs={workspaceMode === 'images' ? ['images', 'upload'] : ['videos', 'upload']}
+        allowedTabs={
+          STOCK_FOOTAGE_ENABLED
+            ? (workspaceMode === 'images' ? ['images', 'upload'] : ['videos', 'upload'])
+            : ['upload']
+        }
         targetAspectRatio={
           project?.style === 'HALF_N_HALF'
             ? '9:8'
