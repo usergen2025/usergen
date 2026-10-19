@@ -101,6 +101,70 @@ const STYLE_MAP: Record<VideoStyle, 'HALF_N_HALF' | 'ALTERNATE' | 'AVATAR_CUTOUT
   'broll-only': 'B_ROLL_ONLY',
 };
 
+/** Normalize UI / session / backend style strings for copy helpers. */
+function normalizeStyleKey(style: string | null | undefined): string {
+  return (style || '').trim().toLowerCase().replace(/_/g, '-');
+}
+
+/**
+ * Voice-step intro — must not mention a "face" for product-only / b-roll-only.
+ */
+function getVoiceStepIntroMessage(style: string | null | undefined): string {
+  const s = normalizeStyleKey(style);
+  if (s === 'product-only' || s === 'productonly') {
+    return "Great — your script is locked in. You're almost there... Want to pick a voice for your product video?";
+  }
+  if (s === 'broll-only' || s === 'b-roll-only') {
+    return "Script looks good. You're almost there... Want to pick a voice for your B-roll video?";
+  }
+  if (s === 'avatar-product') {
+    return "Amazing, your product story has a face now, you're almost there... Want to change the voice?";
+  }
+  if (s === 'avatar-only' || s === 'animated-avatar') {
+    return "Amazing, your video has a face now, you're almost there... Want to change the voice?";
+  }
+  // half-n-half, alternate, avatar-cutout, unknown
+  return "Amazing, your video has a face now, you're almost there... Want to change the voice?";
+}
+
+/**
+ * Generation / workspace handoff message — describe what's actually happening per style.
+ */
+function getGenerationProgressMessage(
+  style: string | null | undefined,
+  isRenderingVideo: boolean,
+): string {
+  const s = normalizeStyleKey(style);
+  if (s === 'product-only' || s === 'productonly') {
+    return isRenderingVideo
+      ? "Perfect! We're generating UGC scenes for your product — visuals, voice, and captions. Sit tight for a moment..."
+      : "Perfect! Preparing your product scenes and voiceover... Heading to the workspace next.";
+  }
+  if (s === 'broll-only' || s === 'b-roll-only') {
+    return isRenderingVideo
+      ? "Perfect! We're generating your B-roll scenes and voiceover. Sit tight for a moment..."
+      : "Perfect! Preparing B-roll visuals and audio... Heading to the workspace next.";
+  }
+  if (s === 'avatar-only' || s === 'animated-avatar') {
+    return isRenderingVideo
+      ? "Perfect! We're bringing your avatar to life with your voice. Sit tight for a moment... Your video is being crafted!"
+      : "Perfect! Preparing your audio... Your video is on its way!";
+  }
+  if (s === 'avatar-product') {
+    return isRenderingVideo
+      ? "Perfect! We're creating avatar + product scenes with your voice. Sit tight for a moment..."
+      : "Perfect! Preparing avatar and product scenes... Heading to the workspace next.";
+  }
+  if (s === 'half-n-half' || s === 'alternate' || s === 'avatar-cutout') {
+    return isRenderingVideo
+      ? "Perfect! We're stitching scenes, voice, and avatar together. Sit tight for a moment... Your video is being crafted!"
+      : "Perfect! Preparing scenes and voice... Heading to the workspace next.";
+  }
+  return isRenderingVideo
+    ? "Perfect! We're putting your video together — scenes, voice, and effects. Sit tight for a moment..."
+    : "Perfect! Preparing your video assets... Heading to the workspace next.";
+}
+
 const STOCK_FOOTAGE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_STOCK_FOOTAGE === 'true';
 
 function AIChatPageContent() {
@@ -8126,10 +8190,15 @@ Use a recent photo of yourself.`}
               {/* SUB-PART 1: Question Substep - Show question, disable when past question */}
               {hasReachedSubstep('voice-selection', 'question') && (
                 <>
-                  {/* AI Message - "Amazing, your video has a face now..." */}
+                  {/* AI Message — style-aware (no "face" copy for product-only / b-roll-only) */}
                   <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                     <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121]">
-                      Amazing, your video has a face now, you're almost there... Want to change the voice?
+                      {getVoiceStepIntroMessage(
+                        selectedVideoStyle ||
+                          (typeof window !== 'undefined'
+                            ? sessionStorage.getItem('selectedVideoStyle')
+                            : null),
+                      )}
                     </p>
                   </div>
                 </>
@@ -9994,20 +10063,13 @@ Read everything on screen smoothly.`}
                   {/* AI message - different for avatar-only vs b-roll styles */}
                   <div className="flex flex-col items-start gap-[clamp(0.5rem,0.78vh,8px)] max-w-full sm:max-w-[852px] mt-[clamp(0.5rem,0.98vh,10px)]">
                     <p className="font-heading text-[clamp(0.875rem,1.76vh,18px)] font-normal leading-[clamp(1rem,2.05vh,21px)] text-[#212121] text-center w-full">
-                      {(() => {
-                        const styleToCheck = selectedVideoStyle || 
-                          (typeof window !== 'undefined' ? sessionStorage.getItem('selectedVideoStyle') : null);
-                        const isAvatarOnlyStyle = styleToCheck === 'avatar-only' || styleToCheck === 'AVATAR_ONLY' || 
-                                                   styleToCheck === 'animated-avatar' || styleToCheck === 'ANIMATED_AVATAR';
-                        
-                        if (isAvatarOnlyStyle) {
-                          if (isRenderingVideo) {
-                            return "Perfect! We're bringing your avatar to life with your voice. Sit tight for a moment... Your video is being crafted!";
-                          }
-                          return "Perfect! Preparing your audio... Your video is on its way!";
-                        }
-                        return "Perfect! We're stitching everything together — scenes, voice, avatar, effects… the whole magic potion. Sit tight for a moment... Your video is being crafted!";
-                      })()}
+                      {getGenerationProgressMessage(
+                        selectedVideoStyle ||
+                          (typeof window !== 'undefined'
+                            ? sessionStorage.getItem('selectedVideoStyle')
+                            : null),
+                        isRenderingVideo,
+                      )}
                     </p>
                   </div>
 

@@ -1009,24 +1009,32 @@ function WorkspacePageContent() {
       if (typeof window !== 'undefined') {
         const cached = sessionStorage.getItem(cacheKey);
         if (cached) {
-          const parsed = JSON.parse(cached);
-          if (parsed?.results) {
-            setMusicLibraryItems(parsed.results as MusicSearchItem[]);
-            setMusicRelaxLevel(Number(parsed.relaxLevel || 0));
-            setMusicLoading(false);
-            return;
+          try {
+            const parsed = JSON.parse(cached);
+            // Never reuse an empty cache — seed/relax may have improved since last visit
+            if (Array.isArray(parsed?.results) && parsed.results.length > 0) {
+              setMusicLibraryItems(parsed.results as MusicSearchItem[]);
+              setMusicRelaxLevel(Number(parsed.relaxLevel || 0));
+              setMusicLoading(false);
+              return;
+            }
+            sessionStorage.removeItem(cacheKey);
+          } catch {
+            sessionStorage.removeItem(cacheKey);
           }
         }
       }
       const res = await fetch(`/api/music/search?${params.toString()}`, { headers: musicHeaders() });
       const json = await res.json();
       if (!res.ok || !json?.success) throw new Error(json?.message || json?.error || 'Music search failed');
-      setMusicLibraryItems((json.data?.results || []) as MusicSearchItem[]);
+      const results = (json.data?.results || []) as MusicSearchItem[];
+      setMusicLibraryItems(results);
       setMusicRelaxLevel(Number(json.data?.relaxLevel || 0));
-      if (typeof window !== 'undefined') {
+      // Only cache non-empty results so empty responses can be retried
+      if (typeof window !== 'undefined' && results.length > 0) {
         sessionStorage.setItem(
           cacheKey,
-          JSON.stringify({ results: json.data?.results || [], relaxLevel: Number(json.data?.relaxLevel || 0) }),
+          JSON.stringify({ results, relaxLevel: Number(json.data?.relaxLevel || 0) }),
         );
       }
     } catch (e: any) {

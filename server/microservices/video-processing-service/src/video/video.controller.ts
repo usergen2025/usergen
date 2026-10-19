@@ -2477,7 +2477,8 @@ export class VideoController {
 
     const audioType: HeyGenAudioType = type === 'sound_effects' ? 'sound_effects' : 'music';
     const parsedLimit = limit ? Math.min(Math.max(parseInt(String(limit), 10), 1), 50) : 10;
-    const parsedMinScore = minScore ? Math.min(Math.max(parseFloat(String(minScore)), 0), 1) : 0.6;
+    // Default 0.35 (was 0.6) — niche script topics often scored below 0.6 and returned empty lists
+    const parsedMinScore = minScore ? Math.min(Math.max(parseFloat(String(minScore)), 0), 1) : 0.35;
 
     console.log(
       `[VideoController] Searching HeyGen music: query="${query}", type=${audioType}, limit=${parsedLimit}`,
@@ -2566,12 +2567,19 @@ export class VideoController {
       throw new BadRequestException('Query parameter is required');
     }
 
-    // Search HeyGen music
-    const result = await this.heygenVideoProvider.searchAudioSounds(query.trim(), {
+    // Search HeyGen music (lenient minScore; retry with broader query if empty)
+    let result = await this.heygenVideoProvider.searchAudioSounds(query.trim(), {
       type: 'music',
       limit: 10,
-      minScore: 0.6,
+      minScore: 0.35,
     });
+    if (result.tracks.length === 0) {
+      result = await this.heygenVideoProvider.searchAudioSounds('upbeat background music', {
+        type: 'music',
+        limit: 10,
+        minScore: 0.2,
+      });
+    }
 
     if (result.tracks.length === 0) {
       throw new HttpException(
