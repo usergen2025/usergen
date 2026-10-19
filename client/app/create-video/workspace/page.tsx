@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X, Languages, Pencil } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Music, Type, ChevronUp, Play, Pause, Loader2, User, Check, Clapperboard, SlidersHorizontal, Upload, RefreshCw, Search, X, Languages, Pencil, Info } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import {
   getFinalVideoUrl,
@@ -3568,11 +3568,31 @@ function WorkspacePageContent() {
 
         {/* Center - Preview */}
         <div className="relative flex flex-col items-center gap-[clamp(12px,1.56vh,20px)] w-full min-w-0 lg:flex-1 lg:max-w-[520px] lg:min-w-[340px] max-w-[min(520px,calc(100vw-2rem))] min-[560px]:max-w-[min(620px,calc(100vw-1rem))] mx-auto h-auto lg:h-full shrink-0">
-          {/* Scene counter */}
-          <div className="flex flex-row justify-center items-center w-full">
+          {/* Scene counter + preview-audio info */}
+          <div className="relative z-[110] flex flex-row justify-center items-center gap-1.5 w-full overflow-visible">
             <span className="font-heading font-medium text-[clamp(14px,1.56vh,16px)] leading-[clamp(14px,1.56vh,16px)] text-[#212121]">
               Scene {selectedSceneIndex + 1} of {sceneCount}
             </span>
+            {(workspaceMode === 'videos' || isSingleClipStyle) &&
+              !['converting', 'rendering', 'completed'].includes(workspaceMode) && (
+              <div className="relative group/preview-info overflow-visible">
+                <button
+                  type="button"
+                  aria-label="About preview audio"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[#9E9E9E] hover:text-[#E86512] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E86512]/40 transition-colors"
+                >
+                  <Info className="h-3.5 w-3.5" strokeWidth={2.25} />
+                </button>
+                <div
+                  role="tooltip"
+                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-[110] w-[min(280px,calc(100vw-2rem))] -translate-x-1/2 rounded-lg border border-[#E8E2DB] bg-white px-3 py-2 text-center font-heading text-[11px] leading-snug text-[#616161] shadow-md opacity-0 invisible transition-opacity duration-150 group-hover/preview-info:opacity-100 group-hover/preview-info:visible group-focus-within/preview-info:opacity-100 group-focus-within/preview-info:visible"
+                >
+                  {isSingleClipStyle
+                    ? 'Background music and the final mix are applied on export. Preview your clip and captions here.'
+                    : 'Audio (voice + music) is added on export. Preview visuals and captions here.'}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Preview area with navigation arrows on sides */}
@@ -3866,12 +3886,12 @@ function WorkspacePageContent() {
               <div className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] w-full flex-shrink-0">
                 <Music className="w-[clamp(18px,2.34vh,24px)] h-[clamp(18px,2.34vh,24px)] text-[#212121]" />
                 <span className="font-heading font-semibold text-[clamp(14px,1.76vh,18px)] leading-[clamp(14px,1.76vh,18px)] text-[#212121]">Background Music</span>
-                {/* Search in header - compact expandable */}
+                {/* Search in header - compact expandable; hides enable toggle while searching */}
                 {musicExpanded && musicTab === 'library' && (
                   <div className="flex items-center gap-1.5 flex-1 min-w-0 mx-2">
                     <div
                       className={`overflow-hidden transition-all duration-200 ease-in-out rounded-full border border-[#E8E2DB] bg-white ${
-                        musicSearchExpanded ? 'flex-1 opacity-100 px-3 py-1.5' : 'w-0 opacity-0 px-0 py-0 border-0'
+                        musicSearchExpanded ? 'flex-1 opacity-100 h-7 px-2.5' : 'w-0 h-7 opacity-0 px-0 border-0'
                       }`}
                     >
                       <input
@@ -3880,7 +3900,7 @@ function WorkspacePageContent() {
                         onChange={(e) => setMusicSearchInput(e.target.value)}
                         placeholder="Search..."
                         aria-label="Search music"
-                        className="w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[clamp(12px,1.3vh,14px)] text-[#212121] placeholder:text-[#9E9E9E]"
+                        className="h-full w-full min-w-0 bg-transparent border-0 outline-none font-heading text-[11px] leading-none text-[#212121] placeholder:text-[#9E9E9E]"
                         onBlur={() => {
                           if (!musicSearchInput.trim()) setMusicSearchExpanded(false);
                         }}
@@ -3907,22 +3927,23 @@ function WorkspacePageContent() {
                         }
                       }}
                       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#E8E2DB] bg-white hover:bg-orange-50/60 transition-colors"
-                      aria-label={musicSearchExpanded ? 'Collapse search' : 'Search music'}
+                      aria-label={musicSearchExpanded ? 'Close search' : 'Search music'}
                     >
                       {musicSearchExpanded ? (
-                        <X className="h-4 w-4 text-[#E86512]" />
+                        <X className="h-3.5 w-3.5 text-[#E86512]" />
                       ) : (
-                        <Search className="h-4 w-4 text-[#E86512]" />
+                        <Search className="h-3.5 w-3.5 text-[#E86512]" />
                       )}
                     </button>
                     {musicSearchInput.trim() && (
                       <button
+                        type="button"
                         onClick={() => {
                           setMusicSearchInput('');
                           setMusicSearchExpanded(false);
                           fetchMusicLibrary({ useSeed: true });
                         }}
-                        className="text-xs text-[#E86512] hover:underline shrink-0"
+                        className="text-[11px] leading-none text-[#E86512] hover:underline shrink-0"
                       >
                         Clear
                       </button>
@@ -3936,12 +3957,17 @@ function WorkspacePageContent() {
                 >
                   <ChevronUp className={`w-full h-full text-[#212121] transition-transform ${musicExpanded ? '' : 'rotate-180'}`} />
                 </button>
-                <div
-                  onClick={() => setBackgroundMusicEnabled(!backgroundMusicEnabled)}
-                  className={`relative w-[44px] h-[24px] rounded-full cursor-pointer transition-all flex-shrink-0 ${backgroundMusicEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : 'bg-gray-300'}`}
-                >
-                  <div className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-all shadow-sm ${backgroundMusicEnabled ? 'left-[22px]' : 'left-[2px]'}`} />
-                </div>
+                {!musicSearchExpanded && (
+                  <div
+                    onClick={() => setBackgroundMusicEnabled(!backgroundMusicEnabled)}
+                    className={`relative w-[44px] h-[24px] rounded-full cursor-pointer transition-all flex-shrink-0 ${backgroundMusicEnabled ? 'bg-gradient-to-b from-[#E86412] to-[#F12A4C]' : 'bg-gray-300'}`}
+                    role="switch"
+                    aria-checked={backgroundMusicEnabled}
+                    aria-label="Toggle background music"
+                  >
+                    <div className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-all shadow-sm ${backgroundMusicEnabled ? 'left-[22px]' : 'left-[2px]'}`} />
+                  </div>
+                )}
               </div>
 
               {musicExpanded && (
