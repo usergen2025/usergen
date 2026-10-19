@@ -6,6 +6,89 @@ import * as fs from 'fs';
 import { computeCaptionBoxPixels } from './html-caption-layer.provider';
 
 /**
+ * Split an FFmpeg command string into argv the way a shell would for simple
+ * quoting — without using `shell: true` (avoids injection + keeps spawn safe).
+ *
+ * Naive `.split(' ')` leaves quote characters on paths like `-i "/tmp/a.mp4"`,
+ * so FFmpeg looks for a file literally named `"/tmp/a.mp4"` and fails with
+ * "No such file or directory".
+ */
+function parseFfmpegArgv(command: string): string[] {
+  const normalized = command.replace(/\s+/g, ' ').trim();
+  const args: string[] = [];
+  let current = '';
+  let inDouble = false;
+  let inSingle = false;
+  let escaped = false;
+
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && inDouble) {
+      // Preserve ffmpeg filter escapes inside double quotes (e.g. eq(n\,0))
+      const next = normalized[i + 1];
+      if (next === '"' || next === '\\') {
+        escaped = true;
+        continue;
+      }
+      current += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === ' ' && !inDouble && !inSingle) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+/** Collect paths passed via `-i` / `-i` style inputs and verify they exist on disk. */
+function assertFfmpegInputFilesExist(argv: string[]): void {
+  const missing: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (token !== '-i' && token !== '-i:') continue;
+    const inputPath = argv[i + 1];
+    if (!inputPath || inputPath.startsWith('-')) continue;
+    // Skip protocol / pipe / lavfi / concat demuxer virtual inputs
+    if (
+      inputPath === '-' ||
+      inputPath.startsWith('pipe:') ||
+      inputPath.startsWith('lavfi') ||
+      inputPath.includes('://')
+    ) {
+      continue;
+    }
+    if (!fs.existsSync(inputPath)) {
+      missing.push(inputPath);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `FFmpeg input file(s) missing on disk (download from GCS or regenerate before stitch):\n` +
+        missing.map((p) => `  - ${p}`).join('\n'),
+    );
+  }
+}
+
+/**
  * Run an FFmpeg command asynchronously so the Node.js event loop stays
  * responsive (status-polling, WebSocket heartbeats, etc.).
  *
@@ -17,8 +100,21 @@ function execFFmpegAsync(
   options: { maxStderrKB?: number } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = command.replace(/\s+/g, ' ').trim().split(' ');
-    const bin = args.shift()!;
+    let argv: string[];
+    try {
+      argv = parseFfmpegArgv(command);
+      if (argv.length === 0) {
+        reject(new Error('Empty FFmpeg command'));
+        return;
+      }
+      assertFfmpegInputFilesExist(argv);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    const bin = argv[0];
+    const args = argv.slice(1);
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     const stderrChunks: Buffer[] = [];

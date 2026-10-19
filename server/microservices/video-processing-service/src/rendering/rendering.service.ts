@@ -659,6 +659,33 @@ export class RenderingService {
     return null;
   }
 
+  /**
+   * Resolve a video media record to an on-disk path, downloading from GCS/HTTP
+   * when the local file is missing. Prefer this over resolveLocalVideoPath for
+   * any path that will be fed to FFmpeg.
+   */
+  async ensureVideoPathOnDisk(video: {
+    localPath?: string;
+    localUrl?: string;
+    gcsUrl?: string;
+    publicUrl?: string;
+    videoUrl?: string;
+    sceneNumber?: number;
+  } | null | undefined): Promise<string | null> {
+    if (!video) return null;
+    const existing = this.resolveLocalVideoPath(video.localPath, video.localUrl);
+    if (existing) return existing;
+
+    const userDir = path.join(this.uploadsDir, 'videos');
+    const serverRoot = path.join(process.cwd(), '..', '..');
+    return this.resolveBrollVideoPathOnDisk(
+      video,
+      userDir,
+      serverRoot,
+      `scene_${video.sceneNumber ?? '?'}`,
+    );
+  }
+
   getUploadsDir(): string {
     return this.uploadsDir;
   }
@@ -2842,37 +2869,13 @@ export class RenderingService {
           continue;
         }
         
-        // Get b-roll video path (supports both regular and stock videos)
-        let brollPath: string | null = null;
-        if (brollVideo.localPath) {
-          brollPath = path.isAbsolute(brollVideo.localPath) 
-            ? brollVideo.localPath 
-            : path.resolve(brollVideo.localPath);
-        } else if (brollVideo.localUrl) {
-          const urlPath = brollVideo.localUrl.startsWith('/uploads') ? brollVideo.localUrl : brollVideo.localUrl;
-          
-          // Handle different localUrl formats
-          if (urlPath.includes('/uploads/stock/')) {
-            const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-            brollPath = path.join(mediaServiceDir, urlPath);
-          } else {
-            const relativePath = urlPath.replace(/^\/uploads\/videos\/[^/]+\//, '');
-            brollPath = path.join(userDir, relativePath);
-          }
-        }
-        
-        // Check primary path, then try stock fallback
-        if (!brollPath || !fs.existsSync(brollPath)) {
-          if (brollVideo.localUrl && brollVideo.localUrl.includes('/uploads/stock/')) {
-            const mediaServiceDir = path.join(serverRoot, 'microservices', 'media-management-service');
-            const stockPath = path.join(mediaServiceDir, brollVideo.localUrl);
-            if (fs.existsSync(stockPath)) {
-              console.log(`[RenderingService] CUTOUT: Found stock video at fallback path: ${stockPath}`);
-              brollPath = stockPath;
-            }
-          }
-        }
-        
+        // GCS-aware resolve (local disk first, then download from gcsUrl/publicUrl)
+        const brollPath = await this.resolveBrollVideoPathOnDisk(
+          brollVideo,
+          userDir,
+          serverRoot,
+          'CUTOUT',
+        );
         if (!brollPath || !fs.existsSync(brollPath)) {
           console.warn(`[RenderingService] CUTOUT: B-roll video not found for scene ${sceneNumber}, skipping`);
           continue;
@@ -2897,9 +2900,7 @@ export class RenderingService {
         let brollWithAudioPath = brollPath;
         
         if (sceneAudioFile) {
-          const audioPath = sceneAudioFile.localPath || 
-            (sceneAudioFile.localUrl ? path.join(process.cwd(), sceneAudioFile.localUrl.replace(/^\//, '')) : null);
-          
+          const audioPath = await this.resolveAudioPathOnDisk(sceneAudioFile);
           if (audioPath && fs.existsSync(audioPath)) {
             brollWithAudioPath = path.join(tempDir, `broll_audio_scene_${sceneNumber}.mp4`);
             await this.videoCompositor.addAudioToVideo(brollPath, audioPath, brollWithAudioPath);

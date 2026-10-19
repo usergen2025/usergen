@@ -616,7 +616,7 @@ export class VideoTranslationService {
     let sourcePath: string | null = null;
     if (role === 'avatar') {
       const entry = avatarVideos.find((v: any) => v.sceneNumber === sceneNumber);
-      sourcePath = this.renderingService.resolveLocalVideoPath(entry?.localPath, entry?.localUrl);
+      sourcePath = await this.renderingService.ensureVideoPathOnDisk(entry);
       if (!sourcePath) throw new Error(`Missing avatar video for scene ${sceneNumber}`);
     } else {
       sourcePath = await this.buildBrollSceneClip(project, userId, sceneNumber, bRollVideos, audioFiles, workDir);
@@ -894,7 +894,7 @@ export class VideoTranslationService {
     const videoEntry = bRollVideos.find((v) => v.sceneNumber === sceneNumber);
     if (!videoEntry) throw new Error(`Missing b-roll video for scene ${sceneNumber}`);
 
-    let videoPath = this.renderingService.resolveLocalVideoPath(videoEntry.localPath, videoEntry.localUrl);
+    let videoPath = await this.renderingService.ensureVideoPathOnDisk(videoEntry);
     if (!videoPath) throw new Error(`B-roll file not found for scene ${sceneNumber}`);
 
     const audioFile = audioFiles.find((af) => af.sceneNumber === sceneNumber);

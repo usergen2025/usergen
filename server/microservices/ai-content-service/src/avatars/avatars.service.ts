@@ -1008,6 +1008,54 @@ export class AvatarsService {
   }
 
   /**
+   * Load avatar original image from local disk or remote (GCS/HTTP).
+   * Used by Original (resize-only) and all preview/project image paths so a
+   * missing local file after GCS upload does not 400.
+   */
+  private async loadAvatarOriginalImage(
+    originalImageUrl: string,
+  ): Promise<{ buffer: Buffer; localPath: string | null }> {
+    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
+    const possiblePaths = urlMatch
+      ? [
+          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+          path.join(
+            process.cwd(),
+            'microservices',
+            'ai-content-service',
+            'uploads',
+            'avatars',
+            urlMatch[1],
+            urlMatch[2],
+          ),
+          // Monorepo: service may run from microservices/ai-content-service
+          path.join(process.cwd(), '..', '..', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+        ]
+      : originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://')
+        ? []
+        : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
+
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        return { buffer: fs.readFileSync(p), localPath: p };
+      }
+    }
+
+    const remote = await this.downloadImageBufferForPreview(originalImageUrl);
+    if (remote && remote.length > 0) {
+      this.logger.log(
+        `Loaded avatar original image from remote URL (${remote.length} bytes)`,
+        'AvatarsService',
+      );
+      return { buffer: remote, localPath: null };
+    }
+
+    throw new BadRequestException(
+      `Avatar original image not found at: ${originalImageUrl}. Re-upload the avatar or ensure the image is reachable.`,
+    );
+  }
+
+  /**
    * Ensure avatar original image is accessible via public HTTP URL for FAL multi-reference generation.
    */
   private async ensureAvatarPublicUrl(
@@ -1214,25 +1262,7 @@ export class AvatarsService {
       throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
     }
 
-    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
-    const possiblePaths = urlMatch
-      ? [
-          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-          path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-        ]
-      : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
-    let imagePath: string | null = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        imagePath = p;
-        break;
-      }
-    }
-    if (!imagePath) {
-      throw new BadRequestException(`Avatar original image not found at: ${originalImageUrl}`);
-    }
-
-    const imageBuffer = fs.readFileSync(imagePath);
+    const { buffer: imageBuffer } = await this.loadAvatarOriginalImage(originalImageUrl);
     // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
     const useBottomHalfFraming = style === 'HALF_N_HALF';
     const classification = this.resolveAvatarIntentFromAvatar(avatar);
@@ -1357,25 +1387,8 @@ export class AvatarsService {
       throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
     }
 
-    const urlMatch = avatarOriginalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
-    const possiblePaths = urlMatch
-      ? [
-          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-          path.join(process.cwd(), 'microservices', 'ai-content-service', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-        ]
-      : [path.join(process.cwd(), avatarOriginalImageUrl.replace(/^\//, ''))];
-    let imagePath: string | null = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        imagePath = p;
-        break;
-      }
-    }
-    if (!imagePath) {
-      throw new BadRequestException(`Avatar original image not found at: ${avatarOriginalImageUrl}`);
-    }
-
-    let imageBuffer = fs.readFileSync(imagePath);
+    const { buffer: imageBuffer, localPath: imagePath } =
+      await this.loadAvatarOriginalImage(avatarOriginalImageUrl);
 
     // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
     const useBottomHalfFraming = style === 'HALF_N_HALF';
@@ -1398,6 +1411,10 @@ export class AvatarsService {
     let resultImageBuffer: Buffer;
 
     if (useResizeOnlyPath) {
+      this.logger.log(
+        `Original/resize-only preview: using uploaded image as-is (resized for video format)`,
+        'AvatarsService',
+      );
       resultImageBuffer = await this.resizeAvatarImageBuffer(imageBuffer, useBottomHalfFraming);
     } else {
       const sceneHint =
