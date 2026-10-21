@@ -12,7 +12,7 @@ import { PublicUrlService } from '../../storage/public-url.service';
 import { AssetProcessorService, AnalyzedAsset } from '../../services/asset-processor.service';
 import { ProjectLogService } from '../../logging/project-log.service';
 import { UserNotificationService } from '../../../notifications/user-notification.service';
-import { preWarmUrl } from '@shared/storage';
+import { preWarmUrl, isExternallyReachableUrl, replaceStoredUrl } from '@shared/storage';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
@@ -51,6 +51,8 @@ export interface ImageGenerationJobData {
 @Injectable()
 export class ImageGenerationProcessor extends WorkerHost {
   private readonly uploadsDir: string;
+  /** One in-flight Cloud Storage upload per local URL, shared across concurrent scenes. */
+  private readonly publishedUrlCache = new Map<string, Promise<string>>();
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -352,26 +354,10 @@ export class ImageGenerationProcessor extends WorkerHost {
       `[ImageGenerationProcessor] PRODUCT_ONLY scene ${sceneNumber}: mode=${presentationMode}, profile=${presentationPlan?.profile || 'unknown'}, productType=${productType || 'unknown'}, productForm=${presentationPlan?.productForm || 'unknown'}, refs=presenter:${Boolean(ephemeralPresenterUrl)}`,
     );
 
-    // Ensure product image is publicly accessible (for 3rd party API calls like FAL)
-    let publicProductImageUrl = productImageUrl;
-    if (productImageUrl) {
-      if (!productImageUrl.startsWith('http://') && !productImageUrl.startsWith('https://')) {
-        // If it's a local file path, convert to public URL using GCS if available
-        const localUrl = productImageUrl.startsWith('/') ? productImageUrl : `/${productImageUrl}`;
-        try {
-          publicProductImageUrl = await this.publicUrlService.getPublicUrl(productImageUrl, localUrl);
-          console.log(`[ImageGenerationProcessor] Converted product image to public URL: ${publicProductImageUrl}`);
-        } catch (error: any) {
-          console.error(`[ImageGenerationProcessor] Failed to get public URL for product image: ${error.message}`);
-          throw new Error(`Product image URL must be publicly accessible for 3rd party API calls. Failed to convert: ${error.message}`);
-        }
-      } else {
-        // Already a public URL, verify it's accessible
-        console.log(`[ImageGenerationProcessor] Using provided public product image URL: ${publicProductImageUrl}`);
-      }
-    } else {
+    if (!productImageUrl) {
       throw new Error('Product image URL is required for PRODUCT_ONLY style');
     }
+    const publicProductImageUrl = await this.publishForExternalApi(productImageUrl, project);
 
     // Mode-aware prompt suffix and reference images
     const sanitizedPrompt = sanitizeProductOnlyScenePrompt(
@@ -414,11 +400,9 @@ export class ImageGenerationProcessor extends WorkerHost {
     let selectedModelId = modelId || (project as any).defaultImageModel || 'model-4'; // Default to model-4 for product styles
     let model = this.modelRegistry.getModel(selectedModelId);
 
-    // Validate model supports reference images for PRODUCT_ONLY style
-    // If model doesn't support reference images and productImageUrl is provided, fallback to model-4
-    if (!model || (selectedModelId === 'model-1' && productImageUrl)) {
-      // imagen4 doesn't support reference images, fallback to model-4
-      console.warn(`[ImageGenerationProcessor] Model ${selectedModelId} doesn't support reference images for PRODUCT_ONLY, using model-4 (nano-banana-pro) instead`);
+    // Product shots with a reference image use nano-banana-pro. model-1 is the legacy text-to-image slot (now Seedream).
+    if (!model || ((selectedModelId === 'model-1' || model.id.includes('imagen4')) && productImageUrl)) {
+      console.warn(`[ImageGenerationProcessor] Model ${selectedModelId} is not used for PRODUCT_ONLY references, using model-4 (nano-banana-pro) instead`);
       model = this.modelRegistry.getDefaultModelForStyle('PRODUCT_ONLY');
       selectedModelId = 'model-4';
     }
@@ -436,7 +420,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       resolution: resolution || model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'jpeg',
-      referenceImages: allReferenceImages, // ✅ Use image-to-image with product + assets as reference
+      referenceImages: await this.publishReferenceImages(allReferenceImages, project),
     };
 
     // Validate request
@@ -591,6 +575,67 @@ export class ImageGenerationProcessor extends WorkerHost {
   }
 
   /**
+   * Upload a localhost or on-disk reference to Cloud Storage before an external image API sees it.
+   * Writes the Cloud Storage URL back onto the project so later scenes reuse it.
+   */
+  private async publishForExternalApi(
+    url: string,
+    project: { id: string; metadata?: any },
+  ): Promise<string> {
+    const key = url.trim();
+    if (isExternallyReachableUrl(key)) return key;
+
+    let pending = this.publishedUrlCache.get(key);
+    if (!pending) {
+      pending = this.publishUncached(key, project.id);
+      this.publishedUrlCache.set(key, pending);
+      pending.catch(() => this.publishedUrlCache.delete(key));
+    }
+
+    const published = await pending;
+    if (published !== key && project.metadata) {
+      project.metadata = replaceStoredUrl(project.metadata, key, published);
+    }
+    return published;
+  }
+
+  private async publishReferenceImages(
+    urls: Array<string | undefined | null> | undefined,
+    project: { id: string; metadata?: any },
+  ): Promise<string[] | undefined> {
+    if (!urls?.length) return undefined;
+    const published = await Promise.all(
+      urls.filter((url): url is string => !!url).map((url) => this.publishForExternalApi(url, project)),
+    );
+    return published;
+  }
+
+  private async publishUncached(url: string, projectId: string): Promise<string> {
+    const published = await this.publicUrlService.ensureExternallyReachableUrl(url);
+    if (published !== url) {
+      console.log(`[ImageGenerationProcessor] Migrated local media to Cloud Storage: ${published}`);
+      await this.persistReplacedUrl(projectId, url, published);
+    }
+    return published;
+  }
+
+  private async persistReplacedUrl(projectId: string, from: string, to: string): Promise<void> {
+    try {
+      const fresh = await this.databaseService.videoProject.findUnique({
+        where: { id: projectId },
+        select: { metadata: true },
+      });
+      const metadata = replaceStoredUrl(fresh?.metadata ?? {}, from, to);
+      await this.databaseService.videoProject.update({
+        where: { id: projectId },
+        data: { metadata: metadata as any },
+      });
+    } catch (error: any) {
+      console.warn(`[ImageGenerationProcessor] Failed to store migrated media URL: ${error.message}`);
+    }
+  }
+
+  /**
    * Ensure avatar image has a valid public URL (with GCS upload if needed)
    * This method handles:
    * 1. Checking cached public URL from metadata
@@ -612,19 +657,25 @@ export class ImageGenerationProcessor extends WorkerHost {
     // 1) Check for cached public URL in metadata
     const cachedAvatarUrl: string | undefined = projectMetadata?.avatarPublicImageUrl;
     
-    if (cachedAvatarUrl && (cachedAvatarUrl.startsWith('http://') || cachedAvatarUrl.startsWith('https://'))) {
+    if (cachedAvatarUrl && isExternallyReachableUrl(cachedAvatarUrl)) {
       console.log(`[ImageGenerationProcessor] Found cached avatarPublicImageUrl: ${cachedAvatarUrl}`);
-      
-      // 2) Validate cached URL with pre-warming (this validates accessibility)
-      console.log(`[ImageGenerationProcessor] Validating cached avatar URL with pre-warming...`);
       const isValid = await preWarmUrl(cachedAvatarUrl, 3);
-      
       if (isValid) {
-        console.log(`[ImageGenerationProcessor] ✅ Cached avatar URL is valid and accessible`);
+        console.log(`[ImageGenerationProcessor] Cached avatar URL is reachable by external APIs`);
         return cachedAvatarUrl;
-      } else {
-        console.warn(`[ImageGenerationProcessor] ⚠️ Cached avatar URL failed validation, will re-upload to GCS`);
-        // Continue to re-upload logic below
+      }
+      console.warn(`[ImageGenerationProcessor] Cached avatar URL failed validation, will re-upload to GCS`);
+    } else if (cachedAvatarUrl) {
+      console.log(`[ImageGenerationProcessor] Cached avatar URL is local; publishing to Cloud Storage`);
+      try {
+        const published = await this.publishForExternalApi(cachedAvatarUrl, {
+          id: projectId,
+          metadata: projectMetadata,
+        });
+        await this.cacheAvatarPublicUrl(projectId, projectMetadata, published);
+        return published;
+      } catch (error: any) {
+        console.warn(`[ImageGenerationProcessor] Could not publish cached avatar URL: ${error.message}`);
       }
     }
 
@@ -648,16 +699,25 @@ export class ImageGenerationProcessor extends WorkerHost {
       const originalImageUrl = avatarData.originalImageUrl;
       const avatarUserId = avatarData.userId;
       
-      // 4) If originalImageUrl is already a public URL, validate and use it
-      if (originalImageUrl && (originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://'))) {
+      if (originalImageUrl && isExternallyReachableUrl(originalImageUrl)) {
         console.log(`[ImageGenerationProcessor] Avatar has public URL in database: ${originalImageUrl}`);
         const isValid = await preWarmUrl(originalImageUrl, 3);
         if (isValid) {
-          // Cache it in metadata for future use
           await this.cacheAvatarPublicUrl(projectId, projectMetadata, originalImageUrl);
           return originalImageUrl;
         }
-        console.warn(`[ImageGenerationProcessor] ⚠️ Avatar public URL from database failed validation, will find local file`);
+        console.warn(`[ImageGenerationProcessor] Avatar public URL from database failed validation, will find local file`);
+      } else if (originalImageUrl && (originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://'))) {
+        try {
+          const published = await this.publishForExternalApi(originalImageUrl, {
+            id: projectId,
+            metadata: projectMetadata,
+          });
+          await this.cacheAvatarPublicUrl(projectId, projectMetadata, published);
+          return published;
+        } catch (error: any) {
+          console.warn(`[ImageGenerationProcessor] Could not publish avatar URL from database: ${error.message}`);
+        }
       }
       
       // 5) Find local file path
@@ -718,8 +778,13 @@ export class ImageGenerationProcessor extends WorkerHost {
         'image/jpeg'
       );
       
-      const publicUrl = storageResult.publicUrl;
-      console.log(`[ImageGenerationProcessor] ✅ Avatar image uploaded, public URL: ${publicUrl}`);
+      const publicUrl = storageResult.gcsUrl || storageResult.publicUrl;
+      if (!isExternallyReachableUrl(publicUrl)) {
+        throw new Error(
+          'Cloud Storage upload did not return a public avatar URL. External image APIs cannot use a localhost address.',
+        );
+      }
+      console.log(`[ImageGenerationProcessor] Avatar image uploaded, public URL: ${publicUrl}`);
       
       // 7) Cache the public URL in metadata for future use
       await this.cacheAvatarPublicUrl(projectId, projectMetadata, publicUrl);
@@ -829,32 +894,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     console.log(`[ImageGenerationProcessor] Avatar image URL: ${avatarImageUrl}`);
     console.log(`[ImageGenerationProcessor] Avatar image URL valid: true`);
 
-    // Ensure product image is publicly accessible (for 3rd party API calls like FAL)
-    let publicProductImageUrl = productImageUrl;
-    if (productImageUrl) {
-      // ✅ Enhanced logging for product image URL
-      console.log(`[ImageGenerationProcessor] ========== PRODUCT IMAGE URL ==========`);
-      console.log(`[ImageGenerationProcessor] Original product image URL: ${productImageUrl}`);
-      console.log(`[ImageGenerationProcessor] Is public URL: ${productImageUrl.startsWith('http://') || productImageUrl.startsWith('https://')}`);
-      
-      if (!productImageUrl.startsWith('http://') && !productImageUrl.startsWith('https://')) {
-        // If it's a local file path, convert to public URL using GCS if available
-        const localUrl = productImageUrl.startsWith('/') ? productImageUrl : `/${productImageUrl}`;
-        try {
-          publicProductImageUrl = await this.publicUrlService.getPublicUrl(productImageUrl, localUrl);
-          console.log(`[ImageGenerationProcessor] ✅ Converted product image to public URL: ${publicProductImageUrl}`);
-        } catch (error: any) {
-          console.error(`[ImageGenerationProcessor] ❌ Failed to get public URL for product image: ${error.message}`);
-          throw new Error(`Product image URL must be publicly accessible for 3rd party API calls. Failed to convert: ${error.message}`);
-        }
-      } else {
-        // Already a public URL, verify it's accessible
-        console.log(`[ImageGenerationProcessor] ✅ Using provided public product image URL: ${publicProductImageUrl}`);
-      }
-    } else {
-      console.error(`[ImageGenerationProcessor] ❌ Product image URL is required for AVATAR_PRODUCT style`);
-      throw new Error('Product image URL is required for AVATAR_PRODUCT style');
-    }
+    const publicProductImageUrl = await this.publishForExternalApi(productImageUrl, project);
+    console.log(`[ImageGenerationProcessor] Product image URL for external API: ${publicProductImageUrl}`);
 
     // Enhanced prompt for avatar-product generation with reference images and asset context
     // Include STRONG product consistency requirements
@@ -891,7 +932,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       resolution: model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'jpeg',
-      referenceImages: allReferenceImages, // ✅ Multi-reference image-to-image with assets
+      referenceImages: await this.publishReferenceImages(allReferenceImages, project),
     };
 
     // ✅ Enhanced logging for reference images
@@ -1311,15 +1352,22 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = aspectRatio || finalAspectRatio;
 
     const hasReferenceAssets = referenceImages && referenceImages.length > 0;
-    // Use model-4 (nano-banana-pro) when we have asset references – same as AVATAR_PRODUCT/PRODUCT_ONLY;
-    // use model-5 (BytePlus Seedream) when no assets (text-to-image) — replaces model-1 (imagen4) which is unavailable.
+    // Reference images use model-4 (nano-banana-pro). Text-to-image uses model-5 (BytePlus Seedream).
+    // model-1 used to be FAL imagen4, which is unavailable, so it is treated as Seedream.
     let selectedModelId: string;
+    const requestedModelId = modelId || (project as any).defaultImageModel;
     if (hasReferenceAssets) {
-      selectedModelId = 'model-4'; // FAL nano-banana-pro: multi-reference image-to-image for all styles
+      selectedModelId = 'model-4';
+    } else if (!requestedModelId || requestedModelId === 'model-1') {
+      selectedModelId = 'model-5';
     } else {
-      selectedModelId = modelId || (project as any).defaultImageModel || 'model-5'; // No assets: text-to-image with model-5 (BytePlus Seedream)
+      selectedModelId = requestedModelId;
     }
-    const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
+    let model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
+    if (model.id.includes('imagen4')) {
+      selectedModelId = 'model-5';
+      model = this.modelRegistry.getModel('model-5') || model;
+    }
 
     console.log(`[ImageGenerationProcessor] Scene ${sceneNumber}: Style=${project.style}, Model=${model.displayName}, AspectRatio=${selectedAspectRatio}, refImages=${referenceImages?.length ?? 0}`);
 
@@ -1395,6 +1443,10 @@ export class ImageGenerationProcessor extends WorkerHost {
       );
     }
 
+    const publishedReferenceImages = hasReferenceAssets
+      ? await this.publishReferenceImages(referenceImages, project)
+      : undefined;
+
     const request: ImageGenerationRequest = {
       prompt: finalPrompt,
       modelId: model.id,
@@ -1402,7 +1454,7 @@ export class ImageGenerationProcessor extends WorkerHost {
       resolution: resolution || model.defaultConfig.resolution || '2K',
       numImages: model.defaultConfig.numImages || 1,
       outputFormat: (model.defaultConfig.outputFormat as 'png' | 'jpeg' | 'webp') || 'png',
-      referenceImages: hasReferenceAssets ? referenceImages : undefined,
+      referenceImages: publishedReferenceImages,
     };
 
     // Validate request

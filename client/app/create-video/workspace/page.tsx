@@ -1783,7 +1783,7 @@ function WorkspacePageContent() {
       if (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
         return 'model-4'; // nano-banana-pro for product-focused styles
       }
-      return 'model-1'; // FAL imagen4 for other styles; backend overrides to model-4 when refs present
+      return 'model-5'; // BytePlus Seedream for other styles; backend uses model-4 when refs present
     };
 
     try {

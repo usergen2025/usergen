@@ -11,7 +11,7 @@ import { PublicUrlService } from '../common/storage/public-url.service';
 import { AnalyzedAsset } from './asset-analysis.service';
 import { LogoBrandMetadata } from '@shared/brand/logo-brand.types';
 import { resolveCanonicalBrandName } from '@shared/brand/logo-brand-voiceover.util';
-import { storageResultToRef, normalizeStorageRef } from '@shared/storage';
+import { storageResultToRef, normalizeStorageRef, isExternallyReachableUrl } from '@shared/storage';
 
 export type { LogoBrandMetadata };
 
@@ -187,17 +187,16 @@ export class LogoPreprocessingService {
   }
 
   private async resolvePublicUrl(assetUrl: string): Promise<string | null> {
-    if (assetUrl.startsWith('http://') || assetUrl.startsWith('https://')) {
-      return assetUrl;
+    try {
+      const published = await this.publicUrlService.ensureExternallyReachableUrl(assetUrl);
+      return isExternallyReachableUrl(published) ? published : null;
+    } catch (error: any) {
+      this.logger.warn(
+        `[LogoPreprocessing] Could not publish logo URL to Cloud Storage: ${error?.message}`,
+        'LogoPreprocessingService',
+      );
+      return null;
     }
-    const backendBaseUrl =
-      this.configService.get<string>('BACKEND_BASE_URL') ||
-      this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace('/ws', '') ||
-      'http://localhost:9001';
-    if (assetUrl.startsWith('/uploads')) {
-      return `${backendBaseUrl}${assetUrl}`;
-    }
-    return null;
   }
 
   private async downloadImage(url: string): Promise<Buffer | null> {

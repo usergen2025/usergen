@@ -10,6 +10,7 @@ import {
   getExternalUrl,
 } from './storage-ref.types';
 import { getStoragePriority } from './storage-priority';
+import { isExternallyReachableUrl } from './ensure-external-url';
 import type { StorageService } from './storage.types';
 
 function uploadsPathFromLocalUrl(localUrl: string, uploadsDir: string): string {
@@ -181,26 +182,28 @@ export function resolveStorageRefExternalUrl(
   options?: Pick<ResolveStorageRefOptions, 'aiContentServiceUrl' | 'backendBaseUrl' | 'priority'>,
 ): string | undefined {
   const ref = normalizeStorageRef(input);
-  if (!ref) return typeof input === 'string' && input.startsWith('http') ? input : undefined;
+  if (!ref) return isExternallyReachableUrl(typeof input === 'string' ? input : undefined) ? (input as string) : undefined;
 
   const priority = options?.priority ?? getStoragePriority();
 
   if (priority === 'gcs') {
-    if (ref.gcsUrl?.startsWith('http')) return ref.gcsUrl;
-    if (ref.publicUrl?.startsWith('http')) return ref.publicUrl;
+    if (isExternallyReachableUrl(ref.gcsUrl)) return ref.gcsUrl;
+    if (isExternallyReachableUrl(ref.publicUrl)) return ref.publicUrl;
   }
 
   const external = getExternalUrl(ref);
-  if (external?.startsWith('http')) return external;
+  if (isExternallyReachableUrl(external)) return external;
 
   if (ref.localUrl && options?.aiContentServiceUrl) {
-    return `${options.aiContentServiceUrl.replace(/\/$/, '')}${ref.localUrl}`;
+    const composed = `${options.aiContentServiceUrl.replace(/\/$/, '')}${ref.localUrl}`;
+    if (isExternallyReachableUrl(composed)) return composed;
   }
   if (ref.localUrl && options?.backendBaseUrl) {
-    return `${options.backendBaseUrl.replace(/\/$/, '')}${ref.localUrl}`;
+    const composed = `${options.backendBaseUrl.replace(/\/$/, '')}${ref.localUrl}`;
+    if (isExternallyReachableUrl(composed)) return composed;
   }
 
-  return external;
+  return undefined;
 }
 
 /** Map legacy logoBrand png url fields to StorageRef */

@@ -24,7 +24,7 @@ interface ModelSelectorProps {
 // Initialize with fallback models immediately so menu can work even if API fails
 // These are for image models - video models will be fetched via getModelsFn
 const fallbackModels: ModelInfo[] = [
-  { id: 'model-1', displayName: 'Model 1', platform: 'FAL', defaultConfig: {}, capabilities: {} },
+  { id: 'model-1', displayName: 'Model 1', platform: 'BYTEPLUS', defaultConfig: {}, capabilities: {} },
   { id: 'model-2', displayName: 'Model 2', platform: 'FAL', defaultConfig: {}, capabilities: {} },
   { id: 'model-3', displayName: 'Model 3', platform: 'FAL', defaultConfig: {}, capabilities: {} },
   { id: 'model-4', displayName: 'Model 4', platform: 'FAL', defaultConfig: {}, capabilities: {} },

@@ -64,13 +64,22 @@ export class VideoController {
   ) {}
 
   /**
-   * Returns true if the URL is reachable by external services (e.g. BytePlus).
-   * Must be a full URL and must not be localhost.
+   * Cloud Storage URL for an image record. Localhost values are uploaded first.
    */
-  private isPubliclyReachableUrl(url: string | undefined): boolean {
-    if (!url || typeof url !== 'string') return false;
-    const u = url.trim();
-    return (u.startsWith('http://') || u.startsWith('https://')) && !u.includes('localhost');
+  private async resolveProviderImageUrl(image: {
+    publicUrl?: string;
+    gcsUrl?: string;
+    localPath?: string;
+    localUrl?: string;
+    imageUrl?: string;
+  }): Promise<string> {
+    const candidate = image.publicUrl || image.gcsUrl || image.imageUrl;
+    return this.publicUrlService.ensureExternallyReachableUrl({
+      publicUrl: candidate,
+      gcsUrl: image.gcsUrl,
+      localPath: image.localPath,
+      localUrl: image.localUrl,
+    });
   }
 
   /**
@@ -1799,8 +1808,9 @@ export class VideoController {
       console.log(`[VideoController] Extracted product image URL: ${productImageUrl}`);
     }
 
-    // Get model ID from body or use style-appropriate default
-    let modelId = body.modelId;
+    // Get model ID from body or use style-appropriate default.
+    // model-1 used to be FAL imagen4, which is unavailable. Treat it as unset so the style default applies (Seedream, or nano-banana-pro for product styles).
+    let modelId = body.modelId === 'model-1' ? undefined : body.modelId;
     if (!modelId) {
       // Use model-4 for product styles; model-5 for non-product text-to-image (processor overrides to model-4 when project has reference assets)
       const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
@@ -1962,35 +1972,16 @@ export class VideoController {
       heygenImageKey = image.heygenImageKey || image.compositeImageKey;
     }
 
-    // Get public URL for the image. Prefer stored GCS/public URL from image generation
-    // so BytePlus (and other external services) can fetch it; avoid passing localhost.
+    // External video APIs need a Cloud Storage URL. Localhost files are uploaded here.
     let publicImageUrl: string;
-    if (image.publicUrl && this.isPubliclyReachableUrl(image.publicUrl)) {
-      publicImageUrl = image.publicUrl;
-      console.log(`[VideoController] Using stored public URL for scene ${sceneNum}: ${publicImageUrl}`);
-    } else if (image.gcsUrl && this.isPubliclyReachableUrl(image.gcsUrl)) {
-      publicImageUrl = image.gcsUrl;
-      console.log(`[VideoController] Using stored GCS URL for scene ${sceneNum}: ${publicImageUrl}`);
-    } else if (image.localPath && image.localUrl) {
-      try {
-        console.log(`[VideoController] Using local file for scene ${sceneNum}: ${image.localPath}`);
-        publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
-        console.log(`[VideoController] ✅ Got public URL for local file: ${publicImageUrl}`);
-      } catch (error: any) {
-        console.warn(`[VideoController] Failed to get public URL from local file, falling back to provider URL: ${error.message}`);
-        if (!image.imageUrl) {
-          throw new HttpException(
-            `Failed to get public URL for image: ${error.message}`,
-            HttpStatus.INTERNAL_SERVER_ERROR
-          );
-        }
-        publicImageUrl = image.imageUrl;
-      }
-    } else if (image.imageUrl) {
-      console.log(`[VideoController] Using provider URL for scene ${sceneNum} (no local file found)`);
-      publicImageUrl = image.imageUrl;
-    } else {
-      throw new HttpException('Image URL not found for this scene', HttpStatus.BAD_REQUEST);
+    try {
+      publicImageUrl = await this.resolveProviderImageUrl(image);
+      console.log(`[VideoController] Scene ${sceneNum} image URL for provider: ${publicImageUrl}`);
+    } catch (error: any) {
+      throw new HttpException(
+        error?.message || 'Failed to publish image for video generation',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
 
     const audioFiles = (project.data.audioFiles as any[]) || [];
@@ -2138,17 +2129,7 @@ export class VideoController {
 
       let publicImageUrl: string;
       try {
-        if (image.publicUrl && this.isPubliclyReachableUrl(image.publicUrl)) {
-          publicImageUrl = image.publicUrl;
-        } else if (image.gcsUrl && this.isPubliclyReachableUrl(image.gcsUrl)) {
-          publicImageUrl = image.gcsUrl;
-        } else if (image.localPath && image.localUrl) {
-          publicImageUrl = await this.publicUrlService.getPublicUrl(image.localPath, image.localUrl);
-        } else if (image.imageUrl) {
-          publicImageUrl = image.imageUrl;
-        } else {
-          continue;
-        }
+        publicImageUrl = await this.resolveProviderImageUrl(image);
       } catch {
         continue;
       }

@@ -16,7 +16,7 @@ import {
   VideoProviderCapabilities,
   VideoModelInfo,
 } from './interfaces/video-generation.interface';
-import { preWarmUrl, withRetry } from '@shared/storage';
+import { preWarmUrl, withRetry, isExternallyReachableUrl } from '@shared/storage';
 
 export interface BytePlusImageGenerationRequest {
   model: string;
@@ -323,9 +323,9 @@ export class BytePlusProvider implements IImageGenerationProvider, IVideoGenerat
 
       // Multiple reference images are supported (product(s) first, logo last)
       if (imgRequest.referenceImages && imgRequest.referenceImages.length > 0) {
-        const invalid = imgRequest.referenceImages.some(url => !url || typeof url !== 'string' || (!url.startsWith('http://') && !url.startsWith('https://')));
+        const invalid = imgRequest.referenceImages.some((url) => !isExternallyReachableUrl(url));
         if (invalid) {
-          return { valid: false, error: 'All reference image URLs must be valid HTTP(S) URLs' };
+          return { valid: false, error: 'Reference images must be Cloud Storage URLs. Localhost addresses cannot be sent to BytePlus.' };
         }
       }
 

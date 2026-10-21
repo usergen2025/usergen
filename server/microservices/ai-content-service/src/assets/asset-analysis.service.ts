@@ -6,6 +6,8 @@ import axios from 'axios';
 import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
 import { httpImageToOpenAIDataUrl } from '../common/openai/openai-vision-image.util';
 import { extractAssistantText, formatCompletionDiagnostics } from '../common/openai/openai-completion.util';
+import { PublicUrlService } from '../common/storage/public-url.service';
+import { isExternallyReachableUrl } from '@shared/storage';
 
 import { inferBrandNameVariantsFromRaw } from '@shared/brand/logo-brand-voiceover.util';
 
@@ -92,11 +94,44 @@ export class AssetAnalysisService {
   constructor(
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
+    private readonly publicUrlService: PublicUrlService,
   ) {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     const openAiBaseUrl = this.configService.get<string>('OPENAI_BASE_URL');
     if (apiKey) {
       this.openai = createConfiguredOpenAI(apiKey, openAiBaseUrl);
+    }
+  }
+
+  /**
+   * Turn a local or localhost asset URL into a Cloud Storage URL when possible.
+   * If Cloud Storage is unavailable, keep a URL this machine can still read for vision.
+   */
+  private async publishAssetUrl(assetUrl: string): Promise<string> {
+    if (isExternallyReachableUrl(assetUrl)) return assetUrl;
+
+    let candidate = assetUrl;
+    if (!candidate.startsWith('http://') && !candidate.startsWith('https://')) {
+      const backendBaseUrl =
+        this.configService.get<string>('BACKEND_BASE_URL') ||
+        this.configService.get<string>('NEXT_PUBLIC_WS_URL') ||
+        'http://localhost:9001';
+      if (candidate.startsWith('/uploads')) {
+        candidate = `${backendBaseUrl}${candidate}`;
+      } else if (!candidate.startsWith('/')) {
+        throw new Error(`Asset URL must be an HTTP(S) URL or /uploads path. Received: ${candidate.substring(0, 100)}`);
+      }
+    }
+
+    try {
+      return await this.publicUrlService.ensureExternallyReachableUrl(candidate);
+    } catch (error: any) {
+      this.logger.warn(
+        `Could not publish asset to Cloud Storage (${error?.message}). Vision will read the local URL.`,
+        'AssetAnalysisService',
+      );
+      if (candidate.startsWith('http://') || candidate.startsWith('https://')) return candidate;
+      throw new Error(`Asset URL must be publicly accessible HTTP(S) URL. Received: ${assetUrl.substring(0, 100)}`);
     }
   }
 
@@ -110,18 +145,8 @@ export class AssetAnalysisService {
       throw new Error('OpenAI API key is not configured');
     }
 
-    // Ensure URL is publicly accessible
-    let publicUrl = assetUrl;
-    if (!publicUrl.startsWith('http://') && !publicUrl.startsWith('https://')) {
-      const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
-                            this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
-                            'http://localhost:9001';
-      if (publicUrl.startsWith('/uploads')) {
-        publicUrl = `${backendBaseUrl}${publicUrl}`;
-      } else {
-        throw new Error(`Asset URL must be publicly accessible HTTP(S) URL. Received: ${publicUrl.substring(0, 100)}`);
-      }
-    }
+    // Ensure URL is publicly accessible. Localhost is uploaded to Cloud Storage when Google is available.
+    let publicUrl = await this.publishAssetUrl(assetUrl);
 
     // Build analysis prompt based on user label or general categorization
     const analysisPrompt = this.buildAnalysisPrompt(userLabel);
@@ -218,20 +243,25 @@ export class AssetAnalysisService {
     );
 
     const analyzedAssets: AnalyzedAsset[] = [];
-    results.forEach((result, index) => {
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
       if (result.status === 'fulfilled') {
         analyzedAssets.push(result.value);
-      } else {
-        this.logger.warn(`Failed to analyze asset ${assets[index].id}: ${result.reason}`, 'AssetAnalysisService');
-        // Create a fallback analyzed asset with user label; resolve public URL so downstream can use it
-        const inputUrl = assets[index].url;
-        let fallbackPublicUrl = inputUrl;
+        continue;
+      }
+      this.logger.warn(`Failed to analyze asset ${assets[index].id}: ${result.reason}`, 'AssetAnalysisService');
+      const inputUrl = assets[index].url;
+      let fallbackPublicUrl = inputUrl;
+      try {
+        fallbackPublicUrl = await this.publishAssetUrl(inputUrl);
+      } catch {
         if (!inputUrl.startsWith('http://') && !inputUrl.startsWith('https://')) {
           const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') ||
             this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace('/ws', '') ||
             'http://localhost:9001';
           fallbackPublicUrl = inputUrl.startsWith('/') ? `${backendBaseUrl}${inputUrl}` : `${backendBaseUrl}/${inputUrl}`;
         }
+      }
         analyzedAssets.push({
           id: `analyzed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           originalAsset: {
@@ -250,8 +280,7 @@ export class AssetAnalysisService {
             processingTime: 0,
           },
         });
-      }
-    });
+    }
 
     return analyzedAssets;
   }
@@ -713,18 +742,7 @@ Return your analysis as a JSON object with the following structure:
       throw new Error('OpenAI API key is not configured');
     }
 
-    // Ensure URL is publicly accessible
-    let publicUrl = imageUrl;
-    if (!publicUrl.startsWith('http://') && !publicUrl.startsWith('https://')) {
-      const backendBaseUrl = this.configService.get<string>('BACKEND_BASE_URL') || 
-                            this.configService.get<string>('NEXT_PUBLIC_WS_URL') || 
-                            'http://localhost:9001';
-      if (publicUrl.startsWith('/uploads')) {
-        publicUrl = `${backendBaseUrl}${publicUrl}`;
-      } else {
-        throw new Error(`Asset URL must be publicly accessible HTTP(S) URL. Received: ${publicUrl.substring(0, 100)}`);
-      }
-    }
+    const publicUrl = await this.publishAssetUrl(imageUrl);
 
     const prompt = `You are a video prompt generator for B-roll footage. Analyze this image and the scene context to generate a video prompt.
 

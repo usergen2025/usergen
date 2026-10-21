@@ -369,7 +369,7 @@ function BrollImagesPageContent() {
     loadProject();
   }, [projectId, isAuthenticated, authLoading, showToast]);
 
-  // Initialize default model for all scenes - default to Model 1 (FAL imagen4); backend uses model-4 when refs present
+  // Initialize default model for all scenes - Model 5 (BytePlus Seedream); backend uses model-4 when refs present
   useEffect(() => {
     if (!scenesNeedingBroll.length || !dbLoaded) return;
 
@@ -379,9 +379,9 @@ function BrollImagesPageContent() {
       
       scenesNeedingBroll.forEach((scene, index) => {
         const sceneNumber = normalizeSceneNumber(scene, index);
-        // Default to model-1 when not set; backend uses model-4 when project has reference assets
+        // Default to model-5 (BytePlus Seedream) when not set; backend uses model-4 when project has reference assets
         if (!updated[sceneNumber]) {
-          updated[sceneNumber] = 'model-1'; // Default to Model 1 (FAL imagen4)
+          updated[sceneNumber] = 'model-5';
           hasChanges = true;
         }
       });
@@ -484,8 +484,8 @@ function BrollImagesPageContent() {
         setGeneratingImages(prev => new Set(prev).add(sceneNumber));
         setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
         
-        // Get selected model for this scene (default to model-1)
-        const selectedModelId = selectedModels[sceneNumber] || 'model-1';
+        // Get selected model for this scene (default to Seedream)
+        const selectedModelId = selectedModels[sceneNumber] || 'model-5';
 
         // Fire API call without awaiting (non-blocking)
         return apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId)
@@ -591,8 +591,8 @@ function BrollImagesPageContent() {
       setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
       setGeneratingImages(prev => new Set(prev).add(sceneNumber));
       
-      // Get selected model for this scene (default to model-1)
-      const selectedModelId = selectedModels[sceneNumber] || 'model-1';
+      // Get selected model for this scene (default to Seedream)
+      const selectedModelId = selectedModels[sceneNumber] || 'model-5';
       
       // Pass force: true to always regenerate when user manually clicks the button
       const response = await apiClient.regenerateImage(
@@ -905,7 +905,7 @@ function BrollImagesPageContent() {
                           
                           {/* Model selector - integrated as part of button */}
                           <ModelSelector
-                            selectedModelId={selectedModels[sceneNumber] ?? 'model-1'}
+                            selectedModelId={selectedModels[sceneNumber] ?? 'model-5'}
                             onModelSelect={(modelId) => {
                               setSelectedModels(prev => ({
                                 ...prev,

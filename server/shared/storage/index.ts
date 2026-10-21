@@ -19,6 +19,12 @@ export {
 } from './resolve-storage-ref';
 export { getStoragePriority, isGcsPriority } from './storage-priority';
 export type { StoragePriority } from './storage-priority';
+export {
+  isExternallyReachableUrl,
+  ensureExternallyReachableUrl,
+  replaceStoredUrl,
+} from './ensure-external-url';
+export type { EnsureExternalUrlDeps } from './ensure-external-url';
 
 // Export constants and utilities
 export * from './storage.constants';

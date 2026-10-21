@@ -4602,7 +4602,7 @@ function AIChatPageContent() {
 
           const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
             ? 'model-4' 
-            : 'model-1';
+            : 'model-5';
 
           try {
             console.log(`[AIChat] Generating AI B-roll for scene ${sceneNumber}`);
@@ -4767,10 +4767,10 @@ function AIChatPageContent() {
             return;
           }
           
-          // Use model-4 for product/avatar-product; model-1 for other styles (backend uses model-4 when refs present)
+          // Use model-4 for product/avatar-product; model-5 (BytePlus Seedream) for other styles
           const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') 
             ? 'model-4'  // nano-banana-pro supports reference images
-            : 'model-1'; // FAL imagen4 for non-product; processor overrides to model-4 when assets exist
+            : 'model-5'; // BytePlus Seedream for text-to-image; processor uses model-4 when assets exist
 
           try {
             const imageResponse = await apiClient.regenerateImage(
@@ -5073,7 +5073,7 @@ function AIChatPageContent() {
               `Scene ${sceneNumber} full-screen b-roll for ALTERNATE style`;
           }
           if (!prompt) return;
-          const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') ? 'model-4' : 'model-1';
+          const modelId = (styleToUse === 'product-only' || styleToUse === 'avatar-product') ? 'model-4' : 'model-5';
           try {
             const imageResponse = await apiClient.regenerateImage(
               projectId, sceneNumber, prompt, modelId,

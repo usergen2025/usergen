@@ -10,7 +10,7 @@ import {
   ValidationResult,
 } from '../interfaces/image-generation.interface';
 import { FalProviderError, FalErrorType } from './fal-errors';
-import { preWarmUrls, withRetry, isRetryableError } from '@shared/storage';
+import { preWarmUrls, withRetry, isRetryableError, isExternallyReachableUrl } from '@shared/storage';
 
 /**
  * FAL API Response Types
@@ -590,7 +590,7 @@ export class FalProvider implements IImageGenerationProvider {
       console.log(`[FalProvider] ========== REFERENCE IMAGES IN PAYLOAD ==========`);
       console.log(`[FalProvider] image_urls count: ${payload.image_urls.length}`);
       console.log(`[FalProvider] image_urls array:`, payload.image_urls);
-      console.log(`[FalProvider] All URLs valid:`, payload.image_urls.every(url => url && (url.startsWith('http://') || url.startsWith('https://'))));
+      console.log(`[FalProvider] All URLs externally reachable:`, payload.image_urls.every((url: string) => isExternallyReachableUrl(url)));
       console.log(`[FalProvider] Using image-to-image with ${request.referenceImages.length} reference image(s) via image_urls`);
     } else {
       console.log(`[FalProvider] ⚠️ No reference images provided - will use text-to-image generation`);
@@ -771,6 +771,13 @@ export class FalProvider implements IImageGenerationProvider {
       return { valid: false, error: 'Model ID is required' };
     }
 
+    if (this.extractBaseModelName(request.modelId.replace('fal-ai/', '')) === 'imagen4') {
+      return {
+        valid: false,
+        error: 'imagen4 is unavailable. Use model-5 (BytePlus Seedream) for text-to-image.',
+      };
+    }
+
     if (request.numImages && (request.numImages < 1 || request.numImages > 4)) {
       return { valid: false, error: 'num_images must be between 1 and 4' };
     }
@@ -790,10 +797,10 @@ export class FalProvider implements IImageGenerationProvider {
       
       // Validate reference images are URLs
       for (const refUrl of request.referenceImages) {
-        if (!refUrl.startsWith('http://') && !refUrl.startsWith('https://')) {
+        if (!isExternallyReachableUrl(refUrl)) {
           return {
             valid: false,
-            error: `Invalid reference image URL: ${refUrl}. Must be a valid HTTP/HTTPS URL.`
+            error: `Reference image is not publicly reachable (${refUrl}). Upload it to Cloud Storage before calling the image API.`,
           };
         }
       }

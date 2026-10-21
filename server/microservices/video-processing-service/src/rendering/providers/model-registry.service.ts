@@ -17,23 +17,23 @@ export class ModelRegistryService {
   }
 
   private initializeModels() {
-    // Model 1: FAL imagen4/preview/ultra (DEFAULT)
+    // Model 1: legacy client id. Imagen4 is unavailable, so this resolves to BytePlus Seedream (same as model-5).
     this.models.set('model-1', {
-      id: 'fal-ai/imagen4/preview/ultra',
+      id: 'seedream-4-5-251128',
       displayName: 'Model 1',
-      platform: 'FAL',
+      platform: 'BYTEPLUS',
       capabilities: {
         supportsAspectRatio: true,
         supportsResolution: true,
-        supportsNumImages: true,
-        supportedAspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
-        supportedResolutions: ['1K', '2K'],
+        supportsNumImages: false,
+        supportedAspectRatios: ['9:16', '3:4', '16:9', '1:1', '4:3'],
+        supportedResolutions: ['1K', '2K', '4K'],
         maxNumImages: 1,
-        isAsync: true,
-        estimatedTimeSeconds: 30,
+        isAsync: false,
+        estimatedTimeSeconds: 15,
       },
       defaultConfig: {
-        aspectRatio: '9:16', // Will be overridden by video style
+        aspectRatio: '9:16',
         resolution: '2K',
         outputFormat: 'png',
         numImages: 1,
@@ -179,7 +179,7 @@ export class ModelRegistryService {
       return model;
     }
     // Default to model-5 (BytePlus Seedream) for other styles (ALTERNATE, HALF_N_HALF, etc.)
-    // when no asset references (text-to-image). Replaces model-1 (FAL imagen4) which is unavailable.
+    // when no asset references (text-to-image). model-1 is the same Seedream model.
     // Processor overrides to model-4 when refs present.
     const model = this.models.get('model-5');
     if (!model) {

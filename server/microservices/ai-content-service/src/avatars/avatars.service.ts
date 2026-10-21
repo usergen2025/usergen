@@ -16,6 +16,7 @@ import sharp from 'sharp';
 import OpenAI from 'openai';
 import { createConfiguredOpenAI } from '../common/openai/openai-client.util';
 import { extractAssistantText } from '../common/openai/openai-completion.util';
+import { isExternallyReachableUrl } from '@shared/storage';
 
 export interface UploadImageDto {
   imageBuffer: Buffer;
@@ -1063,8 +1064,14 @@ export class AvatarsService {
     localImagePath?: string | null,
   ): Promise<string> {
     const originalImageUrl = avatar.originalImageUrl;
-    if (originalImageUrl && (originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://'))) {
-      return originalImageUrl;
+    try {
+      const published = await this.publicUrlService.ensureExternallyReachableUrl({
+        publicUrl: originalImageUrl || undefined,
+        localPath: localImagePath || undefined,
+      });
+      if (isExternallyReachableUrl(published)) return published;
+    } catch {
+      /* fall through to a direct buffer upload */
     }
 
     const buffer = localImagePath && fs.existsSync(localImagePath)
@@ -1082,16 +1089,9 @@ export class AvatarsService {
       'image/jpeg',
     );
 
-    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl || uploadResult.localUrl;
-    if (!publicUrl || (!publicUrl.startsWith('http://') && !publicUrl.startsWith('https://'))) {
-      const backendBase =
-        this.configService.get<string>('BACKEND_BASE_URL') ||
-        this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace(/\/ws$/, '') ||
-        'http://localhost:9001';
-      if (publicUrl?.startsWith('/')) {
-        return `${backendBase.replace(/\/$/, '')}${publicUrl}`;
-      }
-      throw new BadRequestException('Failed to resolve public URL for avatar original image');
+    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl;
+    if (!isExternallyReachableUrl(publicUrl)) {
+      throw new BadRequestException('Failed to publish avatar image to Cloud Storage');
     }
 
     return publicUrl;
@@ -1102,8 +1102,11 @@ export class AvatarsService {
    */
   private async ensureProductPublicUrl(productImageUrl: string): Promise<string> {
     const trimmed = productImageUrl.trim();
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      return trimmed;
+    try {
+      const published = await this.publicUrlService.ensureExternallyReachableUrl(trimmed);
+      if (isExternallyReachableUrl(published)) return published;
+    } catch {
+      /* fall through to a direct buffer upload */
     }
 
     const productBuf = await this.downloadImageBufferForPreview(trimmed);
@@ -1118,20 +1121,11 @@ export class AvatarsService {
       'image/jpeg',
     );
 
-    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl || uploadResult.localUrl;
-    if (publicUrl && (publicUrl.startsWith('http://') || publicUrl.startsWith('https://'))) {
-      return publicUrl;
+    const publicUrl = uploadResult.gcsUrl || uploadResult.publicUrl;
+    if (!isExternallyReachableUrl(publicUrl)) {
+      throw new BadRequestException('Failed to publish product image to Cloud Storage');
     }
-
-    const backendBase =
-      this.configService.get<string>('BACKEND_BASE_URL') ||
-      this.configService.get<string>('NEXT_PUBLIC_WS_URL')?.replace(/\/ws$/, '') ||
-      'http://localhost:9001';
-    if (publicUrl?.startsWith('/')) {
-      return `${backendBase.replace(/\/$/, '')}${publicUrl}`;
-    }
-
-    throw new BadRequestException('Failed to resolve public URL for product image');
+    return publicUrl;
   }
 
   /**

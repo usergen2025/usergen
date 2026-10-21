@@ -7,6 +7,8 @@ import {
   StorageResult,
   GCSConfig,
   getContentType,
+  ensureExternallyReachableUrl,
+  StorageRef,
 } from '@shared/storage';
 
 /**
@@ -176,8 +178,22 @@ export class PublicUrlService {
   }
 
   /**
-   * Check if a URL is already public (starts with http/https)
-   * Useful for skipping upload if URL is already public
+   * URL an external API can fetch. Localhost and on-disk files are uploaded to Cloud Storage first.
+   */
+  async ensureExternallyReachableUrl(input: string | StorageRef | null | undefined): Promise<string> {
+    const siblingUploads = path.resolve(process.cwd(), '../ai-content-service/uploads');
+    const uploadsDirs = [this.uploadsBaseDir];
+    if (siblingUploads !== this.uploadsBaseDir) uploadsDirs.push(siblingUploads);
+    return ensureExternallyReachableUrl(input, {
+      uploadsDirs,
+      uploadFromBuffer: (buffer, subPath, filename, contentType) =>
+        this.uploadFromBuffer(buffer, subPath, filename, contentType),
+    });
+  }
+
+  /**
+   * Check if a URL is already public (starts with http/https).
+   * This includes localhost. External APIs must use ensureExternallyReachableUrl instead.
    */
   isPublicUrl(url: string): boolean {
     return url.startsWith('http://') || url.startsWith('https://');

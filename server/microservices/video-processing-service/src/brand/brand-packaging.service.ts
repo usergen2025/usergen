@@ -15,6 +15,8 @@ import {
   resolveStorageRefToLocalPath,
   resolveStorageRefExternalUrl,
   storageResultToRef,
+  isExternallyReachableUrl,
+  StorageRef,
 } from '@shared/storage';
 import { DatabaseService } from '../common/database/database.service';
 import { PublicUrlService } from '../common/storage/public-url.service';
@@ -255,10 +257,7 @@ export class BrandPackagingService {
     }
 
     const sourceRef = getEndCardLogoRef(logoBrand) || getCornerOverlayRef(logoBrand);
-    const externalUrl = resolveStorageRefExternalUrl(sourceRef, {
-      aiContentServiceUrl: resolveOpts.aiContentServiceUrl,
-      backendBaseUrl: resolveOpts.backendBaseUrl,
-    });
+    const externalUrl = await this.urlForExternalApi(sourceRef);
     if (!externalUrl) {
       console.warn(`[BrandPackaging] BRAND_PACKAGING_NOOP corner-variant: no external URL for ${projectId}`);
       return logoBrand;
@@ -316,10 +315,7 @@ export class BrandPackagingService {
       this.configService.get<string>('BRAND_END_CARD_BYTEPLUS_ENABLED') !== 'false'
     ) {
       const endCardLogoRef = getEndCardLogoRef(logoBrand);
-      const externalUrl = resolveStorageRefExternalUrl(endCardLogoRef, {
-        aiContentServiceUrl: this.configService.get<string>('AI_CONTENT_SERVICE_URL') || 'http://localhost:9001',
-        backendBaseUrl: this.configService.get<string>('BACKEND_BASE_URL'),
-      });
+      const externalUrl = await this.urlForExternalApi(endCardLogoRef);
       if (externalUrl) {
         const bpUrl = await this.brandVideoPostProcessor.generateBytePlusEndCardPlate(
           externalUrl,
@@ -418,6 +414,20 @@ export class BrandPackagingService {
       return { ...(raw as Record<string, unknown>) };
     }
     return {};
+  }
+
+  private async urlForExternalApi(
+    ref: StorageRef | string | null | undefined,
+  ): Promise<string | undefined> {
+    if (!ref) return undefined;
+    const direct = resolveStorageRefExternalUrl(ref);
+    if (isExternallyReachableUrl(direct)) return direct;
+    try {
+      return await this.publicUrlService.ensureExternallyReachableUrl(ref);
+    } catch (error: any) {
+      console.warn(`[BrandPackaging] Could not publish media for external API: ${error?.message}`);
+      return undefined;
+    }
   }
 
   getResolveOptions() {

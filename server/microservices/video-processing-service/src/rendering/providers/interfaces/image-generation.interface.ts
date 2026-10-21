@@ -5,7 +5,7 @@
 
 export interface ImageGenerationRequest {
   prompt: string;
-  modelId: string; // e.g., "fal-ai/imagen4/preview/ultra" or "seedream-4-0-250828"
+  modelId: string; // e.g., "seedream-4-5-251128" or "fal-ai/nano-banana-pro"
   aspectRatio?: string; // "9:16", "3:4", "1:1", etc.
   resolution?: string; // "1K", "2K", "4K" (if supported)
   numImages?: number; // Default: 1
@@ -43,7 +43,7 @@ export interface ProviderCapabilities {
 }
 
 export interface ModelInfo {
-  id: string; // e.g., "fal-ai/imagen4/preview/ultra" or "model-1"
+  id: string; // e.g., "seedream-4-5-251128" or "model-5"
   displayName: string; // "Model 1", "Model 2", etc.
   platform: 'FAL' | 'BYTEPLUS';
   capabilities: ProviderCapabilities;
