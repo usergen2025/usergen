@@ -4544,7 +4544,7 @@ function AIChatPageContent() {
               
               // For uploaded images, analyze and generate a video prompt
               let videoPrompt: string | undefined;
-              if (!isVideo && isUpload && finalUrl.startsWith('http')) {
+              if (!isVideo && isUpload && finalUrl && !finalUrl.startsWith('blob:')) {
                 try {
                   console.log(`[AIChat] Analyzing uploaded image for scene ${sceneNumber} to generate video prompt`);
                   const voiceover = scene.voiceover || scene.script || '';

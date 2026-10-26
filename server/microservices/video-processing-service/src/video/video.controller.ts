@@ -2013,7 +2013,7 @@ export class VideoController {
       userId,
       sceneNumber: sceneNum,
       imageUrl: publicImageUrl,
-      prompt: body.prompt?.trim() || image.prompt,
+      prompt: body.prompt?.trim() || image.videoPrompt || image.prompt,
       ...(body.prompt?.trim() ? { promptOverride: body.prompt.trim() } : {}),
       duration: videoDuration,
       modelId: body.modelId || 'video-model-1',
@@ -2140,7 +2140,7 @@ export class VideoController {
         userId,
         sceneNumber,
         imageUrl: publicImageUrl,
-        prompt: image.prompt,
+        prompt: image.videoPrompt || image.prompt,
         duration: videoDuration,
         modelId: 'video-model-1',
         videoStyle: style,
@@ -2640,6 +2640,7 @@ export class VideoController {
         mediaType: { type: 'string', enum: ['image', 'video'], description: 'Type of media' },
         targetAspectRatio: { type: 'string', enum: ['9:16', '9:8'], description: 'Target aspect ratio for B-roll' },
         scriptContext: { type: 'string', description: 'Optional script context for generating video prompt from image' },
+        videoPrompt: { type: 'string', description: 'Video prompt derived from an uploaded image and the scene voiceover' },
       },
       required: ['sceneNumber', 'source', 'mediaType', 'targetAspectRatio'],
     },
@@ -2657,6 +2658,7 @@ export class VideoController {
       mediaType: 'image' | 'video';
       targetAspectRatio: '9:16' | '9:8';
       scriptContext?: string;
+      videoPrompt?: string;
     },
   ) {
     const userId = this.extractUserIdFromToken(req);
@@ -2664,7 +2666,7 @@ export class VideoController {
       throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
     }
 
-    const { sceneNumber, source, sourceId, fileUrl, mediaType, targetAspectRatio, scriptContext } = body;
+    const { sceneNumber, source, sourceId, fileUrl, mediaType, targetAspectRatio, videoPrompt } = body;
 
     if (!sceneNumber || !source || !mediaType || !targetAspectRatio) {
       throw new HttpException('Missing required fields', HttpStatus.BAD_REQUEST);
@@ -2701,6 +2703,8 @@ export class VideoController {
         if (mediaType === 'image') {
           processedImageUrl = displayUrl;
           const existingIndex = bRollImages.findIndex((b: any) => b.sceneNumber === sceneNumber);
+          const previous = existingIndex >= 0 ? bRollImages[existingIndex] : {};
+          const motionPrompt = videoPrompt?.trim() || previous.videoPrompt || previous.prompt;
           const brollEntry = {
             sceneNumber,
             imageUrl: displayUrl,
@@ -2709,6 +2713,8 @@ export class VideoController {
             source: 'custom_upload',
             customUpload: true,
             uploadedAt: new Date().toISOString(),
+            prompt: motionPrompt,
+            videoPrompt: motionPrompt,
           };
           if (existingIndex >= 0) {
             bRollImages[existingIndex] = { ...bRollImages[existingIndex], ...brollEntry };

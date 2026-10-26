@@ -1838,14 +1838,6 @@ function WorkspacePageContent() {
 
     const sceneNumber = currentScene.scene_number || currentScene.sceneNumber || (sceneIndex + 1);
     const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(currentScene, sceneNumber);
-    const image = brollImages.find((img) => img.sceneNumber === sceneNumber);
-
-    // ALTERNATE avatar scenes are generated from the project avatar image + scene
-    // audio (HeyGen Avatar IV), so they don't have/need a b-roll source image.
-    if (!isAvatarScene && !image?.imageUrl) {
-      showToast('Source image not found. Cannot regenerate video without source image.', 'warning');
-      return;
-    }
 
     const activeJobs = videoJobIdsRef.current.get(sceneNumber);
     if (activeJobs && activeJobs.size > 0) {
@@ -1929,7 +1921,7 @@ function WorkspacePageContent() {
       next.prompt,
       promptField,
     );
-    const response = await apiClient.updateVideoProject(projectId, { script: nextScript });
+    const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
     if (!response.success) {
       showToast(response.message || 'Could not save the edit', 'error');
       throw new Error('save failed');
@@ -2394,6 +2386,7 @@ function WorkspacePageContent() {
 
     try {
       let fileUrl = selection.url;
+      const isImage = selection.type.includes('image');
 
       // For uploads: upload file first to get a URL, then process (avoids 413 from large base64 in JSON)
       if (selection.source === 'upload' && selection.file) {
@@ -2410,7 +2403,37 @@ function WorkspacePageContent() {
         if (!uploadRes.ok || !uploadData.success || !uploadData.data?.url) {
           throw new Error(uploadData.message || 'Failed to upload file');
         }
-        fileUrl = uploadData.data.url;
+        fileUrl = uploadData.data.gcsUrl || uploadData.data.publicUrl || uploadData.data.url;
+      }
+
+      let videoPrompt: string | undefined;
+      if (isImage && fileUrl) {
+        const scene =
+          scenes.find((item, index) => (item.scene_number || item.sceneNumber || index + 1) === brollModalSceneNumber) ||
+          scenes[brollModalSceneNumber - 1];
+        const voiceover = scene?.voiceover || '';
+        try {
+          const analysis = await apiClient.analyzeBrollImage(fileUrl, voiceover);
+          videoPrompt = analysis.data?.videoPrompt?.trim() || undefined;
+        } catch (analysisError) {
+          console.warn('[Workspace] Uploaded image analysis failed:', analysisError);
+        }
+        if (videoPrompt && project?.script) {
+          const parsed = typeof project.script === 'string'
+            ? JSON.parse(project.script)
+            : JSON.parse(JSON.stringify(project.script));
+          const scriptScenes = parsed.scenes || parsed.scene_plan || [];
+          const target =
+            scriptScenes.find((item: any, index: number) => (item?.scene_number || item?.sceneNumber || index + 1) === brollModalSceneNumber) ||
+            scriptScenes[brollModalSceneNumber - 1];
+          if (target) {
+            target.broll_video_prompt = videoPrompt;
+            const scriptSave = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(parsed) });
+            if (!scriptSave.success) {
+              console.warn('[Workspace] Could not store the generated video prompt on the script');
+            }
+          }
+        }
       }
 
       const response = await fetch(`/api/video/${projectId}/process-custom-broll`, {
@@ -2424,7 +2447,8 @@ function WorkspacePageContent() {
           source: selection.source,
           sourceId: selection.id,
           fileUrl,
-          mediaType: selection.type.includes('image') ? 'image' : 'video',
+          mediaType: isImage ? 'image' : 'video',
+          videoPrompt,
           targetAspectRatio:
             project?.style === 'HALF_N_HALF'
               ? '9:8'
@@ -2489,6 +2513,17 @@ function WorkspacePageContent() {
               return [...prev, newEntry];
             });
           }
+        }
+
+        if (workspaceMode === 'videos' && isImage) {
+          if (!videoPrompt) {
+            showToast('Image saved, but a video prompt could not be created from it', 'warning');
+          }
+          const sceneIndex = Math.max(
+            0,
+            scenes.findIndex((item, index) => (item.scene_number || item.sceneNumber || index + 1) === brollModalSceneNumber),
+          );
+          await handleRegenerateVideo(sceneIndex, videoPrompt);
         }
       } else {
         throw new Error(data.message || 'Failed to process B-roll');

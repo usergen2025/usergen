@@ -868,7 +868,9 @@ export class VideoService {
         source: fullSourceType,
         contentType: 'image',
         customUpload: isUpload,
-        videoPrompt: data.videoPrompt || null, // Generated prompt for video conversion
+        ...(data.videoPrompt?.trim()
+          ? { prompt: data.videoPrompt.trim(), videoPrompt: data.videoPrompt.trim() }
+          : {}),
         createdAt: now,
       };
 
@@ -880,9 +882,27 @@ export class VideoService {
         updatedImages = [...currentImages, newImageEntry];
       }
 
+      const updateData: { bRollImages: any[]; script?: string } = { bRollImages: updatedImages };
+      const motionPrompt = data.videoPrompt?.trim();
+      if (motionPrompt && existing.script) {
+        try {
+          const parsed = typeof existing.script === 'string' ? JSON.parse(existing.script) : existing.script;
+          const scriptScenes = parsed.scenes || parsed.scene_plan || [];
+          const scene =
+            scriptScenes.find((item: any, index: number) => (item?.scene_number || item?.sceneNumber || index + 1) === sceneNumber) ||
+            scriptScenes[sceneNumber - 1];
+          if (scene) {
+            scene.broll_video_prompt = motionPrompt;
+            updateData.script = JSON.stringify(parsed);
+          }
+        } catch {
+          // Keep the image update when the stored script cannot be parsed.
+        }
+      }
+
       await this.databaseService.videoProject.update({
         where: { id: projectId },
-        data: { bRollImages: updatedImages },
+        data: updateData,
       });
     } else {
       // Update bRollVideoTasks array for video

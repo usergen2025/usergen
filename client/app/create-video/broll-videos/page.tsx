@@ -1116,7 +1116,7 @@ function BrollVideosPageContent() {
             prompt,
             'broll_video_prompt',
           );
-          const response = await apiClient.updateVideoProject(projectId, { script: nextScript });
+          const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
           if (!response.success) {
             showToast(response.message || 'Could not save the edit', 'error');
             throw new Error('save failed');
