@@ -1012,47 +1012,64 @@ export class AvatarsService {
    * Load avatar original image from local disk or remote (GCS/HTTP).
    * Used by Original (resize-only) and all preview/project image paths so a
    * missing local file after GCS upload does not 400.
+   * Falls back to avatarUrl / thumbnailUrl when originalImageUrl is a dead local path
+   * (common for library avatars on VMs without /uploads seeded).
    */
   private async loadAvatarOriginalImage(
-    originalImageUrl: string,
+    originalImageUrl: string | null | undefined,
+    fallbackUrls: Array<string | null | undefined> = [],
   ): Promise<{ buffer: Buffer; localPath: string | null }> {
-    const urlMatch = originalImageUrl.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
-    const possiblePaths = urlMatch
-      ? [
-          path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-          path.join(
-            process.cwd(),
-            'microservices',
-            'ai-content-service',
-            'uploads',
-            'avatars',
-            urlMatch[1],
-            urlMatch[2],
-          ),
-          // Monorepo: service may run from microservices/ai-content-service
-          path.join(process.cwd(), '..', '..', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
-        ]
-      : originalImageUrl.startsWith('http://') || originalImageUrl.startsWith('https://')
-        ? []
-        : [path.join(process.cwd(), originalImageUrl.replace(/^\//, ''))];
+    const candidates = [originalImageUrl, ...fallbackUrls].filter(
+      (u): u is string => typeof u === 'string' && u.trim().length > 0,
+    );
+    const uniqueCandidates = [...new Set(candidates)];
+    if (uniqueCandidates.length === 0) {
+      throw new BadRequestException(
+        'Avatar has no original image. Re-upload the avatar or ensure avatarUrl is reachable.',
+      );
+    }
 
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        return { buffer: fs.readFileSync(p), localPath: p };
+    let lastTried = uniqueCandidates[0];
+    for (const candidate of uniqueCandidates) {
+      lastTried = candidate;
+      const urlMatch = candidate.match(/\/uploads\/avatars\/([^/]+)\/(.+)$/);
+      const possiblePaths = urlMatch
+        ? [
+            path.join(process.cwd(), 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+            path.join(
+              process.cwd(),
+              'microservices',
+              'ai-content-service',
+              'uploads',
+              'avatars',
+              urlMatch[1],
+              urlMatch[2],
+            ),
+            // Monorepo: service may run from microservices/ai-content-service
+            path.join(process.cwd(), '..', '..', 'uploads', 'avatars', urlMatch[1], urlMatch[2]),
+          ]
+        : candidate.startsWith('http://') || candidate.startsWith('https://')
+          ? []
+          : [path.join(process.cwd(), candidate.replace(/^\//, ''))];
+
+      for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+          return { buffer: fs.readFileSync(p), localPath: p };
+        }
+      }
+
+      const remote = await this.downloadImageBufferForPreview(candidate);
+      if (remote && remote.length > 0) {
+        this.logger.log(
+          `Loaded avatar original image from ${candidate === originalImageUrl ? 'primary' : 'fallback'} URL (${remote.length} bytes)`,
+          'AvatarsService',
+        );
+        return { buffer: remote, localPath: null };
       }
     }
 
-    const remote = await this.downloadImageBufferForPreview(originalImageUrl);
-    if (remote && remote.length > 0) {
-      this.logger.log(
-        `Loaded avatar original image from remote URL (${remote.length} bytes)`,
-        'AvatarsService',
-      );
-      return { buffer: remote, localPath: null };
-    }
-
     throw new BadRequestException(
-      `Avatar original image not found at: ${originalImageUrl}. Re-upload the avatar or ensure the image is reachable.`,
+      `Avatar original image not found at: ${lastTried}. Re-upload the avatar or ensure the image is reachable.`,
     );
   }
 
@@ -1251,12 +1268,14 @@ export class AvatarsService {
       throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
     }
 
-    const originalImageUrl = avatar.originalImageUrl;
-    if (!originalImageUrl) {
+    if (!avatar.originalImageUrl && !avatar.avatarUrl && !avatar.thumbnailUrl) {
       throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
     }
 
-    const { buffer: imageBuffer } = await this.loadAvatarOriginalImage(originalImageUrl);
+    const { buffer: imageBuffer } = await this.loadAvatarOriginalImage(
+      avatar.originalImageUrl,
+      [avatar.avatarUrl, avatar.thumbnailUrl],
+    );
     // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
     const useBottomHalfFraming = style === 'HALF_N_HALF';
     const classification = this.resolveAvatarIntentFromAvatar(avatar);
@@ -1376,13 +1395,15 @@ export class AvatarsService {
       throw new NotFoundException(`Avatar ${avatarId} not found or does not belong to user`);
     }
 
-    const avatarOriginalImageUrl = avatar.originalImageUrl;
-    if (!avatarOriginalImageUrl) {
+    if (!avatar.originalImageUrl && !avatar.avatarUrl && !avatar.thumbnailUrl) {
       throw new BadRequestException('Avatar has no original image. Re-upload the avatar.');
     }
 
     const { buffer: imageBuffer, localPath: imagePath } =
-      await this.loadAvatarOriginalImage(avatarOriginalImageUrl);
+      await this.loadAvatarOriginalImage(avatar.originalImageUrl, [
+        avatar.avatarUrl,
+        avatar.thumbnailUrl,
+      ]);
 
     // ALTERNATE now uses full 9:16 avatar-only format, not half-n-half
     const useBottomHalfFraming = style === 'HALF_N_HALF';

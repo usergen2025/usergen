@@ -124,15 +124,17 @@ function execFFmpegAsync(
     child.stderr.on('data', (d: Buffer) => { stderrChunks.push(d); });
 
     child.on('error', (err) => reject(err));
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       const stderr = Buffer.concat(stderrChunks).toString('utf-8');
       if (code === 0) {
         resolve(stderr);
       } else {
         const tail = stderr.slice(-(options.maxStderrKB ?? 4) * 1024);
-        reject(new Error(
-          `FFmpeg exited with code ${code}\n${tail}`,
-        ));
+        const reason =
+          code === null
+            ? `FFmpeg killed by signal ${signal ?? 'unknown'}`
+            : `FFmpeg exited with code ${code}`;
+        reject(new Error(`${reason}\n${tail}`));
       }
     });
   });
@@ -531,10 +533,11 @@ export class VideoCompositorProvider {
           // EVERY clip. `-ac 2` is essential: without it a mono clip and a
           // stereo clip stay mismatched after normalization and the final
           // stream-copy concat re-introduces the static-audio corruption.
+          // veryfast + threads 2 keeps peak RAM/CPU low on small VMs (avoids SIGKILL).
           cmd = `
             ffmpeg -y -i "${meta.path}" \
             -vf "${vf}" \
-            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -c:v libx264 -preset veryfast -threads 2 -crf 23 -pix_fmt yuv420p \
             -c:a aac -b:a 192k -ar 48000 -ac 2 -af "aresample=async=1:first_pts=0" \
             -movflags +faststart \
             "${normalizedPath}"
@@ -546,7 +549,7 @@ export class VideoCompositorProvider {
             -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
             -vf "${vf}" \
             -map 0:v:0 -map 1:a:0 \
-            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -c:v libx264 -preset veryfast -threads 2 -crf 23 -pix_fmt yuv420p \
             -c:a aac -b:a 192k -ar 48000 -ac 2 \
             -shortest -movflags +faststart \
             "${normalizedPath}"
@@ -555,7 +558,7 @@ export class VideoCompositorProvider {
           cmd = `
             ffmpeg -y -i "${meta.path}" \
             -vf "${vf}" \
-            -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+            -c:v libx264 -preset veryfast -threads 2 -crf 23 -pix_fmt yuv420p \
             -an -movflags +faststart \
             "${normalizedPath}"
           `.replace(/\s+/g, ' ').trim();

@@ -135,6 +135,65 @@ export class HtmlCaptionLayerProvider {
   }
 
   /**
+   * Prefer env override, then known Playwright cache layouts under the service user home.
+   * VM installs put chrome-headless-shell under chromium_headless_shell-*/chrome-headless-shell-linux64/.
+   */
+  private resolveChromiumExecutablePath(): string | undefined {
+    const fromEnv =
+      this.configService.get<string>('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH') ||
+      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+    if (fromEnv && fs.existsSync(fromEnv)) {
+      return fromEnv;
+    }
+
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    if (!home) return undefined;
+
+    const candidates = [
+      path.join(
+        home,
+        '.cache',
+        'ms-playwright',
+        'chromium_headless_shell-1217',
+        'chrome-headless-shell-linux64',
+        'chrome-headless-shell',
+      ),
+      path.join(
+        home,
+        '.cache',
+        'ms-playwright',
+        'chromium-1217',
+        'chrome-linux64',
+        'chrome',
+      ),
+    ];
+
+    // Also scan for any matching binary if version folder differs.
+    const root = path.join(home, '.cache', 'ms-playwright');
+    if (fs.existsSync(root)) {
+      try {
+        for (const entry of fs.readdirSync(root)) {
+          if (entry.startsWith('chromium_headless_shell-')) {
+            candidates.push(
+              path.join(root, entry, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
+            );
+          }
+          if (entry.startsWith('chromium-') && !entry.includes('headless')) {
+            candidates.push(path.join(root, entry, 'chrome-linux64', 'chrome'));
+          }
+        }
+      } catch {
+        // ignore scan errors; fall through to known candidates
+      }
+    }
+
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+    return undefined;
+  }
+
+  /**
    * Renders full-frame transparent PNGs (caption styled in-page). Caller overlays via FFmpeg PNG sequence.
    */
   async renderCaptionLayer(params: {
@@ -184,8 +243,10 @@ export class HtmlCaptionLayerProvider {
     });
 
     const chromium = await this.loadChromium();
+    const executablePath = this.resolveChromiumExecutablePath();
     const browser = await chromium.launch({
       headless: true,
+      ...(executablePath ? { executablePath } : {}),
       args: ['--disable-gpu', '--font-render-hinting=none'],
     });
 
