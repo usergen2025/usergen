@@ -136,7 +136,8 @@ export class HtmlCaptionLayerProvider {
 
   /**
    * Prefer env override, then known Playwright cache layouts under the service user home.
-   * VM installs put chrome-headless-shell under chromium_headless_shell-*/chrome-headless-shell-linux64/.
+   * VM installs put chrome-headless-shell under
+   * chromium_headless_shell-<ver>/chrome-headless-shell-linux64/.
    */
   private resolveChromiumExecutablePath(): string | undefined {
     const fromEnv =
