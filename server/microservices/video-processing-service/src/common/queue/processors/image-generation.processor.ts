@@ -1388,10 +1388,50 @@ export class ImageGenerationProcessor extends WorkerHost {
       // ignore script parse errors
     }
     // Prepend photorealism for b-roll images if not already present (safety net for script prompts that lack it)
-    // Skip photorealism for topics that warrant stylized/artistic visuals (space, sci-fi, fantasy, abstract)
+    // Skip when script/visual_style_guide marks stylized art (Ghibli, anime, animated explainer, etc.)
     const lowerPrompt = finalPrompt.toLowerCase();
-    const stylizedTopicKeywords = ['space', 'sci-fi', 'science fiction', 'fantasy', 'galaxy', 'alien', 'abstract art', 'cosmic', 'surreal'];
-    const isStylizedTopic = stylizedTopicKeywords.some((kw) => lowerPrompt.includes(kw));
+    let scriptVisualMode: string | undefined;
+    let scriptArtMedium: string | undefined;
+    try {
+      const script = typeof project.script === 'string' ? JSON.parse(project.script) : project.script;
+      const guide = script?.visual_style_guide || {};
+      scriptVisualMode = String(guide.visual_mode || guide.visualMode || '').toLowerCase();
+      scriptArtMedium = String(guide.art_medium || guide.artMedium || '').trim();
+    } catch {
+      // ignore
+    }
+    const stylizedTopicKeywords = [
+      'space',
+      'sci-fi',
+      'science fiction',
+      'fantasy',
+      'galaxy',
+      'alien',
+      'abstract art',
+      'cosmic',
+      'surreal',
+      'ghibli',
+      'anime',
+      'manga',
+      'cartoon',
+      'illustration',
+      'illustrated',
+      'animated',
+      'animation',
+      'motion graphics',
+      'explainer',
+      'pixar',
+      'watercolor',
+      'comic book',
+      'not photorealistic',
+      'art medium',
+    ];
+    const isStylizedTopic =
+      scriptVisualMode === 'stylized' ||
+      !!scriptArtMedium ||
+      stylizedTopicKeywords.some((kw) => lowerPrompt.includes(kw)) ||
+      (lowerPrompt.includes('[style:') &&
+        /ghibli|anime|illustration|animation|cartoon|stylized|motion graphics/.test(lowerPrompt));
     const PHOTOREALISM_PREFIX = 'Photorealistic, documentary photograph, real-world, ';
     if (!isStylizedTopic && !lowerPrompt.includes('photorealistic') && !lowerPrompt.includes('documentary')) {
       finalPrompt = PHOTOREALISM_PREFIX + finalPrompt;

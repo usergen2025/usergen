@@ -694,18 +694,15 @@ function BrollVideosPageContent() {
     }
   };
 
-  const handleRegenerate = async (sceneNumber: number, promptOverride?: string) => {
+  const handleRegenerate = async (
+    sceneNumber: number,
+    promptOverride?: string,
+    opts?: { silent?: boolean },
+  ) => {
     if (!projectId) return;
 
     // Ensure we're regenerating VIDEO, not image
     // This is the broll-videos page, so we should always regenerate videos
-    const video = brollVideos.find(vid => {
-      const vidSceneNumber = typeof vid.sceneNumber === 'number' 
-        ? vid.sceneNumber 
-        : parseInt(String(vid.sceneNumber || 0), 10);
-      return vidSceneNumber === sceneNumber;
-    });
-    
     const image = brollImages.find(img => img.sceneNumber === sceneNumber);
 
     const scene = scenes.find((s, i) => (s.scene_number || s.sceneNumber || i + 1) === sceneNumber);
@@ -714,14 +711,16 @@ function BrollVideosPageContent() {
     // ALTERNATE avatar scenes are generated from the project avatar image + scene
     // audio (HeyGen Avatar IV), so they don't have/need a b-roll source image.
     if (!isAvatarScene && (!image || !image.imageUrl)) {
-      showToast('Source image not found for this scene. Cannot generate video without source image.', 'warning');
+      if (!opts?.silent) {
+        showToast('Source image not found for this scene. Cannot generate video without source image.', 'warning');
+      }
       return;
     }
 
     // Check if already generating for this scene
     const activeJobs = activeJobsBySceneRef.current.get(sceneNumber);
     if (activeJobs && activeJobs.size > 0) {
-      showToast('Video generation already in progress for this scene', 'warning');
+      if (!opts?.silent) showToast('Video generation already in progress for this scene', 'warning');
       return;
     }
 
@@ -769,7 +768,7 @@ function BrollVideosPageContent() {
           return next;
         });
         setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
-        showToast('Video already exists', 'info');
+        if (!opts?.silent) showToast('Video already exists', 'info');
         return;
       }
       
@@ -783,17 +782,18 @@ function BrollVideosPageContent() {
         activeJobsBySceneRef.current.get(sceneNumber)!.add(jobId);
         jobToSceneRef.current.set(jobId, sceneNumber);
         subscribeToJob(jobId, queueType);
-        showToast('Video regeneration started', 'info');
+        if (!opts?.silent) showToast('Video regeneration started', 'info');
       }
     } catch (error: any) {
       console.error('Failed to regenerate video:', error);
-      showToast('Failed to regenerate video', 'error');
+      if (!opts?.silent) showToast('Failed to regenerate video', 'error');
       setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
       setGeneratingVideos(prev => {
         const next = new Set(prev);
         next.delete(sceneNumber);
         return next;
       });
+      throw error;
     }
   };
 
@@ -1120,6 +1120,8 @@ function BrollVideosPageContent() {
           if (!projectId || !sceneEdit) return;
           const sceneNumber = sceneEdit.sceneNumber;
           let effectivePrompt = next.prompt;
+          let videoJobQueued = false;
+          setRegenerating((prev) => ({ ...prev, [sceneNumber]: true }));
           try {
             const nextScript = applySceneTextEdit(
               project?.script,
@@ -1127,13 +1129,40 @@ function BrollVideosPageContent() {
               next.voiceover,
               effectivePrompt,
               'broll_video_prompt',
-            );
-            const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
+            ) as { scenes?: Scene[]; scene_plan?: Scene[] };
+            const response = await apiClient.updateVideoProject(projectId, {
+              script: JSON.stringify(nextScript),
+            });
             if (!response.success) {
-              showToast(response.message || 'Could not save the edit', 'error');
-              throw new Error('save failed');
+              throw new Error(response.message || 'Could not save the edit');
+            }
+
+            const localScenes = nextScript.scenes || nextScript.scene_plan || [];
+            if (Array.isArray(localScenes) && localScenes.length > 0) {
+              setScenes(localScenes);
             }
             setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+
+            const refreshedScript = await apiClient.getVideoProject(projectId);
+            if (refreshedScript.success && refreshedScript.data) {
+              setProject(refreshedScript.data);
+              if (refreshedScript.data.script) {
+                const script =
+                  typeof refreshedScript.data.script === 'string'
+                    ? JSON.parse(refreshedScript.data.script)
+                    : refreshedScript.data.script;
+                const scriptScenes = script.scenes || script.scene_plan || [];
+                if (Array.isArray(scriptScenes) && scriptScenes.length > 0) {
+                  setScenes(scriptScenes);
+                }
+              }
+              if (refreshedScript.data.bRollImages) {
+                setBrollImages(Array.isArray(refreshedScript.data.bRollImages) ? refreshedScript.data.bRollImages : []);
+              }
+              if (refreshedScript.data.bRollVideoTasks) {
+                setBrollVideos(Array.isArray(refreshedScript.data.bRollVideoTasks) ? refreshedScript.data.bRollVideoTasks : []);
+              }
+            }
 
             let uploadedFinishedVideo = false;
             if (next.mediaFile) {
@@ -1222,13 +1251,22 @@ function BrollVideosPageContent() {
             const needsVideo =
               next.voiceoverChanged || next.promptChanged || (next.mediaChanged && !uploadedFinishedVideo);
             if (needsVideo || (next.mediaChanged && next.mediaFile?.type.startsWith('image/'))) {
-              await handleRegenerate(sceneNumber, effectivePrompt);
+              await handleRegenerate(sceneNumber, effectivePrompt, { silent: true });
+              videoJobQueued = true;
             }
 
-            showToast('Scene update started', 'success');
+            showToast(
+              videoJobQueued ? 'Scene update in progress' : 'Scene updated',
+              'success',
+            );
           } catch (error: any) {
             showToast(error?.message || 'Failed to update scene', 'error');
             throw error;
+          } finally {
+            const activeJobs = activeJobsBySceneRef.current.get(sceneNumber);
+            if (!activeJobs || activeJobs.size === 0) {
+              setRegenerating((prev) => ({ ...prev, [sceneNumber]: false }));
+            }
           }
         }}
       />
@@ -1236,7 +1274,9 @@ function BrollVideosPageContent() {
       <ProgressBar
         progress={scenesNeedingVideos.length > 0 && brollVideos.length === scenesNeedingVideos.length ? 80 : 70}
         message={
-          scenesNeedingVideos.length > 0 && brollVideos.length === scenesNeedingVideos.length
+          Object.values(regenerating).some(Boolean) || generatingVideos.size > 0
+            ? 'Updating scene… please wait'
+            : scenesNeedingVideos.length > 0 && brollVideos.length === scenesNeedingVideos.length
             ? "All videos generated! Ready for final rendering."
             : `Generating videos... ${brollVideos.length}/${scenesNeedingVideos.length}`
         }
@@ -1244,7 +1284,11 @@ function BrollVideosPageContent() {
           if (!projectId) return;
           router.push(`/create-video/rendering?projectId=${projectId}`);
         }}
-        disabled={scenesNeedingVideos.length > 0 && brollVideos.length !== scenesNeedingVideos.length}
+        disabled={
+          (scenesNeedingVideos.length > 0 && brollVideos.length !== scenesNeedingVideos.length) ||
+          Object.values(regenerating).some(Boolean) ||
+          generatingVideos.size > 0
+        }
       />
     </div>
   );

@@ -1384,6 +1384,14 @@ CRITICAL DURATION REQUIREMENTS:
         });
       }
 
+      const visualIntent = this.detectVisualModeFromIdea(request.userPrompt || '');
+      if (visualIntent.visualMode === 'stylized') {
+        this.logger.log(
+          `Detected stylized visual intent: ${visualIntent.artMedium || 'stylized'}`,
+          'ScriptsService',
+        );
+      }
+
       // Get the system prompt (uses BOTH: analysis text in asset context + images attached below for vision)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle, 
@@ -1398,6 +1406,7 @@ CRITICAL DURATION REQUIREMENTS:
         productPresentationPlan,
         logoRawOcr,
         brandNameVariants,
+        { ...visualIntent, userPrompt: request.userPrompt },
       );
       
       // Get duration from request, or use default (prompt extraction temporarily disabled — client uses duration sub-step)
@@ -1638,6 +1647,8 @@ CRITICAL DURATION REQUIREMENTS:
       scriptData = this.normalizePrompts(scriptData, language, {
         injectReferenceIdentityHint: this.analyzedAssetsSupplyHeroReferenceForI2I(analyzedAssets),
         skipGenericVideoMotion: request.videoStyle === 'PRODUCT_ONLY',
+        visualMode: visualIntent.visualMode,
+        artMedium: visualIntent.artMedium,
       });
 
       if (request.videoStyle === 'PRODUCT_ONLY') {
@@ -1745,6 +1756,20 @@ CRITICAL DURATION REQUIREMENTS:
         regenMeta?.canonical_brand_name ||
         regenMeta?.tracked_brand_names?.[0];
       const regenBrandVariants = regenMeta?.brand_name_variants || [];
+      const existingGuide = request.existingScript?.visual_style_guide;
+      const existingStyleParams = this.extractStyleParameters(existingGuide);
+      const regenVisualIntent =
+        existingStyleParams?.visualMode === 'stylized'
+          ? {
+              visualMode: 'stylized' as const,
+              artMedium: existingStyleParams.artMedium || undefined,
+              userPrompt: request.originalUserPrompt,
+            }
+          : {
+              ...this.detectVisualModeFromIdea(request.originalUserPrompt || ''),
+              userPrompt: request.originalUserPrompt,
+            };
+
       // Get system prompt (same as script generation to maintain consistency)
       const systemPrompt = this.getSystemPromptForStyle(
         request.videoStyle,
@@ -1759,6 +1784,7 @@ CRITICAL DURATION REQUIREMENTS:
         undefined,
         undefined,
         regenBrandVariants,
+        regenVisualIntent,
       );
       
       // Build conversation history for context
@@ -1787,8 +1813,12 @@ CRITICAL DURATION REQUIREMENTS:
       if (request.operation === 'edit' && request.newVoiceover) {
         // Extract visual style guide from existing script to maintain consistency
         const visualStyleGuide = request.existingScript?.visual_style_guide;
-        const styleGuidance = visualStyleGuide 
-          ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
+        const styleParams = this.extractStyleParameters(visualStyleGuide);
+        const isStylized = styleParams?.visualMode === 'stylized';
+        const styleGuidance = visualStyleGuide
+          ? isStylized
+            ? `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". Keep visual_mode stylized and art_medium "${styleParams?.artMedium || visualStyleGuide.art_medium || 'stylized'}". Do NOT force photorealistic/documentary photograph wording.`
+            : `CRITICAL: Maintain the EXACT same visual style parameters in broll_image_prompt and broll_video_prompt from the visual_style_guide. Use format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
         userRequest = `Update Scene ${request.sceneNumber} with the following voiceover: "${request.newVoiceover}". Keep all other fields (broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, avatar_motion, avatar_cutout_position, etc.) consistent with the video style "${request.videoStyle}" and the scene's context. ${styleGuidance} ${brollIdentitySpatial}${regenBrandVoiceoverRule} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Ensure the scene_number is ${request.sceneNumber}.`;
@@ -1796,8 +1826,12 @@ CRITICAL DURATION REQUIREMENTS:
         // Regenerate operation
         // Extract visual style guide from existing script to maintain consistency
         const visualStyleGuide = request.existingScript?.visual_style_guide;
-        const styleGuidance = visualStyleGuide 
-          ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
+        const styleParams = this.extractStyleParameters(visualStyleGuide);
+        const isStylized = styleParams?.visualMode === 'stylized';
+        const styleGuidance = visualStyleGuide
+          ? isStylized
+            ? `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}", art_medium: "${styleParams?.artMedium || visualStyleGuide.art_medium || 'stylized'}". These MUST appear in broll_image_prompt and broll_video_prompt. Keep the stylized art medium; do NOT force photorealistic documentary wording.`
+            : `CRITICAL: Use the EXACT same visual style parameters from the visual_style_guide: Color palette: "${visualStyleGuide.color_palette || visualStyleGuide.colorPalette}", Lighting: "${visualStyleGuide.lighting}", Mood: "${visualStyleGuide.mood}", Camera: "${visualStyleGuide.camera_style || visualStyleGuide.cameraStyle}", Time: "${visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay}", Tone: "${visualStyleGuide.visual_tone || visualStyleGuide.visualTone}". These MUST appear in broll_image_prompt and broll_video_prompt in the format: "[Color palette: X] [Lighting: Y] [Mood: Z] [Camera: W] [Time: T] [Tone: U] [Scene-specific: description]". B-roll images must be PHOTOREALISTIC: prepend "Photorealistic, documentary photograph, real-world, " to scene-specific descriptions. Avoid "dramatic", "cinematic", "stark", "stylized" - use documentary-style wording.`
           : '';
         
         userRequest = `Regenerate Scene ${request.sceneNumber} with new creative content. Keep it consistent with the overall video theme: "${request.originalUserPrompt}" and the video style "${request.videoStyle}". ${voiceoverSceneGuidance}${regenBrandVoiceoverRule} ${styleGuidance} ${brollIdentitySpatial} Return ONLY the updated scene object as JSON, following the exact same structure as the existing scenes. Include all required fields: scene_number (must be ${request.sceneNumber}), time_range, voiceover, broll_visual_description, broll_image_prompt, broll_video_prompt, avatar_action, and avatar_motion (if applicable). For ALTERNATE style, include the 'type' field. For AVATAR_CUTOUT style, include 'avatar_cutout_position'.`;
@@ -2220,8 +2254,8 @@ The visual_style_guide you create should be a synthesis of these tag preferences
    * Get system prompt based on video style, language, and tags
    */
   private getSystemPromptForStyle(
-    style: string, 
-    language: 'english' | 'hindi' | 'hinglish' = 'hinglish', 
+    style: string,
+    language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
     tags: string[] = [],
     productImageUrl?: string, // Deprecated - kept for backward compatibility, but not used for analysis
     hasAvatar?: boolean,
@@ -2232,6 +2266,7 @@ The visual_style_guide you create should be a synthesis of these tag preferences
     productPresentationPlan?: ProductPresentationPlan,
     logoRawOcr?: string,
     brandNameVariants?: string[],
+    visualIntent?: { visualMode: 'photoreal' | 'stylized'; artMedium?: string; userPrompt?: string },
   ): string {
     // Language-specific descriptions
     const voiceoverExamples = this.getVoiceoverLanguageExamples(language);
@@ -2414,6 +2449,9 @@ Your JSON output MUST include at the top level: "avatar_image_prompt": "<full pr
 `;
     }
 
+  const visualMode = visualIntent?.visualMode ?? 'photoreal';
+  const artMedium = visualIntent?.artMedium;
+
   const PHOTOREALISM_RULE = `
 CRITICAL B-ROLL PHOTOREALISM RULE (NON-NEGOTIABLE):
 - B-roll images MUST look like REAL-WORLD PHOTOGRAPHS, not AI art or illustrations
@@ -2422,12 +2460,16 @@ CRITICAL B-ROLL PHOTOREALISM RULE (NON-NEGOTIABLE):
 - AVOID: Symbolic color descriptions (e.g. "stark blues to represent contrast")
 - PREFER: "natural daylight", "overcast", "golden hour", "neutral tones", "documentary photograph"
 - visual_style_guide must describe how a REAL LOCATION would look, not an artistic interpretation
+- visual_style_guide MUST include "visual_mode": "photoreal"
 
 TOPIC-APPROPRIATE REALISM:
 - For general, educational, business, or everyday topics: use "documentary photograph", "real-world", "natural", "everyday setting". Avoid hyper-stylized, neon, or overly digital aesthetics.
 - For fantasy, sci-fi, space, or explicitly creative topics: stylized or artistic b-roll is acceptable.
 - If the topic does NOT mention fantasy, sci-fi, space, or abstract art, generate b-roll descriptions that sound like real-world locations and objects.
 `;
+
+  const BROLL_LOOK_RULE =
+    visualMode === 'stylized' ? this.buildArtStyleRule(artMedium) : PHOTOREALISM_RULE;
 
   const BROLL_TEXT_RULE = `
 CRITICAL B-ROLL TEXT RULE:
@@ -2457,7 +2499,7 @@ CRITICAL B-ROLL VIDEO PROMPT RULE (broll_video_prompt):
 - When reference images are used for the hero product or garment, use the same identity language as broll_image_prompt: the same item as in the reference image(s), not a redesigned or generic substitute.
 `;
 
-  const GLOBAL_BROLL_RULES = `${PHOTOREALISM_RULE}
+  const GLOBAL_BROLL_RULES = `${BROLL_LOOK_RULE}
 ${BROLL_TEXT_RULE}
 ${PHYSICAL_PLAUSIBILITY_RULE}
 ${BROLL_VIDEO_MOTION_RULE}
@@ -3082,10 +3124,18 @@ Structure Your Output in This JSON Format:
 
 CRITICAL PROMPT GENERATION RULES:
 1. EVERY broll_image_prompt MUST start with "[COMPOSITION: Single focused shot, NO grid, NO collage, NO multiple images]"
-2. EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description.
+2. ${
+      visualMode === 'stylized'
+        ? `EVERY broll_image_prompt must match the requested art medium (${artMedium || 'stylized'}). Do NOT prepend photorealistic/documentary photograph wording.`
+        : 'EVERY broll_image_prompt must produce PHOTOREALISTIC output. Prepend "Photorealistic, documentary photograph, real-world, " to the scene-specific description.'
+    }
 3. Create engaging b-roll visuals that illustrate the narration - ONE focused shot per scene
 4. Maintain visual consistency across all scenes
-5. FIRST, determine the visual_style_guide based on the user's topic/idea
+5. FIRST, determine the visual_style_guide based on the user's topic/idea${
+      visualMode === 'stylized'
+        ? `; set visual_mode to "stylized" and art_medium to "${artMedium || 'stylized animation'}"`
+        : '; set visual_mode to "photoreal" when not stylized'
+    }
 6. You MUST include top-level "video_topic" and ensure every scene's broll prompts tie to this topic so the global context is never lost
 
 Guidelines:
@@ -3191,7 +3241,10 @@ Guidelines:
   };
 
   const basePrompt = prompts[style as keyof typeof prompts] || prompts['HALF_N_HALF'];
-  const regionContext = this.getRegionContext(language);
+  const regionContext = this.getRegionContext(language, {
+    visualMode,
+    userPrompt: visualIntent?.userPrompt,
+  });
   const voiceoverQualityBlock = this.buildVoiceoverQualitySystemBlock(language, style);
 
   // Voiceover quality first, then specificity, then style-specific prompt
@@ -3199,10 +3252,85 @@ Guidelines:
 }
 
   /**
-   * Get region/locale context for script generation.
-   * Indian default for ALL languages (english, hindi, hinglish).
+   * Detect stylized / animated art intent from the user's idea.
+   * Default is photoreal so existing documentary behavior stays unchanged.
    */
-  private getRegionContext(_language: 'english' | 'hindi' | 'hinglish'): string {
+  private detectVisualModeFromIdea(userPrompt: string): {
+    visualMode: 'photoreal' | 'stylized';
+    artMedium?: string;
+  } {
+    const text = (userPrompt || '').toLowerCase();
+    if (!text.trim()) {
+      return { visualMode: 'photoreal' };
+    }
+
+    const mediumMatchers: Array<{ re: RegExp; medium: string }> = [
+      { re: /\bghibli\b|\bstudio\s+ghibli\b/, medium: 'Studio Ghibli anime' },
+      { re: /\banime\b/, medium: 'Japanese anime' },
+      { re: /\bmanga\b/, medium: 'Manga illustration' },
+      { re: /\bpixar\b|\bcartoon\s+3d\b|\b3d\s+cartoon\b/, medium: 'Pixar-like 3D cartoon' },
+      { re: /\bmotion\s+graphics?\b|\bexplainer\b/, medium: '2D motion graphics / animated explainer' },
+      { re: /\banimated\s+explainer\b|\banimated\s+video\b|\banimation\b|\banimated\b/, medium: '2D/3D animation' },
+      { re: /\billustration\b|\billustrated\b/, medium: 'Illustration' },
+      { re: /\bwatercolor\b/, medium: 'Watercolor illustration' },
+      { re: /\bcomic\s+book\b|\bgraphic\s+novel\b/, medium: 'Comic / graphic novel' },
+      { re: /\bclaymation\b|\bstop[\s-]?motion\b/, medium: 'Stop-motion / claymation' },
+      { re: /\bpaper[\s-]?cut\b|\bcollage\s+art\b/, medium: 'Paper-cut / collage art' },
+      { re: /\bvector\s+art\b|\bflat\s+design\b/, medium: 'Flat vector art' },
+    ];
+
+    for (const { re, medium } of mediumMatchers) {
+      if (re.test(text)) {
+        return { visualMode: 'stylized', artMedium: medium };
+      }
+    }
+
+    // Broad creative signals without a named medium
+    if (
+      /\bstylized\b|\bartistic\b|\bnon[\s-]?photoreal\b|\bilustrated\b|\bhand[\s-]?drawn\b|\bpainterly\b/.test(
+        text,
+      )
+    ) {
+      return { visualMode: 'stylized', artMedium: 'Stylized artistic visuals' };
+    }
+
+    return { visualMode: 'photoreal' };
+  }
+
+  private buildArtStyleRule(artMedium?: string): string {
+    const medium = artMedium || 'stylized animation / illustration';
+    return `
+CRITICAL B-ROLL ART STYLE RULE (USER REQUESTED STYLIZED LOOK):
+- The user asked for a non-photoreal look. Art medium: ${medium}.
+- B-roll MUST match that art medium consistently in EVERY scene (same line weight, palette language, and rendering style).
+- Do NOT force documentary photography, real-world camera footage, or "photorealistic" wording.
+- visual_style_guide MUST include "visual_mode": "stylized" and "art_medium": "${medium}".
+- visual_tone should name the art medium (e.g. "${medium}"), not "documentary photograph".
+- Continuity still matters: one shared visual_style_guide across all scenes.
+`;
+  }
+
+  /**
+   * Get region/locale context for script generation.
+   * Indian default for photoreal; relaxed for stylized art so Ghibli/anime worlds are not forced into Indian street photography.
+   */
+  private getRegionContext(
+    _language: 'english' | 'hindi' | 'hinglish',
+    opts?: { visualMode?: 'photoreal' | 'stylized'; userPrompt?: string },
+  ): string {
+    const userAskedIndian =
+      typeof opts?.userPrompt === 'string' &&
+      /\bindian\b|\bindia\b|\bmumbai\b|\bdelhi\b|\bhinglish\b|\bbollywood\b/i.test(opts.userPrompt);
+
+    if (opts?.visualMode === 'stylized' && !userAskedIndian) {
+      return `
+
+REGION CONTEXT (STYLIZED — DO NOT FORCE DOCUMENTARY INDIA):
+- Do NOT default every scene to Indian street photography or Indian documentary locations.
+- Choose locales that fit the requested art medium and story world; keep those locales consistent across scenes.
+- Only use Indian settings if the user's idea explicitly asks for India/Indian context inside that art style.`;
+    }
+
     return `
 
 REGION CONTEXT (CRITICAL - Indian Default):
@@ -3417,10 +3545,26 @@ REGION CONTEXT (CRITICAL - Indian Default):
     cameraStyle: string;
     timeOfDay: string;
     visualTone: string;
+    visualMode: 'photoreal' | 'stylized';
+    artMedium: string;
   } | null {
     if (!visualStyleGuide || typeof visualStyleGuide !== 'object') {
       return null;
     }
+
+    const rawMode = String(
+      visualStyleGuide.visual_mode || visualStyleGuide.visualMode || '',
+    ).toLowerCase();
+    const artMedium = String(
+      visualStyleGuide.art_medium || visualStyleGuide.artMedium || '',
+    ).trim();
+    const visualMode: 'photoreal' | 'stylized' =
+      rawMode === 'stylized' ||
+      /ghibli|anime|illustration|animation|cartoon|motion graphics/i.test(
+        `${artMedium} ${visualStyleGuide.visual_tone || visualStyleGuide.visualTone || ''}`,
+      )
+        ? 'stylized'
+        : 'photoreal';
 
     return {
       colorPalette: visualStyleGuide.color_palette || visualStyleGuide.colorPalette || '',
@@ -3429,6 +3573,8 @@ REGION CONTEXT (CRITICAL - Indian Default):
       cameraStyle: visualStyleGuide.camera_style || visualStyleGuide.cameraStyle || '',
       timeOfDay: visualStyleGuide.time_of_day || visualStyleGuide.timeOfDay || '',
       visualTone: visualStyleGuide.visual_tone || visualStyleGuide.visualTone || '',
+      visualMode,
+      artMedium,
     };
   }
 
@@ -3442,10 +3588,20 @@ REGION CONTEXT (CRITICAL - Indian Default):
     cameraStyle: string;
     timeOfDay: string;
     visualTone: string;
+    visualMode?: 'photoreal' | 'stylized';
+    artMedium?: string;
   }): string {
     const parts: string[] = [];
-    // Add photorealism anchor first - ensures image model prioritizes realism
-    parts.push('[Style: Photorealistic, documentary photograph, real-world, natural textures]');
+    if (styleParams.visualMode === 'stylized') {
+      const medium =
+        styleParams.artMedium ||
+        styleParams.visualTone ||
+        'stylized animation / illustration';
+      parts.push(`[Style: ${medium}, consistent art medium across all scenes, not photorealistic]`);
+    } else {
+      // Photorealism anchor — default path unchanged
+      parts.push('[Style: Photorealistic, documentary photograph, real-world, natural textures]');
+    }
     if (styleParams.colorPalette) {
       parts.push(`[Color palette: ${styleParams.colorPalette}]`);
     }
@@ -3868,22 +4024,49 @@ REFERENCE-ALIGNED B-ROLL (IMAGE-TO-IMAGE) — REQUIRED:
   private normalizePrompts(
     scriptData: any,
     _language: 'english' | 'hindi' | 'hinglish' = 'hinglish',
-    opts?: { injectReferenceIdentityHint?: boolean; skipGenericVideoMotion?: boolean },
+    opts?: {
+      injectReferenceIdentityHint?: boolean;
+      skipGenericVideoMotion?: boolean;
+      visualMode?: 'photoreal' | 'stylized';
+      artMedium?: string;
+    },
   ): any {
     if (!scriptData) return scriptData;
 
-    const sceneFallback = 'Indian context scene';
-    const sceneFallbackMotion = 'Indian context scene with motion';
-
     // Extract visual style guide
-    const visualStyleGuide = scriptData.visual_style_guide;
-    const styleParams = this.extractStyleParameters(visualStyleGuide);
+    const visualStyleGuide = scriptData.visual_style_guide || {};
+    if (opts?.visualMode === 'stylized' || opts?.artMedium) {
+      scriptData.visual_style_guide = {
+        ...visualStyleGuide,
+        visual_mode: 'stylized',
+        ...(opts.artMedium ? { art_medium: opts.artMedium } : {}),
+      };
+    } else if (!visualStyleGuide.visual_mode && !visualStyleGuide.visualMode) {
+      scriptData.visual_style_guide = {
+        ...visualStyleGuide,
+        visual_mode: 'photoreal',
+      };
+    }
+
+    const styleParams = this.extractStyleParameters(scriptData.visual_style_guide);
+    const isStylized = styleParams?.visualMode === 'stylized' || opts?.visualMode === 'stylized';
+    const sceneFallback = isStylized
+      ? `${opts?.artMedium || styleParams?.artMedium || 'stylized'} scene matching the shared art style`
+      : 'Indian context scene';
+    const sceneFallbackMotion = isStylized
+      ? `${opts?.artMedium || styleParams?.artMedium || 'stylized'} scene with gentle motion matching the shared art style`
+      : 'Indian context scene with motion';
 
     if (!styleParams || !styleParams.colorPalette) {
       // If no style guide, return as-is (AI should have created it, but handle gracefully)
       this.logger.warn('No visual_style_guide found in script, skipping normalization', 'ScriptsService');
       this.attachBackgroundMusicSearchSeed(scriptData);
       return scriptData;
+    }
+
+    if (isStylized && opts?.artMedium && !styleParams.artMedium) {
+      styleParams.artMedium = opts.artMedium;
+      styleParams.visualMode = 'stylized';
     }
 
     const stylePrefix = this.buildStylePrefix(styleParams);

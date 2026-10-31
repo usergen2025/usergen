@@ -50,6 +50,10 @@ export function applySceneTextEdit(
     scenes[sceneNumber - 1];
   if (scene) {
     scene.voiceover = voiceover;
+    // Keep alternate text field in sync so every page reads the same VO
+    if (typeof scene.text === 'string' || scene.text === undefined) {
+      scene.text = voiceover;
+    }
     const previous = typeof scene[promptField] === 'string' ? scene[promptField] : '';
     const incoming = prompt.trim();
     scene[promptField] = /\[Scene-specific:/i.test(incoming)

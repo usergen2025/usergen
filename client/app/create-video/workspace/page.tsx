@@ -1757,7 +1757,11 @@ function WorkspacePageContent() {
   }, [updateTabInUrl]);
 
   // Handle image regeneration
-  const handleRegenerate = async (sceneIndexOverride?: number, promptOverride?: string) => {
+  const handleRegenerate = async (
+    sceneIndexOverride?: number,
+    promptOverride?: string,
+    opts?: { silent?: boolean },
+  ) => {
     if (!projectId) return;
 
     const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
@@ -1774,7 +1778,7 @@ function WorkspacePageContent() {
     }
 
     if (!prompt) {
-      showToast('No prompt found for this scene', 'warning');
+      if (!opts?.silent) showToast('No prompt found for this scene', 'warning');
       return;
     }
 
@@ -1787,7 +1791,8 @@ function WorkspacePageContent() {
     };
 
     try {
-      showToast('Regenerating image...', 'info');
+      if (!opts?.silent) showToast('Regenerating image...', 'info');
+      setRegeneratingImageScenes((prev) => new Set(prev).add(sceneNumber));
       const defaultModel = getDefaultModel(project?.style);
       const response = await apiClient.regenerateImage(
         projectId,
@@ -1801,7 +1806,12 @@ function WorkspacePageContent() {
         true,
       );
       if (!response.success || !response.data) {
-        showToast(response.message || 'Could not start image regeneration', 'error');
+        setRegeneratingImageScenes((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
+        if (!opts?.silent) showToast(response.message || 'Could not start image regeneration', 'error');
         return;
       }
       const { jobId, existing, image } = response.data;
@@ -1814,22 +1824,42 @@ function WorkspacePageContent() {
           }
           return [...prev, next];
         });
-        showToast('Image is already available for this scene', 'info');
+        setRegeneratingImageScenes((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
+        if (!opts?.silent) showToast('Image is already available for this scene', 'info');
         return;
       }
       if (jobId) {
         imageRegenJobToSceneRef.current.set(jobId, sceneNumber);
-        setRegeneratingImageScenes((prev) => new Set(prev).add(sceneNumber));
         subscribeToJobRef.current?.(jobId, 'image-generation');
-        showToast('Image regeneration started', 'success');
+        if (!opts?.silent) showToast('Image regeneration started', 'success');
+      } else {
+        setRegeneratingImageScenes((prev) => {
+          const next = new Set(prev);
+          next.delete(sceneNumber);
+          return next;
+        });
       }
     } catch (error: any) {
       console.error('Failed to regenerate image:', error);
-      showToast('Failed to regenerate image', 'error');
+      setRegeneratingImageScenes((prev) => {
+        const next = new Set(prev);
+        next.delete(sceneNumber);
+        return next;
+      });
+      if (!opts?.silent) showToast('Failed to regenerate image', 'error');
+      throw error;
     }
   };
 
-  const handleRegenerateVideo = async (sceneIndexOverride?: number, promptOverride?: string) => {
+  const handleRegenerateVideo = async (
+    sceneIndexOverride?: number,
+    promptOverride?: string,
+    opts?: { silent?: boolean },
+  ) => {
     if (!projectId) return;
 
     const sceneIndex = sceneIndexOverride !== undefined ? sceneIndexOverride : selectedSceneIndex;
@@ -1841,7 +1871,7 @@ function WorkspacePageContent() {
 
     const activeJobs = videoJobIdsRef.current.get(sceneNumber);
     if (activeJobs && activeJobs.size > 0) {
-      showToast('Video generation already in progress for this scene', 'warning');
+      if (!opts?.silent) showToast('Video generation already in progress for this scene', 'warning');
       return;
     }
 
@@ -1853,7 +1883,6 @@ function WorkspacePageContent() {
       }
       setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
       setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
-      showToast('Regenerating video...', 'info');
 
       const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true, promptOverride);
 
@@ -1876,7 +1905,7 @@ function WorkspacePageContent() {
           next.delete(sceneNumber);
           return next;
         });
-        showToast('Video already exists for this scene', 'info');
+        if (!opts?.silent) showToast('Video already exists for this scene', 'info');
         return;
       }
 
@@ -1890,7 +1919,7 @@ function WorkspacePageContent() {
         videoJobIdsRef.current.get(sceneNumber)!.add(jobId);
         jobToSceneRef.current.set(jobId, sceneNumber);
         subscribeToJobRef.current?.(jobId, queueType);
-        showToast('Video regeneration started', 'success');
+        if (!opts?.silent) showToast('Video regeneration started', 'success');
         return;
       }
 
@@ -1907,7 +1936,8 @@ function WorkspacePageContent() {
         next.delete(sceneNumber);
         return next;
       });
-      showToast(error?.message || 'Failed to regenerate video', 'error');
+      if (!opts?.silent) showToast(error?.message || 'Failed to regenerate video', 'error');
+      throw error;
     }
   };
 
@@ -2025,23 +2055,56 @@ function WorkspacePageContent() {
     const { sceneNumber, sceneIndex } = sceneEdit;
     const promptField = workspaceMode === 'videos' ? 'broll_video_prompt' : 'broll_image_prompt';
     let effectivePrompt = next.prompt;
+    let jobQueued = false;
+
+    if (workspaceMode === 'videos') {
+      setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
+    } else {
+      setRegeneratingImageScenes((prev) => new Set(prev).add(sceneNumber));
+    }
 
     try {
-      showToast('Saving scene changes…', 'info');
-
       const nextScript = applySceneTextEdit(
         project?.script,
         sceneNumber,
         next.voiceover,
         effectivePrompt,
         promptField,
-      );
+      ) as { scenes?: any[]; scene_plan?: any[] };
       const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
       if (!response.success) {
-        showToast(response.message || 'Could not save the edit', 'error');
-        throw new Error('save failed');
+        throw new Error(response.message || 'Could not save the edit');
+      }
+
+      const localScenes = nextScript.scenes || nextScript.scene_plan || [];
+      if (Array.isArray(localScenes) && localScenes.length > 0) {
+        setScenes(localScenes);
       }
       setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+
+      const refreshedScript = await apiClient.getVideoProject(projectId);
+      if (refreshedScript.success && refreshedScript.data) {
+        setProject(refreshedScript.data);
+        if (refreshedScript.data.script) {
+          const script =
+            typeof refreshedScript.data.script === 'string'
+              ? JSON.parse(refreshedScript.data.script)
+              : refreshedScript.data.script;
+          const scriptScenes = script.scenes || script.scene_plan || [];
+          if (Array.isArray(scriptScenes) && scriptScenes.length > 0) {
+            setScenes(scriptScenes);
+          }
+        }
+        if (refreshedScript.data.bRollImages) {
+          setBrollImages(Array.isArray(refreshedScript.data.bRollImages) ? refreshedScript.data.bRollImages : []);
+        }
+        if (refreshedScript.data.bRollVideoTasks) {
+          setBrollVideos(Array.isArray(refreshedScript.data.bRollVideoTasks) ? refreshedScript.data.bRollVideoTasks : []);
+        }
+        if (refreshedScript.data.avatarVideos) {
+          setAvatarVideos(Array.isArray(refreshedScript.data.avatarVideos) ? refreshedScript.data.avatarVideos : []);
+        }
+      }
 
       let uploadedVideoPrompt: string | undefined;
       if (next.mediaFile) {
@@ -2057,7 +2120,8 @@ function WorkspacePageContent() {
           effectivePrompt = uploadedVideoPrompt;
         }
       } else if (workspaceMode === 'images' && next.promptChanged) {
-        await handleRegenerate(sceneIndex, effectivePrompt);
+        await handleRegenerate(sceneIndex, effectivePrompt, { silent: true });
+        jobQueued = true;
       }
 
       if (next.voiceoverChanged) {
@@ -2069,7 +2133,6 @@ function WorkspacePageContent() {
           throw new Error(audioRes.message || 'Failed to queue audio regeneration');
         }
         if (audioRes.data?.jobId) {
-          showToast('Regenerating scene audio…', 'info');
           await waitForAudioJob(audioRes.data.jobId);
         }
       }
@@ -2087,16 +2150,40 @@ function WorkspacePageContent() {
             await handleRegenerateVideo(
               sceneIndex,
               uploadedVideoPrompt || effectivePrompt,
+              { silent: true },
             );
+            jobQueued = true;
           }
         }
       }
 
-      showToast('Scene update started', 'success');
+      showToast(jobQueued ? 'Scene update in progress' : 'Scene updated', 'success');
     } catch (error: any) {
       console.error('[Workspace] saveSceneEdit failed:', error);
       showToast(error?.message || 'Failed to update scene', 'error');
       throw error;
+    } finally {
+      if (workspaceMode === 'videos') {
+        const activeJobs = videoJobIdsRef.current.get(sceneNumber);
+        if (!activeJobs || activeJobs.size === 0) {
+          setRegeneratingVideoScenes((prev) => {
+            const nextSet = new Set(prev);
+            nextSet.delete(sceneNumber);
+            return nextSet;
+          });
+        }
+      } else {
+        const stillQueued = imageRegenJobToSceneRef.current
+          ? [...imageRegenJobToSceneRef.current.entries()].some(([, sn]) => sn === sceneNumber)
+          : false;
+        if (!stillQueued && !jobQueued) {
+          setRegeneratingImageScenes((prev) => {
+            const nextSet = new Set(prev);
+            nextSet.delete(sceneNumber);
+            return nextSet;
+          });
+        }
+      }
     }
   };
 
@@ -2112,6 +2199,10 @@ function WorkspacePageContent() {
   // Handle convert to videos (uses batch API)
   const handleConvertToVideos = async () => {
     if (!projectId) return;
+    if (regeneratingImageScenes.size > 0 || regeneratingVideoScenes.size > 0 || generatingVideos.size > 0) {
+      showToast('Wait for scene updates to finish', 'warning');
+      return;
+    }
 
     const scenesNeedingVideos = scenes.filter((scene, index) => {
       const sceneNumber = scene.scene_number || scene.sceneNumber || (index + 1);
@@ -2507,6 +2598,10 @@ function WorkspacePageContent() {
   // Handle export - show cost confirmation before starting final rendering
   const handleExport = async () => {
     if (!projectId) return;
+    if (regeneratingImageScenes.size > 0 || regeneratingVideoScenes.size > 0 || generatingVideos.size > 0) {
+      showToast('Wait for scene updates to finish', 'warning');
+      return;
+    }
     // Modal and the quote stay in the file. They only run when billing is
     // explicitly turned back on.
     if (process.env.NEXT_PUBLIC_BILLING_ENFORCEMENT_ENABLED !== 'true') {
@@ -3556,13 +3651,32 @@ function WorkspacePageContent() {
                 ? handleExport
                 : handleConvertToVideos
             }
-            disabled={workspaceMode === 'converting'}
+            disabled={
+              workspaceMode === 'converting' ||
+              regeneratingImageScenes.size > 0 ||
+              regeneratingVideoScenes.size > 0 ||
+              generatingVideos.size > 0
+            }
+            title={
+              regeneratingImageScenes.size > 0 ||
+              regeneratingVideoScenes.size > 0 ||
+              generatingVideos.size > 0
+                ? 'Wait for scene updates to finish'
+                : undefined
+            }
             className="flex flex-row justify-center items-center gap-[clamp(6px,0.69vw,8px)] px-[clamp(12px,1.39vw,20px)] py-[clamp(8px,1.17vh,12px)] bg-gradient-to-r from-[#E86412] to-[#F12A4C] rounded-[26px] min-w-[clamp(120px,14vw,202px)] h-[clamp(32px,3.3vh,40px)] hover:opacity-90 transition-opacity disabled:opacity-70 disabled:cursor-wait">
             <span className="font-heading font-semibold text-[clamp(12px,1.37vh,14px)] leading-[clamp(12px,1.37vh,14px)] text-white flex items-center gap-2">
               {workspaceMode === 'converting' ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Converting...
+                </>
+              ) : regeneratingImageScenes.size > 0 ||
+                regeneratingVideoScenes.size > 0 ||
+                generatingVideos.size > 0 ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Updating...
                 </>
               ) : workspaceMode === 'videos' || (isSingleClipStyle && finalReady) ? (
                 'Export →'

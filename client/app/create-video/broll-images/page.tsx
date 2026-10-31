@@ -557,7 +557,11 @@ function BrollImagesPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, scenesNeedingBroll.length, loading, dbLoaded, project, brollImages.length]);
 
-  const handleRegenerate = async (sceneNumber: number, promptOverride?: string) => {
+  const handleRegenerate = async (
+    sceneNumber: number,
+    promptOverride?: string,
+    opts?: { silent?: boolean },
+  ) => {
     if (!projectId) return;
 
     const scene = scenesNeedingBroll.find(
@@ -569,14 +573,14 @@ function BrollImagesPageContent() {
     // Try multiple prompt fields: broll_image_prompt, broll_prompt, broll_visual_description
     const prompt = promptOverride || scene.broll_image_prompt || scene.broll_prompt || scene.broll_visual_description;
     if (!prompt) {
-      showToast('No prompt found for this scene', 'warning');
+      if (!opts?.silent) showToast('No prompt found for this scene', 'warning');
       return;
     }
 
     // Check if already generating for this scene
     const activeJobs = activeJobsBySceneRef.current.get(sceneNumber);
     if (activeJobs && activeJobs.size > 0) {
-      showToast('Image generation already in progress for this scene', 'warning');
+      if (!opts?.silent) showToast('Image generation already in progress for this scene', 'warning');
       return;
     }
 
@@ -627,7 +631,7 @@ function BrollImagesPageContent() {
           return next;
         });
         setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
-        showToast('Image already exists', 'info');
+        if (!opts?.silent) showToast('Image already exists', 'info');
         return;
       }
       
@@ -642,17 +646,18 @@ function BrollImagesPageContent() {
         jobToSceneRef.current.set(jobId, sceneNumber);
         // Subscribe to job updates via WebSocket
         subscribeToJob(jobId, 'image-generation');
-        showToast('Image regeneration started', 'info');
+        if (!opts?.silent) showToast('Image regeneration started', 'info');
       }
     } catch (error: any) {
       console.error('Failed to regenerate image:', error);
-      showToast('Failed to regenerate image', 'error');
+      if (!opts?.silent) showToast('Failed to regenerate image', 'error');
       setRegenerating(prev => ({ ...prev, [sceneNumber]: false }));
       setGeneratingImages(prev => {
         const next = new Set(prev);
         next.delete(sceneNumber);
         return next;
       });
+      throw error;
     }
   };
 
@@ -940,6 +945,8 @@ function BrollImagesPageContent() {
         onSave={async (next: SceneEditSavePayload) => {
           if (!projectId || !sceneEdit) return;
           const sceneNumber = sceneEdit.sceneNumber;
+          let imageJobQueued = false;
+          setRegenerating((prev) => ({ ...prev, [sceneNumber]: true }));
           try {
             const nextScript = applySceneTextEdit(
               project?.script,
@@ -947,13 +954,39 @@ function BrollImagesPageContent() {
               next.voiceover,
               next.prompt,
               'broll_image_prompt',
-            );
-            const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
+            ) as { scenes?: Scene[]; scene_plan?: Scene[] };
+            const response = await apiClient.updateVideoProject(projectId, {
+              script: JSON.stringify(nextScript),
+            });
             if (!response.success) {
-              showToast(response.message || 'Could not save the edit', 'error');
-              throw new Error('save failed');
+              throw new Error(response.message || 'Could not save the edit');
+            }
+
+            // Keep local scene list in sync so voiceover/prompt show immediately
+            const localScenes = nextScript.scenes || nextScript.scene_plan || [];
+            if (Array.isArray(localScenes) && localScenes.length > 0) {
+              setScenes(localScenes);
             }
             setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+
+            // Re-fetch project so later pages (broll-videos) always read persisted script
+            const refreshed = await apiClient.getVideoProject(projectId);
+            if (refreshed.success && refreshed.data) {
+              setProject(refreshed.data);
+              if (refreshed.data.script) {
+                const script =
+                  typeof refreshed.data.script === 'string'
+                    ? JSON.parse(refreshed.data.script)
+                    : refreshed.data.script;
+                const scriptScenes = script.scenes || script.scene_plan || [];
+                if (Array.isArray(scriptScenes) && scriptScenes.length > 0) {
+                  setScenes(scriptScenes);
+                }
+              }
+              if (refreshed.data.bRollImages) {
+                setBrollImages(Array.isArray(refreshed.data.bRollImages) ? refreshed.data.bRollImages : []);
+              }
+            }
 
             if (next.mediaFile) {
               const formData = new FormData();
@@ -984,12 +1017,13 @@ function BrollImagesPageContent() {
               });
               const processData = await processRes.json();
               if (!processData.success) throw new Error(processData.message || 'Failed to process image');
-              const refreshed = await apiClient.getVideoProject(projectId);
-              if (refreshed.success && refreshed.data?.bRollImages) {
-                setBrollImages(Array.isArray(refreshed.data.bRollImages) ? refreshed.data.bRollImages : []);
+              const afterMedia = await apiClient.getVideoProject(projectId);
+              if (afterMedia.success && afterMedia.data?.bRollImages) {
+                setBrollImages(Array.isArray(afterMedia.data.bRollImages) ? afterMedia.data.bRollImages : []);
               }
             } else if (next.promptChanged) {
-              await handleRegenerate(sceneNumber, next.prompt);
+              await handleRegenerate(sceneNumber, next.prompt, { silent: true });
+              imageJobQueued = true;
             }
 
             if (next.voiceoverChanged) {
@@ -1019,10 +1053,19 @@ function BrollImagesPageContent() {
               }
             }
 
-            showToast('Scene update started', 'success');
+            // One toast for the whole edit action
+            showToast(
+              imageJobQueued ? 'Scene update in progress' : 'Scene updated',
+              'success',
+            );
           } catch (error: any) {
             showToast(error?.message || 'Failed to update scene', 'error');
             throw error;
+          } finally {
+            const activeJobs = activeJobsBySceneRef.current.get(sceneNumber);
+            if (!activeJobs || activeJobs.size === 0) {
+              setRegenerating((prev) => ({ ...prev, [sceneNumber]: false }));
+            }
           }
         }}
       />
@@ -1040,12 +1083,18 @@ function BrollImagesPageContent() {
       <ProgressBar
         progress={scenesNeedingBroll.length > 0 && brollImages.length === scenesNeedingBroll.length ? 70 : 60}
         message={
-          scenesNeedingBroll.length > 0 && brollImages.length === scenesNeedingBroll.length
+          Object.values(regenerating).some(Boolean) || generatingImages.size > 0
+            ? 'Updating scene… please wait'
+            : scenesNeedingBroll.length > 0 && brollImages.length === scenesNeedingBroll.length
             ? "All images generated! Ready to create videos."
             : `Generating images... ${brollImages.length}/${scenesNeedingBroll.length}`
         }
         onNext={handleNext}
-        disabled={scenesNeedingBroll.length > 0 && brollImages.length !== scenesNeedingBroll.length}
+        disabled={
+          (scenesNeedingBroll.length > 0 && brollImages.length !== scenesNeedingBroll.length) ||
+          Object.values(regenerating).some(Boolean) ||
+          generatingImages.size > 0
+        }
       />
     </div>
   );
