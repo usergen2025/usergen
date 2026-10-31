@@ -4594,8 +4594,10 @@ function WorkspacePageContent() {
                   const video =
                     brollVideos.find((v) => v.sceneNumber === sn) ||
                     avatarVideos.find((v) => v.sceneNumber === sn);
-                  if (video?.localUrl || video?.videoUrl || (video as any)?.gcsUrl) {
-                    return video.localUrl || video.videoUrl || (video as any).gcsUrl;
+                  if (video) {
+                    const url =
+                      video.localUrl || video.videoUrl || (video as { gcsUrl?: string }).gcsUrl;
+                    if (url) return url;
                   }
                 }
                 const image = brollImages.find((img) => img.sceneNumber === sn);
