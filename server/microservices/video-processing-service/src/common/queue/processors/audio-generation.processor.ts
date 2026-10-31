@@ -12,6 +12,8 @@ export interface AudioGenerationJobData {
   projectId: string;
   userId: string;
   authToken?: string;
+  /** When set, only these scenes are regenerated and merged into existing audioFiles */
+  sceneNumbers?: number[];
 }
 
 @Processor('audio-generation', {
@@ -29,9 +31,16 @@ export class AudioGenerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<AudioGenerationJobData>): Promise<any> {
-    const { projectId, userId, authToken } = job.data;
+    const { projectId, userId, authToken, sceneNumbers } = job.data;
+    const scopedSceneNumbers =
+      Array.isArray(sceneNumbers) && sceneNumbers.length > 0
+        ? [...new Set(sceneNumbers.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))]
+        : null;
 
-    console.log(`[AudioGenerationProcessor] Processing job ${job.id} for project ${projectId}`);
+    console.log(
+      `[AudioGenerationProcessor] Processing job ${job.id} for project ${projectId}` +
+        (scopedSceneNumbers ? ` (scenes: ${scopedSceneNumbers.join(',')})` : ''),
+    );
 
     try {
       // Get project
@@ -66,7 +75,18 @@ export class AudioGenerationProcessor extends WorkerHost {
           sceneNumber: scene.scene_number || scene.sceneNumber || (index + 1),
           voiceover: scene.voiceover,
           timeRange: scene.time_range || scene.timeRange,
-        }));
+        }))
+        .filter((scene: { sceneNumber: number }) =>
+          !scopedSceneNumbers || scopedSceneNumbers.includes(scene.sceneNumber),
+        );
+
+      if (scenesWithVoiceover.length === 0) {
+        throw new Error(
+          scopedSceneNumbers
+            ? `No voiceover found for scene(s): ${scopedSceneNumbers.join(', ')}`
+            : 'No scenes with voiceover found',
+        );
+      }
 
       // Update progress
       await job.updateProgress(10);
@@ -97,7 +117,19 @@ export class AudioGenerationProcessor extends WorkerHost {
         throw new Error('Failed to generate audio files');
       }
 
-      const audioFiles = response.data.data;
+      const generatedAudioFiles = Array.isArray(response.data.data) ? response.data.data : [];
+      const existingAudioFiles = Array.isArray(project.audioFiles) ? (project.audioFiles as any[]) : [];
+      const audioFiles = scopedSceneNumbers
+        ? [
+            ...existingAudioFiles.filter(
+              (af: any) => !scopedSceneNumbers.includes(Number(af.sceneNumber ?? af.scene_number)),
+            ),
+            ...generatedAudioFiles,
+          ].sort(
+            (a: any, b: any) =>
+              Number(a.sceneNumber ?? a.scene_number ?? 0) - Number(b.sceneNumber ?? b.scene_number ?? 0),
+          )
+        : generatedAudioFiles;
 
       // Build audio generation config to store
       const audioGenerationConfig = buildAudioGenerationConfig(
@@ -120,8 +152,8 @@ export class AudioGenerationProcessor extends WorkerHost {
         },
       });
 
-      const files = Array.isArray(audioFiles) ? audioFiles : [];
-      for (const af of files) {
+      const filesForCharge = scopedSceneNumbers ? generatedAudioFiles : audioFiles;
+      for (const af of filesForCharge) {
         const sn = (af as any)?.sceneNumber ?? (af as any)?.scene_number;
         if (sn == null) continue;
         await this.recordOperationCharge({

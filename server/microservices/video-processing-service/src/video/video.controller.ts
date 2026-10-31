@@ -798,9 +798,27 @@ export class VideoController {
   @Post(':projectId/generate-audio')
   @ApiBearerAuth('JWT-auth')
   @ApiParam({ name: 'projectId', description: 'Video project ID' })
-  @ApiOperation({ summary: 'Generate audio files', description: 'Queue audio generation for all scenes. Skips regeneration if config matches existing audio.' })
+  @ApiOperation({
+    summary: 'Generate audio files',
+    description:
+      'Queue audio generation for all scenes, or only sceneNumbers when provided. Skips regeneration if config matches existing audio unless force/sceneNumbers are set.',
+  })
+  @ApiBody({
+    required: false,
+    schema: {
+      type: 'object',
+      properties: {
+        sceneNumbers: { type: 'array', items: { type: 'number' }, description: 'Optional scene subset to regenerate' },
+        force: { type: 'boolean', description: 'Force regeneration even if config matches' },
+      },
+    },
+  })
   @ApiResponse({ status: 200, description: 'Audio generation queued successfully or existing audio returned' })
-  async generateAudio(@Request() req: any, @Param('projectId') projectId: string) {
+  async generateAudio(
+    @Request() req: any,
+    @Param('projectId') projectId: string,
+    @Body() body?: { sceneNumbers?: number[]; force?: boolean },
+  ) {
     const userId = this.extractUserIdFromToken(req);
     if (!userId) {
       throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
@@ -815,10 +833,15 @@ export class VideoController {
     const projectData = project.data;
     const existingAudioFiles = (projectData.audioFiles as any[]) || null;
     const storedConfig = (projectData.audioGenerationConfig as any) || null;
+    const sceneNumbers =
+      Array.isArray(body?.sceneNumbers) && body.sceneNumbers.length > 0
+        ? [...new Set(body.sceneNumbers.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))]
+        : undefined;
+    const force = body?.force === true || !!sceneNumbers?.length;
 
     // If project is explicitly in MANUAL voice mode and already has audioFiles, avoid regenerating
     const voiceMode = (projectData.metadata as any)?.voiceMode;
-    if (voiceMode === 'MANUAL' && existingAudioFiles && existingAudioFiles.length > 0) {
+    if (voiceMode === 'MANUAL' && existingAudioFiles && existingAudioFiles.length > 0 && !force) {
       console.log(`[VideoController] Manual voice mode detected for project ${projectId}, using existing manual audio files`);
       return {
         success: true,
@@ -842,7 +865,7 @@ export class VideoController {
     );
 
     // Check if regeneration is needed
-    const needsRegeneration = shouldRegenerateAudio(currentConfig, storedConfig, existingAudioFiles);
+    const needsRegeneration = force || shouldRegenerateAudio(currentConfig, storedConfig, existingAudioFiles);
 
     if (!needsRegeneration && existingAudioFiles && existingAudioFiles.length > 0) {
       // No regeneration needed, return existing audio
@@ -864,12 +887,15 @@ export class VideoController {
       projectId,
       userId,
       authToken,
+      ...(sceneNumbers ? { sceneNumbers } : {}),
     });
 
     return {
       success: true,
-      data: { jobId },
-      message: 'Audio generation queued successfully',
+      data: { jobId, sceneNumbers: sceneNumbers || null },
+      message: sceneNumbers?.length
+        ? `Audio generation queued for scene(s): ${sceneNumbers.join(', ')}`
+        : 'Audio generation queued successfully',
     };
   }
 

@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, RefreshCw, Loader2, Play, Pause, Video as VideoIcon, Pencil } from 'lucide-react';
-import SceneEditModal, { applySceneTextEdit } from '@/components/create-video/SceneEditModal';
+import SceneEditModal, { applySceneTextEdit, type SceneEditSavePayload } from '@/components/create-video/SceneEditModal';
+import { useWebSocketContext } from '@/contexts/WebSocketContext';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -48,6 +49,7 @@ function BrollVideosPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
+  const { subscribeToQueueType } = useWebSocketContext();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const projectIdFromUrl = searchParams?.get('projectId') ?? null;
   
@@ -1059,26 +1061,17 @@ function BrollVideosPageContent() {
                             });
                           }}
                           disabled={isRegenerating}
-                          className="rounded-none border-0 border-r border-border"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRegenerate(sceneNumber)}
-                          disabled={isRegenerating}
                           className="flex-1 rounded-none border-0 border-r border-border"
                         >
                           {isRegenerating ? (
                             <>
                               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              Regenerating...
+                              Updating…
                             </>
                           ) : (
                             <>
-                              <RefreshCw className="w-4 h-4 mr-2" />
-                              Regenerate
+                              <Pencil className="w-4 h-4 mr-2" />
+                              Edit
                             </>
                           )}
                         </Button>
@@ -1107,23 +1100,136 @@ function BrollVideosPageContent() {
         voiceover={sceneEdit?.voiceover ?? ''}
         prompt={sceneEdit?.prompt ?? ''}
         promptLabel="Video prompt"
-        onSave={async ({ voiceover, prompt, regenerate }) => {
+        mediaAccept="videos"
+        currentMediaUrl={
+          sceneEdit
+            ? (() => {
+                const sn = sceneEdit.sceneNumber;
+                const video =
+                  brollVideos.find((v) => v.sceneNumber === sn) ||
+                  avatarVideos.find((v) => v.sceneNumber === sn);
+                if (video?.publicUrl || video?.gcsUrl || video?.localUrl || video?.videoUrl) {
+                  return video.publicUrl || video.gcsUrl || video.localUrl || video.videoUrl || null;
+                }
+                const image = brollImages.find((img) => img.sceneNumber === sn);
+                return image?.publicUrl || image?.gcsUrl || image?.localUrl || image?.imageUrl || null;
+              })()
+            : null
+        }
+        onSave={async (next: SceneEditSavePayload) => {
           if (!projectId || !sceneEdit) return;
-          const nextScript = applySceneTextEdit(
-            project?.script,
-            sceneEdit.sceneNumber,
-            voiceover,
-            prompt,
-            'broll_video_prompt',
-          );
-          const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
-          if (!response.success) {
-            showToast(response.message || 'Could not save the edit', 'error');
-            throw new Error('save failed');
+          const sceneNumber = sceneEdit.sceneNumber;
+          let effectivePrompt = next.prompt;
+          try {
+            const nextScript = applySceneTextEdit(
+              project?.script,
+              sceneNumber,
+              next.voiceover,
+              effectivePrompt,
+              'broll_video_prompt',
+            );
+            const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
+            if (!response.success) {
+              showToast(response.message || 'Could not save the edit', 'error');
+              throw new Error('save failed');
+            }
+            setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+
+            let uploadedFinishedVideo = false;
+            if (next.mediaFile) {
+              const isImage = next.mediaFile.type.startsWith('image/');
+              uploadedFinishedVideo = next.mediaFile.type.startsWith('video/');
+              const formData = new FormData();
+              formData.append('file', next.mediaFile);
+              const uploadRes = await fetch(`/api/video/${projectId}/upload-broll`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${localStorage.getItem('authToken')}` },
+                body: formData,
+              });
+              const uploadData = await uploadRes.json();
+              if (!uploadRes.ok || !uploadData.success || !uploadData.data?.url) {
+                throw new Error(uploadData.message || 'Failed to upload file');
+              }
+              const fileUrl = uploadData.data.gcsUrl || uploadData.data.publicUrl || uploadData.data.url;
+
+              let videoPrompt: string | undefined = next.rewritePromptFromMedia ? undefined : next.prompt;
+              if (isImage && next.rewritePromptFromMedia) {
+                try {
+                  const analysis = await apiClient.analyzeBrollImage(fileUrl, next.voiceover);
+                  videoPrompt = analysis.data?.videoPrompt?.trim() || undefined;
+                  if (videoPrompt) effectivePrompt = videoPrompt;
+                } catch (e) {
+                  console.warn('[BrollVideos] analyzeBrollImage failed', e);
+                }
+              }
+
+              const processRes = await fetch(`/api/video/${projectId}/process-custom-broll`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${localStorage.getItem('authToken')}`,
+                },
+                body: JSON.stringify({
+                  sceneNumber,
+                  source: 'upload',
+                  fileUrl,
+                  mediaType: isImage ? 'image' : 'video',
+                  videoPrompt,
+                  targetAspectRatio: project?.style === 'HALF_N_HALF' ? '9:8' : '9:16',
+                }),
+              });
+              const processData = await processRes.json();
+              if (!processData.success) throw new Error(processData.message || 'Failed to process media');
+
+              const refreshed = await apiClient.getVideoProject(projectId);
+              if (refreshed.success && refreshed.data) {
+                if (refreshed.data.bRollImages) {
+                  setBrollImages(Array.isArray(refreshed.data.bRollImages) ? refreshed.data.bRollImages : []);
+                }
+                if (refreshed.data.bRollVideoTasks) {
+                  setBrollVideos(Array.isArray(refreshed.data.bRollVideoTasks) ? refreshed.data.bRollVideoTasks : []);
+                }
+              }
+            }
+
+            if (next.voiceoverChanged) {
+              const audioRes = await apiClient.generateAudio(projectId, {
+                sceneNumbers: [sceneNumber],
+                force: true,
+              });
+              if (audioRes.data?.jobId) {
+                await new Promise<void>((resolve, reject) => {
+                  const timeout = setTimeout(() => {
+                    unsubscribe();
+                    reject(new Error('Audio regeneration timed out'));
+                  }, 180000);
+                  const unsubscribe = subscribeToQueueType('audio-generation', (update: JobStatusUpdate) => {
+                    if (update.jobId !== audioRes.data?.jobId) return;
+                    if (update.state === 'completed') {
+                      clearTimeout(timeout);
+                      unsubscribe();
+                      resolve();
+                    } else if (update.state === 'failed') {
+                      clearTimeout(timeout);
+                      unsubscribe();
+                      reject(new Error(update.error || 'Audio regeneration failed'));
+                    }
+                  });
+                });
+              }
+            }
+
+            const needsVideo =
+              next.voiceoverChanged || next.promptChanged || (next.mediaChanged && !uploadedFinishedVideo);
+            if (needsVideo || (next.mediaChanged && next.mediaFile?.type.startsWith('image/'))) {
+              await handleRegenerate(sceneNumber, effectivePrompt);
+            }
+
+            showToast('Scene update started', 'success');
+          } catch (error: any) {
+            showToast(error?.message || 'Failed to update scene', 'error');
+            throw error;
           }
-          setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
-          if (regenerate) await handleRegenerate(sceneEdit.sceneNumber, prompt);
-          else showToast('Scene updated', 'success');
         }}
       />
 

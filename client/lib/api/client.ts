@@ -1378,13 +1378,19 @@ class ApiClient {
   }
 
   // Queue operations
-  async generateAudio(projectId: string): Promise<ApiResponse<{ jobId?: string; existing?: boolean; audioFiles?: any[] }>> {
+  async generateAudio(
+    projectId: string,
+    options?: { sceneNumbers?: number[]; force?: boolean },
+  ): Promise<ApiResponse<{ jobId?: string; existing?: boolean; audioFiles?: any[]; sceneNumbers?: number[] | null }>> {
     const videoServiceUrl = VIDEO_SERVICE_URL;
     const token = this.getToken();
 
     const response = await axios.post<ApiResponse<{ jobId: string }>>(
       `${videoServiceUrl}/video-projects/${projectId}/generate-audio`,
-      {},
+      {
+        ...(options?.sceneNumbers?.length ? { sceneNumbers: options.sceneNumbers } : {}),
+        ...(options?.force ? { force: true } : {}),
+      },
       {
         headers: {
           'Content-Type': 'application/json',

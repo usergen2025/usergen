@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, RefreshCw, Loader2, Image as ImageIcon, Pencil } from 'lucide-react';
-import SceneEditModal, { applySceneTextEdit } from '@/components/create-video/SceneEditModal';
+import SceneEditModal, { applySceneTextEdit, type SceneEditSavePayload } from '@/components/create-video/SceneEditModal';
+import { useWebSocketContext } from '@/contexts/WebSocketContext';
 import Button from '@/components/ui/Button';
 import Card from '@/components/ui/Card';
 import ProgressBar from '@/components/layout/ProgressBar';
@@ -47,6 +48,7 @@ function BrollImagesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
+  const { subscribeToQueueType } = useWebSocketContext();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const projectIdFromUrl = searchParams?.get('projectId') ?? null;
   
@@ -865,7 +867,7 @@ function BrollImagesPageContent() {
                         </div>
                       )}
                       
-                      {/* Split button with Regenerate and Model Selector - only for b-roll scenes */}
+                      {/* Edit + model selector — regenerate runs from the edit modal */}
                       {!isAvatarScene && (
                         <div className="flex items-stretch border border-border rounded-md overflow-hidden">
                           <Button
@@ -879,31 +881,20 @@ function BrollImagesPageContent() {
                               })
                             }
                             disabled={isRegenerating}
-                            className="rounded-none border-0 border-r border-border"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleRegenerate(sceneNumber)}
-                            disabled={isRegenerating}
                             className="flex-1 rounded-none border-0 border-r border-border"
                           >
                             {isRegenerating ? (
                               <>
                                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                Regenerating...
+                                Updating…
                               </>
                             ) : (
                               <>
-                                <RefreshCw className="w-4 h-4 mr-2" />
-                                Regenerate
+                                <Pencil className="w-4 h-4 mr-2" />
+                                Edit
                               </>
                             )}
                           </Button>
-                          
-                          {/* Model selector - integrated as part of button */}
                           <ModelSelector
                             selectedModelId={selectedModels[sceneNumber] ?? 'model-5'}
                             onModelSelect={(modelId) => {
@@ -937,23 +928,102 @@ function BrollImagesPageContent() {
         voiceover={sceneEdit?.voiceover ?? ''}
         prompt={sceneEdit?.prompt ?? ''}
         promptLabel="Image prompt"
-        onSave={async ({ voiceover, prompt, regenerate }) => {
+        mediaAccept="images"
+        currentMediaUrl={
+          sceneEdit
+            ? (() => {
+                const img = brollImages.find((b) => b.sceneNumber === sceneEdit.sceneNumber);
+                return img?.publicUrl || img?.gcsUrl || img?.localUrl || img?.imageUrl || null;
+              })()
+            : null
+        }
+        onSave={async (next: SceneEditSavePayload) => {
           if (!projectId || !sceneEdit) return;
-          const nextScript = applySceneTextEdit(
-            project?.script,
-            sceneEdit.sceneNumber,
-            voiceover,
-            prompt,
-            'broll_image_prompt',
-          );
-          const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
-          if (!response.success) {
-            showToast(response.message || 'Could not save the edit', 'error');
-            throw new Error('save failed');
+          const sceneNumber = sceneEdit.sceneNumber;
+          try {
+            const nextScript = applySceneTextEdit(
+              project?.script,
+              sceneNumber,
+              next.voiceover,
+              next.prompt,
+              'broll_image_prompt',
+            );
+            const response = await apiClient.updateVideoProject(projectId, { script: JSON.stringify(nextScript) });
+            if (!response.success) {
+              showToast(response.message || 'Could not save the edit', 'error');
+              throw new Error('save failed');
+            }
+            setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
+
+            if (next.mediaFile) {
+              const formData = new FormData();
+              formData.append('file', next.mediaFile);
+              const uploadRes = await fetch(`/api/video/${projectId}/upload-broll`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${localStorage.getItem('authToken')}` },
+                body: formData,
+              });
+              const uploadData = await uploadRes.json();
+              if (!uploadRes.ok || !uploadData.success || !uploadData.data?.url) {
+                throw new Error(uploadData.message || 'Failed to upload file');
+              }
+              const fileUrl = uploadData.data.gcsUrl || uploadData.data.publicUrl || uploadData.data.url;
+              const processRes = await fetch(`/api/video/${projectId}/process-custom-broll`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${localStorage.getItem('authToken')}`,
+                },
+                body: JSON.stringify({
+                  sceneNumber,
+                  source: 'upload',
+                  fileUrl,
+                  mediaType: 'image',
+                  targetAspectRatio: project?.style === 'HALF_N_HALF' ? '9:8' : '9:16',
+                }),
+              });
+              const processData = await processRes.json();
+              if (!processData.success) throw new Error(processData.message || 'Failed to process image');
+              const refreshed = await apiClient.getVideoProject(projectId);
+              if (refreshed.success && refreshed.data?.bRollImages) {
+                setBrollImages(Array.isArray(refreshed.data.bRollImages) ? refreshed.data.bRollImages : []);
+              }
+            } else if (next.promptChanged) {
+              await handleRegenerate(sceneNumber, next.prompt);
+            }
+
+            if (next.voiceoverChanged) {
+              const audioRes = await apiClient.generateAudio(projectId, {
+                sceneNumbers: [sceneNumber],
+                force: true,
+              });
+              if (audioRes.data?.jobId) {
+                await new Promise<void>((resolve, reject) => {
+                  const timeout = setTimeout(() => {
+                    unsubscribe();
+                    reject(new Error('Audio regeneration timed out'));
+                  }, 180000);
+                  const unsubscribe = subscribeToQueueType('audio-generation', (update: JobStatusUpdate) => {
+                    if (update.jobId !== audioRes.data?.jobId) return;
+                    if (update.state === 'completed') {
+                      clearTimeout(timeout);
+                      unsubscribe();
+                      resolve();
+                    } else if (update.state === 'failed') {
+                      clearTimeout(timeout);
+                      unsubscribe();
+                      reject(new Error(update.error || 'Audio regeneration failed'));
+                    }
+                  });
+                });
+              }
+            }
+
+            showToast('Scene update started', 'success');
+          } catch (error: any) {
+            showToast(error?.message || 'Failed to update scene', 'error');
+            throw error;
           }
-          setProject((prev: any) => (prev ? { ...prev, script: nextScript } : prev));
-          if (regenerate) await handleRegenerate(sceneEdit.sceneNumber, prompt);
-          else showToast('Scene updated', 'success');
         }}
       />
 
