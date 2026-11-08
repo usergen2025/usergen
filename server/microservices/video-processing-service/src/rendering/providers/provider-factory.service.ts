@@ -46,8 +46,12 @@ export class ProviderFactory {
       return this.getProvider(model.platform);
     }
 
-    // Otherwise, try to determine platform from model ID
-    if (modelId.startsWith('fal-ai/')) {
+    // Otherwise, try to determine platform from model ID prefix
+    if (
+      modelId.startsWith('fal-ai/') ||
+      modelId.startsWith('google/') ||
+      modelId.startsWith('alibaba/')
+    ) {
       return this.getProvider('FAL');
     }
 
