@@ -106,24 +106,16 @@ export class FalImageProvider {
   }
 
   private extractBaseModelName(modelPath: string): string {
-    const ns = modelPath.split('/')[0];
-    if (ns === 'google' || ns === 'alibaba') return modelPath;
-    return ns;
+    return modelPath.split('/')[0];
   }
 
-  private getModelUrlPrefix(modelPath: string): string {
-    const ns = modelPath.split('/')[0];
-    if (ns === 'google' || ns === 'alibaba') return '';
+  private getModelUrlPrefix(): string {
     return '/fal-ai';
   }
 
   private determineEndpointSuffix(modelPath: string, hasReferenceImages: boolean): string {
-    const ns = modelPath.split('/')[0];
-    if (ns === 'google' && modelPath.includes('nano-banana')) {
-      return hasReferenceImages ? '/edit' : '';
-    }
     const baseName = modelPath.split('/').pop() || modelPath;
-    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro') {
+    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro' || baseName === 'nano-banana-2') {
       return hasReferenceImages ? '/edit' : '';
     }
     if (baseName === 'reve' || modelPath.startsWith('reve')) {
@@ -133,34 +125,27 @@ export class FalImageProvider {
   }
 
   private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
-    const prefix = this.getModelUrlPrefix(modelPath);
+    const prefix = this.getModelUrlPrefix();
     const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
-    if (prefix) {
-      const baseModel = this.extractBaseModelName(modelPath);
-      if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
-        return `${prefix}/${modelPath}${suffix}`;
-      }
-      return `${prefix}/${baseModel}${suffix}`;
+    const baseModel = this.extractBaseModelName(modelPath);
+    if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
+      return `${prefix}/${modelPath}${suffix}`;
     }
-    return `/${modelPath}${suffix}`;
+    return `${prefix}/${baseModel}${suffix}`;
   }
 
   private async pollUntilComplete(modelPath: string, requestId: string): Promise<FalResultResponse> {
-    const prefix = this.getModelUrlPrefix(modelPath);
+    const prefix = this.getModelUrlPrefix();
     const baseModel = this.extractBaseModelName(modelPath);
     let attempts = 0;
 
     while (attempts < this.maxPollAttempts) {
-      const statusUrl = prefix
-        ? `${prefix}/${baseModel}/requests/${requestId}/status`
-        : `/${baseModel}/requests/${requestId}/status`;
+      const statusUrl = `${prefix}/${baseModel}/requests/${requestId}/status`;
       const statusResponse = await this.axiosInstance.get<FalStatusResponse>(statusUrl);
       const status = statusResponse.data?.status;
 
       if (status === 'COMPLETED') {
-        const resultUrl = prefix
-          ? `${prefix}/${baseModel}/requests/${requestId}`
-          : `/${baseModel}/requests/${requestId}`;
+        const resultUrl = `${prefix}/${baseModel}/requests/${requestId}`;
         const resultResponse = await this.axiosInstance.get<FalResultResponse>(resultUrl);
         return resultResponse.data;
       }

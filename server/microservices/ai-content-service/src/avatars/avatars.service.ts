@@ -1459,7 +1459,7 @@ export class AvatarsService {
 
         const falResult = await this.falImageProvider.generateImage({
           prompt: effectivePrompt,
-          modelId: 'google/nano-banana-2.1',
+          modelId: 'fal-ai/nano-banana-2',
           aspectRatio: '9:16',
           resolution: '2K',
           referenceImages: [avatarPublicUrl, productPublicUrl],

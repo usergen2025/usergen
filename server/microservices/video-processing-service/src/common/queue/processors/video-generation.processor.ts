@@ -718,7 +718,7 @@ export class VideoGenerationProcessor extends WorkerHost {
     await job.updateProgress(10);
 
     // Get selected model or use default
-    const selectedModelId = modelId || 'video-model-3';
+    const selectedModelId = modelId || 'video-model-1';
     const model = this.modelRegistry.getVideoModel(selectedModelId);
     if (!model) {
       throw new Error(`Video model not found: ${selectedModelId}`);

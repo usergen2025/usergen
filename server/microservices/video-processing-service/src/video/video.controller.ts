@@ -303,7 +303,7 @@ export class VideoController {
             isAsync: model.capabilities.isAsync,
           },
         })),
-        default: 'video-model-3',
+        default: 'video-model-1',
       },
     };
   }
@@ -2027,7 +2027,7 @@ export class VideoController {
       );
     }
 
-    console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-3'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
+    console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
 
     const jobId = await this.queueManager.addVideoGenerationJob({
       projectId,
@@ -2037,7 +2037,7 @@ export class VideoController {
       prompt: body.prompt?.trim() || image.videoPrompt || image.prompt,
       ...(body.prompt?.trim() ? { promptOverride: body.prompt.trim() } : {}),
       duration: videoDuration,
-      modelId: body.modelId || 'video-model-3',
+      modelId: body.modelId || 'video-model-1',
       heygenImageKey: heygenImageKey || undefined,
       videoStyle: style,
     });
@@ -2163,7 +2163,7 @@ export class VideoController {
         imageUrl: publicImageUrl,
         prompt: image.videoPrompt || image.prompt,
         duration: videoDuration,
-        modelId: 'video-model-3',
+        modelId: 'video-model-1',
         videoStyle: style,
         // ...(productImageUrlForVideo && { referenceImageUrl: productImageUrlForVideo }),
       });

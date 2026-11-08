@@ -130,9 +130,9 @@ export class ModelRegistryService {
       },
     });
 
-    // Model 6: Google Nano Banana 2.1 (DEFAULT — text-to-image and image-to-image/edit)
+    // Model 6: Nano Banana 2 (DEFAULT — text-to-image and image-to-image/edit)
     this.models.set('model-6', {
-      id: 'google/nano-banana-2.1',
+      id: 'fal-ai/nano-banana-2',
       displayName: 'Model 6',
       platform: 'FAL',
       capabilities: {
@@ -273,40 +273,18 @@ export class ModelRegistryService {
       },
     });
 
-    // Video Model 3: Alibaba Wan 3.0 Standard (DEFAULT)
+    // Video Model 3: Alibaba Wan 3.0 Prime Reference-to-Video
+    // NOTE: Wan 3.0 image-to-video is not available on fal.ai; only reference-to-video exists.
+    // Keeping as registered but NOT the default until a proper I2V endpoint is available.
     this.videoModels.set('video-model-3', {
-      id: 'alibaba/wan-3.0/image-to-video',
+      id: 'alibaba/wan-3.0-prime/reference-to-video',
       displayName: 'Model 3',
       platform: 'FAL',
       capabilities: {
         supportsAspectRatio: true,
         supportsResolution: true,
         supportsDuration: true,
-        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
-        supportedResolutions: ['480p', '720p', '1080p'],
-        minDuration: 2,
-        maxDuration: 30,
-        isAsync: true,
-        estimatedTimeSeconds: 90,
-      },
-      defaultConfig: {
-        aspectRatio: '9:16',
-        resolution: '1080p',
-        duration: 5,
-        generateAudio: false,
-      },
-    });
-
-    // Video Model 4: Alibaba Wan 3.0 Prime
-    this.videoModels.set('video-model-4', {
-      id: 'alibaba/wan-3.0-prime/image-to-video',
-      displayName: 'Model 4',
-      platform: 'FAL',
-      capabilities: {
-        supportsAspectRatio: true,
-        supportsResolution: true,
-        supportsDuration: true,
-        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
+        supportedAspectRatios: ['16:9', '4:3', '1:1', '3:4', '9:16'],
         supportedResolutions: ['480p', '720p', '1080p'],
         minDuration: 2,
         maxDuration: 30,
@@ -345,12 +323,12 @@ export class ModelRegistryService {
   }
 
   /**
-   * Get default video model (Model 3 - Wan 3.0 Standard)
+   * Get default video model (Model 1 - BytePlus Seedance Pro)
    */
   getDefaultVideoModel(): VideoModelInfo {
-    const defaultModel = this.videoModels.get('video-model-3');
+    const defaultModel = this.videoModels.get('video-model-1');
     if (!defaultModel) {
-      throw new Error('Default video model (video-model-3) not found');
+      throw new Error('Default video model (video-model-1) not found');
     }
     return defaultModel;
   }
@@ -359,7 +337,7 @@ export class ModelRegistryService {
    * Get default video model key string
    */
   getDefaultVideoModelKey(): string {
-    return 'video-model-3';
+    return 'video-model-1';
   }
 
   /**

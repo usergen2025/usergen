@@ -264,28 +264,16 @@ export class FalProvider implements IImageGenerationProvider {
 
   /**
    * Extract base model name from full model path.
-   * For namespaced models (google/…, alibaba/…) returns the full path so
-   * queue status/result URLs stay correct.
-   * For legacy fal-ai models returns the first path segment.
+   * Returns the first path segment (e.g. 'nano-banana-2' from 'nano-banana-2/edit').
    */
   private extractBaseModelName(modelPath: string): string {
-    const parts = modelPath.split('/');
-    // Namespaced models: google/nano-banana-2.1 → full path is the "base"
-    if (parts[0] === 'google' || parts[0] === 'alibaba') {
-      return modelPath; // queue URLs use full model path
-    }
-    return parts[0];
+    return modelPath.split('/')[0];
   }
 
   /**
-   * Determine the URL prefix for a model.
-   * Legacy models use /fal-ai/…, namespaced models (google/, alibaba/) use /namespace/… directly.
+   * URL prefix for fal.ai models — always /fal-ai.
    */
-  private getModelUrlPrefix(modelPath: string): string {
-    const ns = modelPath.split('/')[0];
-    if (ns === 'google' || ns === 'alibaba') {
-      return ''; // namespaced — no extra prefix
-    }
+  private getModelUrlPrefix(_modelPath: string): string {
     return '/fal-ai';
   }
 
@@ -314,11 +302,8 @@ export class FalProvider implements IImageGenerationProvider {
       return '';
     }
 
-    // google/nano-banana-2.1 and fal-ai/nano-banana variants use /edit for I2I
-    if (ns === 'google' && modelPath.includes('nano-banana')) {
-      return hasReferenceImages ? '/edit' : '';
-    }
-    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro') {
+    // fal-ai/nano-banana variants (nano-banana, nano-banana-pro, nano-banana-2) use /edit for I2I
+    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro' || baseName === 'nano-banana-2') {
       return hasReferenceImages ? '/edit' : '';
     }
 
@@ -331,23 +316,18 @@ export class FalProvider implements IImageGenerationProvider {
   }
 
   /**
-   * Build FAL endpoint URL (namespace-aware).
+   * Build FAL endpoint URL.
    */
   private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
     const prefix = this.getModelUrlPrefix(modelPath);
     const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
+    const baseName = this.extractBaseModelName(modelPath);
 
-    if (prefix) {
-      // Legacy fal-ai models
-      const baseName = this.extractBaseModelName(modelPath);
-      if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
-        return `${prefix}/${modelPath}${suffix}`;
-      }
-      return `${prefix}/${baseName}${suffix}`;
+    // Multi-segment model paths like reve/text-to-image use the full path
+    if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
+      return `${prefix}/${modelPath}${suffix}`;
     }
-
-    // Namespaced: google/nano-banana-2.1 → /google/nano-banana-2.1(/edit)
-    return `/${modelPath}${suffix}`;
+    return `${prefix}/${baseName}${suffix}`;
   }
 
   /**
@@ -575,7 +555,7 @@ export class FalProvider implements IImageGenerationProvider {
     const modelsWithResolution = [
       'imagen4/preview/ultra',
       'nano-banana-pro',
-      'google/nano-banana-2.1',
+      'nano-banana-2',
     ];
 
     if (request.resolution && modelsWithResolution.some(m => modelPath.includes(m))) {
