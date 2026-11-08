@@ -1818,13 +1818,8 @@ function WorkspacePageContent() {
       return;
     }
 
-    // Determine default model based on video style (processor uses model-4 when project has reference assets)
-    const getDefaultModel = (style?: string) => {
-      if (style === 'PRODUCT_ONLY' || style === 'AVATAR_PRODUCT') {
-        return 'model-4'; // nano-banana-pro for product-focused styles
-      }
-      return 'model-5'; // BytePlus Seedream for other styles; backend uses model-4 when refs present
-    };
+    // All styles default to model-6 (Nano Banana 2.1)
+    const getDefaultModel = (_style?: string) => 'model-6';
 
     try {
       if (!opts?.silent) showToast('Regenerating image...', 'info');
@@ -1920,7 +1915,7 @@ function WorkspacePageContent() {
       setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
       setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
 
-      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true, promptOverride);
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-3', true, promptOverride);
 
       if (response.success && response.data?.existing && response.data?.video) {
         const existingVideo = response.data.video;
@@ -2271,7 +2266,7 @@ function WorkspacePageContent() {
         const sceneNumbers = scenesNeedingVideos.map((s, i) => s.scene_number ?? s.sceneNumber ?? i + 1);
         const fallbackPromises = sceneNumbers.map(async (sceneNumber) => {
           try {
-            const r = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', false);
+            const r = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-3', false);
             if (r.success && r.data?.existing && r.data?.video) {
               setBrollVideos(prev => {
                 const exists = prev.some(v => v.sceneNumber === sceneNumber);

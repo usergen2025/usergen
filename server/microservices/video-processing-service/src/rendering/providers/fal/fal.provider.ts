@@ -263,30 +263,41 @@ export class FalProvider implements IImageGenerationProvider {
   }
 
   /**
-   * Extract base model name from full model path
-   * Examples:
-   * - "imagen4/preview/ultra" -> "imagen4"
-   * - "nano-banana" -> "nano-banana"
-   * - "reve/text-to-image" -> "reve"
-   * - "nano-banana-pro" -> "nano-banana-pro"
+   * Extract base model name from full model path.
+   * For namespaced models (google/…, alibaba/…) returns the full path so
+   * queue status/result URLs stay correct.
+   * For legacy fal-ai models returns the first path segment.
    */
   private extractBaseModelName(modelPath: string): string {
-    // Take the first part before any '/' separator
     const parts = modelPath.split('/');
+    // Namespaced models: google/nano-banana-2.1 → full path is the "base"
+    if (parts[0] === 'google' || parts[0] === 'alibaba') {
+      return modelPath; // queue URLs use full model path
+    }
     return parts[0];
   }
 
   /**
+   * Determine the URL prefix for a model.
+   * Legacy models use /fal-ai/…, namespaced models (google/, alibaba/) use /namespace/… directly.
+   */
+  private getModelUrlPrefix(modelPath: string): string {
+    const ns = modelPath.split('/')[0];
+    if (ns === 'google' || ns === 'alibaba') {
+      return ''; // namespaced — no extra prefix
+    }
+    return '/fal-ai';
+  }
+
+  /**
    * Determine FAL endpoint suffix based on model and whether reference images are provided
-   * @param modelPath - Full model path (e.g., "imagen4/preview/ultra", "nano-banana", "reve/text-to-image")
-   * @param hasReferenceImages - Whether reference images are provided
-   * @returns Endpoint suffix (e.g., "", "/edit", "/remix")
    */
   private determineEndpointSuffix(modelPath: string, hasReferenceImages: boolean): string {
-    const baseModel = this.extractBaseModelName(modelPath);
-    
-    // imagen4 is text-to-image only - no endpoint suffix
-    if (baseModel === 'imagen4') {
+    const baseName = modelPath.split('/').pop() || modelPath;
+    const ns = modelPath.split('/')[0];
+
+    // imagen4 is text-to-image only
+    if (baseName.startsWith('imagen4') || modelPath.startsWith('imagen4')) {
       if (hasReferenceImages) {
         throw new FalProviderError(
           FalErrorType.VALIDATION_ERROR,
@@ -294,49 +305,49 @@ export class FalProvider implements IImageGenerationProvider {
           false,
           [{
             loc: ['body', 'referenceImages'],
-            msg: 'imagen4 model does not support reference images. Use nano-banana-pro or reve models for image-to-image.',
+            msg: 'imagen4 model does not support reference images. Use nano-banana-2.1 or reve models for image-to-image.',
             type: FalErrorType.VALIDATION_ERROR,
             url: 'https://docs.fal.ai/errors',
           }]
         );
       }
-      return ''; // No suffix for imagen4
+      return '';
     }
-    
-    // nano-banana and nano-banana-pro use /edit endpoint for image-to-image
-    if (baseModel === 'nano-banana' || baseModel === 'nano-banana-pro') {
-      return hasReferenceImages ? '/edit' : ''; // Can also do text-to-image without /edit
+
+    // google/nano-banana-2.1 and fal-ai/nano-banana variants use /edit for I2I
+    if (ns === 'google' && modelPath.includes('nano-banana')) {
+      return hasReferenceImages ? '/edit' : '';
     }
-    
-    // reve uses /remix endpoint for multi-reference
-    if (baseModel === 'reve') {
-      return hasReferenceImages ? '/remix' : '/text-to-image'; // Default to text-to-image if no references
+    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro') {
+      return hasReferenceImages ? '/edit' : '';
     }
-    
-    // Default: no suffix
+
+    // reve uses /remix for multi-reference
+    if (baseName === 'reve' || modelPath.startsWith('reve')) {
+      return hasReferenceImages ? '/remix' : '/text-to-image';
+    }
+
     return '';
   }
 
   /**
-   * Build FAL endpoint URL
-   * @param modelPath - Full model path
-   * @param hasReferenceImages - Whether reference images are provided
-   * @returns Full endpoint path
+   * Build FAL endpoint URL (namespace-aware).
    */
   private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
-    const baseModel = this.extractBaseModelName(modelPath);
+    const prefix = this.getModelUrlPrefix(modelPath);
     const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
-    
-    // For models with sub-paths (like imagen4/preview/ultra), use full path
-    // For base models (like nano-banana), use base model name
-    if (modelPath.includes('/') && baseModel !== 'reve') {
-      // imagen4/preview/ultra -> /fal-ai/imagen4/preview/ultra
-      return `/fal-ai/${modelPath}${suffix}`;
-    } else {
-      // nano-banana -> /fal-ai/nano-banana/edit
-      // reve -> /fal-ai/reve/remix
-      return `/fal-ai/${baseModel}${suffix}`;
+
+    if (prefix) {
+      // Legacy fal-ai models
+      const baseName = this.extractBaseModelName(modelPath);
+      if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
+        return `${prefix}/${modelPath}${suffix}`;
+      }
+      return `${prefix}/${baseName}${suffix}`;
     }
+
+    // Namespaced: google/nano-banana-2.1 → /google/nano-banana-2.1(/edit)
+    return `/${modelPath}${suffix}`;
   }
 
   /**
@@ -347,12 +358,12 @@ export class FalProvider implements IImageGenerationProvider {
     requestId: string
   ): Promise<FalStatusResponse> {
     try {
-      // Extract base model name for status endpoint
-      // Status endpoint uses base model name, not full path
+      const prefix = this.getModelUrlPrefix(modelPath);
       const baseModel = this.extractBaseModelName(modelPath);
-      const response = await this.axiosInstance.get<FalStatusResponse>(
-        `/fal-ai/${baseModel}/requests/${requestId}/status`
-      );
+      const statusUrl = prefix
+        ? `${prefix}/${baseModel}/requests/${requestId}/status`
+        : `/${baseModel}/requests/${requestId}/status`;
+      const response = await this.axiosInstance.get<FalStatusResponse>(statusUrl);
       return response.data;
     } catch (error) {
       if (error instanceof FalProviderError) {
@@ -384,12 +395,12 @@ export class FalProvider implements IImageGenerationProvider {
     requestId: string
   ): Promise<FalResultResponse> {
     try {
-      // Extract base model name for result endpoint
-      // Result endpoint uses base model name, not full path
+      const prefix = this.getModelUrlPrefix(modelPath);
       const baseModel = this.extractBaseModelName(modelPath);
-      const response = await this.axiosInstance.get<FalResultResponse>(
-        `/fal-ai/${baseModel}/requests/${requestId}`
-      );
+      const resultUrl = prefix
+        ? `${prefix}/${baseModel}/requests/${requestId}`
+        : `/${baseModel}/requests/${requestId}`;
+      const response = await this.axiosInstance.get<FalResultResponse>(resultUrl);
       return response.data;
     } catch (error) {
       if (error instanceof FalProviderError) {
@@ -536,12 +547,17 @@ export class FalProvider implements IImageGenerationProvider {
   }
 
   /**
+   * Strip provider-specific prefixes from model id to get the fal model path.
+   */
+  private toModelPath(modelId: string): string {
+    return modelId.replace(/^fal-ai\//, '');
+  }
+
+  /**
    * Normalize request to FAL format
    */
   private normalizeRequest(request: ImageGenerationRequest): any {
-    const modelId = request.modelId;
-    const modelPath = modelId.replace('fal-ai/', '');
-    const baseModel = this.extractBaseModelName(modelPath);
+    const modelPath = this.toModelPath(request.modelId);
 
     // Build base payload
     const payload: any = {
@@ -555,10 +571,11 @@ export class FalProvider implements IImageGenerationProvider {
       payload.aspect_ratio = request.aspectRatio;
     }
 
-    // Add resolution only for models that support it
+    // Add resolution for models that support it
     const modelsWithResolution = [
       'imagen4/preview/ultra',
       'nano-banana-pro',
+      'google/nano-banana-2.1',
     ];
 
     if (request.resolution && modelsWithResolution.some(m => modelPath.includes(m))) {
@@ -569,7 +586,8 @@ export class FalProvider implements IImageGenerationProvider {
     // Use image_urls array (correct parameter name for FAL)
     if (request.referenceImages && request.referenceImages.length > 0) {
       // Validate imagen4 doesn't support reference images
-      if (baseModel === 'imagen4') {
+      const baseName = modelPath.split('/').pop() || modelPath;
+      if (baseName.startsWith('imagen4') || modelPath.startsWith('imagen4')) {
         throw new FalProviderError(
           FalErrorType.VALIDATION_ERROR,
           422,
@@ -685,7 +703,7 @@ export class FalProvider implements IImageGenerationProvider {
       const falRequest = this.normalizeRequest(request);
 
       // Extract model path
-      const modelPath = request.modelId.replace('fal-ai/', '');
+      const modelPath = this.toModelPath(request.modelId);
       const hasReferenceImages = !!(request.referenceImages && request.referenceImages.length > 0);
 
       // Pre-warm reference images before submitting to FAL
@@ -771,10 +789,10 @@ export class FalProvider implements IImageGenerationProvider {
       return { valid: false, error: 'Model ID is required' };
     }
 
-    if (this.extractBaseModelName(request.modelId.replace('fal-ai/', '')) === 'imagen4') {
+    if (this.extractBaseModelName(this.toModelPath(request.modelId)) === 'imagen4') {
       return {
         valid: false,
-        error: 'imagen4 is unavailable. Use model-5 (BytePlus Seedream) for text-to-image.',
+        error: 'imagen4 is unavailable. Use model-6 (Nano Banana 2.1) for text-to-image.',
       };
     }
 
@@ -808,7 +826,8 @@ export class FalProvider implements IImageGenerationProvider {
 
     // Validate aspect ratio
     const validAspectRatios = [
-      '1:1', '16:9', '9:16', '4:3', '3:4', '21:9', '3:2', '2:3', '5:4', '4:5'
+      'auto', '1:1', '16:9', '9:16', '4:3', '3:4', '21:9', '3:2', '2:3', '5:4', '4:5',
+      '4:1', '1:4', '8:1', '1:8',
     ];
     if (request.aspectRatio && !validAspectRatios.includes(request.aspectRatio)) {
       return {
@@ -818,7 +837,7 @@ export class FalProvider implements IImageGenerationProvider {
     }
 
     // Validate resolution
-    const validResolutions = ['1K', '2K', '4K'];
+    const validResolutions = ['0.5K', '1K', '2K', '4K'];
     if (request.resolution && !validResolutions.includes(request.resolution)) {
       return {
         valid: false,

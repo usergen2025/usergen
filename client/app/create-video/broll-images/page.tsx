@@ -381,9 +381,9 @@ function BrollImagesPageContent() {
       
       scenesNeedingBroll.forEach((scene, index) => {
         const sceneNumber = normalizeSceneNumber(scene, index);
-        // Default to model-5 (BytePlus Seedream) when not set; backend uses model-4 when project has reference assets
+        // Default to model-6 (BytePlus Seedream) when not set; backend uses model-4 when project has reference assets
         if (!updated[sceneNumber]) {
-          updated[sceneNumber] = 'model-5';
+          updated[sceneNumber] = 'model-6';
           hasChanges = true;
         }
       });
@@ -487,7 +487,7 @@ function BrollImagesPageContent() {
         setRegenerating(prev => ({ ...prev, [sceneNumber]: true }));
         
         // Get selected model for this scene (default to Seedream)
-        const selectedModelId = selectedModels[sceneNumber] || 'model-5';
+        const selectedModelId = selectedModels[sceneNumber] || 'model-6';
 
         // Fire API call without awaiting (non-blocking)
         return apiClient.regenerateImage(projectId, sceneNumber, prompt, selectedModelId)
@@ -598,7 +598,7 @@ function BrollImagesPageContent() {
       setGeneratingImages(prev => new Set(prev).add(sceneNumber));
       
       // Get selected model for this scene (default to Seedream)
-      const selectedModelId = selectedModels[sceneNumber] || 'model-5';
+      const selectedModelId = selectedModels[sceneNumber] || 'model-6';
       
       // Pass force: true to always regenerate when user manually clicks the button
       const response = await apiClient.regenerateImage(
@@ -916,7 +916,7 @@ function BrollImagesPageContent() {
                             )}
                           </Button>
                           <ModelSelector
-                            selectedModelId={selectedModels[sceneNumber] ?? 'model-5'}
+                            selectedModelId={selectedModels[sceneNumber] ?? 'model-6'}
                             onModelSelect={(modelId) => {
                               setSelectedModels(prev => ({
                                 ...prev,

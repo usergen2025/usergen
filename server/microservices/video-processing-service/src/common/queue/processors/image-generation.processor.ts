@@ -396,15 +396,15 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = aspectRatio || '9:16';
 
     // Get model configuration
-    // Default to model-4 (nano-banana-pro) for PRODUCT_ONLY style (supports image-to-image)
-    let selectedModelId = modelId || (project as any).defaultImageModel || 'model-4'; // Default to model-4 for product styles
+    // Default to model-6 (Nano Banana 2.1) for PRODUCT_ONLY style (supports T2I and I2I/edit)
+    let selectedModelId = modelId || (project as any).defaultImageModel || 'model-6';
     let model = this.modelRegistry.getModel(selectedModelId);
 
-    // Product shots with a reference image use nano-banana-pro. model-1 is the legacy text-to-image slot (now Seedream).
+    // Legacy model-1 (imagen4) is unavailable; fall back to model-6
     if (!model || ((selectedModelId === 'model-1' || model.id.includes('imagen4')) && productImageUrl)) {
-      console.warn(`[ImageGenerationProcessor] Model ${selectedModelId} is not used for PRODUCT_ONLY references, using model-4 (nano-banana-pro) instead`);
+      console.warn(`[ImageGenerationProcessor] Model ${selectedModelId} unavailable for PRODUCT_ONLY, using model-6 (Nano Banana 2.1)`);
       model = this.modelRegistry.getDefaultModelForStyle('PRODUCT_ONLY');
-      selectedModelId = 'model-4';
+      selectedModelId = 'model-6';
     }
 
     console.log(`[ImageGenerationProcessor] PRODUCT_ONLY: Using ${model.displayName} (${model.platform}) for image-to-image generation`);
@@ -915,8 +915,8 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = '9:16'; // Avatar-product uses full 9:16
 
     // Get model configuration
-    // Default to model-4 (nano-banana-pro) for AVATAR_PRODUCT style (supports image-to-image)
-    const selectedModelId = modelId || (project as any).defaultImageModel || 'model-4'; // Default to model-4 for product styles
+    // Default to model-6 (Nano Banana 2.1) for AVATAR_PRODUCT style (supports I2I/edit)
+    const selectedModelId = modelId || (project as any).defaultImageModel || 'model-6';
     const model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle('AVATAR_PRODUCT');
 
     console.log(`[ImageGenerationProcessor] AVATAR_PRODUCT: Using ${model.displayName} (${model.platform}) for multi-reference image-to-image`);
@@ -1352,21 +1352,18 @@ export class ImageGenerationProcessor extends WorkerHost {
     const selectedAspectRatio = aspectRatio || finalAspectRatio;
 
     const hasReferenceAssets = referenceImages && referenceImages.length > 0;
-    // Reference images use model-4 (nano-banana-pro). Text-to-image uses model-5 (BytePlus Seedream).
-    // model-1 used to be FAL imagen4, which is unavailable, so it is treated as Seedream.
+    // All styles now default to model-6 (Nano Banana 2.1) — supports both T2I and I2I/edit.
     let selectedModelId: string;
     const requestedModelId = modelId || (project as any).defaultImageModel;
-    if (hasReferenceAssets) {
-      selectedModelId = 'model-4';
-    } else if (!requestedModelId || requestedModelId === 'model-1') {
-      selectedModelId = 'model-5';
+    if (!requestedModelId || requestedModelId === 'model-1') {
+      selectedModelId = 'model-6';
     } else {
       selectedModelId = requestedModelId;
     }
     let model = this.modelRegistry.getModel(selectedModelId) || this.modelRegistry.getDefaultModelForStyle(project.style);
     if (model.id.includes('imagen4')) {
-      selectedModelId = 'model-5';
-      model = this.modelRegistry.getModel('model-5') || model;
+      selectedModelId = 'model-6';
+      model = this.modelRegistry.getModel('model-6') || model;
     }
 
     console.log(`[ImageGenerationProcessor] Scene ${sceneNumber}: Style=${project.style}, Model=${model.displayName}, AspectRatio=${selectedAspectRatio}, refImages=${referenceImages?.length ?? 0}`);

@@ -29,12 +29,15 @@ const fallbackModels: ModelInfo[] = [
   { id: 'model-3', displayName: 'Model 3', platform: 'FAL', defaultConfig: {}, capabilities: {} },
   { id: 'model-4', displayName: 'Model 4', platform: 'FAL', defaultConfig: {}, capabilities: {} },
   { id: 'model-5', displayName: 'Model 5', platform: 'BYTEPLUS', defaultConfig: {}, capabilities: {} },
+  { id: 'model-6', displayName: 'Model 6', platform: 'FAL', defaultConfig: {}, capabilities: {} },
 ];
 
 // Fallback models for video (used if getModelsFn is provided but fails)
 const fallbackVideoModels: ModelInfo[] = [
   { id: 'video-model-1', displayName: 'Model 1', platform: 'BYTEPLUS', defaultConfig: {}, capabilities: {} },
   { id: 'video-model-2', displayName: 'Model 2', platform: 'FAL', defaultConfig: {}, capabilities: {} },
+  { id: 'video-model-3', displayName: 'Model 3', platform: 'FAL', defaultConfig: {}, capabilities: {} },
+  { id: 'video-model-4', displayName: 'Model 4', platform: 'FAL', defaultConfig: {}, capabilities: {} },
 ];
 
 export function ModelSelector({ selectedModelId, onModelSelect, disabled, getModelsFn }: ModelSelectorProps) {

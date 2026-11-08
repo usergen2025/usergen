@@ -1453,13 +1453,13 @@ export class AvatarsService {
           ' [CRITICAL PRODUCT CONSISTENCY: The product MUST be IDENTICAL to the product reference image - same exact product, same shape, same colors, same design, same packaging, same branding. DO NOT generate a different or modified product.] [Using avatar and product reference images to create natural compositions: person interacting with product, demonstrating features, showcasing in context. Professional product showcase with avatar, natural poses and expressions. Keep the same person identity and the same product; natural interaction; full product visible in frame.]';
 
         this.logger.log(
-          `Avatar preview AVATAR_PRODUCT: using FAL nano-banana-pro with multi-reference (avatar + product)`,
+          `Avatar preview AVATAR_PRODUCT: using Nano Banana 2.1 with multi-reference (avatar + product)`,
           'AvatarsService',
         );
 
         const falResult = await this.falImageProvider.generateImage({
           prompt: effectivePrompt,
-          modelId: 'fal-ai/nano-banana-pro',
+          modelId: 'google/nano-banana-2.1',
           aspectRatio: '9:16',
           resolution: '2K',
           referenceImages: [avatarPublicUrl, productPublicUrl],

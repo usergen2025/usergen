@@ -129,6 +129,29 @@ export class ModelRegistryService {
         numImages: 1,
       },
     });
+
+    // Model 6: Google Nano Banana 2.1 (DEFAULT — text-to-image and image-to-image/edit)
+    this.models.set('model-6', {
+      id: 'google/nano-banana-2.1',
+      displayName: 'Model 6',
+      platform: 'FAL',
+      capabilities: {
+        supportsAspectRatio: true,
+        supportsResolution: true,
+        supportsNumImages: true,
+        supportedAspectRatios: ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'],
+        supportedResolutions: ['0.5K', '1K', '2K', '4K'],
+        maxNumImages: 4,
+        isAsync: true,
+        estimatedTimeSeconds: 20,
+      },
+      defaultConfig: {
+        aspectRatio: '9:16',
+        resolution: '1K',
+        outputFormat: 'png',
+        numImages: 1,
+      },
+    });
   }
 
   /**
@@ -154,14 +177,21 @@ export class ModelRegistryService {
   }
 
   /**
-   * Get default model (Model 5 - BytePlus Seedream, text-to-image)
+   * Get default model (Model 6 - Google Nano Banana 2.1)
    */
   getDefaultModel(): ModelInfo {
-    const defaultModel = this.models.get('model-5');
+    const defaultModel = this.models.get('model-6');
     if (!defaultModel) {
-      throw new Error('Default model (model-5) not found');
+      throw new Error('Default model (model-6) not found');
     }
     return defaultModel;
+  }
+
+  /**
+   * Get default model key string
+   */
+  getDefaultModelKey(): string {
+    return 'model-6';
   }
 
   /**
@@ -170,20 +200,10 @@ export class ModelRegistryService {
    * @returns ModelInfo for the default model
    */
   getDefaultModelForStyle(videoStyle?: string): ModelInfo {
-    // For PRODUCT_ONLY and AVATAR_PRODUCT, use nano-banana-pro (model-4)
-    if (videoStyle === 'PRODUCT_ONLY' || videoStyle === 'AVATAR_PRODUCT') {
-      const model = this.models.get('model-4');
-      if (!model) {
-        throw new Error('Default model for PRODUCT_ONLY/AVATAR_PRODUCT (model-4) not found');
-      }
-      return model;
-    }
-    // Default to model-5 (BytePlus Seedream) for other styles (ALTERNATE, HALF_N_HALF, etc.)
-    // when no asset references (text-to-image). model-1 is the same Seedream model.
-    // Processor overrides to model-4 when refs present.
-    const model = this.models.get('model-5');
+    // All styles now default to model-6 (Nano Banana 2.1) which supports both T2I and I2I/edit
+    const model = this.models.get('model-6');
     if (!model) {
-      throw new Error('Default model for default styles (model-5) not found');
+      throw new Error('Default model (model-6) not found');
     }
     return model;
   }
@@ -252,6 +272,54 @@ export class ModelRegistryService {
         generateAudio: true,
       },
     });
+
+    // Video Model 3: Alibaba Wan 3.0 Standard (DEFAULT)
+    this.videoModels.set('video-model-3', {
+      id: 'alibaba/wan-3.0/image-to-video',
+      displayName: 'Model 3',
+      platform: 'FAL',
+      capabilities: {
+        supportsAspectRatio: true,
+        supportsResolution: true,
+        supportsDuration: true,
+        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
+        supportedResolutions: ['480p', '720p', '1080p'],
+        minDuration: 2,
+        maxDuration: 30,
+        isAsync: true,
+        estimatedTimeSeconds: 90,
+      },
+      defaultConfig: {
+        aspectRatio: '9:16',
+        resolution: '1080p',
+        duration: 5,
+        generateAudio: false,
+      },
+    });
+
+    // Video Model 4: Alibaba Wan 3.0 Prime
+    this.videoModels.set('video-model-4', {
+      id: 'alibaba/wan-3.0-prime/image-to-video',
+      displayName: 'Model 4',
+      platform: 'FAL',
+      capabilities: {
+        supportsAspectRatio: true,
+        supportsResolution: true,
+        supportsDuration: true,
+        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
+        supportedResolutions: ['480p', '720p', '1080p'],
+        minDuration: 2,
+        maxDuration: 30,
+        isAsync: true,
+        estimatedTimeSeconds: 120,
+      },
+      defaultConfig: {
+        aspectRatio: '9:16',
+        resolution: '1080p',
+        duration: 5,
+        generateAudio: false,
+      },
+    });
   }
 
   /**
@@ -277,14 +345,21 @@ export class ModelRegistryService {
   }
 
   /**
-   * Get default video model (Model 1 - BytePlus Seedance)
+   * Get default video model (Model 3 - Wan 3.0 Standard)
    */
   getDefaultVideoModel(): VideoModelInfo {
-    const defaultModel = this.videoModels.get('video-model-1');
+    const defaultModel = this.videoModels.get('video-model-3');
     if (!defaultModel) {
-      throw new Error('Default video model (video-model-1) not found');
+      throw new Error('Default video model (video-model-3) not found');
     }
     return defaultModel;
+  }
+
+  /**
+   * Get default video model key string
+   */
+  getDefaultVideoModelKey(): string {
+    return 'video-model-3';
   }
 
   /**

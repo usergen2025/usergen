@@ -267,7 +267,7 @@ export class VideoController {
             isAsync: model.capabilities.isAsync,
           },
         })),
-        default: 'model-5',
+        default: 'model-6',
       },
     };
   }
@@ -303,7 +303,7 @@ export class VideoController {
             isAsync: model.capabilities.isAsync,
           },
         })),
-        default: 'video-model-1',
+        default: 'video-model-3',
       },
     };
   }
@@ -1838,13 +1838,8 @@ export class VideoController {
     // model-1 used to be FAL imagen4, which is unavailable. Treat it as unset so the style default applies (Seedream, or nano-banana-pro for product styles).
     let modelId = body.modelId === 'model-1' ? undefined : body.modelId;
     if (!modelId) {
-      // Use model-4 for product styles; model-5 for non-product text-to-image (processor overrides to model-4 when project has reference assets)
-      const normalizedStyle = typeof style === 'string' ? style.toUpperCase() : style;
-      if (normalizedStyle === 'PRODUCT_ONLY' || normalizedStyle === 'AVATAR_PRODUCT') {
-        modelId = 'model-4'; // nano-banana-pro for product styles (supports image-to-image)
-      } else {
-        modelId = 'model-5'; // BytePlus Seedream for non-product text-to-image; processor uses model-4 when refs present
-      }
+      // All styles now default to model-6 (Nano Banana 2.1) — supports both T2I and I2I/edit
+      modelId = 'model-6';
     }
 
     // Validate AVATAR_PRODUCT style requirements
@@ -2032,7 +2027,7 @@ export class VideoController {
       );
     }
 
-    console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-1'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
+    console.log(`[VideoController] Scene ${sceneNumber}: Style=${style}, Audio duration=${audioDuration}s, Video duration=${videoDuration}s, Image URL=${publicImageUrl}, ModelId=${body.modelId || 'video-model-3'}, HeyGenImageKey=${heygenImageKey || 'N/A'}`);
 
     const jobId = await this.queueManager.addVideoGenerationJob({
       projectId,
@@ -2042,7 +2037,7 @@ export class VideoController {
       prompt: body.prompt?.trim() || image.videoPrompt || image.prompt,
       ...(body.prompt?.trim() ? { promptOverride: body.prompt.trim() } : {}),
       duration: videoDuration,
-      modelId: body.modelId || 'video-model-1',
+      modelId: body.modelId || 'video-model-3',
       heygenImageKey: heygenImageKey || undefined,
       videoStyle: style,
     });
@@ -2168,7 +2163,7 @@ export class VideoController {
         imageUrl: publicImageUrl,
         prompt: image.videoPrompt || image.prompt,
         duration: videoDuration,
-        modelId: 'video-model-1',
+        modelId: 'video-model-3',
         videoStyle: style,
         // ...(productImageUrlForVideo && { referenceImageUrl: productImageUrlForVideo }),
       });

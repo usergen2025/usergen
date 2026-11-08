@@ -79,7 +79,7 @@ export class FalImageProvider {
       payload.aspect_ratio = request.aspectRatio;
     }
 
-    if (request.resolution && modelPath.includes('nano-banana-pro')) {
+    if (request.resolution && (modelPath.includes('nano-banana-pro') || modelPath.includes('nano-banana-2'))) {
       payload.resolution = request.resolution;
     }
 
@@ -106,43 +106,62 @@ export class FalImageProvider {
   }
 
   private extractBaseModelName(modelPath: string): string {
-    return modelPath.split('/')[0];
+    const ns = modelPath.split('/')[0];
+    if (ns === 'google' || ns === 'alibaba') return modelPath;
+    return ns;
+  }
+
+  private getModelUrlPrefix(modelPath: string): string {
+    const ns = modelPath.split('/')[0];
+    if (ns === 'google' || ns === 'alibaba') return '';
+    return '/fal-ai';
   }
 
   private determineEndpointSuffix(modelPath: string, hasReferenceImages: boolean): string {
-    const baseModel = this.extractBaseModelName(modelPath);
-    if (baseModel === 'nano-banana' || baseModel === 'nano-banana-pro') {
+    const ns = modelPath.split('/')[0];
+    if (ns === 'google' && modelPath.includes('nano-banana')) {
       return hasReferenceImages ? '/edit' : '';
     }
-    if (baseModel === 'reve') {
+    const baseName = modelPath.split('/').pop() || modelPath;
+    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro') {
+      return hasReferenceImages ? '/edit' : '';
+    }
+    if (baseName === 'reve' || modelPath.startsWith('reve')) {
       return hasReferenceImages ? '/remix' : '/text-to-image';
     }
     return '';
   }
 
   private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
-    const baseModel = this.extractBaseModelName(modelPath);
+    const prefix = this.getModelUrlPrefix(modelPath);
     const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
-    if (modelPath.includes('/') && baseModel !== 'reve') {
-      return `/fal-ai/${modelPath}${suffix}`;
+    if (prefix) {
+      const baseModel = this.extractBaseModelName(modelPath);
+      if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
+        return `${prefix}/${modelPath}${suffix}`;
+      }
+      return `${prefix}/${baseModel}${suffix}`;
     }
-    return `/fal-ai/${baseModel}${suffix}`;
+    return `/${modelPath}${suffix}`;
   }
 
   private async pollUntilComplete(modelPath: string, requestId: string): Promise<FalResultResponse> {
+    const prefix = this.getModelUrlPrefix(modelPath);
     const baseModel = this.extractBaseModelName(modelPath);
     let attempts = 0;
 
     while (attempts < this.maxPollAttempts) {
-      const statusResponse = await this.axiosInstance.get<FalStatusResponse>(
-        `/fal-ai/${baseModel}/requests/${requestId}/status`,
-      );
+      const statusUrl = prefix
+        ? `${prefix}/${baseModel}/requests/${requestId}/status`
+        : `/${baseModel}/requests/${requestId}/status`;
+      const statusResponse = await this.axiosInstance.get<FalStatusResponse>(statusUrl);
       const status = statusResponse.data?.status;
 
       if (status === 'COMPLETED') {
-        const resultResponse = await this.axiosInstance.get<FalResultResponse>(
-          `/fal-ai/${baseModel}/requests/${requestId}`,
-        );
+        const resultUrl = prefix
+          ? `${prefix}/${baseModel}/requests/${requestId}`
+          : `/${baseModel}/requests/${requestId}`;
+        const resultResponse = await this.axiosInstance.get<FalResultResponse>(resultUrl);
         return resultResponse.data;
       }
 

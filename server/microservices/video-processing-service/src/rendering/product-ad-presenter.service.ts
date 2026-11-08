@@ -75,9 +75,9 @@ export class ProductAdPresenterService {
 
     const prompt = `Photorealistic commercial model reference plate. ${presenterDescription}. Empty hands, plain neutral clothing without branded logos, no text, no watermark.`;
 
-    const model = this.modelRegistry.getModel('model-4');
+    const model = this.modelRegistry.getModel('model-6');
     if (!model) {
-      throw new Error('model-4 not configured for ephemeral presenter generation');
+      throw new Error('model-6 not configured for ephemeral presenter generation');
     }
     const provider = this.providerFactory.getProviderForModel(model.id);
 

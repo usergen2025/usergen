@@ -46,8 +46,12 @@ export class VideoProviderFactory {
       return this.getProvider(model.platform);
     }
 
-    // Otherwise, try to determine platform from model ID
-    if (modelId.startsWith('fal-ai/')) {
+    // Otherwise, try to determine platform from model ID prefix
+    if (
+      modelId.startsWith('fal-ai/') ||
+      modelId.startsWith('alibaba/') ||
+      modelId.startsWith('google/')
+    ) {
       return this.getProvider('FAL');
     }
 
