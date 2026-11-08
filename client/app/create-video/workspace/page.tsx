@@ -582,28 +582,42 @@ function WorkspacePageContent() {
 
   // Get image URL for scene - prioritize GCS URLs, fallback to local
   // For ALTERNATE avatar scenes, return the avatar preview URL instead of b-roll image
+  const resolveAbsoluteMediaUrl = (url?: string | null): string | null => {
+    if (!url || typeof url !== 'string') return null;
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:')) {
+      return url;
+    }
+    const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+    if (url.startsWith('/uploads')) {
+      return `${VIDEO_SERVICE_BASE_URL}${url}`;
+    }
+    if (url.startsWith('/')) {
+      return `${VIDEO_SERVICE_BASE_URL}${url}`;
+    }
+    return `${VIDEO_SERVICE_BASE_URL}/${url}`;
+  };
+
+  const getAvatarPreviewThumbnailUrl = (): string | null => {
+    const avatarUrl =
+      project?.metadata?.avatarPublicImageUrl ||
+      project?.metadata?.avatarPreviewUrl ||
+      project?.metadata?.avatarImageUrl ||
+      project?.metadata?.avatarLocalUrl ||
+      project?.metadata?.avatarGcsUrl ||
+      project?.avatarUrl ||
+      project?.thumbnailUrl;
+    return resolveAbsoluteMediaUrl(typeof avatarUrl === 'string' ? avatarUrl : null);
+  };
+
   const getImageUrl = (sceneNumber: number): string | null => {
     // Check if this is an ALTERNATE avatar scene - these don't have b-roll images
     const scene = scenes.find(s => (s.scene_number || s.sceneNumber) === sceneNumber);
     const isAvatarScene = project?.style === 'ALTERNATE' && isAlternateAvatarScene(scene, sceneNumber);
-    
-    if (isAvatarScene) {
-      // Return avatar preview URL for avatar scenes (check multiple fallback locations)
-      const avatarUrl = project?.metadata?.avatarPublicImageUrl ||
-                        project?.metadata?.avatarPreviewUrl ||
-                        project?.metadata?.avatarImageUrl ||
-                        project?.metadata?.avatarLocalUrl ||
-                        project?.metadata?.avatarGcsUrl ||
-                        project?.avatarUrl;
-      
-      if (avatarUrl && typeof avatarUrl === 'string') {
-        if (avatarUrl.startsWith('http')) {
-          return avatarUrl;
-        }
-        const VIDEO_SERVICE_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
-        return `${VIDEO_SERVICE_BASE_URL}${avatarUrl.startsWith('/') ? '' : '/'}${avatarUrl}`;
-      }
-      return null;
+    const isSingleClip = isSingleClipVideoStyle(project?.style);
+
+    if (isAvatarScene || isSingleClip) {
+      // Continuous avatar styles share one preview/thumbnail across script scenes
+      return getAvatarPreviewThumbnailUrl();
     }
     
     // For b-roll scenes, look in brollImages
@@ -992,6 +1006,44 @@ function WorkspacePageContent() {
     setMusicLoading(true);
     setMusicError(null);
     try {
+      const runSearch = async (searchParams: URLSearchParams) => {
+        const cacheKey = `musicLibrary:${projectId || 'none'}:${searchParams.toString()}`;
+        musicCacheKeyRef.current = cacheKey;
+        if (typeof window !== 'undefined') {
+          const cached = sessionStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              // Never reuse an empty cache — seed/relax may have improved since last visit
+              if (Array.isArray(parsed?.results) && parsed.results.length > 0) {
+                return {
+                  results: parsed.results as MusicSearchItem[],
+                  relaxLevel: Number(parsed.relaxLevel || 0),
+                  fromCache: true as const,
+                  cacheKey,
+                };
+              }
+              sessionStorage.removeItem(cacheKey);
+            } catch {
+              sessionStorage.removeItem(cacheKey);
+            }
+          }
+        }
+        const res = await fetch(`/api/music/search?${searchParams.toString()}`, {
+          headers: musicHeaders(),
+        });
+        const json = await res.json();
+        if (!res.ok || !json?.success) {
+          throw new Error(json?.message || json?.error || 'Music search failed');
+        }
+        const results = (json.data?.results || []) as MusicSearchItem[];
+        const relaxLevel = Number(json.data?.relaxLevel || 0);
+        if (typeof window !== 'undefined' && results.length > 0) {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ results, relaxLevel }));
+        }
+        return { results, relaxLevel, fromCache: false as const, cacheKey };
+      };
+
       const params = new URLSearchParams();
       const q = (opts?.query || '').trim();
       if (q) {
@@ -1001,42 +1053,26 @@ function WorkspacePageContent() {
         if (musicSearchSeed.genres?.length) params.set('genre', musicSearchSeed.genres.join(','));
         if (musicSearchSeed.moods?.length) params.set('mood', musicSearchSeed.moods.join(','));
       }
+      if (!params.get('q') && !(params.get('genre') || params.get('mood'))) {
+        params.set('q', 'upbeat');
+      }
       params.set('limit', '20');
       params.set('offset', '0');
       params.set('includePremium', 'false');
-      const cacheKey = `musicLibrary:${projectId || 'none'}:${params.toString()}`;
-      musicCacheKeyRef.current = cacheKey;
-      if (typeof window !== 'undefined') {
-        const cached = sessionStorage.getItem(cacheKey);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            // Never reuse an empty cache — seed/relax may have improved since last visit
-            if (Array.isArray(parsed?.results) && parsed.results.length > 0) {
-              setMusicLibraryItems(parsed.results as MusicSearchItem[]);
-              setMusicRelaxLevel(Number(parsed.relaxLevel || 0));
-              setMusicLoading(false);
-              return;
-            }
-            sessionStorage.removeItem(cacheKey);
-          } catch {
-            sessionStorage.removeItem(cacheKey);
-          }
-        }
+
+      let result = await runSearch(params);
+      // Seeded searches can return empty — fall back to a generic query so Library isn't blank
+      if (result.results.length === 0 && params.get('q') !== 'upbeat') {
+        const fallback = new URLSearchParams();
+        fallback.set('q', 'upbeat');
+        fallback.set('limit', '20');
+        fallback.set('offset', '0');
+        fallback.set('includePremium', 'false');
+        result = await runSearch(fallback);
       }
-      const res = await fetch(`/api/music/search?${params.toString()}`, { headers: musicHeaders() });
-      const json = await res.json();
-      if (!res.ok || !json?.success) throw new Error(json?.message || json?.error || 'Music search failed');
-      const results = (json.data?.results || []) as MusicSearchItem[];
-      setMusicLibraryItems(results);
-      setMusicRelaxLevel(Number(json.data?.relaxLevel || 0));
-      // Only cache non-empty results so empty responses can be retried
-      if (typeof window !== 'undefined' && results.length > 0) {
-        sessionStorage.setItem(
-          cacheKey,
-          JSON.stringify({ results, relaxLevel: Number(json.data?.relaxLevel || 0) }),
-        );
-      }
+
+      setMusicLibraryItems(result.results);
+      setMusicRelaxLevel(result.relaxLevel);
     } catch (e: any) {
       setMusicError(e?.message || 'Failed to load music library');
       setMusicLibraryItems([]);
@@ -1172,7 +1208,7 @@ function WorkspacePageContent() {
     const payload: BackgroundMusicConfig = {
       enabled: backgroundMusicEnabled,
       searchSeed: musicSearchSeed || undefined,
-      mixVolume: 0.05,
+      mixVolume: 0.2,
       voiceDuckTo: 1.0,
       fadeInMs: 500,
       fadeOutMs: 1500,
@@ -2490,12 +2526,17 @@ function WorkspacePageContent() {
   const startRenderAfterConfirmation = async () => {
     if (!projectId) return;
 
+    // Raw avatar clip looks "completed" with a videoUrl, but final export still needs
+    // post-process (music/captions). Do not short-circuit that path.
+    const needsAvatarPostProcess = isRawAvatarClipEditingPhase(project || {});
+
     // Prefer server truth before flipping UI — avoids re-entering rendering when already done.
     try {
       const statusRes = await apiClient.getRenderingStatus(projectId);
       if (statusRes.success && statusRes.data) {
         const { status, renderingStatus, videoUrl } = statusRes.data;
         if (
+          !needsAvatarPostProcess &&
           (status === 'COMPLETED' || renderingStatus === 'completed') &&
           (videoUrl || hasFinalVideo(project || {}))
         ) {
@@ -3832,6 +3873,23 @@ function WorkspacePageContent() {
                                 <Pencil className="w-3.5 h-3.5" />
                               )}
                             </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleSceneRegenerate(index);
+                              }}
+                              disabled={isRegeneratingScene}
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-[#E4D7CF] text-[#8B6C5C] hover:text-[#E86412] hover:border-[#E86412] transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                              title="Regenerate scene"
+                              aria-label={`Regenerate scene ${sceneNumber}`}
+                            >
+                              {isRegeneratingScene ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                           </div>
                         )}
                         {isSingleClipStyle && (
@@ -4311,7 +4369,7 @@ function WorkspacePageContent() {
                                   searchSeed: isHeygen 
                                     ? { query: musicSearchInput || musicSearchSeed?.query || 'background music' }
                                     : musicSearchSeed || undefined,
-                                  mixVolume: 0.05,
+                                  mixVolume: 0.2,
                                   voiceDuckTo: 1.0,
                                   fadeInMs: 500,
                                   fadeOutMs: 1500,
@@ -4409,7 +4467,7 @@ function WorkspacePageContent() {
                               publicUrl: j.data?.publicUrl || j.data?.url,
                               gcsUrl: j.data?.gcsUrl,
                               searchSeed: musicSearchSeed || undefined,
-                              mixVolume: 0.05,
+                              mixVolume: 0.2,
                               voiceDuckTo: 1.0,
                               fadeInMs: 500,
                               fadeOutMs: 1500,
@@ -4595,13 +4653,16 @@ function WorkspacePageContent() {
                     brollVideos.find((v) => v.sceneNumber === sn) ||
                     avatarVideos.find((v) => v.sceneNumber === sn);
                   if (video) {
-                    const url =
-                      video.localUrl || video.videoUrl || (video as { gcsUrl?: string }).gcsUrl;
-                    if (url) return url;
+                    const absolute =
+                      resolveAbsoluteMediaUrl(video.videoUrl) ||
+                      resolveAbsoluteMediaUrl((video as { gcsUrl?: string }).gcsUrl) ||
+                      resolveAbsoluteMediaUrl(video.localUrl);
+                    if (absolute) return absolute;
                   }
+                  // Prefer still as a visible thumbnail when video URL is unavailable
+                  return getImageUrl(sn);
                 }
-                const image = brollImages.find((img) => img.sceneNumber === sn);
-                return image?.localUrl || image?.imageUrl || (image as any)?.gcsUrl || null;
+                return getImageUrl(sn);
               })()
             : null
         }

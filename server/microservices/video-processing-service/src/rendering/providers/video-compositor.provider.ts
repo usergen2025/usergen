@@ -76,6 +76,10 @@ function assertFfmpegInputFilesExist(argv: string[]): void {
     ) {
       continue;
     }
+    // Image2 / sequence patterns (e.g. frame_%06d.png) are not literal files
+    if (/%0?\d*d/.test(inputPath) || inputPath.includes('%d')) {
+      continue;
+    }
     if (!fs.existsSync(inputPath)) {
       missing.push(inputPath);
     }
@@ -1657,7 +1661,7 @@ export class VideoCompositorProvider {
       throw new Error('Could not read video duration for BGM mix');
     }
 
-    const mixVolume = Math.min(1, Math.max(0, opts?.mixVolume ?? 0.05));
+    const mixVolume = Math.min(1, Math.max(0, opts?.mixVolume ?? 0.2));
     const voiceVol = Math.min(1, Math.max(0, opts?.voiceDuckTo ?? 0.85));
     const fadeIn = Math.min(5, Math.max(0, opts?.fadeInSec ?? 0.5));
     const fadeOut = Math.min(5, Math.max(0, opts?.fadeOutSec ?? 1.5));

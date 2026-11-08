@@ -1075,6 +1075,21 @@ function BrollVideosPageContent() {
                             </>
                           )}
                         </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleRegenerate(sceneNumber)}
+                          disabled={isRegenerating}
+                          className="rounded-none border-0 border-r border-border px-3"
+                          title="Regenerate video"
+                          aria-label={`Regenerate scene ${sceneNumber}`}
+                        >
+                          {isRegenerating ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-4 h-4" />
+                          )}
+                        </Button>
                         <ModelSelector
                           selectedModelId={selectedModels[sceneNumber] ?? 'video-model-1'}
                           onModelSelect={(modelId) => {
@@ -1108,11 +1123,22 @@ function BrollVideosPageContent() {
                 const video =
                   brollVideos.find((v) => v.sceneNumber === sn) ||
                   avatarVideos.find((v) => v.sceneNumber === sn);
-                if (video?.publicUrl || video?.gcsUrl || video?.localUrl || video?.videoUrl) {
-                  return video.publicUrl || video.gcsUrl || video.localUrl || video.videoUrl || null;
+                if (video) {
+                  const absolute = getVideoUrl(video);
+                  if (absolute) return absolute;
                 }
                 const image = brollImages.find((img) => img.sceneNumber === sn);
-                return image?.publicUrl || image?.gcsUrl || image?.localUrl || image?.imageUrl || null;
+                if (!image) return null;
+                if (image.publicUrl?.startsWith('http')) return image.publicUrl;
+                if (image.gcsUrl?.startsWith('http')) return image.gcsUrl;
+                if (image.localUrl) {
+                  const url = image.localUrl.startsWith('/uploads')
+                    ? image.localUrl
+                    : `/uploads${image.localUrl}`;
+                  const base = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:9004';
+                  return `${base}${url}`;
+                }
+                return image.imageUrl || null;
               })()
             : null
         }

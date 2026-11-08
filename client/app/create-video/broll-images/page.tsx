@@ -872,7 +872,7 @@ function BrollImagesPageContent() {
                         </div>
                       )}
                       
-                      {/* Edit + model selector — regenerate runs from the edit modal */}
+                      {/* Edit + regenerate + model selector */}
                       {!isAvatarScene && (
                         <div className="flex items-stretch border border-border rounded-md overflow-hidden">
                           <Button
@@ -898,6 +898,21 @@ function BrollImagesPageContent() {
                                 <Pencil className="w-4 h-4 mr-2" />
                                 Edit
                               </>
+                            )}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleRegenerate(sceneNumber)}
+                            disabled={isRegenerating}
+                            className="rounded-none border-0 border-r border-border px-3"
+                            title="Regenerate image"
+                            aria-label={`Regenerate scene ${sceneNumber}`}
+                          >
+                            {isRegenerating ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-4 h-4" />
                             )}
                           </Button>
                           <ModelSelector
@@ -938,7 +953,7 @@ function BrollImagesPageContent() {
           sceneEdit
             ? (() => {
                 const img = brollImages.find((b) => b.sceneNumber === sceneEdit.sceneNumber);
-                return img?.publicUrl || img?.gcsUrl || img?.localUrl || img?.imageUrl || null;
+                return img ? getImageUrl(img) || null : null;
               })()
             : null
         }

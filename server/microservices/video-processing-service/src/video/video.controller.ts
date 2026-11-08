@@ -2617,7 +2617,7 @@ export class VideoController {
       heygenTrackScore: selectedTrack.score,
       // Note: publicUrl is NOT stored - it will be fetched fresh at export time
       // because HeyGen URLs are pre-signed and time-limited
-      mixVolume: mixVolume ?? 0.05,
+      mixVolume: mixVolume ?? 0.2,
       voiceDuckTo: 1.0,
       fadeInMs: fadeInMs ?? 500,
       fadeOutMs: fadeOutMs ?? 1500,
