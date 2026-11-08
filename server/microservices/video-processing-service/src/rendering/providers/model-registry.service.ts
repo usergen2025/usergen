@@ -130,9 +130,11 @@ export class ModelRegistryService {
       },
     });
 
-    // Model 6: Nano Banana 2 (DEFAULT — text-to-image and image-to-image/edit)
+    // Model 6: Google Nano Banana 2.1 (DEFAULT — text-to-image + /edit for I2I)
+    // Uses google/ namespace — no fal-ai prefix in queue URLs
+    // Supports thinking_level, enable_web_search, system_prompt
     this.models.set('model-6', {
-      id: 'fal-ai/nano-banana-2',
+      id: 'google/nano-banana-2.1',
       displayName: 'Model 6',
       platform: 'FAL',
       capabilities: {
@@ -140,7 +142,7 @@ export class ModelRegistryService {
         supportsResolution: true,
         supportsNumImages: true,
         supportedAspectRatios: ['auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8'],
-        supportedResolutions: ['0.5K', '1K', '2K', '4K'],
+        supportedResolutions: ['1K', '2K', '4K'],
         maxNumImages: 4,
         isAsync: true,
         estimatedTimeSeconds: 20,
@@ -226,7 +228,7 @@ export class ModelRegistryService {
    * Initialize video models
    */
   private initializeVideoModels() {
-    // Video Model 1: BytePlus Seedance Pro (DEFAULT)
+    // Video Model 1: BytePlus Seedance Pro
     this.videoModels.set('video-model-1', {
       id: 'seedance-1-0-pro-250528',
       displayName: 'Model 1',
@@ -273,18 +275,18 @@ export class ModelRegistryService {
       },
     });
 
-    // Video Model 3: Alibaba Wan 3.0 Prime Reference-to-Video
-    // NOTE: Wan 3.0 image-to-video is not available on fal.ai; only reference-to-video exists.
-    // Keeping as registered but NOT the default until a proper I2V endpoint is available.
+    // Video Model 3: Alibaba Wan 3.0 Image-to-Video (DEFAULT)
+    // Uses alibaba/ namespace — no fal-ai prefix in queue URLs
+    // Payload: start_image_url, integer duration, audio boolean, resolution (480p/720p/1080p)
     this.videoModels.set('video-model-3', {
-      id: 'alibaba/wan-3.0-prime/reference-to-video',
+      id: 'alibaba/wan-3.0/image-to-video',
       displayName: 'Model 3',
       platform: 'FAL',
       capabilities: {
         supportsAspectRatio: true,
         supportsResolution: true,
         supportsDuration: true,
-        supportedAspectRatios: ['16:9', '4:3', '1:1', '3:4', '9:16'],
+        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
         supportedResolutions: ['480p', '720p', '1080p'],
         minDuration: 2,
         maxDuration: 30,
@@ -293,7 +295,32 @@ export class ModelRegistryService {
       },
       defaultConfig: {
         aspectRatio: '9:16',
-        resolution: '1080p',
+        resolution: '720p',
+        duration: 5,
+        generateAudio: false,
+      },
+    });
+
+    // Video Model 4: Alibaba Wan 3.0 Reference-to-Video (character consistency)
+    // Uses alibaba/ namespace — no fal-ai prefix in queue URLs
+    this.videoModels.set('video-model-4', {
+      id: 'alibaba/wan-3.0/reference-to-video',
+      displayName: 'Model 4',
+      platform: 'FAL',
+      capabilities: {
+        supportsAspectRatio: true,
+        supportsResolution: true,
+        supportsDuration: true,
+        supportedAspectRatios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
+        supportedResolutions: ['480p', '720p', '1080p'],
+        minDuration: 2,
+        maxDuration: 30,
+        isAsync: true,
+        estimatedTimeSeconds: 120,
+      },
+      defaultConfig: {
+        aspectRatio: '9:16',
+        resolution: '720p',
         duration: 5,
         generateAudio: false,
       },
@@ -323,12 +350,12 @@ export class ModelRegistryService {
   }
 
   /**
-   * Get default video model (Model 1 - BytePlus Seedance Pro)
+   * Get default video model (Model 3 - Alibaba Wan 3.0 Image-to-Video)
    */
   getDefaultVideoModel(): VideoModelInfo {
-    const defaultModel = this.videoModels.get('video-model-1');
+    const defaultModel = this.videoModels.get('video-model-3');
     if (!defaultModel) {
-      throw new Error('Default video model (video-model-1) not found');
+      throw new Error('Default video model (video-model-3) not found');
     }
     return defaultModel;
   }
@@ -337,7 +364,7 @@ export class ModelRegistryService {
    * Get default video model key string
    */
   getDefaultVideoModelKey(): string {
-    return 'video-model-1';
+    return 'video-model-3';
   }
 
   /**

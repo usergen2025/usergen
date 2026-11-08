@@ -1915,7 +1915,7 @@ function WorkspacePageContent() {
       setRegeneratingVideoScenes((prev) => new Set(prev).add(sceneNumber));
       setGeneratingVideos((prev) => new Set(prev).add(sceneNumber));
 
-      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', true, promptOverride);
+      const response = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-3', true, promptOverride);
 
       if (response.success && response.data?.existing && response.data?.video) {
         const existingVideo = response.data.video;
@@ -2266,7 +2266,7 @@ function WorkspacePageContent() {
         const sceneNumbers = scenesNeedingVideos.map((s, i) => s.scene_number ?? s.sceneNumber ?? i + 1);
         const fallbackPromises = sceneNumbers.map(async (sceneNumber) => {
           try {
-            const r = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-1', false);
+            const r = await apiClient.regenerateVideo(projectId, sceneNumber, 'video-model-3', false);
             if (r.success && r.data?.existing && r.data?.video) {
               setBrollVideos(prev => {
                 const exists = prev.some(v => v.sceneNumber === sceneNumber);

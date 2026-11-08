@@ -464,7 +464,7 @@ function BrollVideosPageContent() {
       let hasChanges = false;
       scenesNeedingVideos.forEach((sceneNumber) => {
         if (!updated[sceneNumber]) {
-          updated[sceneNumber] = 'video-model-1'; // Default to Model 1 (BytePlus Seedance)
+          updated[sceneNumber] = 'video-model-3'; // Default to Model 3 (Wan 3.0 I2V)
           hasChanges = true;
         }
       });
@@ -586,7 +586,7 @@ function BrollVideosPageContent() {
         
         // Fire API call without awaiting (non-blocking)
         // Use default model for auto-generation
-        const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-1';
+        const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-3';
         return apiClient.regenerateVideo(projectId, sceneNumber, selectedModelId, false)
           .then(response => {
             // Handle existing video response
@@ -743,7 +743,7 @@ function BrollVideosPageContent() {
       setGeneratingVideos(prev => new Set(prev).add(sceneNumber));
       
       // Get selected model for this scene
-      const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-1'; // Using nullish coalescing
+      const selectedModelId = selectedModels[sceneNumber] ?? 'video-model-3'; // Using nullish coalescing
       
       // IMPORTANT: Always regenerate VIDEO (not image) when on broll-videos page
       // Pass force: true to always regenerate when user manually clicks the button
@@ -1091,7 +1091,7 @@ function BrollVideosPageContent() {
                           )}
                         </Button>
                         <ModelSelector
-                          selectedModelId={selectedModels[sceneNumber] ?? 'video-model-1'}
+                          selectedModelId={selectedModels[sceneNumber] ?? 'video-model-3'}
                           onModelSelect={(modelId) => {
                             setSelectedModels(prev => ({ ...prev, [sceneNumber]: modelId }));
                           }}

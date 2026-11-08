@@ -216,13 +216,18 @@ export class FalVideoProvider implements IVideoGenerationProvider {
   }
 
   /**
-   * Extract base model name for queue status/result URLs.
-   * Namespaced models keep full path; legacy uses first segment.
+   * Extract {owner}/{app} for queue status/result URLs.
+   * fal queue API uses /{owner}/{app}/requests/{id}/status — NOT the full endpoint path.
+   * e.g. 'alibaba/wan-3.0/image-to-video' → 'alibaba/wan-3.0'
+   * e.g. 'veo3.1/image-to-video' → 'veo3.1' (legacy fal-ai models)
    */
-  private extractBaseModelName(modelPath: string): string {
-    const ns = modelPath.split('/')[0];
-    if (ns === 'alibaba' || ns === 'google') return modelPath;
-    return ns;
+  private extractOwnerApp(modelPath: string): string {
+    const parts = modelPath.split('/');
+    const ns = parts[0];
+    if (ns === 'alibaba' || ns === 'google') {
+      return `${parts[0]}/${parts[1]}`; // owner/app only
+    }
+    return parts[0]; // legacy fal-ai models
   }
 
   /**
@@ -268,10 +273,10 @@ export class FalVideoProvider implements IVideoGenerationProvider {
   private async checkRequestStatus(modelPath: string, requestId: string): Promise<FalVideoStatusResponse> {
     try {
       const adapter = getAdapterForModel(modelPath);
-      const baseModel = this.extractBaseModelName(modelPath);
+      const ownerApp = this.extractOwnerApp(modelPath);
       const prefix = adapter.urlPrefix || '';
       const response = await this.axiosInstance.get<FalVideoStatusResponse>(
-        `${prefix}/${baseModel}/requests/${requestId}/status`
+        `${prefix}/${ownerApp}/requests/${requestId}/status`
       );
       return response.data;
     } catch (error: any) {
@@ -288,10 +293,10 @@ export class FalVideoProvider implements IVideoGenerationProvider {
   private async fetchRequestResult(modelPath: string, requestId: string): Promise<FalVideoResultResponse> {
     try {
       const adapter = getAdapterForModel(modelPath);
-      const baseModel = this.extractBaseModelName(modelPath);
+      const ownerApp = this.extractOwnerApp(modelPath);
       const prefix = adapter.urlPrefix || '';
       const response = await this.axiosInstance.get<FalVideoResultResponse>(
-        `${prefix}/${baseModel}/requests/${requestId}`
+        `${prefix}/${ownerApp}/requests/${requestId}`
       );
       return response.data;
     } catch (error: any) {

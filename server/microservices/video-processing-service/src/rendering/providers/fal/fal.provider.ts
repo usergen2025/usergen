@@ -263,17 +263,31 @@ export class FalProvider implements IImageGenerationProvider {
   }
 
   /**
-   * Extract base model name from full model path.
-   * Returns the first path segment (e.g. 'nano-banana-2' from 'nano-banana-2/edit').
+   * Extract {owner}/{app} from a model path for queue status/result URLs.
+   * fal queue API uses /{owner}/{app}/requests/{id}/status — NOT the full endpoint path.
+   * e.g. 'google/nano-banana-2.1' → 'google/nano-banana-2.1'
+   * e.g. 'alibaba/wan-3.0/image-to-video' → 'alibaba/wan-3.0' (strip the endpoint path)
+   * e.g. 'nano-banana-2' → 'nano-banana-2' (legacy fal-ai models)
    */
-  private extractBaseModelName(modelPath: string): string {
-    return modelPath.split('/')[0];
+  private extractOwnerApp(modelPath: string): string {
+    const parts = modelPath.split('/');
+    const ns = parts[0];
+    if (ns === 'google' || ns === 'alibaba') {
+      return `${parts[0]}/${parts[1]}`; // owner/app only
+    }
+    return parts[0]; // legacy fal-ai models use the first segment
   }
 
   /**
-   * URL prefix for fal.ai models — always /fal-ai.
+   * Get URL prefix for queue submission.
+   * - google/… and alibaba/… models use their own namespace: /google/… , /alibaba/…
+   * - Legacy models (nano-banana, reve, etc.) use /fal-ai/…
    */
-  private getModelUrlPrefix(_modelPath: string): string {
+  private getModelUrlPrefix(modelPath: string): string {
+    const ns = modelPath.split('/')[0];
+    if (ns === 'google' || ns === 'alibaba') {
+      return ''; // namespaced models — no extra prefix
+    }
     return '/fal-ai';
   }
 
@@ -302,8 +316,9 @@ export class FalProvider implements IImageGenerationProvider {
       return '';
     }
 
-    // fal-ai/nano-banana variants (nano-banana, nano-banana-pro, nano-banana-2) use /edit for I2I
-    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro' || baseName === 'nano-banana-2') {
+    // nano-banana variants use /edit for I2I
+    // fal-ai/nano-banana, fal-ai/nano-banana-pro, fal-ai/nano-banana-2, google/nano-banana-2.1
+    if (baseName === 'nano-banana' || baseName === 'nano-banana-pro' || baseName === 'nano-banana-2' || baseName === 'nano-banana-2.1') {
       return hasReferenceImages ? '/edit' : '';
     }
 
@@ -316,13 +331,21 @@ export class FalProvider implements IImageGenerationProvider {
   }
 
   /**
-   * Build FAL endpoint URL.
+   * Build FAL endpoint URL for queue submission.
+   * e.g. 'google/nano-banana-2.1' + edit → '/google/nano-banana-2.1/edit'
+   * e.g. 'nano-banana-2' → '/fal-ai/nano-banana-2'
    */
   private buildEndpointUrl(modelPath: string, hasReferenceImages: boolean): string {
     const prefix = this.getModelUrlPrefix(modelPath);
     const suffix = this.determineEndpointSuffix(modelPath, hasReferenceImages);
-    const baseName = this.extractBaseModelName(modelPath);
 
+    // Namespaced models (google/…, alibaba/…) already include the full path
+    if (prefix === '') {
+      return `/${modelPath}${suffix}`;
+    }
+
+    // Legacy models (fal-ai prefix) — use just the first segment
+    const baseName = modelPath.split('/')[0];
     // Multi-segment model paths like reve/text-to-image use the full path
     if (modelPath.includes('/') && !modelPath.startsWith('reve')) {
       return `${prefix}/${modelPath}${suffix}`;
@@ -339,10 +362,10 @@ export class FalProvider implements IImageGenerationProvider {
   ): Promise<FalStatusResponse> {
     try {
       const prefix = this.getModelUrlPrefix(modelPath);
-      const baseModel = this.extractBaseModelName(modelPath);
+      const ownerApp = this.extractOwnerApp(modelPath);
       const statusUrl = prefix
-        ? `${prefix}/${baseModel}/requests/${requestId}/status`
-        : `/${baseModel}/requests/${requestId}/status`;
+        ? `${prefix}/${ownerApp}/requests/${requestId}/status`
+        : `/${ownerApp}/requests/${requestId}/status`;
       const response = await this.axiosInstance.get<FalStatusResponse>(statusUrl);
       return response.data;
     } catch (error) {
@@ -376,10 +399,10 @@ export class FalProvider implements IImageGenerationProvider {
   ): Promise<FalResultResponse> {
     try {
       const prefix = this.getModelUrlPrefix(modelPath);
-      const baseModel = this.extractBaseModelName(modelPath);
+      const ownerApp = this.extractOwnerApp(modelPath);
       const resultUrl = prefix
-        ? `${prefix}/${baseModel}/requests/${requestId}`
-        : `/${baseModel}/requests/${requestId}`;
+        ? `${prefix}/${ownerApp}/requests/${requestId}`
+        : `/${ownerApp}/requests/${requestId}`;
       const response = await this.axiosInstance.get<FalResultResponse>(resultUrl);
       return response.data;
     } catch (error) {
@@ -556,6 +579,7 @@ export class FalProvider implements IImageGenerationProvider {
       'imagen4/preview/ultra',
       'nano-banana-pro',
       'nano-banana-2',
+      'nano-banana-2.1',
     ];
 
     if (request.resolution && modelsWithResolution.some(m => modelPath.includes(m))) {
@@ -769,7 +793,8 @@ export class FalProvider implements IImageGenerationProvider {
       return { valid: false, error: 'Model ID is required' };
     }
 
-    if (this.extractBaseModelName(this.toModelPath(request.modelId)) === 'imagen4') {
+    const modelPath = this.toModelPath(request.modelId);
+    if (modelPath === 'imagen4' || modelPath.startsWith('imagen4/')) {
       return {
         valid: false,
         error: 'imagen4 is unavailable. Use model-6 (Nano Banana 2.1) for text-to-image.',
@@ -782,11 +807,7 @@ export class FalProvider implements IImageGenerationProvider {
 
     // Validate imagen4 doesn't support reference images
     if (request.referenceImages && request.referenceImages.length > 0) {
-      const modelId = request.modelId;
-      const modelPath = modelId.replace('fal-ai/', '');
-      const baseModel = this.extractBaseModelName(modelPath);
-      
-      if (baseModel === 'imagen4') {
+      if (modelPath === 'imagen4' || modelPath.startsWith('imagen4/')) {
         return {
           valid: false,
           error: 'imagen4 model does not support reference images. Use nano-banana-pro (model-4) or reve (model-3) for image-to-image generation.'
