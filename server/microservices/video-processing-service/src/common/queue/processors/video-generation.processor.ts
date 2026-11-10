@@ -804,7 +804,8 @@ export class VideoGenerationProcessor extends WorkerHost {
       videoResponse = await provider.generateVideo({
         prompt: videoPrompt,
         imageUrl: imageUrl,
-        modelId: selectedModelId,
+        // Pass the provider model path (e.g. alibaba/wan-3.0/image-to-video), not the registry key
+        modelId: model.id,
         aspectRatio: videoRatio,
         resolution: videoResolution,
         duration: finalDuration,
