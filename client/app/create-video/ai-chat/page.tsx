@@ -16,7 +16,11 @@ import {
 } from '@/lib/video-urls';
 import { cn } from '@/lib/utils/cn';
 import { normalizeWebsiteUrl } from '@/lib/utils/normalize-website-url';
-import { consumeIntent } from '@/lib/marketing/generation-intent';
+import {
+  consumeIntent,
+  peekPendingHeroScript,
+  takePendingHeroScript,
+} from '@/lib/marketing/generation-intent';
 import { useToast } from '@/lib/toast/toast';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { VideoStyle } from '@/types';
@@ -479,17 +483,20 @@ function AIChatPageContent() {
   }, [searchParams]);
 
   /*
-   * Seed a fresh funnel from what the landing page hero collected.
+   * Seed a fresh funnel from what the home/landing hero collected.
    *
    * Must stay declared after the effect above: that one resets the script
    * substep back to 'language' for new projects, and effects run in
    * declaration order, so seeding first would be undone on the same mount.
    *
-   * Only for new projects. Resuming a draft restores from project metadata,
-   * and an intent applied on top of that would overwrite real saved choices
-   * with copy from a page the user visited before signing up.
+   * Style, language, and duration are chosen in chat — only the prompt is
+   * carried over and applied when the user reaches script input.
+   *
+   * Only for new projects. Resuming a draft restores from project metadata.
    */
   const heroIntentApplied = useRef(false);
+  /** Home prompt to apply once the user reaches script input. */
+  const pendingHeroScriptRef = useRef<string | null>(null);
   /** In-flight draft project plus uploaded assets from a landing handoff. */
   const heroProjectPromiseRef = useRef<Promise<{ projectId: string | null; assets: Asset[] }> | null>(null);
   useEffect(() => {
@@ -500,25 +507,26 @@ function AIChatPageContent() {
     if (!isAuthenticated || isLoading) return;
     if (searchParams?.get('projectId')) {
       heroIntentApplied.current = true;
+      // Remount after style confirm still needs the durable home prompt.
+      const pending = peekPendingHeroScript();
+      if (pending) pendingHeroScriptRef.current = pending;
       return;
     }
 
     heroIntentApplied.current = true;
     void (async () => {
     const consumed = await consumeIntent();
-    if (!consumed) return;
+    if (!consumed) {
+      const pending = peekPendingHeroScript();
+      if (pending) pendingHeroScriptRef.current = pending;
+      return;
+    }
     const { intent, assets } = consumed;
 
-    setSelectedLanguage(intent.language);
-    setSelectedVideoDuration(intent.duration);
-    setSelectedVideoStyle(intent.videoStyle);
-    setStyleSubstep('confirmed');
-    setCurrentStep('assets-attached');
-    setScriptSubstep('input');
-    // Pre-fill only. The visitor still presses enter to generate the script.
-    setScriptInput(intent.value);
-    sessionStorage.setItem('selectedScriptLanguage', intent.language);
-    sessionStorage.setItem('selectedVideoStyle', intent.videoStyle);
+    // Hold prompt for the script step — do not jump style/language/duration.
+    if (intent.value.trim()) {
+      pendingHeroScriptRef.current = intent.value;
+    }
 
     const mapped: Asset[] = assets.map((draft) => ({
       id: draft.id,
@@ -534,25 +542,20 @@ function AIChatPageContent() {
     if (mapped.length > 0) {
       setAttachedAssets(mapped);
       setPendingAssets(mapped);
-      // Send refuses assets until a project exists. Create it here and keep
-      // the id in memory so a reload of the chat URL is not required — that
-      // reload would restore from the server and drop the local files.
+      // Send refuses assets until a project exists. Create a provisional draft
+      // so uploads can proceed, but leave the UI at style selection.
       if (heroHandoffKey !== intent.createdAt || !heroHandoffPromise) {
         heroHandoffKey = intent.createdAt;
         heroHandoffPromise = (async () => {
         try {
           const createResponse = await apiClient.createVideoProject({
             videoType: 'WITHOUT_AVATAR',
-            style: STYLE_MAP[intent.videoStyle],
+            style: 'AVATAR_ONLY',
             currentStep: 'STYLE_SELECTION',
             metadata: {
               generationFlow: 'AI_CHAT',
-              aiChatStep: 'assets-attached',
-              selectedVideoStyle: intent.videoStyle,
-              aiChatStyleSubstep: 'confirmed',
-              aiChatScriptSubstep: 'input',
-              selectedLanguage: intent.language,
-              selectedVideoDuration: intent.duration,
+              aiChatStep: 'style-selection',
+              pendingHeroScript: intent.value || undefined,
             },
           });
           const createdId = createResponse.success ? createResponse.data?.id : null;
@@ -598,13 +601,19 @@ function AIChatPageContent() {
       }
       heroProjectPromiseRef.current = heroHandoffPromise;
     }
-
-    if (intent.videoStyle === 'product-only' || intent.videoStyle === 'broll-only') {
-      setAvatarPreference('skip');
-      sessionStorage.setItem('avatarPreference', 'skip');
-    }
     })();
   }, [isAuthenticated, isLoading, searchParams]);
+
+  // Apply the home prompt once the user reaches the script-input step.
+  useEffect(() => {
+    if (scriptSubstep !== 'input') return;
+    const pending = pendingHeroScriptRef.current || takePendingHeroScript();
+    if (!pending) return;
+    pendingHeroScriptRef.current = null;
+    // Clear durable key even when the value came from the ref.
+    takePendingHeroScript();
+    setScriptInput(pending);
+  }, [scriptSubstep]);
 
   // AuthGuard shows LoginModal overlay when not authenticated - no redirect to /login
 
@@ -908,6 +917,15 @@ function AIChatPageContent() {
             // Restore extracted tags
             if (project.metadata?.extractedTags && Array.isArray(project.metadata.extractedTags)) {
               setExtractedTags(project.metadata.extractedTags);
+            }
+
+            // Home prompt held for script-input (survives ?projectId remount).
+            const metaPending =
+              typeof project.metadata?.pendingHeroScript === 'string'
+                ? project.metadata.pendingHeroScript.trim()
+                : '';
+            if (metaPending && !pendingHeroScriptRef.current) {
+              pendingHeroScriptRef.current = metaPending;
             }
             
             // Restore voice clone name
@@ -5276,6 +5294,8 @@ function AIChatPageContent() {
 
     try {
       if (!projectId) {
+        const pendingHeroScript =
+          pendingHeroScriptRef.current || peekPendingHeroScript() || undefined;
         const createResponse = await apiClient.createVideoProject({
           videoType: 'WITHOUT_AVATAR',
           style: STYLE_MAP[selectedVideoStyle],
@@ -5285,6 +5305,7 @@ function AIChatPageContent() {
             aiChatStep: 'asset-upload',
             selectedVideoStyle,
             aiChatStyleSubstep: 'confirmed',
+            ...(pendingHeroScript ? { pendingHeroScript } : {}),
           },
         });
 

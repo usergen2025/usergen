@@ -1,13 +1,11 @@
 import { readStorage, readStorageJson, removeStorage, writeStorage } from '@/lib/utils/safeStorage';
 
 /**
- * What the landing page hero collected, held across sign-up.
+ * What the landing/home hero collected, held across sign-up.
  *
- * The hero asks for an ad description, a video style, a language, a duration
- * and optional product assets, then sends the visitor through the sign-up
- * modals. The generation funnel (`/create-video/ai-chat`) reads its state from
- * a server `VideoProject` record that does not exist yet at that point, so
- * the answers live in the browser until the funnel can apply them.
+ * The hero only captures an ad description (and optional product assets).
+ * Style, language, and duration are chosen in the AI chat funnel itself.
+ * The prompt is applied when the user reaches the script-input step.
  *
  * Session storage rather than local: this is one visitor's half-finished
  * thought, not a preference. Closing the tab should throw it away. Image
@@ -16,17 +14,13 @@ import { readStorage, readStorageJson, removeStorage, writeStorage } from '@/lib
  */
 export type GenerationIntent = {
   /** Bumped when the shape changes; a mismatched version is discarded. */
-  version: 2;
-  /** Ad description. May be empty — the funnel still applies the other choices. */
+  version: 3;
+  /** Ad description. May be empty — the funnel still opens from scratch. */
   value: string;
-  videoStyle: GenerationVideoStyle;
-  duration: GenerationDuration;
-  /** Already narrowed to what `generate-video-script` accepts. */
-  language: GenerationLanguage;
   createdAt: number;
 };
 
-/** The five styles the AI chat style step currently offers. */
+/** Kept for callers that still type style ids (AI chat, assets). */
 export type GenerationVideoStyle =
   | 'avatar-only'
   | 'alternate'
@@ -53,6 +47,8 @@ export type HeroAssetDraft = {
 };
 
 const STORAGE_KEY = 'ug_generation_intent';
+/** Survives AI-chat remounts (style confirm → ?projectId=) until script-input applies it. */
+const PENDING_SCRIPT_KEY = 'ug_pending_hero_script';
 const FROM_CREATE_VIDEO_KEY = 'fromCreateVideo';
 const IDB_NAME = 'ug-hero-assets';
 const IDB_STORE = 'files';
@@ -74,21 +70,6 @@ const LANGUAGE_BY_LABEL: Record<string, GenerationLanguage> = {
   hindi: 'hindi',
   hinglish: 'hinglish',
 };
-
-const VIDEO_STYLES = new Set<GenerationVideoStyle>([
-  'avatar-only',
-  'alternate',
-  'product-only',
-  'broll-only',
-  'avatar-product',
-]);
-
-const DURATIONS = new Set<GenerationDuration>([
-  '30 seconds',
-  '45 seconds',
-  '1 minute',
-  '90 seconds',
-]);
 
 /** Survives `router.push` within the tab. Cleared with the intent. */
 let stagedAssets: HeroAssetDraft[] = [];
@@ -208,30 +189,16 @@ function takeHeroAssets(): HeroAssetDraft[] {
 export function hasPendingGenerationFunnel(): boolean {
   if (readStorage(FROM_CREATE_VIDEO_KEY, 'session') === 'true') return true;
   const stored = readStorageJson<GenerationIntent>(STORAGE_KEY, 'session');
-  return !!stored && stored.version === 2;
+  return !!stored && stored.version === 3;
 }
 
 /**
- * Stores what the hero collected. Returns false when the style, duration or
- * language is not one the funnel understands, so the caller can still open
- * sign-up without leaving a half-intent behind.
+ * Stores the hero prompt. Always succeeds for a well-formed string value.
  */
-export function writeIntent(input: {
-  value: string;
-  videoStyle: GenerationVideoStyle;
-  duration: GenerationDuration;
-  language: GenerationLanguage;
-}): boolean {
-  if (!VIDEO_STYLES.has(input.videoStyle)) return false;
-  if (!DURATIONS.has(input.duration)) return false;
-  if (!LANGUAGE_BY_LABEL[input.language]) return false;
-
+export function writeIntent(input: { value: string }): boolean {
   const intent: GenerationIntent = {
-    version: 2,
+    version: 3,
     value: input.value.trim(),
-    videoStyle: input.videoStyle,
-    duration: input.duration,
-    language: input.language,
     createdAt: Date.now(),
   };
 
@@ -264,11 +231,8 @@ async function readConsumedIntent(): Promise<ConsumedIntent | null> {
   const memory = takeHeroAssets();
   if (
     !stored ||
-    stored.version !== 2 ||
+    stored.version !== 3 ||
     typeof stored.value !== 'string' ||
-    !VIDEO_STYLES.has(stored.videoStyle) ||
-    !DURATIONS.has(stored.duration) ||
-    !LANGUAGE_BY_LABEL[stored.language] ||
     typeof stored.createdAt !== 'number' ||
     Date.now() - stored.createdAt > TTL_MS
   ) {
@@ -278,8 +242,29 @@ async function readConsumedIntent(): Promise<ConsumedIntent | null> {
 
   const assets = memory.length > 0 ? memory : await readPersistedHeroAssets();
   clearPersistedHeroAssets();
+  // Durable until script-input: router.replace(?projectId=) remounts AI chat
+  // and would otherwise drop a ref-only pending prompt.
+  if (stored.value.trim()) {
+    writeStorage(PENDING_SCRIPT_KEY, stored.value, 'session');
+  } else {
+    removeStorage(PENDING_SCRIPT_KEY, 'session');
+  }
   const value = { intent: stored, assets };
   recentConsume = { at: Date.now(), value };
+  return value;
+}
+
+/** Peek the home prompt without clearing — safe across remounts until applied. */
+export function peekPendingHeroScript(): string | null {
+  const value = readStorage(PENDING_SCRIPT_KEY, 'session');
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || null;
+}
+
+/** Take and clear the home prompt once the script-input step applies it. */
+export function takePendingHeroScript(): string | null {
+  const value = peekPendingHeroScript();
+  removeStorage(PENDING_SCRIPT_KEY, 'session');
   return value;
 }
 
@@ -302,6 +287,7 @@ export function consumeIntent(): Promise<ConsumedIntent | null> {
  */
 export function clearIntent(): void {
   removeStorage(STORAGE_KEY, 'session');
+  removeStorage(PENDING_SCRIPT_KEY, 'session');
   stagedAssets = [];
   recentConsume = null;
   clearPersistedHeroAssets();
