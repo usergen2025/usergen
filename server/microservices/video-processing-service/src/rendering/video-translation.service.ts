@@ -23,6 +23,7 @@ import {
   VideoTranslationVariant,
 } from '../video/video-translation.types';
 import { PreviewVideoService } from '../preview/preview-video.service';
+import { isExternallyReachableUrl } from '@shared/storage';
 
 export interface VideoTranslationJobData {
   projectId: string;
@@ -1115,11 +1116,242 @@ export class VideoTranslationService {
       project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
         ? (project.metadata as Record<string, unknown>)
         : {};
+    // Home / upload translation projects are whole-video sources, already final.
+    if (meta.generationFlow === 'UPLOADED_TRANSLATION') {
+      return project.status === 'COMPLETED';
+    }
     const isSingleClip = style === 'AVATAR_ONLY' || style === 'ANIMATED_AVATAR';
     if (isSingleClip) {
       return project.status === 'COMPLETED' && Boolean(meta.finalExportedAt);
     }
     return project.status === 'COMPLETED';
+  }
+
+  private static readonly MAX_SOURCE_BYTES = 200 * 1024 * 1024; // 200MB
+  private static readonly VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.m4v']);
+
+  /**
+   * Create a completed shell project from an uploaded video for standalone translation.
+   */
+  async createFromUpload(
+    userId: string,
+    file: { buffer: Buffer; originalname?: string; mimetype?: string; size?: number },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Video file is required');
+    }
+    if (file.buffer.length > VideoTranslationService.MAX_SOURCE_BYTES) {
+      throw new BadRequestException('Video is too large (max 200MB)');
+    }
+    const sniffed = this.sniffVideoFormat(file.buffer);
+    const ext =
+      sniffed?.ext ||
+      path.extname(file.originalname || '').toLowerCase() ||
+      '.mp4';
+    if (!VideoTranslationService.VIDEO_EXTS.has(ext) && !sniffed) {
+      throw new BadRequestException('File must be an mp4, mov, webm, or m4v video');
+    }
+    const mime = sniffed?.mime || file.mimetype || 'video/mp4';
+    return this.finalizeTranslationSourceProject(userId, file.buffer, ext, mime, 'UPLOAD');
+  }
+
+  /**
+   * Create a completed shell project from a public video URL.
+   * Rejects private/localhost URLs and unreachable or non-video responses.
+   */
+  async createFromUrl(userId: string, rawUrl: string) {
+    const videoUrl = (rawUrl || '').trim();
+    if (!videoUrl) {
+      throw new BadRequestException('Video URL is required');
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(videoUrl);
+    } catch {
+      throw new BadRequestException('Invalid video URL');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new BadRequestException('Only http(s) video URLs are allowed');
+    }
+
+    if (!isExternallyReachableUrl(videoUrl)) {
+      throw new BadRequestException(
+        'Video URL must be a publicly reachable http(s) address (not localhost or a private network)',
+      );
+    }
+
+    const downloaded = await this.downloadPublicVideo(videoUrl);
+    return this.finalizeTranslationSourceProject(
+      userId,
+      downloaded.buffer,
+      downloaded.ext,
+      downloaded.mime,
+      'EXTERNAL_URL',
+      videoUrl,
+    );
+  }
+
+  private sniffVideoFormat(buffer: Buffer): { ext: string; mime: string } | null {
+    if (buffer.length < 12) return null;
+    // ISO BMFF (mp4/mov/m4v): ....ftyp
+    if (buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70) {
+      const brand = buffer.slice(8, 12).toString('ascii');
+      if (brand.startsWith('qt')) return { ext: '.mov', mime: 'video/quicktime' };
+      return { ext: '.mp4', mime: 'video/mp4' };
+    }
+    // WebM / Matroska: 0x1A45DFA3
+    if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
+      return { ext: '.webm', mime: 'video/webm' };
+    }
+    return null;
+  }
+
+  private async downloadPublicVideo(
+    videoUrl: string,
+  ): Promise<{ buffer: Buffer; ext: string; mime: string }> {
+    const maxBytes = VideoTranslationService.MAX_SOURCE_BYTES;
+    try {
+      // Probe first — reject HTML/login pages and missing hosts early.
+      const head = await axios.head(videoUrl, {
+        timeout: 20000,
+        maxRedirects: 5,
+        validateStatus: (s) => s >= 200 && s < 400,
+        headers: { 'User-Agent': 'UserGen-VideoTranslation/1.0' },
+      }).catch(() => null);
+
+      const headType = String(head?.headers?.['content-type'] || '').toLowerCase();
+      const headLen = Number(head?.headers?.['content-length'] || 0);
+      if (headLen > maxBytes) {
+        throw new BadRequestException('Video is too large (max 200MB)');
+      }
+      if (headType && (headType.includes('text/html') || headType.includes('application/json'))) {
+        throw new BadRequestException(
+          'URL did not return a video file. Use a direct, publicly accessible video link.',
+        );
+      }
+
+      const response = await axios.get<ArrayBuffer>(videoUrl, {
+        responseType: 'arraybuffer',
+        timeout: 120000,
+        maxRedirects: 5,
+        maxContentLength: maxBytes,
+        maxBodyLength: maxBytes,
+        headers: { 'User-Agent': 'UserGen-VideoTranslation/1.0' },
+        validateStatus: (s) => s >= 200 && s < 400,
+      });
+
+      const buffer = Buffer.from(response.data);
+      if (buffer.length < 1024) {
+        throw new BadRequestException('Downloaded file is too small to be a valid video');
+      }
+      if (buffer.length > maxBytes) {
+        throw new BadRequestException('Video is too large (max 200MB)');
+      }
+
+      const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        throw new BadRequestException(
+          'URL did not return a video file. Use a direct, publicly accessible video link.',
+        );
+      }
+
+      const sniffed = this.sniffVideoFormat(buffer);
+      const urlExt = path.extname(new URL(videoUrl).pathname).toLowerCase();
+      if (!sniffed && !VideoTranslationService.VIDEO_EXTS.has(urlExt)) {
+        throw new BadRequestException(
+          'URL does not appear to be a video. Use a public mp4, mov, webm, or m4v link.',
+        );
+      }
+
+      return {
+        buffer,
+        ext: sniffed?.ext || (VideoTranslationService.VIDEO_EXTS.has(urlExt) ? urlExt : '.mp4'),
+        mime: sniffed?.mime || (contentType.startsWith('video/') ? contentType : 'video/mp4'),
+      };
+    } catch (error: any) {
+      if (error instanceof BadRequestException || error instanceof HttpException) throw error;
+      const status = error?.response?.status;
+      if (status === 403 || status === 401) {
+        throw new BadRequestException(
+          'Video URL is not publicly accessible. Make the file public or upload the video instead.',
+        );
+      }
+      if (status === 404) {
+        throw new BadRequestException('Video URL was not found');
+      }
+      throw new BadRequestException(
+        error?.message?.includes('maxContentLength')
+          ? 'Video is too large (max 200MB)'
+          : `Could not access video URL: ${error?.message || 'unreachable'}`,
+      );
+    }
+  }
+
+  private async finalizeTranslationSourceProject(
+    userId: string,
+    buffer: Buffer,
+    ext: string,
+    mime: string,
+    sourceType: 'UPLOAD' | 'EXTERNAL_URL',
+    originalUrl?: string,
+  ) {
+    const filename = `source-${Date.now()}${ext.startsWith('.') ? ext : `.${ext}`}`;
+    const subPath = `videos/${userId}/translation-sources`;
+    const publicUrlService = this.renderingService.getPublicUrlService();
+    const storage = await publicUrlService.uploadFromBuffer(buffer, subPath, filename, mime);
+
+    // Prefer a URL HeyGen can fetch. Avoid locking in a localhost publicUrl
+    // when a Cloud Storage upload is still possible.
+    let publicUrl =
+      (storage.gcsUrl && isExternallyReachableUrl(storage.gcsUrl) && storage.gcsUrl) ||
+      (storage.publicUrl && isExternallyReachableUrl(storage.publicUrl) && storage.publicUrl) ||
+      null;
+    if (!publicUrl) {
+      try {
+        publicUrl = await publicUrlService.ensureExternallyReachableUrl({
+          publicUrl: storage.publicUrl,
+          gcsUrl: storage.gcsUrl,
+          localPath: storage.localPath,
+          localUrl: storage.localUrl,
+        });
+      } catch (error: any) {
+        console.warn(
+          '[VideoTranslationService] ensureExternallyReachableUrl failed:',
+          error?.message || error,
+        );
+      }
+    }
+    if (!publicUrl || !isExternallyReachableUrl(publicUrl)) {
+      // Local/dev fallback — translateSingleClipVariant re-publishes before HeyGen.
+      publicUrl = storage.publicUrl || storage.localUrl || storage.gcsUrl;
+    }
+    if (!publicUrl) {
+      throw new BadRequestException('Failed to store video for translation');
+    }
+
+    const now = new Date().toISOString();
+    const project = await this.databaseService.videoProject.create({
+      data: {
+        userId,
+        title: 'Video translation',
+        videoType: 'WITHOUT_AVATAR',
+        style: 'AVATAR_ONLY',
+        videoUrl: publicUrl,
+        currentStep: 'COMPLETED',
+        status: 'COMPLETED',
+        metadata: {
+          generationFlow: 'UPLOADED_TRANSLATION',
+          sourceType,
+          originalSourceUrl: originalUrl || undefined,
+          finalExportedAt: now,
+          localVideoUrl: storage.localUrl || undefined,
+          gcsUrl: storage.gcsUrl || undefined,
+        },
+      },
+    });
+
+    return project;
   }
 
   private async assertNonHumanAvatarAllowed(project: any, authToken?: string): Promise<void> {

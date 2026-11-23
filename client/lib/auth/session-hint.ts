@@ -29,6 +29,7 @@ export type SessionHint = 'creator' | 'brand' | 'admin';
 export function hintForRole(role: string | undefined | null): SessionHint | null {
   switch (role) {
     case 'USER':
+    case 'CREATOR':
     case 'AVATAR_CREATOR':
       return 'creator';
     case 'BRAND':

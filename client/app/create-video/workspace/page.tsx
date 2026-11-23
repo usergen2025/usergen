@@ -406,7 +406,10 @@ function WorkspacePageContent() {
   const [translationPlaybackOverride, setTranslationPlaybackOverride] = useState<string | null>(null);
   const [selectedTranslationVariantId, setSelectedTranslationVariantId] = useState<'original' | string>('original');
   const [isDownloadingTranslation, setIsDownloadingTranslation] = useState(false);
-  const [showTranslateModal, setShowTranslateModal] = useState(false);
+  const [showTranslateModal, setShowTranslateModal] = useState(
+    () => searchParams?.get('openTranslate') === '1',
+  );
+  const openTranslateRequested = searchParams?.get('openTranslate') === '1';
 
   const handleCompletedDownload = useCallback(async () => {
     if (selectedTranslationVariantId !== 'original') {
@@ -721,7 +724,14 @@ function WorkspacePageContent() {
           const isCompletedProject = projectData.status === 'COMPLETED';
 
           // Allow completed projects with a final video even when generationFlow is classic.
-          if (projectData.metadata?.generationFlow !== 'AI_CHAT' && !(isCompletedProject && hasFinalVideoUrl)) {
+          // Home "Translate your video" uploads use UPLOADED_TRANSLATION.
+          const generationFlow = projectData.metadata?.generationFlow;
+          const isUploadedTranslation = generationFlow === 'UPLOADED_TRANSLATION';
+          if (
+            generationFlow !== 'AI_CHAT' &&
+            !isUploadedTranslation &&
+            !(isCompletedProject && hasFinalVideoUrl)
+          ) {
             // Show a local message instead of redirecting into the classic flow
             showToast('This project was created with the classic flow and is not available in the AI workspace.', 'info');
             setProject(null);
@@ -1402,6 +1412,34 @@ function WorkspacePageContent() {
     subscribeToQueueType,
     stopPreviewPolling,
     refreshProjectForPreview,
+  ]);
+
+  // Home translate handoff: open the language modal once the completed screen is ready.
+  useEffect(() => {
+    if (!openTranslateRequested || !projectId || workspaceMode !== 'completed') return;
+    if (!isVideoTranslationEligible(project || {})) return;
+    setShowTranslateModal(true);
+    // Drop the flag from the URL so a refresh does not keep re-opening the modal.
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(searchParams?.toString() || '');
+      if (params.has('openTranslate')) {
+        params.delete('openTranslate');
+        const qs = params.toString();
+        router.replace(
+          qs
+            ? `/create-video/workspace?${qs}`
+            : `/create-video/workspace?projectId=${encodeURIComponent(projectId)}`,
+          { scroll: false },
+        );
+      }
+    }
+  }, [
+    openTranslateRequested,
+    projectId,
+    workspaceMode,
+    project,
+    router,
+    searchParams,
   ]);
 
   // Slow fallback poll until watermarked preview is ready (avoid hammering API)

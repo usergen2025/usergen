@@ -5,6 +5,11 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { hintForRole, signedInPathFor } from '@/lib/auth/session-hint';
 import { clearIntent, GENERATION_FUNNEL_PATH, hasPendingGenerationFunnel } from '@/lib/marketing/generation-intent';
+import {
+  clearTranslationIntent,
+  hasPendingTranslationFunnel,
+  TRANSLATION_FUNNEL_PATH,
+} from '@/lib/marketing/translation-intent';
 
 /**
  * Client-side backstop for the redirect `proxy.ts` normally performs.
@@ -35,7 +40,14 @@ export default function LoggedOutGate({ children }: { children: React.ReactNode 
      */
     if (redirectHint !== 'creator') {
       if (hasPendingGenerationFunnel()) clearIntent();
+      if (hasPendingTranslationFunnel()) clearTranslationIntent();
       router.replace(signedInPathFor(redirectHint, pathname ?? '/'));
+      return;
+    }
+    if (hasPendingTranslationFunnel()) {
+      sessionStorage.removeItem('fromCreateVideo');
+      sessionStorage.removeItem('fromTranslateVideo');
+      router.replace(TRANSLATION_FUNNEL_PATH);
       return;
     }
     if (hasPendingGenerationFunnel()) {

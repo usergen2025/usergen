@@ -36,6 +36,10 @@ export function isSingleClipFinalExported(project: SingleClipProjectFields): boo
 /** True when a final export finished and translation API should accept the project. */
 export function isVideoTranslationEligible(project: SingleClipProjectFields): boolean {
   if (!project.videoUrl) return false;
+  const meta = projectMeta(project);
+  if (meta.generationFlow === 'UPLOADED_TRANSLATION') {
+    return project.status === 'COMPLETED';
+  }
   if (isSingleClipVideoStyle(project.style)) {
     return project.status === 'COMPLETED' && isSingleClipFinalExported(project);
   }

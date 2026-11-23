@@ -6,6 +6,7 @@ import { Menu, X } from 'lucide-react';
 import MarketingButton from './MarketingButton';
 import MarketingLogo from './MarketingLogo';
 import { useMarketingAuth } from './MarketingAuthProvider';
+import { useAuth } from '@/hooks/useAuth';
 import { landing } from '@/lib/content/landing';
 import { cn } from '@/lib/utils/cn';
 
@@ -17,10 +18,15 @@ import { cn } from '@/lib/utils/cn';
  * was and revealing the links beneath a dashed rule. This is built as one
  * element that changes height for that reason — animating a separate overlay
  * would not land in the same place.
+ *
+ * Hidden while signed in — ConditionalHeader owns the app chrome, and
+ * LoggedOutGate is about to leave this page. Rendering both caused a stacked
+ * double header.
  */
 export default function MarketingHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { openLogin } = useMarketingAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   const { nav } = landing;
 
   // The card is fixed over the page, so the scrim behind it must not scroll.
@@ -41,6 +47,10 @@ export default function MarketingHeader() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [menuOpen]);
+
+  if (!isLoading && isAuthenticated) {
+    return null;
+  }
 
   return (
     <>

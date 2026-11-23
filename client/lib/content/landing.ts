@@ -56,9 +56,15 @@ export type LandingContent = {
     headline: { lead: string; priceLine: string; price: string };
     subcopy: Responsive<string>;
     widget: {
-      tabs: { link: Responsive<string>; brief: Responsive<string> };
+      tabs: {
+        link: Responsive<string>;
+        brief: Responsive<string>;
+        translate: Responsive<string>;
+      };
       linkPlaceholder: string;
       briefPlaceholder: string;
+      translatePlaceholder: string;
+      translateSubmit: string;
       avatarOptions: [string, string];
       languages: Responsive<string[]>;
       submit: string;
@@ -238,10 +244,13 @@ export const landing = {
       tabs: {
         link: { base: 'Paste product link', mobile: 'Paste link' },
         brief: { base: 'Describe your ad', mobile: 'Describe ad' },
+        translate: { base: 'Translate your video', mobile: 'Translate video' },
       },
       linkPlaceholder: 'https://yourstore.in/product/vitamin-c-serum',
       // TODO(copy): the brief tab is shown empty in both frames.
       briefPlaceholder: 'A 20-second ad for my vitamin C serum, upbeat and friendly',
+      translatePlaceholder: 'https://…/your-video.mp4',
+      translateSubmit: 'Translate video',
       avatarOptions: ['With avatar', 'Without avatar'],
       // The mobile frame drops Hinglish to keep the row on one line.
       languages: { base: ['Hindi', 'English', 'Hinglish'], mobile: ['Hindi', 'English'] },

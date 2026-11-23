@@ -218,7 +218,7 @@ export function useAuth() {
   }, [user]);
 
   const isCreator = useCallback(() => {
-    return user?.role === 'USER' || user?.role === 'AVATAR_CREATOR';
+    return user?.role === 'USER' || user?.role === 'CREATOR' || user?.role === 'AVATAR_CREATOR';
   }, [user]);
 
   return { 

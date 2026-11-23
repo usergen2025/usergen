@@ -1680,6 +1680,51 @@ class ApiClient {
     return response.data;
   }
 
+  /**
+   * Create a completed shell project from a public video URL or an uploaded file
+   * for the standalone translate funnel.
+   */
+  async createTranslationSource(input: {
+    videoUrl?: string;
+    file?: File;
+  }): Promise<ApiResponse<any>> {
+    const token = this.getToken();
+    if (!token) {
+      throw new Error('Please log in to translate a video');
+    }
+
+    if (input.file) {
+      const formData = new FormData();
+      formData.append('file', input.file, input.file.name || 'video.mp4');
+      const response = await axios.post<ApiResponse<any>>(
+        '/api/video/translation-source',
+        formData,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 180000,
+        },
+      );
+      return response.data;
+    }
+
+    const videoUrl = input.videoUrl?.trim();
+    if (!videoUrl) {
+      throw new Error('Provide a video URL or file');
+    }
+    const response = await axios.post<ApiResponse<any>>(
+      '/api/video/translation-source',
+      { videoUrl },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        timeout: 180000,
+      },
+    );
+    return response.data;
+  }
+
   async getOperationCreditCost(operationType: string): Promise<ApiResponse<{ operationType: string; creditCost: number }>> {
     const paymentServiceUrl = PAYMENT_SERVICE_URL;
     const response = await axios.get<ApiResponse<{ operationType: string; creditCost: number }>>(

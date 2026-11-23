@@ -114,13 +114,18 @@ function CreatorSignupModalContent({ isOpen, onClose, onShowLogin, redirectUrl }
         setTimeout(() => {
           const finalRedirectUrl = redirectUrl || sessionStorage.getItem('pendingRedirect') || '/create-video/style';
           const fromCreateVideo = typeof window !== 'undefined' && sessionStorage.getItem('fromCreateVideo') === 'true';
+          const fromTranslateVideo =
+            typeof window !== 'undefined' && sessionStorage.getItem('fromTranslateVideo') === 'true';
           
           // Clear the flag after checking
           if (typeof window !== 'undefined') {
             sessionStorage.removeItem('fromCreateVideo');
+            sessionStorage.removeItem('fromTranslateVideo');
           }
           
-          if (finalRedirectUrl.includes('/create-video')) {
+          if (finalRedirectUrl.includes('/create-video/translate') || fromTranslateVideo) {
+            router.push('/create-video/translate');
+          } else if (finalRedirectUrl.includes('/create-video')) {
             // If user came from "Create a Video" button, go to new chat flow
             if (fromCreateVideo) {
               router.push('/create-video/ai-chat');

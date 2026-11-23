@@ -320,6 +320,43 @@ export class VideoController {
     return { success: true, data: { languages } };
   }
 
+  @Post('translation-source')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Create a translation project from an uploaded video or a public video URL',
+  })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 200 * 1024 * 1024 },
+    }),
+  )
+  async createTranslationSource(
+    @Request() req: any,
+    @UploadedFile() file: Multer.File | undefined,
+    @Body() body: { videoUrl?: string },
+  ) {
+    const userId = this.extractUserIdFromToken(req);
+    if (!userId) {
+      throw new HttpException('Authentication failed. Please login again.', HttpStatus.UNAUTHORIZED);
+    }
+
+    const videoUrl = typeof body?.videoUrl === 'string' ? body.videoUrl.trim() : '';
+    try {
+      if (file?.buffer?.length) {
+        const project = await this.videoTranslationService.createFromUpload(userId, file);
+        return { success: true, data: project };
+      }
+      if (videoUrl) {
+        const project = await this.videoTranslationService.createFromUrl(userId, videoUrl);
+        return { success: true, data: project };
+      }
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      throw new BadRequestException(error?.message || 'Failed to create translation source');
+    }
+    throw new BadRequestException('Provide a video file upload or a public videoUrl');
+  }
+
   @Post(':projectId/share')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Create or return the public share link for a finished video' })

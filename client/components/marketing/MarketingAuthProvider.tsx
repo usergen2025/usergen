@@ -6,6 +6,10 @@ import GetStartedModal from '@/components/auth/GetStartedModal';
 import BrandSignupModal from '@/components/auth/BrandSignupModal';
 import CreatorSignupModal from '@/components/auth/CreatorSignupModal';
 import { clearIntent } from '@/lib/marketing/generation-intent';
+import {
+  clearTranslationIntent,
+  TRANSLATION_FUNNEL_PATH,
+} from '@/lib/marketing/translation-intent';
 import { removeStorage, writeStorage } from '@/lib/utils/safeStorage';
 
 /**
@@ -31,11 +35,13 @@ type MarketingAuthValue = {
   /**
    * Opens the role picker.
    *
-   * `startGeneration` marks this as one of the "generate my ad" CTAs, which
-   * should drop the visitor into the generation funnel rather than on their
-   * dashboard. Pass false for CTAs that only mean "make an account".
+   * `startGeneration` / `startTranslation` mark funnel CTAs that should drop
+   * the visitor into create-video rather than their dashboard.
    */
-  openGetStarted: (options?: { startGeneration?: boolean }) => void;
+  openGetStarted: (options?: {
+    startGeneration?: boolean;
+    startTranslation?: boolean;
+  }) => void;
   openLogin: () => void;
   close: () => void;
 };
@@ -68,16 +74,24 @@ export default function MarketingAuthProvider({ children }: { children: React.Re
     () => ({
       openGetStarted: (options) => {
         const startGeneration = options?.startGeneration ?? false;
+        const startTranslation = options?.startTranslation ?? false;
         /*
          * `CreatorSignupModal` branches on this flag, not on the redirect: a
          * `/create-video` target without it lands on `/create-video/style`,
          * the older wizard. Setting both is what the header's "Create a
          * Video" button already does.
          */
-        if (startGeneration) {
+        if (startGeneration || startTranslation) {
           writeStorage('fromCreateVideo', 'true', 'session');
         }
-        setRedirectUrl(startGeneration ? GENERATION_FUNNEL : undefined);
+        if (startTranslation) {
+          writeStorage('fromTranslateVideo', 'true', 'session');
+          setRedirectUrl(TRANSLATION_FUNNEL_PATH);
+        } else if (startGeneration) {
+          setRedirectUrl(GENERATION_FUNNEL);
+        } else {
+          setRedirectUrl(undefined);
+        }
         setStep('get-started');
       },
       openLogin: () => {
@@ -98,7 +112,9 @@ export default function MarketingAuthProvider({ children }: { children: React.Re
    */
   const selectBrand = useCallback(() => {
     clearIntent();
+    clearTranslationIntent();
     removeStorage('fromCreateVideo', 'session');
+    removeStorage('fromTranslateVideo', 'session');
     setRedirectUrl(undefined);
     setStep('brand-signup');
   }, []);

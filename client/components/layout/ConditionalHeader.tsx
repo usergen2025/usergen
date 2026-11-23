@@ -16,6 +16,7 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   const isAuthCallbackPage = pathname === '/auth/callback';
   const isAIChatPage = pathname === '/create-video/ai-chat';
   const isWorkspacePage = pathname === '/create-video/workspace';
+  const isTranslateBootstrapPage = pathname === '/create-video/translate';
   const isBrandRoute = pathname?.startsWith('/brand');
   const isBillingRoute = pathname === '/billing' || pathname?.startsWith('/billing/');
   const isUsagePage = pathname === '/usage';
@@ -31,6 +32,10 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
    * the browser path at `/` while rendering an app screen that does need this
    * header, so the check is on the session rather than the path alone.
    *
+   * Other marketing routes (`/pricing`, …) must not show this header while
+   * authenticated either — otherwise it stacks on top of MarketingHeader
+   * until LoggedOutGate finishes redirecting (the double-header flash).
+   *
    * The header is fixed, so appearing after the auth check resolves costs a
    * fade-in and no layout shift.
    */
@@ -40,12 +45,16 @@ export default function ConditionalHeader({ position = 'fixed' }: ConditionalHea
   if (isMarketingRoute(pathname) && !isAuthenticated) {
     return null;
   }
+  if (isMarketingRoute(pathname) && pathname !== '/' && isAuthenticated) {
+    return null;
+  }
   
   // Use relative positioning so page content is not covered by the fixed floating header bar
   const headerPosition = (
     isAIChatPage ||
     isBrandRoute ||
     isWorkspacePage ||
+    isTranslateBootstrapPage ||
     isBillingRoute ||
     isUsagePage ||
     isProjectsPage ||

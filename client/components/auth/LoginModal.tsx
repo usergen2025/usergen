@@ -9,6 +9,11 @@ import { writeStorage } from '@/lib/utils/safeStorage';
 import { trackLogin } from '@/lib/analytics/events';
 import { clearIntent, hasPendingGenerationFunnel } from '@/lib/marketing/generation-intent';
 import {
+  clearTranslationIntent,
+  hasPendingTranslationFunnel,
+  TRANSLATION_FUNNEL_PATH,
+} from '@/lib/marketing/translation-intent';
+import {
   AuthEmailInput,
   AuthField,
   AuthModalShell,
@@ -108,9 +113,10 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
 
           const finalRedirectUrl = redirectUrl || searchParams?.get('redirect') || sessionStorage.getItem('pendingRedirect') || defaultRedirect;
           
-          // Clear fromCreateVideo flag after use
+          // Clear funnel flags after use
           if (typeof window !== 'undefined') {
             sessionStorage.removeItem('fromCreateVideo');
+            sessionStorage.removeItem('fromTranslateVideo');
           }
           
           // Brands don't use create-video flow. The resolved URL can still
@@ -119,7 +125,13 @@ function LoginModalContent({ isOpen, onClose, redirectUrl, onShowGetStarted }: L
           // dashboard instead of a funnel that has no brand variant.
           if (userRole === 'BRAND') {
             clearIntent();
+            clearTranslationIntent();
             router.push(finalRedirectUrl.includes('/create-video') ? '/brand/dashboard' : finalRedirectUrl);
+          } else if (
+            finalRedirectUrl.includes('/create-video/translate') ||
+            hasPendingTranslationFunnel()
+          ) {
+            router.push(TRANSLATION_FUNNEL_PATH);
           } else if (finalRedirectUrl.includes('/create-video') || hasPendingGenerationFunnel()) {
             // Prefer ai-chat flow (AuthGuard overlay), not style
             router.push('/create-video/ai-chat');
