@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import FormData from 'form-data';
 
 export interface HeyGenUploadResponse {
   code?: number;
@@ -10,8 +11,10 @@ export interface HeyGenUploadResponse {
     file_type: 'image' | 'video' | 'audio';
     folder_id?: string;
     meta?: any;
+    /** Legacy field name. For v3 uploads this is the public asset URL (http). */
     image_key?: string;
     url?: string;
+    asset_id?: string;
   };
   msg?: string;
   message?: string;
@@ -68,8 +71,10 @@ export interface HeyGenAddMotionResponse {
 export class HeyGenProvider {
   private readonly logger = new Logger(HeyGenProvider.name);
   private readonly apiKey: string;
+  /** @deprecated Legacy v1 upload host — retired by HeyGen (HTTP 410). Kept for interceptor wiring. */
   private readonly uploadClient: AxiosInstance;
   private readonly apiClient: AxiosInstance;
+  private readonly apiClientV3: AxiosInstance;
 
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('HEYGEN_API_KEY', '');
@@ -78,7 +83,7 @@ export class HeyGenProvider {
       this.logger.warn('HeyGen API key not configured');
     }
 
-    // Upload endpoint client
+    // Legacy upload host (retired). Prefer apiClientV3 POST /v3/assets.
     this.uploadClient = axios.create({
       baseURL: 'https://upload.heygen.com/v1',
       headers: {
@@ -87,7 +92,7 @@ export class HeyGenProvider {
       timeout: 60000, // 60 seconds for file uploads
     });
 
-    // API endpoint client
+    // API endpoint client (v2 photo-avatar helpers still used in places)
     this.apiClient = axios.create({
       baseURL: 'https://api.heygen.com/v2',
       headers: {
@@ -95,6 +100,14 @@ export class HeyGenProvider {
         'Content-Type': 'application/json',
       },
       timeout: 30000,
+    });
+
+    this.apiClientV3 = axios.create({
+      baseURL: 'https://api.heygen.com',
+      headers: {
+        'X-Api-Key': this.apiKey,
+      },
+      timeout: 60000,
     });
 
     // Add error interceptors to handle EPIPE and socket errors
@@ -152,37 +165,79 @@ export class HeyGenProvider {
         return Promise.reject(error);
       }
     );
+
+    this.apiClientV3.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.code === 'EPIPE' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
+          this.logger.warn(`API v3 client connection error (${error.code}): ${error.message}`);
+          return Promise.reject(new Error(`API connection failed: ${error.message}`));
+        }
+        this.logger.error(`API v3 client response error: ${error.message}`, error.stack);
+        return Promise.reject(error);
+      },
+    );
   }
 
   /**
-   * Upload image to HeyGen
-   * Returns image_key that can be used for avatar creation
+   * Upload image to HeyGen via POST /v3/assets (multipart).
+   *
+   * Legacy `POST https://upload.heygen.com/v1/asset` returns HTTP 410 (retired).
+   * Callers historically expect `image_key`; for v3 we store the public asset
+   * URL there so downstream Avatar IV / v3 pipelines that accept http(s) keys
+   * (`buildImageUrlFromImageKey`) keep working without a larger rewrite.
    */
   async uploadImage(imageBuffer: Buffer, contentType: 'image/jpeg' | 'image/png', filename?: string): Promise<HeyGenUploadResponse['data']> {
     try {
-      this.logger.log(`Uploading image to HeyGen: ${filename || 'unnamed'}`);
+      const safeName =
+        filename ||
+        (contentType === 'image/png' ? `avatar_${Date.now()}.png` : `avatar_${Date.now()}.jpg`);
+      this.logger.log(`Uploading image to HeyGen v3 /assets: ${safeName}`);
 
-      const response = await this.uploadClient.post<HeyGenUploadResponse>(
-        '/asset',
-        imageBuffer,
-        {
-          headers: {
-            'Content-Type': contentType,
-          },
-        }
-      );
+      const form = new FormData();
+      form.append('file', imageBuffer, {
+        filename: safeName,
+        contentType,
+      });
 
-      const data = response.data.code !== undefined ? response.data.data : (response.data as any);
-      
-      if (!data.image_key) {
-        throw new Error('Failed to get image_key from HeyGen upload response');
+      const response = await this.apiClientV3.post('/v3/assets', form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+
+      const payload = response.data?.data ?? response.data;
+      const assetId = payload?.asset_id || payload?.id || payload?.assetId;
+      const url = payload?.url;
+      if (!assetId && !url) {
+        this.logger.error(`HeyGen v3 upload response: ${JSON.stringify(response.data)}`);
+        throw new Error('Failed to get asset_id/url from HeyGen v3 upload response');
       }
 
-      this.logger.log(`Image uploaded successfully. Image key: ${data.image_key}`);
-      return data;
+      // Prefer public URL as image_key — video pipelines resolve http keys directly.
+      const imageKey = (typeof url === 'string' && url.startsWith('http') ? url : null) || String(assetId);
+
+      this.logger.log(`Image uploaded successfully (v3). asset_id=${assetId}, image_key=${imageKey}`);
+      return {
+        id: String(assetId || imageKey),
+        name: safeName,
+        file_type: 'image',
+        image_key: imageKey,
+        url: typeof url === 'string' ? url : undefined,
+        asset_id: assetId ? String(assetId) : undefined,
+      };
     } catch (error: any) {
-      this.logger.error(`Failed to upload image to HeyGen: ${error.message}`, error.stack);
-      throw new Error(`HeyGen upload failed: ${error.response?.data?.msg || error.response?.data?.message || error.message}`);
+      const status = error?.response?.status;
+      const apiMsg =
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.msg ||
+        error?.response?.data?.message ||
+        error.message;
+      this.logger.error(
+        `Failed to upload image to HeyGen: ${apiMsg}${status ? ` (HTTP ${status})` : ''}`,
+        error.stack,
+      );
+      throw new Error(`HeyGen upload failed: ${apiMsg}`);
     }
   }
 

@@ -23,7 +23,8 @@ export class CompositeImageService {
   ) {
     this.uploadsDir = this.configService.get<string>('UPLOADS_DIR') || path.join(process.cwd(), 'uploads');
     this.heygenApiKey = this.configService.get<string>('HEYGEN_API_KEY') || '';
-    this.heygenUploadBaseUrl = 'https://upload.heygen.com/v1';
+    // Legacy upload.heygen.com/v1 is retired (HTTP 410). Use api.heygen.com /v3/assets.
+    this.heygenUploadBaseUrl = 'https://api.heygen.com';
   }
 
   /**
@@ -42,7 +43,8 @@ export class CompositeImageService {
   }
 
   /**
-   * Upload composite image to HeyGen and get image_key
+   * Upload composite image to HeyGen via POST /v3/assets.
+   * Returns a public URL usable as Avatar IV image_key (legacy v1 image_key is gone).
    */
   private async uploadToHeyGen(imageBuffer: Buffer, contentType: 'image/jpeg' | 'image/png'): Promise<string> {
     if (!this.heygenApiKey) {
@@ -50,27 +52,47 @@ export class CompositeImageService {
     }
 
     try {
+      const ext = contentType === 'image/png' ? 'png' : 'jpg';
+      const form = new FormData();
+      form.append('file', imageBuffer, {
+        filename: `composite_${Date.now()}.${ext}`,
+        contentType,
+      });
+
       const response = await axios.post(
-        `${this.heygenUploadBaseUrl}/asset`,
-        imageBuffer,
+        `${this.heygenUploadBaseUrl}/v3/assets`,
+        form,
         {
           headers: {
             'X-Api-Key': this.heygenApiKey,
-            'Content-Type': contentType,
+            ...form.getHeaders(),
           },
           timeout: 60000,
-        }
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        },
       );
 
-      const data = response.data.code !== undefined ? response.data.data : (response.data as any);
-      
-      if (!data?.image_key) {
-        throw new Error('Failed to get image_key from HeyGen upload response');
+      const data = response.data?.data ?? response.data;
+      const url = data?.url;
+      const assetId = data?.id ?? data?.asset_id ?? data?.assetId;
+      const imageKey =
+        typeof url === 'string' && url.startsWith('http') ? url : assetId ? String(assetId) : null;
+
+      if (!imageKey) {
+        throw new Error('Failed to get url/asset_id from HeyGen v3 upload response');
       }
 
-      return data.image_key;
+      return imageKey;
     } catch (error: any) {
-      throw new Error(`Failed to upload composite image to HeyGen: ${error.message}`);
+      throw new Error(
+        `Failed to upload composite image to HeyGen: ${
+          error.response?.data?.error?.message ||
+          error.response?.data?.msg ||
+          error.response?.data?.message ||
+          error.message
+        }`,
+      );
     }
   }
 

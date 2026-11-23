@@ -471,42 +471,43 @@ export class HeyGenVideoProvider {
   }
 
   /**
-   * Upload audio file to HeyGen and get asset ID
-   * Uses the same upload endpoint as image upload: https://upload.heygen.com/v1/asset
+   * Upload audio file to HeyGen and get asset ID.
+   * Legacy upload.heygen.com/v1/asset is retired (HTTP 410); use POST /v3/assets.
    */
   async uploadAudio(audioBuffer: Buffer, filename: string): Promise<string> {
     try {
-      console.log(`[HeyGen] Uploading audio file: ${filename}`);
-      
-      // Create a separate axios instance for upload endpoint (different from API endpoint)
-      const uploadAxios = axios.create({
-        baseURL: 'https://upload.heygen.com/v1',
-        headers: {
-          'X-Api-Key': this.apiKey,
-          'Content-Type': 'audio/mpeg', // MP3 files use audio/mpeg
-        },
-        timeout: 60000, // 60 seconds for file uploads
+      console.log(`[HeyGen] Uploading audio file via v3 /assets: ${filename}`);
+
+      const form = new FormData();
+      form.append('file', audioBuffer, {
+        filename: filename || `audio_${Date.now()}.mp3`,
+        contentType: 'audio/mpeg',
+      });
+      const response = await this.axiosV3.post<any>('/v3/assets', form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
       });
 
-      const response = await uploadAxios.post<any>(
-        '/asset',
-        audioBuffer // Send buffer directly as binary data
-      );
-
-      // Handle different response formats (similar to image upload)
-      const data = response.data.code !== undefined ? response.data.data : (response.data as any);
-      
-      const assetId = data?.id || response.data?.id;
+      const data = response.data?.data ?? response.data;
+      const assetId = data?.id || data?.asset_id || data?.assetId;
       if (!assetId) {
-        console.error('[HeyGen] Upload response:', JSON.stringify(response.data));
-        throw new Error('Failed to get asset ID from upload response');
+        console.error('[HeyGen] Audio upload response:', JSON.stringify(response.data));
+        throw new Error('Failed to get asset ID from HeyGen v3 upload response');
       }
 
       console.log(`[HeyGen] Audio uploaded successfully. Asset ID: ${assetId}`);
-      return assetId;
+      return String(assetId);
     } catch (error: any) {
       console.error('[HeyGen] Audio upload error:', error.response?.data || error.message);
-      throw new Error(`Failed to upload audio: ${error.response?.data?.msg || error.response?.data?.message || error.message}`);
+      throw new Error(
+        `Failed to upload audio: ${
+          error.response?.data?.error?.message ||
+          error.response?.data?.msg ||
+          error.response?.data?.message ||
+          error.message
+        }`,
+      );
     }
   }
 
@@ -1145,9 +1146,11 @@ export class HeyGenVideoProvider {
   }
 
   /**
-   * Upload an image file to HeyGen and return its image_key.
-   * This is used for Avatar IV (image_key-based) flows such as AVATAR_PRODUCT.
-   * The caller is responsible for caching the returned key in project data.
+   * Upload an image file to HeyGen and return a key usable as Avatar IV `image_key`.
+   *
+   * Legacy `POST upload.heygen.com/v1/asset` is retired (HTTP 410). We upload via
+   * POST /v3/assets and return the public asset URL so callers that pass the
+   * value through `buildImageUrlFromImageKey` keep working.
    */
   async uploadImageAndGetKey(imagePath: string, filename?: string): Promise<string> {
     if (!this.apiKey) {
@@ -1163,60 +1166,40 @@ export class HeyGenVideoProvider {
     }
 
     try {
-      console.log(`[HeyGen] Uploading image to HeyGen asset API from ${resolvedPath}`);
+      console.log(`[HeyGen] Uploading image to HeyGen v3 /assets from ${resolvedPath}`);
 
-      // Read file into buffer
       const buffer = fs.readFileSync(resolvedPath);
+      const ext = path.extname(resolvedPath).toLowerCase() || '.jpg';
+      const safeName = filename || `avatar_${Date.now()}${ext}`;
 
-      // Detect actual image format from magic bytes (not just extension)
-      // PNG signature: 89 50 4E 47 0D 0A 1A 0A
-      // JPEG signature: FF D8 FF
-      let contentType: 'image/jpeg' | 'image/png';
-      if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-        // PNG file
-        contentType = 'image/png';
-        console.log(`[HeyGen] Detected PNG format (magic bytes)`);
-      } else if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-        // JPEG file
-        contentType = 'image/jpeg';
-        console.log(`[HeyGen] Detected JPEG format (magic bytes)`);
-      } else {
-        // Fallback to extension-based detection
-        const ext = path.extname(resolvedPath).toLowerCase();
-        contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
-        console.log(`[HeyGen] Using extension-based detection: ${contentType}`);
-      }
-
-      // Mirror the working avatar upload flow: send raw binary buffer with appropriate Content-Type
-      const uploadAxios = axios.create({
-        baseURL: 'https://upload.heygen.com/v1',
-        headers: {
-          'X-Api-Key': this.apiKey,
-          'Content-Type': contentType,
-        },
-        timeout: 60000,
+      const form = new FormData();
+      form.append('file', buffer, { filename: safeName });
+      const res = await this.axiosV3.post<any>('/v3/assets', form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
       });
-
-      const response = await uploadAxios.post<any>('/asset', buffer);
-
-      // Handle different response formats (code-wrapped or direct)
-      const responseData = response.data;
-      const data = responseData.code !== undefined ? responseData.data : (responseData as any);
-
-      const imageKey = data?.image_key || data?.id;
+      const data = res.data?.data ?? res.data;
+      const url = data?.url;
+      const assetId = data?.id ?? data?.asset_id ?? data?.assetId;
+      const imageKey =
+        typeof url === 'string' && url.startsWith('http') ? url : assetId ? String(assetId) : null;
 
       if (!imageKey) {
-        console.error('[HeyGen] Image upload response:', JSON.stringify(responseData, null, 2));
-        throw new Error('Failed to get image_key from HeyGen upload response');
+        console.error('[HeyGen] v3 image upload response:', JSON.stringify(res.data, null, 2));
+        throw new Error('Failed to get url/asset_id from HeyGen v3 upload response');
       }
 
-      console.log(`[HeyGen] ✅ Image uploaded to HeyGen. image_key=${imageKey}`);
+      console.log(`[HeyGen] ✅ Image uploaded to HeyGen v3. image_key=${imageKey}`);
       return imageKey;
     } catch (error: any) {
       console.error('[HeyGen] Image upload error:', error.response?.data || error.message);
       throw new Error(
         `Failed to upload image to HeyGen: ${
-          error.response?.data?.msg || error.response?.data?.message || error.message
+          error.response?.data?.error?.message ||
+          error.response?.data?.msg ||
+          error.response?.data?.message ||
+          error.message
         }`,
       );
     }

@@ -1637,25 +1637,41 @@ export class AvatarsService {
     const mimeType: 'image/jpeg' | 'image/png' = ct.includes('png') ? 'image/png' : 'image/jpeg';
     const ext = mimeType === 'image/png' ? 'png' : 'jpg';
 
-    const uploadResponse = await this.heygenProvider.uploadImage(
-      imageBuffer,
-      mimeType,
-      `avatar_finalize_${avatarId}.${ext}`,
-    );
-    if (!uploadResponse.image_key) {
-      throw new Error('HeyGen upload did not return image_key');
+    let imageKey: string;
+    try {
+      const uploadResponse = await this.heygenProvider.uploadImage(
+        imageBuffer,
+        mimeType,
+        `avatar_finalize_${avatarId}.${ext}`,
+      );
+      if (!uploadResponse.image_key) {
+        throw new Error('HeyGen upload did not return image_key');
+      }
+      imageKey = uploadResponse.image_key;
+    } catch (uploadError: any) {
+      // Downstream Avatar IV / v3 pipelines accept http(s) image keys and re-upload.
+      // Prefer failing open on a public GCS URL so "Proceed" is not blocked by HeyGen upload outages.
+      if (imageUrlForHeyGen.startsWith('http://') || imageUrlForHeyGen.startsWith('https://')) {
+        this.logger.warn(
+          `[finalizeAvatarPreview] HeyGen upload failed (${uploadError?.message}); storing source URL as imageKey`,
+          'AvatarsService',
+        );
+        imageKey = imageUrlForHeyGen;
+      } else {
+        throw uploadError;
+      }
     }
 
     await this.databaseService.avatar.update({
       where: { id: avatarId },
       data: {
-        imageKey: uploadResponse.image_key,
+        imageKey,
         generationStatus: 'COMPLETED',
       },
     });
 
-    this.logger.log(`Avatar ${avatarId} finalized with HeyGen image_key`, 'AvatarsService');
-    return { imageKey: uploadResponse.image_key };
+    this.logger.log(`Avatar ${avatarId} finalized with image_key=${imageKey}`, 'AvatarsService');
+    return { imageKey };
   }
 
   /**

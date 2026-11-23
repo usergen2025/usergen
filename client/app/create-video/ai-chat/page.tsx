@@ -8107,9 +8107,9 @@ Use a recent photo of yourself.`}
                     </p>
                   </div>
 
-                  {/* Avatar Preview Image Container - fixed 240px height for reliable display across devices */}
+                  {/* Avatar Preview Image Container - fixed size so mobile doesn't collapse to a gradient line while the image loads */}
                   <div 
-                    className="flex items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
+                    className="flex w-full max-w-full items-center justify-center h-[240px] min-h-[240px] max-h-[240px] mt-[clamp(0.5rem,0.98vh,10px)] rounded-[12px] overflow-hidden p-[2px]"
                     style={{
                     background:
                       'linear-gradient(251.58deg, rgba(255, 255, 255, 0) 0.74%, rgba(255, 255, 255, 0.8) 58.96%), ' +
@@ -8117,7 +8117,7 @@ Use a recent photo of yourself.`}
                         'rgba(231, 57, 19, 0.4) 64.75%, rgba(254, 201, 89, 0.4) 83.76%, rgba(232, 100, 18, 0.4) 93.57%)',
                     }}
                   >
-                    <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
+                    <div className="relative h-[236px] min-h-[236px] max-h-[236px] w-full min-w-0 bg-white rounded-[10px] overflow-hidden flex items-center justify-center">
                       {isGeneratingAvatarPreview ? (
                         <div className="flex flex-col items-center justify-center gap-3">
                           <div className="w-8 h-8 border-2 border-[#E86412] border-t-transparent rounded-full animate-spin" />
@@ -8129,7 +8129,7 @@ Use a recent photo of yourself.`}
                         <img
                           src={avatarPreviewUrl}
                           alt="Avatar Preview"
-                          className="h-[236px] min-h-[236px] max-h-[236px] w-auto max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                          className="h-[236px] min-h-[236px] max-h-[236px] w-full max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
                           onClick={() => {
                             setAvatarPreviewModalOpen(true);
                           }}
