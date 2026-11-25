@@ -61,25 +61,88 @@ function normalizeStyleToBackend(style?: string): string | undefined {
   return styleMap[style.toLowerCase()] || style.toUpperCase().replace(/-/g, '_');
 }
 
-/** Preset pose/framing prompts only (no lighting/background). */
+/** Preset pose/framing prompts — spatial composition only, no mood or lighting. */
 const PRESET_POSE_PROMPTS: Record<string, string> = {
-  'front-facing': 'Front-facing waist-up portrait, person looking directly at camera, professional video look, simple talking-to-camera style',
-  'wide-angle-front': 'Wide-angle front shot, natural creator look, person facing camera, casual professional aesthetic',
-  'standing-with-mic': 'Person standing with microphone, presenter stage vibe, front-facing',
-  'side-camera-angle': 'Person at slight angle to camera, cinematic conversational feel',
-  'podcast-setup': 'Person seated at desk with microphone and headphones, studio look',
+  'front-facing': 'Front-facing waist-up portrait, person looking directly at camera, simple talking-to-camera framing',
+  'wide-angle-front': 'Wide-angle front shot, person facing camera, more background visible',
+  'standing-with-mic': 'Person standing with microphone, presenter framing, front-facing',
+  'side-camera-angle': 'Person at slight angle to camera, conversational framing',
+  'podcast-setup': 'Person seated at desk with microphone and headphones, studio framing',
 };
 
-/** Fixed indoor/studio backgrounds per preset — never b-roll locations. */
-const PRESET_BACKGROUND_PROMPTS: Record<string, string> = {
-  'front-facing': 'neutral soft gray studio backdrop, indoor, no outdoor elements',
-  'wide-angle-front': 'clean minimal creator studio background, soft gradient wall',
-  'standing-with-mic':
-    'indoor presentation stage or neutral studio wall, professional microphone visible, no audience, no street, no windows to city',
-  'side-camera-angle': 'neutral indoor studio, shallow depth, plain backdrop',
-  'podcast-setup':
-    'indoor podcast studio, desk, broadcast microphone, headphones, acoustic panels or bookshelf blur, no outdoor scenery, no market, no traffic',
+/** Structural props per preset — elements that define the preset's identity (desk, mic, panels). */
+const PRESET_STRUCTURAL_PROPS: Record<string, string> = {
+  'front-facing': '',
+  'wide-angle-front': '',
+  'standing-with-mic': 'professional microphone visible',
+  'side-camera-angle': '',
+  'podcast-setup': 'desk, broadcast microphone, headphones, acoustic panels or bookshelf blur',
 };
+
+/**
+ * Mood bucket classification — maps mood keywords from visual_style_guide to
+ * atmosphere tokens (background tone, lighting style, expression cue).
+ * Rule-based: deterministic, fast, no LLM call, never hallucinates objects.
+ */
+type MoodBucket = 'somber' | 'serious' | 'neutral' | 'warm' | 'bright' | 'dramatic';
+
+interface AtmosphereTokens {
+  backgroundTone: string;
+  lighting: string;
+  colorTemp: string;
+  expressionCue: string;
+}
+
+const MOOD_ATMOSPHERE_MAP: Record<MoodBucket, AtmosphereTokens> = {
+  somber: {
+    backgroundTone: 'dark muted solid background',
+    lighting: 'dim low-key studio lighting',
+    colorTemp: 'cool desaturated tones',
+    expressionCue: 'somber serious expression',
+  },
+  serious: {
+    backgroundTone: 'deep neutral solid background',
+    lighting: 'even controlled studio lighting with subtle contrast',
+    colorTemp: 'neutral muted tones',
+    expressionCue: 'composed serious expression',
+  },
+  neutral: {
+    backgroundTone: 'clean neutral solid background',
+    lighting: 'even balanced studio lighting',
+    colorTemp: 'neutral tones',
+    expressionCue: 'natural composed expression',
+  },
+  warm: {
+    backgroundTone: 'warm-toned clean solid background',
+    lighting: 'warm soft studio lighting',
+    colorTemp: 'warm inviting tones',
+    expressionCue: 'friendly approachable expression',
+  },
+  bright: {
+    backgroundTone: 'bright clean solid background',
+    lighting: 'bright warm studio lighting',
+    colorTemp: 'warm saturated tones',
+    expressionCue: 'confident energetic expression',
+  },
+  dramatic: {
+    backgroundTone: 'deep dark solid background',
+    lighting: 'high-contrast dramatic studio lighting',
+    colorTemp: 'strong contrast with selective color',
+    expressionCue: 'intense focused expression',
+  },
+};
+
+const MOOD_KEYWORD_BUCKETS: Array<{ bucket: MoodBucket; keywords: RegExp }> = [
+  { bucket: 'somber', keywords: /\b(somber|tragic|grief|mourning|sad|melanchol|loss|death|suicide|funeral|solemn|dark|grim|bleak|heartbreak|devastat)/i },
+  { bucket: 'serious', keywords: /\b(serious|grave|critical|urgent|investigat|documentary|factual|sobering|important|concern|warning|crisis|issue|awareness|injustice)/i },
+  { bucket: 'dramatic', keywords: /\b(dramatic|intense|powerful|bold|impact|thriller|suspense|tension|climax|conflict|struggle|fierce)/i },
+  { bucket: 'bright', keywords: /\b(upbeat|energetic|exciting|fun|celebrat|party|vibrant|lively|dynamic|enthusias|joy|cheer|happy|festiv|triumph|victory|success)/i },
+  { bucket: 'warm', keywords: /\b(warm|friendly|calm|peaceful|gentle|kind|comfort|cozy|relaxed|trust|wholesome|heartfelt|inspir|hope|gratitude|tender|caring|love)/i },
+];
+
+/** Hard safety rail appended to every avatar preset prompt — prevents object injection. */
+const AVATAR_BACKGROUND_SAFETY_RAIL =
+  'plain clean background only, no products, no vehicles, no outdoor elements, no animated objects, no scene-specific props, no street elements, no crowds, background must remain simple and uncluttered';
 
 const AVATAR_PLATE_STUDIO_SUFFIX =
   ', avatar plate background must be studio or indoor only, no outdoor street scene, no crowd';
@@ -421,6 +484,7 @@ export class AvatarsService {
 
   /**
    * Lighting / palette / abstract mood only — for avatar image prompts (not b-roll locations).
+   * Used by the "random" preset path where the LLM-generated prompt already carries context.
    */
   private formatAvatarLightingFromStyleGuide(visualStyleGuide: any): string {
     if (!visualStyleGuide || typeof visualStyleGuide !== 'object') {
@@ -442,15 +506,64 @@ export class AvatarsService {
     return parts.join(', ');
   }
 
+  /**
+   * Classify mood text into a deterministic bucket for atmosphere resolution.
+   * Scans visual_style_guide.mood, narration_delivery.overall_emotion, and color_palette
+   * for keyword matches. Falls back to 'neutral' when nothing matches.
+   */
+  private classifyMoodBucket(visualStyleGuide: any, script?: any): MoodBucket {
+    const moodText = [
+      String(visualStyleGuide?.mood || visualStyleGuide?.Mood || ''),
+      String(visualStyleGuide?.visual_tone || visualStyleGuide?.visualTone || ''),
+      String(visualStyleGuide?.lighting || visualStyleGuide?.Lighting || ''),
+      String(script?.narration_delivery?.overall_emotion || ''),
+    ].join(' ').toLowerCase();
+
+    for (const { bucket, keywords } of MOOD_KEYWORD_BUCKETS) {
+      if (keywords.test(moodText)) return bucket;
+    }
+    return 'neutral';
+  }
+
+  /**
+   * Rule-based contextual atmosphere resolver.
+   * Returns background tone + lighting + color temperature + expression cue
+   * derived from the script's mood context. Never outputs objects or locations.
+   */
+  private resolveContextualAtmosphere(
+    visualStyleGuide: any,
+    script?: any,
+  ): string {
+    const bucket = this.classifyMoodBucket(visualStyleGuide, script);
+    const tokens = MOOD_ATMOSPHERE_MAP[bucket];
+
+    const palette = String(
+      visualStyleGuide?.color_palette || visualStyleGuide?.colorPalette || '',
+    ).trim().replace(LOCATION_MOOD_PATTERN, '').replace(/\s+/g, ' ').trim();
+
+    const parts = [
+      tokens.backgroundTone,
+      tokens.lighting,
+      palette ? `color palette ${palette}` : tokens.colorTemp,
+      tokens.expressionCue,
+    ];
+    return parts.join(', ');
+  }
+
+  /**
+   * Build a named preset avatar prompt with contextual atmosphere.
+   * Compose: [preset framing] + [structural props] + [contextual atmosphere] + [safety rail]
+   */
   private buildNamedPresetAvatarPrompt(
     presetId: string,
     visualStyleGuide: any,
+    script?: any,
   ): string {
     const pose = PRESET_POSE_PROMPTS[presetId] || PRESET_POSE_PROMPTS['front-facing'];
-    const background =
-      PRESET_BACKGROUND_PROMPTS[presetId] || PRESET_BACKGROUND_PROMPTS['front-facing'];
-    const lighting = this.formatAvatarLightingFromStyleGuide(visualStyleGuide);
-    return `${pose}, ${background}, ${lighting}, solid controlled background, no outdoor street scene, no crowd`;
+    const structuralProps = PRESET_STRUCTURAL_PROPS[presetId] || '';
+    const atmosphere = this.resolveContextualAtmosphere(visualStyleGuide, script);
+    const propsSuffix = structuralProps ? `, ${structuralProps}` : '';
+    return `${pose}${propsSuffix}, ${atmosphere}, ${AVATAR_BACKGROUND_SAFETY_RAIL}`;
   }
 
   /**
@@ -692,12 +805,10 @@ export class AvatarsService {
 
     if (PRESET_POSE_PROMPTS[preset]) {
       if (isHuman) {
-        return `${base} ${this.buildNamedPresetAvatarPrompt(preset, visualGuide)}`;
+        return `${base} ${this.buildNamedPresetAvatarPrompt(preset, visualGuide, script)}`;
       }
-      const lighting = this.formatAvatarLightingFromStyleGuide(visualGuide);
-      const background =
-        PRESET_BACKGROUND_PROMPTS[preset] || PRESET_BACKGROUND_PROMPTS['front-facing'];
-      return `${base} Front-facing, looking directly at camera, ${background}, ${lighting}, solid controlled background, no outdoor street scene, no crowd`;
+      const atmosphere = this.resolveContextualAtmosphere(visualGuide, script);
+      return `${base} Front-facing, looking directly at camera, ${atmosphere}, ${AVATAR_BACKGROUND_SAFETY_RAIL}`;
     }
 
     return base;
@@ -924,7 +1035,7 @@ export class AvatarsService {
         avatarVisualStylePreset && PRESET_POSE_PROMPTS[avatarVisualStylePreset]
           ? avatarVisualStylePreset
           : 'front-facing';
-      effectivePrompt = `${avatarImagePrompt}, ${this.buildNamedPresetAvatarPrompt(presetForPose, visualGuide)}`;
+      effectivePrompt = `${avatarImagePrompt}, ${this.buildNamedPresetAvatarPrompt(presetForPose, visualGuide, script)}`;
     } else if (
       avatarVisualStylePreset === 'random' ||
       !avatarVisualStylePreset ||
@@ -942,7 +1053,7 @@ export class AvatarsService {
       effectivePrompt = `${avatarImagePrompt}, ${lighting}${frontFacingSuffix}${sceneHint}`;
     } else {
       effectivePrompt =
-        this.buildNamedPresetAvatarPrompt(avatarVisualStylePreset, visualGuide) + sceneHint;
+        this.buildNamedPresetAvatarPrompt(avatarVisualStylePreset, visualGuide, script) + sceneHint;
     }
 
     return this.appendAvatarStyleSuffixes(

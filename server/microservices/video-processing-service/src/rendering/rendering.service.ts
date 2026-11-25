@@ -86,7 +86,18 @@ export class RenderingService {
   }
 
   /**
+   * Extract narration_delivery.overall_emotion from project script.
+   */
+  private extractScriptEmotion(script: unknown): string | undefined {
+    if (!script || typeof script !== 'object') return undefined;
+    const s = script as Record<string, unknown>;
+    const nd = s.narration_delivery as Record<string, unknown> | undefined;
+    return typeof nd?.overall_emotion === 'string' ? nd.overall_emotion : undefined;
+  }
+
+  /**
    * HeyGen avatar video: legacy /video/av4 or v3 pipelines + unified polling.
+   * Automatically injects script emotion into the request for expressiveness + motion.
    */
   async generateAndPollAvatarVideoUnified(
     project: { id: string; script?: unknown; voiceId?: string | null; metadata?: unknown },
@@ -98,11 +109,23 @@ export class RenderingService {
     const pipelineMode = this.heygenVideoProvider.getAvatarPipelineMode();
     const engineType = this.heygenVideoProvider.getAvatarEngineType();
     const uploadedAudioId = request.audio_asset_id?.trim();
+
+    // Inject emotion from script if not already set on request
+    if (!request.emotion) {
+      const parsedScript = typeof project.script === 'string'
+        ? (() => { try { return JSON.parse(project.script as string); } catch { return project.script; } })()
+        : project.script;
+      const emotion = this.extractScriptEmotion(parsedScript);
+      if (emotion) {
+        request.emotion = emotion;
+      }
+    }
+
     await this.projectLog
       .logProject(
         project.id,
         'INFO',
-        `HeyGen video start: pipeline=${pipelineMode}, engine=${engineType}, stitched_audio_upload=${uploadedAudioId ? 'yes' : 'no'}`,
+        `HeyGen video start: pipeline=${pipelineMode}, engine=${engineType}, stitched_audio_upload=${uploadedAudioId ? 'yes' : 'no'}, emotion=${request.emotion || 'none'}`,
         { op: 'heygen_video' },
       )
       .catch(() => {});

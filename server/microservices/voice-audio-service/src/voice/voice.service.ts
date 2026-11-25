@@ -51,31 +51,52 @@ export class VoiceService {
   }
 
   /**
-   * Get language-specific voice settings for optimal quality
+   * Emotion-to-voice-settings mapping.
+   * Adjusts stability, style, and similarity_boost to convey the right tone.
+   * Lower stability = more expressive/emotional; higher style = more dramatic delivery.
+   */
+  private static readonly EMOTION_VOICE_SETTINGS: Record<string, {
+    stability: number;
+    similarity_boost: number;
+    style: number;
+    use_speaker_boost: boolean;
+  }> = {
+    somber:        { stability: 0.65, similarity_boost: 0.80, style: 0.35, use_speaker_boost: true },
+    serious:       { stability: 0.60, similarity_boost: 0.80, style: 0.20, use_speaker_boost: true },
+    neutral:       { stability: 0.50, similarity_boost: 0.75, style: 0.00, use_speaker_boost: true },
+    warm:          { stability: 0.45, similarity_boost: 0.75, style: 0.30, use_speaker_boost: true },
+    upbeat:        { stability: 0.40, similarity_boost: 0.70, style: 0.45, use_speaker_boost: true },
+    dramatic:      { stability: 0.35, similarity_boost: 0.75, style: 0.50, use_speaker_boost: true },
+    inspirational: { stability: 0.45, similarity_boost: 0.75, style: 0.40, use_speaker_boost: true },
+    playful:       { stability: 0.35, similarity_boost: 0.70, style: 0.50, use_speaker_boost: true },
+  };
+
+  /**
+   * Get voice settings optimized for language and emotional context.
+   * Emotion from script's narration_delivery.overall_emotion drives expressiveness.
    */
   private getVoiceSettingsForLanguage(
-    language?: 'english' | 'hindi' | 'hinglish'
+    language?: 'english' | 'hindi' | 'hinglish',
+    emotion?: string,
   ): {
     stability: number;
     similarity_boost: number;
     use_speaker_boost: boolean;
     style?: number;
   } {
-    const baseSettings = {
-      stability: 0.5,
-      similarity_boost: 0.75,
-      use_speaker_boost: true,
-      style: 0.0,
-    };
+    const emotionKey = (emotion || 'neutral').toLowerCase().trim();
+    const emotionSettings = VoiceService.EMOTION_VOICE_SETTINGS[emotionKey]
+      || VoiceService.EMOTION_VOICE_SETTINGS['neutral'];
 
-    // Hindi/Hinglish might need different settings for accent clarity
+    const baseSettings = { ...emotionSettings };
+
+    // Hindi/Hinglish: bump stability and similarity for accent clarity
     if (language === 'hindi' || language === 'hinglish') {
-      return {
-        ...baseSettings,
-        stability: 0.6,  // Slightly more stable for accent clarity
-        similarity_boost: 0.85,  // Higher similarity for accent preservation
-      };
+      baseSettings.stability = Math.min(1.0, baseSettings.stability + 0.10);
+      baseSettings.similarity_boost = Math.min(1.0, baseSettings.similarity_boost + 0.10);
     }
+
+    console.log(`[VoiceService] Voice settings for emotion="${emotionKey}", language="${language || 'default'}": stability=${baseSettings.stability}, style=${baseSettings.style}, similarity=${baseSettings.similarity_boost}`);
 
     return baseSettings;
   }
@@ -463,6 +484,7 @@ export class VoiceService {
       model_id?: string;
       output_format?: string;
       language?: 'english' | 'hindi' | 'hinglish';
+      emotion?: string;
       voice_settings?: {
         stability?: number;
         similarity_boost?: number;
@@ -499,8 +521,8 @@ export class VoiceService {
       const filename = `scene_${scene.sceneNumber}_${projectId}_${Date.now()}.mp3`;
       
       try {
-        // Merge language-specific settings with provided settings
-        const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
+        // Merge language + emotion-specific settings with provided settings
+        const languageSettings = this.getVoiceSettingsForLanguage(options?.language, options?.emotion);
         const mergedSettings = {
           ...languageSettings,
           ...options?.voice_settings, // User-provided settings override defaults
@@ -681,6 +703,7 @@ export class VoiceService {
       model_id?: string;
       output_format?: string;
       language?: 'english' | 'hindi' | 'hinglish';
+      emotion?: string;
       voice_settings?: {
         stability?: number;
         similarity_boost?: number;
@@ -726,7 +749,7 @@ export class VoiceService {
     const applyFadeOut = options?.applyFadeOutToLastScene !== false;
     const fadeOutDuration = options?.fadeOutDuration ?? 1.0;
 
-    const languageSettings = this.getVoiceSettingsForLanguage(options?.language);
+    const languageSettings = this.getVoiceSettingsForLanguage(options?.language, options?.emotion);
     const mergedSettings = {
       ...languageSettings,
       ...options?.voice_settings,

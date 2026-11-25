@@ -420,6 +420,13 @@ export class VideoGenerationProcessor extends WorkerHost {
 
       await job.updateProgress(35);
 
+      // Extract emotion from script for HeyGen expressiveness + motion
+      const parsedScript = typeof (project as any).script === 'string'
+        ? (() => { try { return JSON.parse((project as any).script); } catch { return null; } })()
+        : (project as any).script;
+      const scriptEmotion =
+        parsedScript?.narration_delivery?.overall_emotion || undefined;
+
       const start = await this.heygenVideoProvider.generateAvatarVideoUnified(
         {
           image_key: heygenImageKey,
@@ -428,6 +435,7 @@ export class VideoGenerationProcessor extends WorkerHost {
           audio_url: audioUrl || undefined,
           video_orientation: 'portrait',
           fit: 'cover',
+          emotion: scriptEmotion,
         },
         v3Ctx,
       );

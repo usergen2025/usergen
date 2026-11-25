@@ -461,6 +461,7 @@ export class VoiceController {
       model_id?: string;
       output_format?: string;
       language?: 'english' | 'hindi' | 'hinglish';
+      emotion?: string;
       includeWordTimestamps?: boolean;
     },
     @Request() req: any,
@@ -483,6 +484,7 @@ export class VoiceController {
       model_id: body.model_id,
       output_format: body.output_format,
       language: body.language,
+      emotion: body.emotion,
     };
 
     const audioFiles = body.includeWordTimestamps

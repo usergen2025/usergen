@@ -2443,11 +2443,30 @@ Your JSON output MUST include at the top level: "avatar_image_prompt": "<full pr
 - This is a single string: a complete, ready-to-use prompt for the image model (no structured fields or enums).
 - Generate it entirely from the video topic, style, and visual_style_guide. Do not use placeholders.
 - Style-specific for this video: ${styleGuide}
-- CRITICAL - AVATAR BACKGROUND vs B-ROLL: visual_style_guide mood and lighting apply to b-roll and overall video atmosphere. The avatar_image_prompt MUST describe a neutral or indoor studio background only (gray backdrop, podcast studio, presentation stage). NEVER put streets, markets, crowds, traffic, or outdoor city scenes in avatar_image_prompt — those belong in b-roll scenes only.
-- Rules: No scenic or decorative backgrounds in avatar_image_prompt (no mountains, traffic, markets, streets). Neutral studio or soft gradient background. Lighting and color palette from visual_style_guide may be referenced for mood only.
-- Example format: "avatar_image_prompt": "Front-facing waist-up portrait, person looking directly at camera, neutral gray studio background, soft even lighting, professional video look" (for HALF_N_HALF) or "Front-facing close-up, person at streaming desk looking straight at camera, neutral dark gray studio background, soft lighting" (for ALTERNATE).
+- CRITICAL - AVATAR BACKGROUND vs B-ROLL: The avatar_image_prompt MUST describe a plain, clean, uncluttered studio background. NEVER put streets, markets, crowds, traffic, products, vehicles, or outdoor city scenes in avatar_image_prompt — those belong in b-roll scenes only.
+- The avatar background tone should match the video's emotional context: darker/muted for somber topics, warmer for friendly topics, brighter for upbeat topics — but always a plain solid background without objects or scene elements.
+- Rules: No scenic or decorative backgrounds in avatar_image_prompt (no mountains, traffic, markets, streets, products). Plain studio background that adapts its color tone to the mood. Lighting must match the narration_delivery emotion.
+- Example format: "avatar_image_prompt": "Front-facing waist-up portrait, person looking directly at camera, plain clean studio background, context-appropriate lighting, talking-to-camera framing" (for HALF_N_HALF) or "Front-facing close-up, person at streaming desk looking straight at camera, plain clean studio background, mood-appropriate lighting" (for ALTERNATE).
+- The avatar background must remain a plain, clean, uncluttered studio backdrop. It should NOT be hardcoded gray — instead adapt its tone (darker for somber topics, warmer for friendly topics, brighter for upbeat topics) while keeping it simple and free of objects, products, or scene elements.
 `;
     }
+
+  const narrationDeliveryInstruction = `
+NARRATION DELIVERY (REQUIRED):
+Your JSON output MUST include at the top level: "narration_delivery": { "overall_emotion": "<emotion>", "suggested_expression": "<expression>" }.
+- Analyze the video topic and determine the appropriate emotional tone for the narration.
+- overall_emotion: One of "somber", "serious", "neutral", "warm", "upbeat", "dramatic", "inspirational", "playful". Choose based on the topic's nature:
+  * Tragic/sad/grief/death topics → "somber"
+  * News/documentary/factual/investigative → "serious"
+  * Business/corporate/educational → "neutral"
+  * Friendly/lifestyle/wellness/personal → "warm"
+  * Celebratory/fun/promotional/exciting → "upbeat"
+  * Intense/thriller/powerful/conflict → "dramatic"
+  * Motivational/hope/achievement → "inspirational"
+  * Casual/fun/lighthearted/comedy → "playful"
+- suggested_expression: A brief expression cue for the avatar's face (e.g. "somber serious", "composed professional", "warm friendly", "confident energetic", "gentle empathetic").
+- This field drives voice tone and avatar visual mood. It must match the topic's emotional gravity.
+`;
 
   const visualMode = visualIntent?.visualMode ?? 'photoreal';
   const artMedium = visualIntent?.artMedium;
@@ -2580,7 +2599,11 @@ Structure Your Output in This JSON Format:
     "visual_tone": "Describe documentary tone (e.g., 'Documentary photograph, authentic local life, unretouched')",
     "recurring_elements": "List any visual elements that should appear consistently (e.g., 'Indian street vendors, markets, urban infrastructure')"
   },
-  "avatar_image_prompt": "Only include this key when the video uses an avatar. Full prompt string for the avatar image, e.g. 'Waist-up portrait, neutral gray background, soft lighting matching the video theme, person centered for lower half of frame'.",
+  "avatar_image_prompt": "Only include this key when the video uses an avatar. Full prompt string for the avatar image, e.g. 'Waist-up portrait, plain clean studio background, context-appropriate lighting, person centered for lower half of frame'.",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful — based on the topic's emotional gravity",
+    "suggested_expression": "Brief avatar expression cue matching the emotion (e.g. 'somber serious', 'warm friendly', 'confident energetic')"
+  },
   "background_music": {
     "query": "upbeat corporate promo",
     "genres": ["Corporate", "Pop"],
@@ -2691,7 +2714,11 @@ Output Format:
     "visual_tone": "Describe documentary tone (e.g., 'Documentary photograph, authentic')",
     "recurring_elements": "List any visual elements that should appear consistently"
   },
-  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. close-up, person at streaming desk, neutral background, soft lighting).",
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. close-up, person at streaming desk, plain clean background, mood-appropriate lighting).",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief avatar expression cue (e.g. 'composed professional', 'gentle empathetic')"
+  },
   "background_music": {
     "query": "soft emotional cinematic",
     "genres": ["Cinematic", "Ambient"],
@@ -2802,7 +2829,11 @@ Output Format:
     "visual_tone": "Describe documentary tone for b-roll (e.g., 'Documentary photograph, authentic')",
     "recurring_elements": "List any visual elements that should appear consistently in backgrounds"
   },
-  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. waist-up portrait, neutral background, soft lighting for cutout overlay).",
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. waist-up portrait, plain clean background, mood-appropriate lighting for cutout overlay).",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief avatar expression cue (e.g. 'somber serious', 'warm friendly')"
+  },
   "background_music": {
     "query": "documentary ambient india",
     "genres": ["Ambient", "World"],
@@ -2900,7 +2931,11 @@ Structure Your Output in This JSON Format:
     "time_of_day": "Specify consistent time",
     "visual_tone": "Professional avatar presentation"
   },
-  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. full-screen avatar, neutral background, soft lighting).",
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. full-screen avatar, plain clean background, mood-appropriate lighting).",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief avatar expression cue (e.g. 'composed serious', 'confident energetic')"
+  },
   "scenes": [
     {
       "scene_number": 1,
@@ -2955,6 +2990,10 @@ Structure Your Output in This JSON Format:
     "visual_tone": "Professional 3D animated avatar presentation"
   },
   "avatar_image_prompt": "Short 3D animated style only (e.g. '3D animated character' or 'stylized 3D animated look'). No position, pose, or setup.",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief avatar expression cue (e.g. 'composed professional', 'warm friendly')"
+  },
   "scenes": [
     {
       "scene_number": 1,
@@ -3029,6 +3068,10 @@ Structure Your Output in This JSON Format:
     "camera_style": "Mixed TVC / e-commerce cinematography",
     "time_of_day": "Consistent across scenes",
     "visual_tone": "Photorealistic commercial product ad"
+  },
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief expression cue matching the emotion (e.g. 'confident energetic', 'warm friendly')"
   },
   "scenes": [
     {
@@ -3108,6 +3151,10 @@ Structure Your Output in This JSON Format:
     "camera_style": "Documentary style, natural perspective",
     "time_of_day": "Specify consistent time",
     "visual_tone": "Documentary photograph, photorealistic"
+  },
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief expression cue matching the emotion (e.g. 'composed serious', 'warm friendly')"
   },
   "scenes": [
     {
@@ -3201,7 +3248,11 @@ Structure Your Output in This JSON Format:
     "time_of_day": "Specify consistent time",
     "visual_tone": "Professional product advertisement"
   },
-  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. presenter with product, neutral background, soft lighting).",
+  "avatar_image_prompt": "Full prompt string for the avatar image, matching visual_style_guide and style (e.g. presenter with product, plain clean background, mood-appropriate lighting).",
+  "narration_delivery": {
+    "overall_emotion": "One of: somber, serious, neutral, warm, upbeat, dramatic, inspirational, playful",
+    "suggested_expression": "Brief avatar expression cue (e.g. 'confident professional', 'warm friendly')"
+  },
   "scenes": [
     {
       "scene_number": 1,
@@ -3248,7 +3299,7 @@ Guidelines:
   const voiceoverQualityBlock = this.buildVoiceoverQualitySystemBlock(language, style);
 
   // Voiceover quality first, then specificity, then style-specific prompt
-  return voiceoverQualityBlock + SPECIFICITY_RULE + basePrompt + assetContext + urlContext + avatarContext + regionContext;
+  return voiceoverQualityBlock + SPECIFICITY_RULE + basePrompt + assetContext + urlContext + avatarContext + narrationDeliveryInstruction + regionContext;
 }
 
   /**

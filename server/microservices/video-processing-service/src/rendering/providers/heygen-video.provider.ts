@@ -77,6 +77,56 @@ export interface HeyGenAvatarIVRequest {
   fit?: 'cover' | 'contain';
   custom_motion_prompt?: string;
   enhance_custom_motion_prompt?: boolean;
+  /** Emotion from script narration_delivery — drives expressiveness + motion_prompt */
+  emotion?: string;
+}
+
+/**
+ * Map narration_delivery.overall_emotion → HeyGen expressiveness level.
+ * Somber/serious topics get lower expressiveness to avoid cheerful avatar behaviour.
+ */
+function mapEmotionToExpressiveness(emotion?: string): 'high' | 'medium' | 'low' {
+  if (!emotion) return 'medium';
+  switch (emotion.toLowerCase().trim()) {
+    case 'somber':
+    case 'serious':
+      return 'low';
+    case 'dramatic':
+    case 'inspirational':
+    case 'upbeat':
+    case 'playful':
+      return 'high';
+    case 'warm':
+    case 'neutral':
+    default:
+      return 'medium';
+  }
+}
+
+/**
+ * Generate a motion_prompt hint from the emotion to guide avatar body language.
+ * Returns undefined when no specific motion guidance is needed.
+ */
+function buildEmotionMotionPrompt(emotion?: string): string | undefined {
+  if (!emotion) return undefined;
+  switch (emotion.toLowerCase().trim()) {
+    case 'somber':
+      return 'Minimal movement, still and composed, subtle head nods only, solemn delivery';
+    case 'serious':
+      return 'Measured steady gestures, composed delivery, controlled movement';
+    case 'dramatic':
+      return 'Emphatic gestures, strong deliberate movements, impactful pauses';
+    case 'upbeat':
+      return 'Energetic natural gestures, lively movement, enthusiastic delivery';
+    case 'inspirational':
+      return 'Warm confident gestures, open body language, motivating delivery';
+    case 'playful':
+      return 'Animated expressive gestures, light cheerful movement';
+    case 'warm':
+      return 'Gentle natural gestures, friendly open body language';
+    default:
+      return undefined;
+  }
 }
 
 export interface HeyGenAvatarIVResponse {
@@ -1003,15 +1053,21 @@ export class HeyGenVideoProvider {
         : 'v3_tts';
     console.log(`[HeyGen v3] image video mode: ${modeTag}, engine=${engine}`);
 
+    const emotionExpressiveness = mapEmotionToExpressiveness(request.emotion);
+    const emotionMotion = buildEmotionMotionPrompt(request.emotion);
+    const motionPrompt = request.custom_motion_prompt || emotionMotion;
+
+    console.log(`[HeyGen v3] emotion="${request.emotion || 'none'}", expressiveness=${emotionExpressiveness}, motionPrompt=${motionPrompt ? 'yes' : 'none'}`);
+
     const videoId = await this.createV3ImageVideo({
       imageAssetId,
       title: request.video_title || `Video ${ctx.projectId}`,
       resolution: '1080p',
       aspectRatio: request.video_orientation === 'landscape' ? '16:9' : '9:16',
       fit: request.fit || 'cover',
-      motionPrompt: request.custom_motion_prompt,
+      motionPrompt,
       engine: { type: engine },
-      ...(engine !== 'avatar_v' ? { expressiveness: 'medium' as const } : {}),
+      ...(engine !== 'avatar_v' ? { expressiveness: emotionExpressiveness } : {}),
       ...audioParams,
     });
 
@@ -1047,14 +1103,18 @@ export class HeyGenVideoProvider {
         : 'v3_tts';
     console.log(`[HeyGen v3] photo avatar video mode: ${modeTag}, engine=${engine}`);
 
+    const photoEmotionExpressiveness = mapEmotionToExpressiveness(request.emotion);
+    const photoEmotionMotion = buildEmotionMotionPrompt(request.emotion);
+    const photoMotionPrompt = request.custom_motion_prompt || photoEmotionMotion;
+
     const videoId = await this.createV3AvatarVideo({
       avatarId,
       title: request.video_title || `Video ${ctx.projectId}`,
       resolution: '1080p',
       aspectRatio: request.video_orientation === 'landscape' ? '16:9' : '9:16',
-      motionPrompt: request.custom_motion_prompt,
+      motionPrompt: photoMotionPrompt,
       engine: { type: engine },
-      ...(engine !== 'avatar_v' ? { expressiveness: 'medium' as const } : {}),
+      ...(engine !== 'avatar_v' ? { expressiveness: photoEmotionExpressiveness } : {}),
       ...audioParams,
     });
 
