@@ -224,10 +224,10 @@ export class HeyGenVideoProvider {
 
   /** Pipeline mode — see HEYGEN_AVATAR_PIPELINE in env.example */
   getAvatarPipelineMode(): HeyGenPipelineMode {
-    const v = (this.configService.get<string>('HEYGEN_AVATAR_PIPELINE') || 'legacy_av4').toLowerCase();
-    if (v === 'v3_image_video') return 'v3_image_video';
+    const v = (this.configService.get<string>('HEYGEN_AVATAR_PIPELINE') || 'v3_image_video').toLowerCase();
     if (v === 'v3_photo_avatar') return 'v3_photo_avatar';
-    return 'legacy_av4';
+    if (v === 'legacy_av4') return 'legacy_av4';
+    return 'v3_image_video';
   }
 
   /** Engine type for v3 pipelines — see HEYGEN_AVATAR_ENGINE in env.example */
@@ -236,9 +236,9 @@ export class HeyGenVideoProvider {
     return v === 'avatar_v' ? 'avatar_v' : 'avatar_iv';
   }
 
-  /** Whether v3 failures fall back to legacy_av4 (default: true). */
+  /** Whether v3 failures fall back to legacy_av4 (default: false — av4 is retired). */
   isFallbackEnabled(): boolean {
-    return this.configService.get<string>('HEYGEN_V3_FALLBACK_TO_LEGACY') !== 'false';
+    return this.configService.get<string>('HEYGEN_V3_FALLBACK_TO_LEGACY') === 'true';
   }
 
   private logV3Failure(projectId: string | undefined, error: unknown): void {
@@ -1096,16 +1096,23 @@ export class HeyGenVideoProvider {
     );
 
     if (pipeline === 'legacy_av4') {
+      console.warn(
+        '[HeyGen] HEYGEN_AVATAR_PIPELINE=legacy_av4 is retired (POST /v2/video/av4/generate → 410). Prefer v3_image_video.',
+      );
       const legacy = await this.generateAvatarIVVideo(request);
       return { video_id: legacy.video_id, useV3Polling: false, pipeline: 'legacy_av4' };
     }
 
     if (!this.canUseV3Pipeline(pipeline, v3Context, request)) {
-      console.warn(
-        `[HeyGen] HEYGEN_AVATAR_PIPELINE=${pipeline} but missing v3Context or audio/TTS inputs; using legacy_av4`,
-      );
-      const legacy = await this.generateAvatarIVVideo(request);
-      return { video_id: legacy.video_id, useV3Polling: false, pipeline: 'legacy_av4' };
+      const msg =
+        `HEYGEN_AVATAR_PIPELINE=${pipeline} but missing v3Context or audio/TTS inputs ` +
+        '(need audio_asset_id/audio_url, or script+voice_id)';
+      if (fallbackEnabled) {
+        console.warn(`[HeyGen] ${msg}; falling back to legacy_av4 (retired — may 410)`);
+        const legacy = await this.generateAvatarIVVideo(request);
+        return { video_id: legacy.video_id, useV3Polling: false, pipeline: 'legacy_av4' };
+      }
+      throw new Error(msg);
     }
 
     try {
@@ -1116,6 +1123,7 @@ export class HeyGenVideoProvider {
     } catch (e) {
       if (fallbackEnabled) {
         this.logV3Failure(v3Context?.projectId, e);
+        console.warn('[HeyGen] v3 failed; falling back to legacy_av4 (retired — may 410)');
         const legacy = await this.generateAvatarIVVideo(request);
         return { video_id: legacy.video_id, useV3Polling: false, pipeline: 'legacy_av4' };
       }
