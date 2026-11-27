@@ -466,12 +466,20 @@ export class VideoTranslationService {
     );
 
     await notify('active', 20, { phase: 'heygen_translate' });
+    const meta =
+      project.metadata && typeof project.metadata === 'object' && !Array.isArray(project.metadata)
+        ? (project.metadata as Record<string, unknown>)
+        : {};
+    // Uploaded homepage videos already contain their own music. Let HeyGen
+    // separate that bed and mix it back. Generated single-clip videos still
+    // strip it here and mix project.backgroundMusic after the stitch.
+    const keepSourceMusic = meta.generationFlow === 'UPLOADED_TRANSLATION';
     const translationId = await this.heygenVideoProvider.createVideoTranslation({
       videoUrl: publicUrl,
       outputLanguage: language,
       mode: 'precision',
       translateAudioOnly: false,
-      disableMusicTrack: true,
+      disableMusicTrack: !keepSourceMusic,
       title: `Translation ${language} - ${project.id}`,
     });
 
